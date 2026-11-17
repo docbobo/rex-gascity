@@ -40,6 +40,10 @@ type Config struct {
 	// ReadyPromptPrefix is the prompt text the agent shows when ready. When
 	// empty, Start falls back to the GC_READY_PROMPT_PREFIX meta key.
 	ReadyPromptPrefix string
+	// Env is the per-session environment gc ships in the start config. Rex
+	// launch options carry no env, so Start applies it by prefixing the launch
+	// argv with `env K=V ...` (see launchCommand).
+	Env map[string]string
 }
 
 // Provider drives Rex for one gc city.
@@ -164,7 +168,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 		return err
 	}
 	spec := rex.LaunchSpec{
-		Command: cfg.Argv,
+		Command: launchCommand(cfg.Argv, cfg.Env),
 		Cwd:     cfg.WorkDir,
 		Label:   n.PaneLabel(),
 	}
@@ -188,6 +192,29 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 	}
 	p.record(ctx, n, sid, wid, block, "window", cfg)
 	return nil
+}
+
+// launchCommand returns argv with the environment applied at the command
+// boundary, since Rex terminal launch options have no per-pane env. With no
+// env, or no command, argv is returned unchanged: a bare shell cannot be
+// seeded (a documented limitation), and an empty argv must stay empty so the
+// pane starts its default shell. Keys are sorted for deterministic output,
+// and the caller's slice is never mutated.
+func launchCommand(argv []string, env map[string]string) []string {
+	if len(argv) == 0 || len(env) == 0 {
+		return argv
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(env)+1+len(argv))
+	out = append(out, "env")
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return append(out, argv...)
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the

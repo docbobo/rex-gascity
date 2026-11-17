@@ -43,6 +43,45 @@ func TestStartCreatesCitySessionRigTabAndAgentPane(t *testing.T) {
 	}
 }
 
+func TestStartAppliesEnvToLaunchCommand(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	argv := []string{"sleep", "300"}
+	err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{
+		Argv: argv,
+		// B keeps a space, '=' and a quote to prove the wrapper leaves each
+		// mapping as one argv element.
+		Env: map[string]string{"GC_CITY": "/tmp/c", "A": "1", "B": "x y=z'q"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.CreatedWindows) != 1 {
+		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	want := []string{"env", "A=1", "B=x y=z'q", "GC_CITY=/tmp/c", "sleep", "300"}
+	if got := fake.CreatedWindows[0].Spec.Command; !slices.Equal(got, want) {
+		t.Errorf("pane command = %v, want %v", got, want)
+	}
+	if !slices.Equal(argv, []string{"sleep", "300"}) {
+		t.Errorf("caller argv mutated: %v", argv)
+	}
+}
+
+func TestStartWithoutEnvLeavesLaunchCommand(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{Argv: []string{"sleep", "300"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := fake.CreatedWindows[0].Spec.Command; !slices.Equal(got, []string{"sleep", "300"}) {
+		t.Errorf("pane command = %v, want [sleep 300]", got)
+	}
+}
+
 func TestStartJoinsExistingRigTab(t *testing.T) {
 	fake := faketest.New()
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}

@@ -469,14 +469,20 @@ Phase 0 also confirms the plan's decisions against the live surface:
   The pilot confirmed it: under the launchd supervisor the worker landed in
   `gc:default`. Follow-up (still open): pin `GC_REX_CITY` at the supervisor
   level or add a supervisor-level env mechanism.
-- **Start-config hooks are not applied (open, GCREX-5).** The dispatcher
-  ignores the start config's `env`, `nudge`, `pre_start`, `session_setup`,
+- **Remaining start-config hooks are not applied (open, GCREX-5).** The
+  dispatcher ignores the start config's `nudge`, `pre_start`, `session_setup`,
   `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and
   `pack_overlay_dirs`. gc does not resend the startup `nudge`, and Rex launch
-  options carry no `env`, so an agent's first prompt must come from its command
-  line. Phase 5 must close these before a real fleet runs.
-  Still open after the GCREX-6 pilot, which used a command-line-only agent;
-  see `docs/rex-pilot-phase5.md`.
+  options carry no `env` option of their own, so an agent's first prompt must
+  come from its command line. Phase 5 must close the remaining hooks before a
+  real fleet runs.
+  **Resolved (GCREX-10):** the `env` map is applied. The dispatcher decodes
+  `env` from the start config and wraps the launch argv with `env K=V ...`
+  (sorted keys) at the command boundary, so a launched pane's process sees
+  every managed-session variable. A bare shell (no command) cannot be seeded,
+  since Rex has no per-pane env option. The remaining hooks are still open and
+  were not exercised by the GCREX-6 pilot, which used a command-line-only
+  agent; see `docs/rex-pilot-phase5.md`.
 - **Rig-tab growth (resolved, GCREX-6).** Always splitting the first pane
   halved it each time (14 splits: 1/2 ... 1/16384). The provider now splits
   the largest-area pane along its longer axis, side `after`, 50%, reading

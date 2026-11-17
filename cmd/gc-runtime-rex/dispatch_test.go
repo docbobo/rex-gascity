@@ -162,6 +162,23 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
+func TestStartAppliesEnvFromStartConfig(t *testing.T) {
+	h, fake := newHarness(t)
+	h.must(`{"command":"sleep 300","env":{"GC_CITY":"/tmp/city","GC_SESSION_ID":"s-1"}}`, "start", dog)
+	if len(fake.CreatedWindows) != 1 {
+		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	run := fake.CreatedWindows[0].Spec.Command
+	if len(run) == 0 || run[0] != "env" {
+		t.Fatalf("launch command = %v, want an env wrapper", run)
+	}
+	for _, want := range []string{"GC_CITY=/tmp/city", "GC_SESSION_ID=s-1"} {
+		if !slices.Contains(run, want) {
+			t.Errorf("launch command %v missing %q", run, want)
+		}
+	}
+}
+
 func TestDuplicateStartFails(t *testing.T) {
 	h, fake := newHarness(t)
 	h.start(dog)

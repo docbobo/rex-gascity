@@ -39,9 +39,13 @@ func TestE2EDispatcherLifecycle(t *testing.T) {
 	}
 
 	const (
-		name     = "Indigo--dog-1"
-		sentinel = "RPP-E2E-SENTINEL"
+		name        = "Indigo--dog-1"
+		sentinel    = "RPP-E2E-SENTINEL"
+		envSentinel = "RPP_E2E_ENV"
+		envValue    = "RPP-E2E-ENV-VALUE"
 	)
+	// printenv emits only the seeded variable, so the pane output stays two
+	// lines and no unrelated environment leaks into a failure log.
 	defer func() {
 		call("", "stop", name)
 		// Best-effort cleanup of the scratch city session.
@@ -50,7 +54,8 @@ func TestE2EDispatcherLifecycle(t *testing.T) {
 		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
 	}()
 
-	cfg := fmt.Sprintf(`{"work_dir":%q,"command":"sh -c 'echo %s; sleep 300'"}`, os.TempDir(), sentinel)
+	cfg := fmt.Sprintf(`{"work_dir":%q,"command":"sh -c 'printenv %s; echo %s; sleep 300'","env":{%q:%q}}`,
+		os.TempDir(), envSentinel, sentinel, envSentinel, envValue)
 	if r := call(cfg, "start", name); r.code != exitOK {
 		t.Fatalf("start: exit %d, stderr %q", r.code, r.stderr)
 	}
@@ -65,13 +70,16 @@ func TestE2EDispatcherLifecycle(t *testing.T) {
 		if r.code != exitOK {
 			t.Fatalf("peek: exit %d, stderr %q", r.code, r.stderr)
 		}
-		if out = r.stdout; strings.Contains(out, sentinel) {
+		if out = r.stdout; strings.Contains(out, sentinel) && strings.Contains(out, envValue) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	if !strings.Contains(out, sentinel) {
 		t.Fatalf("peek never showed %q; last output:\n%s", sentinel, out)
+	}
+	if !strings.Contains(out, envValue) {
+		t.Fatalf("peek never showed the seeded env value in the pane; last output:\n%s", out)
 	}
 
 	if r := call("", "stop", name); r.code != exitOK {

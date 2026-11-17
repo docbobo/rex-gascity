@@ -84,7 +84,7 @@ Promote `[session] provider = "rex"` as the supported opt-in backend. Basis: thr
 ## Residual open items
 
 - **Namespace under a supervisor** (`gc:default`): pin `GC_REX_CITY` at the supervisor level or add a supervisor-level env mechanism.
-- **Start-config hooks** (`env`, `nudge`, `pre_start`, `session_setup*`, `session_live`, file staging) are still not applied; see `docs/rex-provider.md` Known v1 Limits.
+- **Start-config hooks** (`nudge`, `pre_start`, `session_setup*`, `session_live`, file staging) are still not applied; the `env` map was closed later (GCREX-10). See `docs/rex-provider.md` Known v1 Limits.
 - **Server restart** is not exercised live (D3).
 - **Session removal on `gc stop`**: the gc-side path is not identified.
-- The 2 pre-existing lint findings in `internal/provider/filestore.go`.
+- The 2 errcheck findings in `internal/provider/filestore.go` (marked `_ =` in GCREX-10).
