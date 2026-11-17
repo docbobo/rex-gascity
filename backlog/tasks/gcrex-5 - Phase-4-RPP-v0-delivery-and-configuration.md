@@ -4,7 +4,7 @@ title: 'Phase 4: RPP v0 delivery and configuration'
 status: To Do
 assignee: []
 created_date: '2026-11-17T16:25:00Z'
-updated_date: '2026-11-17T18:44:00Z'
+updated_date: '2026-11-17T19:17:00Z'
 labels: []
 dependencies:
   - GCREX-4
@@ -28,3 +28,16 @@ The provider must ship as an out-of-tree executable so Rex support reaches users
 - [ ] #4 gc runtime check rex and gc runtime conformance rex pass
 - [ ] #5 Docs explain selecting the provider with [session] provider = "rex" or GC_SESSION=rex
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verification notes (from the GCREX-8 plan review). Gaps the verification found between the code that exists today and the plan that describes this phase:
+
+- Wire-op mapping. The plan's §5 table left column holds provider-behavior names (Start, GetLastActivity, CopyTo, RunLive), not wire ops. Before writing the dispatcher, map them onto the pinned operations in docs/REX-CONTRACT.md §9: that table has no CopyTo or RunLive rows and adds protocol, exec, provision and watch-startup.
+- Payload formats. Contract §9 is not JSON everywhere: nudges, metadata, captures, booleans, process names, and exec commands/output are plain text. Do not assume JSON on stdin/stdout for every op.
+- exec scope. Declare proc.exec only when the exec op's exit status carries the in-box command's exit. The excluded ExecProvider is gc's Go interface, not the wire exec op - say which behavior is intended.
+- Capabilities. Advertise only implemented capabilities in the protocol handshake; report-attachment and report-activity become declared here (they back is-attached and get-last-activity).
+- Start coordination and launch options. The dispatcher is one process per op (contract §9), so an in-process mutex is not enough. provider.go's Config has only Argv and WorkDir, and internal/rex/cli never sends focus=false or login/interactive; the plan promises all three.
+- Unimplemented provider methods the dispatcher will need: IsAttached, Attach, ProcessAlive, ListRunning, GetLastActivity, ClearScrollback, CopyTo, RunLive and the metadata ops. BlockClear exists at the transport layer only. provider.Peek also takes no line count, while the wire peek op passes <lines>.
+<!-- SECTION:NOTES:END -->

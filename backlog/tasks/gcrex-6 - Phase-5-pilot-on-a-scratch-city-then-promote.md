@@ -4,7 +4,7 @@ title: 'Phase 5: pilot on a scratch city, then promote'
 status: To Do
 assignee: []
 created_date: '2026-11-17T16:25:00Z'
-updated_date: '2026-11-17T18:44:00Z'
+updated_date: '2026-11-17T19:17:00Z'
 labels: []
 dependencies:
   - GCREX-5
@@ -30,3 +30,13 @@ Before making Rex the default, run it on a scratch city with the mayor still on 
 - [ ] #6 The promotion record states the CLI/server version skew and whether the pilot requires a restarted server at the same API revision
 - [ ] #7 The rig-tab split policy for a growing number of agents in one tab is decided and recorded
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verification notes (from the GCREX-8 plan review) for this phase to consume:
+
+- Reuse internal/provider/e2e_test.go: it already holds opt-in live tests gated by REX_E2E (TestE2EAgentLifecycle, TestE2EInputPath). Extend them rather than writing new ones.
+- Scenarios the review flagged as untested today: shell-vs-agent liveness (IsRunning would call a surviving shell running), concurrent topology creation from parallel Starts, empty-tab cleanup after the last pane closes, server restart recovery and whether block ids survive it, and version skew (CLI 0.1.0-preview.20/rev16 against server 0.1.0-preview.19/rev14 - decide whether promotion needs a restarted server).
+- Rig-tab growth: repeated session.new_split into one tab has layout limits; this phase should fix the split policy for a rig with many agents.
+<!-- SECTION:NOTES:END -->

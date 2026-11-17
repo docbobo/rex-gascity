@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@boris'
 created_date: '2026-11-17T16:25:00Z'
-updated_date: '2026-11-17T17:07:00Z'
+updated_date: '2026-11-17T19:17:00Z'
 labels: []
 dependencies: []
 references:
@@ -59,6 +59,8 @@ CLI adapter (rex/cli) added: implements rex.Client by shelling out to the rex CL
 AC #5 done. Live probes against the Rex server settled the two open facts: (1) block.method and block.event require session_id next to block_id; the adapter had been omitting it, so every block op would have failed against a real server (the fake rex binary matched on method name only, so tests stayed green). (2) format with no max_bytes returns the whole capture or fails too_large; with max_bytes set it returns {content,id,total,eof} and a set id means more remains. blob_read returns {id,data,total,eof} with all four fields required. Fix: rex.Client block methods now take sessionID; the CLI adapter sends session_id, requests format with max_bytes=983040, and follows id with blob_read until eof.
 
 Verification: fake-rex tests cover session_id on block.method/block.event and a two-page follow (format -> blob_read eof=false -> blob_read eof=true) plus the single-page case; provider tests assert Peek scopes the call to session:gc:acme/block:dog-1/format. New opt-in live test internal/provider/e2e_test.go (REX_E2E=1 go test ./internal/provider -run TestE2E -v) runs Start -> Peek -> IsRunning -> Stop -> Peek on a scratch city; the agent emits ~4 MiB, so Peek returning (len > 983040) with the end sentinel proves paging to completion. It passed against the live server in 2.0s. go test ./..., go vet ./..., gofmt -l . are clean.
+
+Verification note (from the GCREX-8 plan review): AC #4 says "IsRunning and ProcessAlive distinguish a live agent from a terminal whose program exited", but ProcessAlive was never implemented. internal/provider/provider.go's IsRunning returns only info.LastExit == nil and never inspects Foreground/Ancestors, so a terminal whose agent died but whose shell survives reads as running. The checked AC text overstates the delivered surface; the semantic gap is recorded on GCREX-4.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
