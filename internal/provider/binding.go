@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // Binding ties a gc session name to its Rex address.

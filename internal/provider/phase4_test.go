@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/docbobo/rex-gas-city/internal/provider"
-	"github.com/docbobo/rex-gas-city/internal/rex"
-	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
+	"github.com/docbobo/rex-gascity/internal/provider"
+	"github.com/docbobo/rex-gascity/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
 func TestPeekLines(t *testing.T) {

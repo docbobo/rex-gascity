@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // ErrAttachmentUnknown is returned by IsAttached when Rex answered but no

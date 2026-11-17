@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 func TestWatchesAgent(t *testing.T) {

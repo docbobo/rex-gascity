@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/docbobo/rex-gas-city/internal/provider"
-	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
+	"github.com/docbobo/rex-gascity/internal/provider"
+	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
 // A binding recorded by one Provider is readable by a fresh Provider over the

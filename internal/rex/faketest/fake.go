@@ -9,7 +9,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // CreatedWindow records a NewWindow call.

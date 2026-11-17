@@ -1,4 +1,4 @@
-# rex-gas-city
+# rex-gascity
 
 A [Gas City](https://docs.gascityhall.com) runtime provider for [Rex](https://rex.dev). It runs Gas City agents as native Rex terminal panes instead of tmux panes, using the Runtime Provider Protocol v0 (RPP v0).
 
@@ -24,7 +24,7 @@ The first agent in a rig creates a tab. Later agents in the same rig split panes
 ## Install
 
 ```sh
-go install github.com/docbobo/rex-gas-city/cmd/gc-runtime-rex@latest
+go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@latest
 ```
 
 Make sure `$(go env GOBIN)` (or `$(go env GOPATH)/bin` when `GOBIN` is unset) is on `PATH`.
@@ -41,7 +41,7 @@ make install          # go install ./cmd/gc-runtime-rex
 Add the pack to the city. A schema-2 city uses a pack import:
 
 ```sh
-gc import add /path/to/rex-gas-city/pack --name rex --city /path/to/my-city
+gc import add /path/to/rex-gascity/pack --name rex --city /path/to/my-city
 ```
 
 which writes an `[imports.rex]` entry. A simple city without its own `pack.toml` can use a workspace include instead, with the path relative to `city.toml`:
@@ -49,7 +49,7 @@ which writes an `[imports.rex]` entry. A simple city without its own `pack.toml`
 ```toml
 [workspace]
 name = "my-city"
-includes = ["path/to/rex-gas-city/pack"]
+includes = ["path/to/rex-gascity/pack"]
 ```
 
 Then select the provider for the whole city:
@@ -101,7 +101,7 @@ make conformance
 |---|---|---|
 | `GC_REX_BIN` | `rex` (via `PATH`) | Path or name of the `rex` CLI the provider drives |
 | `GC_REX_CITY` | `basename($GC_CITY_PATH)`, then `$GC_CITY`, else `"default"` | City namespace for the `gc:<city>` session label and sidecar state |
-| `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gas-city` or `~/.local/state/rex-gas-city` | Base directory for per-city sidecar state |
+| `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Base directory for per-city sidecar state |
 | `GC_SESSION` | unset | Selects the provider for a foreground controller (`rex`) |
 
 RPP v0 calls carry no city identifier, so the provider resolves the city from the environment. Set `GC_REX_CITY` explicitly when several cities share one Rex server; otherwise they all fall back to the same `gc:default` session and state directory.

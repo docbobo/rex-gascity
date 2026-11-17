@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
-	"github.com/docbobo/rex-gas-city/internal/rex/cli"
+	"github.com/docbobo/rex-gascity/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex/cli"
 )
 
 // argsFor returns the decoded JSON argument of the first call to method.

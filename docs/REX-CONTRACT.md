@@ -446,8 +446,8 @@ Phase 0 also confirms the plan's decisions against the live surface:
   fallback is the documented v1 path.
 - **State directory (resolved, GCREX-4).** Bindings, activity fingerprints and
   metadata live under `$GC_REX_STATE_DIR/<city>`, else
-  `$XDG_STATE_HOME/rex-gas-city/<city>`, else
-  `~/.local/state/rex-gas-city/<city>`, one JSON file per `sha256(name)`.
+  `$XDG_STATE_HOME/rex-gascity/<city>`, else
+  `~/.local/state/rex-gascity/<city>`, one JSON file per `sha256(name)`.
 - **Empty-tab teardown (resolved, GCREX-4).** A live probe closed a scratch
   session's only block and `session.view` then reported zero windows: Rex
   removes a tab when its last block closes. Teardown is block-only

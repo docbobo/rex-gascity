@@ -136,7 +136,7 @@ The terminal flavor accepts launch options: `shell`, `command` (argv array),
 ## 3. Architecture and file layout
 
 **The provider is a standalone executable, not a Go package inside gc.** The
-module root is this repo (`github.com/docbobo/rex-gas-city`); there is no nested
+module root is this repo (`github.com/docbobo/rex-gascity`); there is no nested
 `runtime-rex/` module.
 Gas City's runtime-packs direction (`engdocs/design/runtime-provider-packs.md`)
 is explicit: providers must update without a new `gc` release, which rules out
@@ -154,7 +154,7 @@ proxy provider, bound to the pack-declared name `rex`.
 ### Layout
 
 ```
-go.mod                          # github.com/docbobo/rex-gas-city; requires nothing from gascity
+go.mod                          # github.com/docbobo/rex-gascity; requires nothing from gascity
 cmd/gc-runtime-rex/             # RPP v0 op dispatcher (GCREX-5 / Phase 4)             [done]
 internal/rex/client.go          # Client interface: one method per Rex op (below)          [done]
 internal/rex/cli/               #   the only implementation in v1: shells out to `rex`     [done]
@@ -344,8 +344,8 @@ Rex ids are not guaranteed stable across server restarts (Rex persists
 sessions and "jumps ahead" the view revision on restore), and labels are not
 unique across windows. So key on ids. The sidecar stores them (GCREX-4): one
 JSON file per gc session name under the per-city state directory —
-`$GC_REX_STATE_DIR/<city>`, else `$XDG_STATE_HOME/rex-gas-city/<city>`, else
-`~/.local/state/rex-gas-city/<city>` (the city component is percent-encoded by `safeName`) — with atomic (temp + rename) writes:
+`$GC_REX_STATE_DIR/<city>`, else `$XDG_STATE_HOME/rex-gascity/<city>`, else
+`~/.local/state/rex-gascity/<city>` (the city component is percent-encoded by `safeName`) — with atomic (temp + rename) writes:
 
 ```
 <stateDir>/bindings/<sha256(gcName)>.json

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // processAlive reports whether the agent program is running in a pane. A

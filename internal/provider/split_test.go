@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
-	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
+	"github.com/docbobo/rex-gascity/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
 func TestNextSplit(t *testing.T) {

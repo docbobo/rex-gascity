@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // terminalFlavor is the Rex flavor that runs a shell or a chosen command.

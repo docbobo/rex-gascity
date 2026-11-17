@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // ErrSessionNotFound reports that an input op found no live agent for the

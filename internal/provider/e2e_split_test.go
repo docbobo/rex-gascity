@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/provider"
-	"github.com/docbobo/rex-gas-city/internal/rex/cli"
+	"github.com/docbobo/rex-gascity/internal/provider"
+	"github.com/docbobo/rex-gascity/internal/rex/cli"
 )
 
 // TestE2ERigSplitGrid starts several agents in one rig on a live Rex server

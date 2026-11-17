@@ -13,7 +13,7 @@
 Install `gc-runtime-rex` onto `PATH` with `go install`:
 
 ```sh
-go install github.com/docbobo/rex-gas-city/cmd/gc-runtime-rex@latest
+go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@latest
 ```
 
 Make sure `$(go env GOBIN)` (or `$(go env GOPATH)/bin` when `GOBIN` is unset) is on `PATH`.
@@ -49,7 +49,7 @@ Include the pack in your city's `city.toml` (paths in `includes` resolve relativ
 ```toml
 [workspace]
 name = "my-city"
-includes = ["path/to/rex-gas-city/pack"]
+includes = ["path/to/rex-gascity/pack"]
 ```
 
 Select the provider for the whole city in `city.toml`:
@@ -116,8 +116,8 @@ Because RPP invokes `gc-runtime-rex` as a short-lived process per operation, pan
 Base directory precedence:
 
 1. `$GC_REX_STATE_DIR` (if non-empty)
-2. `$XDG_STATE_HOME/rex-gas-city` (if `XDG_STATE_HOME` is set)
-3. `~/.local/state/rex-gas-city`
+2. `$XDG_STATE_HOME/rex-gascity` (if `XDG_STATE_HOME` is set)
+3. `~/.local/state/rex-gascity`
 
 Within that base directory, each city uses `<base>/<encoded-city>/` (percent-encoded so distinct city names always map to distinct directories, including on case-insensitive filesystems such as macOS APFS: only `a-z`, `0-9` and `-` stay literal, and every other byte, including uppercase letters, becomes `%XX`), containing `bindings/`, `activity/`, `meta/`, and an `flock` file `lock`.
 
@@ -136,7 +136,7 @@ RPP v0 passes no city identifier on argv or stdin, so `gc-runtime-rex` resolves 
 |---|---|---|
 | `GC_REX_BIN` | `rex` (resolved via `PATH`) | Path or name of the `rex` CLI binary used by the provider |
 | `GC_REX_CITY` | `basename($GC_CITY_PATH)`, `$GC_CITY`, else `"default"` | Overrides the city namespace used for the `gc:<city>` Rex session label and sidecar state subdirectory |
-| `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gas-city` or `~/.local/state/rex-gas-city` | Overrides the base directory for per-city sidecar state |
+| `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Overrides the base directory for per-city sidecar state |
 
 ## Known v1 Limits
 

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // nameKey is the file stem every file store uses for name: the lowercase hex

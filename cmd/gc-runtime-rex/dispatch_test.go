@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/rex"
-	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
+	"github.com/docbobo/rex-gascity/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
 // result is one dispatcher invocation's observable outcome.

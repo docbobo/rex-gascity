@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/docbobo/rex-gas-city/internal/provider"
-	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
+	"github.com/docbobo/rex-gascity/internal/provider"
+	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
 func TestMetaRoundTripsBytes(t *testing.T) {

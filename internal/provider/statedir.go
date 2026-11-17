@@ -9,7 +9,7 @@ import (
 
 // StateDir returns the per-city state directory that holds the sidecar
 // stores. GC_REX_STATE_DIR overrides the base; otherwise it is
-// $XDG_STATE_HOME/rex-gas-city, or ~/.local/state/rex-gas-city.
+// $XDG_STATE_HOME/rex-gascity, or ~/.local/state/rex-gascity.
 func StateDir(city string) (string, error) {
 	if env := os.Getenv("GC_REX_STATE_DIR"); env != "" {
 		return filepath.Join(env, safeName(city)), nil
@@ -25,7 +25,7 @@ func StateDir(city string) (string, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "rex-gas-city", safeName(city)), nil
+	return filepath.Join(base, "rex-gascity", safeName(city)), nil
 }
 
 // safeName maps a city name to a single path element. It percent-encodes the

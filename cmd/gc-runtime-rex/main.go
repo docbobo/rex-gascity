@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docbobo/rex-gas-city/internal/provider"
-	"github.com/docbobo/rex-gas-city/internal/rex"
-	"github.com/docbobo/rex-gas-city/internal/rex/cli"
+	"github.com/docbobo/rex-gascity/internal/provider"
+	"github.com/docbobo/rex-gascity/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex/cli"
 )
 
 const (

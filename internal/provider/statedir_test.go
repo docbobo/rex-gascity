@@ -19,7 +19,7 @@ func TestStateDirXDGFallback(t *testing.T) {
 	t.Setenv("GC_REX_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
 	got, err := StateDir("acme")
-	if err != nil || got != filepath.Join("/tmp/xdg", "rex-gas-city", "acme") {
+	if err != nil || got != filepath.Join("/tmp/xdg", "rex-gascity", "acme") {
 		t.Fatalf("StateDir = %q, %v", got, err)
 	}
 }
@@ -29,7 +29,7 @@ func TestStateDirHomeFallback(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "/home/x")
 	got, err := StateDir("acme")
-	if err != nil || got != filepath.Join("/home/x", ".local", "state", "rex-gas-city", "acme") {
+	if err != nil || got != filepath.Join("/home/x", ".local", "state", "rex-gascity", "acme") {
 		t.Fatalf("StateDir = %q, %v", got, err)
 	}
 }
