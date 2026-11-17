@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"strings"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
 )
@@ -20,70 +19,29 @@ type Config struct {
 type Provider struct {
 	city   string
 	client rex.Client
+	binder *Binder
 }
 
 // New builds a Provider for city, driving client.
 func New(city string, client rex.Client) *Provider {
-	return &Provider{city: city, client: client}
+	return &Provider{
+		city:   city,
+		client: client,
+		binder: NewBinder(client, NewMemoryStore(), rexSessionLabel(city)),
+	}
 }
 
-// sessionLabel is the Rex session label for this city (D1: one session/city).
-func (p *Provider) sessionLabel() string { return "gc:" + p.city }
-
-// parseName splits a gc session name into its rig tab label and agent pane
-// label. Rig agents are "<rig>--<agent>"; everything else is town-level.
-func parseName(name string) (rig, agent string) {
-	if i := strings.Index(name, "--"); i >= 0 {
-		return name[:i], name[i+2:]
-	}
-	return "__town", name
-}
-
-// findSession returns the city's Rex session, or "" when it does not exist.
-func (p *Provider) findSession(ctx context.Context) (rex.SessionID, error) {
-	sessions, err := p.client.ListSessions(ctx)
-	if err != nil {
-		return "", err
-	}
-	for _, s := range sessions {
-		if s.Label == p.sessionLabel() {
-			return s.ID, nil
-		}
-	}
-	return "", nil
-}
-
-// findAgentBlock returns the pane running the named agent, or "" when the
-// agent has no pane in the city's session.
-func (p *Provider) findAgentBlock(ctx context.Context, sid rex.SessionID, name string) (rex.BlockID, error) {
-	rig, agent := parseName(name)
-	view, err := p.client.SessionView(ctx, sid)
-	if err != nil {
-		return "", err
-	}
-	for _, w := range view.Windows {
-		if w.Label != rig {
-			continue
-		}
-		for _, b := range w.Blocks {
-			if b.Label == agent {
-				return b.ID, nil
-			}
-		}
-	}
-	return "", nil
-}
-
-// Start creates the city session, the rig's tab, and the agent's pane.
+// Start creates the city session, the rig's tab, and the agent's pane, and
+// records the pane's binding.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
-	rig, agent := parseName(name)
+	n := SessionName(name)
 
-	sid, err := p.findSession(ctx)
+	sid, ok, err := p.binder.FindSession(ctx)
 	if err != nil {
 		return err
 	}
-	if sid == "" {
-		sid, err = p.client.CreateSession(ctx, p.sessionLabel())
+	if !ok {
+		sid, err = p.client.CreateSession(ctx, rexSessionLabel(p.city))
 		if err != nil {
 			return err
 		}
@@ -96,44 +54,63 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	spec := rex.LaunchSpec{
 		Command: cfg.Argv,
 		Cwd:     cfg.WorkDir,
-		Label:   agent,
+		Label:   n.PaneLabel(),
 	}
 	for _, w := range view.Windows {
-		if w.Label == rig && len(w.Blocks) > 0 {
-			_, err = p.client.NewSplit(ctx, sid, w.Blocks[0].ID, "horizontal", "after", spec)
-			return err
+		if w.Label == n.TabLabel() && len(w.Blocks) > 0 {
+			block, err := p.client.NewSplit(ctx, sid, w.Blocks[0].ID, "horizontal", "after", spec)
+			if err != nil {
+				return err
+			}
+			p.record(n, sid, w.ID, block)
+			return nil
 		}
 	}
-	_, _, err = p.client.NewWindow(ctx, sid, rig, spec)
-	return err
+	wid, block, err := p.client.NewWindow(ctx, sid, n.TabLabel(), spec)
+	if err != nil {
+		return err
+	}
+	p.record(n, sid, wid, block)
+	return nil
+}
+
+// record stores a binding for a new pane. A pane with no block ID is not
+// recorded.
+func (p *Provider) record(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID) {
+	if block == "" {
+		return
+	}
+	p.binder.Record(Binding{
+		Name:         n,
+		SessionID:    sid,
+		SessionLabel: rexSessionLabel(p.city),
+		WindowID:     wid,
+		BlockID:      block,
+	})
 }
 
 // Stop closes the agent's pane and leaves the city session and other rigs
 // intact. It is a no-op when the agent has no pane.
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	sid, err := p.findSession(ctx)
-	if err != nil || sid == "" {
+	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	if err != nil || !ok {
 		return err
 	}
-	block, err := p.findAgentBlock(ctx, sid, name)
-	if err != nil || block == "" {
+	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil {
 		return err
 	}
-	return p.client.CloseBlock(ctx, sid, block)
+	p.binder.Forget(SessionName(name))
+	return nil
 }
 
 // IsRunning reports whether the agent's program is still running. An agent
 // with no pane is not running.
 func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
-	sid, err := p.findSession(ctx)
-	if err != nil || sid == "" {
+	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	if err != nil || !ok {
 		return false, err
 	}
-	block, err := p.findAgentBlock(ctx, sid, name)
-	if err != nil || block == "" {
-		return false, err
-	}
-	info, err := p.client.BlockProcess(ctx, sid, block)
+	info, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID)
 	if err != nil {
 		return false, err
 	}
@@ -143,13 +120,9 @@ func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
 // Peek returns the agent's rendered terminal output. An agent with no pane
 // has no output.
 func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
-	sid, err := p.findSession(ctx)
-	if err != nil || sid == "" {
+	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	if err != nil || !ok {
 		return "", err
 	}
-	block, err := p.findAgentBlock(ctx, sid, name)
-	if err != nil || block == "" {
-		return "", err
-	}
-	return p.client.BlockFormat(ctx, sid, block)
+	return p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
 }

@@ -45,6 +45,15 @@ type Fake struct {
 	CreatedWindows  []CreatedWindow
 	CreatedSplits   []CreatedSplit
 	ClosedBlocks    []rex.BlockID
+
+	// ListSessionsCalls and SessionViewCalls count calls to those methods.
+	ListSessionsCalls int
+	SessionViewCalls  int
+
+	// ListSessionsErr and SessionViewErr, when set, are returned by those
+	// methods.
+	ListSessionsErr error
+	SessionViewErr  error
 }
 
 // BlockCall records one block-method call.
@@ -65,26 +74,67 @@ func (f *Fake) CreateSession(_ context.Context, label string) (rex.SessionID, er
 
 func (f *Fake) NewWindow(_ context.Context, sid rex.SessionID, label string, spec rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
 	f.CreatedWindows = append(f.CreatedWindows, CreatedWindow{SessionID: sid, Label: label, Spec: spec})
-	return rex.WindowID("window:" + label), rex.BlockID("block:" + spec.Label), nil
+	wid, block := rex.WindowID("window:"+label), rex.BlockID("block:"+spec.Label)
+	f.View.Windows = append(f.View.Windows, rex.Window{
+		ID:     wid,
+		Label:  label,
+		Blocks: []rex.Block{{ID: block, Label: spec.Label}},
+	})
+	return wid, block, nil
 }
 
 func (f *Fake) NewSplit(_ context.Context, sid rex.SessionID, anchor rex.BlockID, direction, side string, spec rex.LaunchSpec) (rex.BlockID, error) {
 	f.CreatedSplits = append(f.CreatedSplits, CreatedSplit{SessionID: sid, Anchor: anchor, Direction: direction, Side: side, Spec: spec})
-	return rex.BlockID("block:" + spec.Label), nil
+	block := rex.BlockID("block:" + spec.Label)
+	for i, w := range f.View.Windows {
+		for _, b := range w.Blocks {
+			if b.ID == anchor {
+				f.View.Windows[i].Blocks = append(w.Blocks, rex.Block{ID: block, Label: spec.Label})
+				return block, nil
+			}
+		}
+	}
+	return block, nil
 }
 
 func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID) error {
 	f.ClosedBlocks = append(f.ClosedBlocks, block)
+	for i, w := range f.View.Windows {
+		var kept []rex.Block
+		for _, b := range w.Blocks {
+			if b.ID != block {
+				kept = append(kept, b)
+			}
+		}
+		f.View.Windows[i].Blocks = kept
+	}
 	return nil
 }
 
 func (f *Fake) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionView, error) {
+	f.SessionViewCalls++
+	if f.SessionViewErr != nil {
+		return rex.SessionView{}, f.SessionViewErr
+	}
 	v := f.View
 	v.SessionID = sid
+	if v.Label == "" {
+		for _, s := range f.Sessions {
+			if s.ID == sid {
+				v.Label = s.Label
+			}
+		}
+	}
 	return v, nil
 }
 
-func (f *Fake) ListSessions(_ context.Context) ([]rex.Session, error) { return f.Sessions, nil }
+func (f *Fake) ListSessions(_ context.Context) ([]rex.Session, error) {
+	f.ListSessionsCalls++
+	if f.ListSessionsErr != nil {
+		return nil, f.ListSessionsErr
+	}
+	return f.Sessions, nil
+}
 
 func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.BlockID) (rex.ProcessInfo, error) {
 	f.record(sid, block, "process")

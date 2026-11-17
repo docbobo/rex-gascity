@@ -227,3 +227,23 @@ func TestStopUnknownSessionIsANoOp(t *testing.T) {
 		t.Errorf("closed blocks = %v, want none", fake.ClosedBlocks)
 	}
 }
+
+func TestStopUsesRecordedBindingWithoutScan(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	if err := p.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"x"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fake.ListSessionsCalls, fake.SessionViewCalls = 0, 0
+
+	if err := p.Stop(ctx, "Indigo--dog-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 1 {
+		t.Errorf("calls: list=%d view=%d", fake.ListSessionsCalls, fake.SessionViewCalls)
+	}
+	if !slices.Equal(fake.ClosedBlocks, []rex.BlockID{"block:dog-1"}) {
+		t.Errorf("closed = %v", fake.ClosedBlocks)
+	}
+}
