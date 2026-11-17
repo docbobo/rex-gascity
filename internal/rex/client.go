@@ -45,6 +45,9 @@ type LaunchSpec struct {
 type Block struct {
 	ID    BlockID
 	Label string
+	// Rect is the pane's normalized position in its window: x, y, width,
+	// height, each in 0..1. It is the zero value when the layout is unknown.
+	Rect [4]float64
 }
 
 // Window is a Rex tab. Blocks is every block in the window flattened across

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/docbobo/rex-gas-city/internal/provider"
+	"github.com/docbobo/rex-gas-city/internal/rex"
 	"github.com/docbobo/rex-gas-city/internal/rex/cli"
 )
 
@@ -429,5 +430,200 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write stale binding: %v", err)
+	}
+}
+
+// e2eHasSession reports whether a Rex session labelled label exists.
+func e2eHasSession(ctx context.Context, t *testing.T, label string) bool {
+	t.Helper()
+	sessions, err := cli.New().ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	for _, s := range sessions {
+		if s.Label == label {
+			return true
+		}
+	}
+	return false
+}
+
+// e2eWindowsLabelled returns the windows in the session view whose label is
+// label.
+func e2eWindowsLabelled(ctx context.Context, t *testing.T, sessionID rex.SessionID, label string) []rex.Window {
+	t.Helper()
+	view, err := cli.New().SessionView(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("SessionView: %v", err)
+	}
+	var out []rex.Window
+	for _, w := range view.Windows {
+		if w.Label == label {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// TestE2EAgentExitLiveness starts an agent whose command exits on its own.
+// A launched command that exits closes its block, and the last block closing
+// removes the tab. IsRunning must report false without an error, Peek must
+// return nothing, the city session must survive, and the empty rig tab must be
+// gone. It is opt-in because it mutates the user's Rex server:
+//
+//	REX_E2E=1 go test ./internal/provider -run TestE2EAgentExitLiveness -v
+func TestE2EAgentExitLiveness(t *testing.T) {
+	if os.Getenv("REX_E2E") == "" {
+		t.Skip("set REX_E2E=1 to run against the live Rex server")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	city := fmt.Sprintf("e2e-exit-%d", time.Now().UnixNano())
+	p := provider.New(city, cli.New(), provider.WithStateDir(t.TempDir()))
+
+	const name = "Indigo--dog-1"
+	defer func() {
+		_ = p.Stop(ctx, name)
+		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+	}()
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:    []string{"/bin/sh", "-c", "echo EXIT-MARK; sleep 1; exit 4"},
+		WorkDir: os.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	b, ok := p.Binding(name)
+	if !ok {
+		t.Fatal("Binding after Start: not found")
+	}
+
+	// Poll until the command exits and its pane vanishes. A vanished pane is
+	// not an error: the call that flips must be (false, nil).
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		running, err := p.IsRunning(ctx, name)
+		if err != nil {
+			t.Fatalf("IsRunning: %v; a vanished pane must not be an error", err)
+		}
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("IsRunning still true 60s after the agent command exited")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if out, err := p.Peek(ctx, name); err != nil || out != "" {
+		t.Errorf("Peek after exit = %q, %v; want empty, nil", out, err)
+	}
+
+	// Teardown is block-only: the city session survives the tab going away.
+	if !e2eHasSession(ctx, t, "gc:"+city) {
+		t.Errorf("session gc:%s gone after the agent exited; it must survive", city)
+	}
+
+	// Closing the last pane removes the rig tab. Allow a moment for the
+	// server to finish the removal.
+	var left []rex.Window
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if left = e2eWindowsLabelled(ctx, t, b.SessionID, "Indigo"); len(left) == 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if len(left) != 0 {
+		t.Errorf("tab Indigo still present after its last pane closed: %+v", left)
+	}
+}
+
+// TestE2EParallelStarts starts four agents in one rig concurrently, as gc
+// does, and checks that topology creation does not race: one rig tab holding
+// four distinct blocks. It is opt-in because it mutates the user's Rex server:
+//
+//	REX_E2E=1 go test ./internal/provider -run TestE2EParallelStarts -v
+func TestE2EParallelStarts(t *testing.T) {
+	if os.Getenv("REX_E2E") == "" {
+		t.Skip("set REX_E2E=1 to run against the live Rex server")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	const agents = 4
+	city := fmt.Sprintf("e2e-par-%d", time.Now().UnixNano())
+	p := provider.New(city, cli.New(), provider.WithStateDir(t.TempDir()))
+
+	names := make([]string, agents)
+	for i := range names {
+		names[i] = fmt.Sprintf("Indigo--dog-%d", i+1)
+	}
+	defer func() {
+		for _, name := range names {
+			_ = p.Stop(ctx, name)
+		}
+		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+	}()
+
+	type startResult struct {
+		name string
+		err  error
+	}
+	results := make(chan startResult, agents)
+	for _, name := range names {
+		go func() {
+			results <- startResult{name, p.Start(ctx, name, provider.Config{
+				Argv:    []string{"/bin/sh"},
+				WorkDir: os.TempDir(),
+			})}
+		}()
+	}
+	for range names {
+		if r := <-results; r.err != nil {
+			t.Errorf("Start %s: %v", r.name, r.err)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	first, ok := p.Binding(names[0])
+	if !ok {
+		t.Fatalf("Binding %s: not found", names[0])
+	}
+	windows := e2eWindowsLabelled(ctx, t, first.SessionID, "Indigo")
+	if len(windows) != 1 {
+		t.Fatalf("got %d windows labelled Indigo, want exactly 1: %+v", len(windows), windows)
+	}
+	if got := len(windows[0].Blocks); got != agents {
+		t.Fatalf("Indigo window holds %d blocks, want %d", got, agents)
+	}
+	seen := map[rex.BlockID]bool{}
+	for _, blk := range windows[0].Blocks {
+		seen[blk.ID] = true
+	}
+	if len(seen) != agents {
+		t.Errorf("got %d distinct block ids, want %d", len(seen), agents)
+	}
+	for _, name := range names {
+		if _, ok := p.Binding(name); !ok {
+			t.Errorf("Binding %s: not found", name)
+		}
+	}
+
+	for _, name := range names {
+		if err := p.Stop(ctx, name); err != nil {
+			t.Errorf("Stop %s: %v", name, err)
+		}
+	}
+	if left := e2eWindowsLabelled(ctx, t, first.SessionID, "Indigo"); len(left) != 0 {
+		t.Errorf("tab Indigo still present after stopping all agents: %+v", left)
+	}
+	if !e2eHasSession(ctx, t, "gc:"+city) {
+		t.Errorf("session gc:%s gone after Stop; teardown must leave the shared session", city)
 	}
 }

@@ -169,8 +169,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 		Label:   n.PaneLabel(),
 	}
 	for _, w := range view.Windows {
-		if w.Label == n.TabLabel() && len(w.Blocks) > 0 {
-			block, err := p.client.NewSplit(ctx, sid, w.Blocks[0].ID, "horizontal", "after", spec)
+		if w.Label == n.TabLabel() {
+			anchor, direction, ok := nextSplit(w)
+			if !ok {
+				continue
+			}
+			block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
 			if err != nil {
 				return err
 			}
@@ -184,6 +188,47 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 	}
 	p.record(ctx, n, sid, wid, block, "window", cfg)
 	return nil
+}
+
+// nextSplit picks where to add a pane to a rig's tab: the block with the
+// largest area, split along its longer axis, so panes stay balanced. Ties go
+// to the lowest BlockID. When no block carries a usable rect it falls back to
+// the first block, split horizontally. ok is false for a window with no blocks.
+func nextSplit(w rex.Window) (anchor rex.BlockID, direction string, ok bool) {
+	if len(w.Blocks) == 0 {
+		return "", "", false
+	}
+	best := -1
+	bestArea := 0.0
+	for i, b := range w.Blocks {
+		area, usable := rectArea(b.Rect)
+		if !usable {
+			continue
+		}
+		if best < 0 || area > bestArea || (area == bestArea && b.ID < w.Blocks[best].ID) {
+			best, bestArea = i, area
+		}
+	}
+	if best < 0 {
+		return w.Blocks[0].ID, "horizontal", true
+	}
+	r := w.Blocks[best].Rect
+	direction = "vertical"
+	if r[2] >= r[3] {
+		direction = "horizontal"
+	}
+	return w.Blocks[best].ID, direction, true
+}
+
+// rectArea returns the area of a normalized rect [x, y, w, h]. It is not
+// usable when the size is not positive or the rect leaves the 0..1 window.
+func rectArea(r [4]float64) (float64, bool) {
+	const eps = 1e-6
+	x, y, w, h := r[0], r[1], r[2], r[3]
+	if w <= 0 || h <= 0 || x < -eps || y < -eps || x+w > 1+eps || y+h > 1+eps {
+		return 0, false
+	}
+	return w * h, true
 }
 
 // record stores a binding for a new pane, started in the given mode ("window"

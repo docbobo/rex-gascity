@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
+	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
 )
 
 func TestProcessAlive(t *testing.T) {
@@ -33,5 +36,24 @@ func TestProcessAlive(t *testing.T) {
 				t.Errorf("processAlive = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsRunningTreatsVanishedPaneAsStopped(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{{
+			ID:     "window:Indigo",
+			Label:  "Indigo",
+			Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}},
+		}},
+	}
+	fake.ProcessErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
+	p := New("acme", fake)
+
+	running, err := p.IsRunning(context.Background(), "Indigo--dog-1")
+	if err != nil || running {
+		t.Errorf("IsRunning = %v, %v; want false, nil", running, err)
 	}
 }

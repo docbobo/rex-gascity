@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
@@ -55,9 +56,14 @@ func processMatches(p rex.Process, names []string) bool {
 // paneAlive reports whether the pane of b still has a live terminal. It only
 // inspects LastExit: a live probe showed Rex runs a launched command as the
 // default shell with argv0 set to the command, so process-name heuristics
-// misclassify live panes. last_exit is the v1 liveness truth.
+// misclassify live panes. last_exit is the v1 liveness truth. A pane Rex no
+// longer knows (its command exited and closed the block) is not running.
 func (p *Provider) paneAlive(ctx context.Context, b Binding) (bool, error) {
 	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
+	if errors.Is(err, rex.ErrNotFound) {
+		// A command that exits closes its block, so a missing pane is dead.
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

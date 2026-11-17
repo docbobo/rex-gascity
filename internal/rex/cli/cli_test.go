@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -443,4 +444,84 @@ func nodeBlock(t *testing.T, args map[string]any) map[string]any {
 		t.Fatalf("layout.block = %v, want object", layout["block"])
 	}
 	return block
+}
+
+func TestSessionViewResolvesLayoutRects(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.view", `{
+		"session_id":"session:a","label":"gc:acme","active_window_id":"window:Indigo","revision":4,
+		"windows":[{"window_id":"window:Indigo","label":"Indigo","focused_block_id":"block:dog-1",
+			"layers":[{
+				"blocks":[{"block_id":"block:dog-1","label":"dog-1"},{"block_id":"block:dog-2","label":"dog-2"},{"block_id":"block:dog-3","label":"dog-3"}],
+				"layout":{"rect":[0,0,1,1],"split":{"direction":"horizontal","ratio":0.5,
+					"before":{"rect":[0,0,0.5,1],"block_id":"block:dog-1"},
+					"after":{"rect":[0.5,0,0.5,1],"split":{"direction":"vertical","ratio":0.5,
+						"before":{"rect":[0.5,0,0.5,0.5],"block_id":"block:dog-2"},
+						"after":{"rect":[0.5,0.5,0.5,0.5],"block_id":"block:dog-3"}}}}}
+			}]}]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	view, err := c.SessionView(context.Background(), "session:a")
+	if err != nil {
+		t.Fatalf("SessionView: %v", err)
+	}
+	want := []rex.Block{
+		{ID: "block:dog-1", Label: "dog-1", Rect: [4]float64{0, 0, 0.5, 1}},
+		{ID: "block:dog-2", Label: "dog-2", Rect: [4]float64{0.5, 0, 0.5, 0.5}},
+		{ID: "block:dog-3", Label: "dog-3", Rect: [4]float64{0.5, 0.5, 0.5, 0.5}},
+	}
+	if got := view.Windows[0].Blocks; !slices.Equal(got, want) {
+		t.Errorf("blocks = %+v, want %+v", got, want)
+	}
+}
+
+func TestSessionViewBlockMissingFromLayoutHasZeroRect(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.view", `{
+		"session_id":"session:a","label":"gc:acme","active_window_id":"window:Indigo","revision":4,
+		"windows":[{"window_id":"window:Indigo","label":"Indigo","focused_block_id":"block:dog-1",
+			"layers":[{
+				"blocks":[{"block_id":"block:dog-1","label":"dog-1"},{"block_id":"block:dog-2","label":"dog-2"}],
+				"layout":{"rect":[0,0,1,1],"block_id":"block:dog-1"}
+			},{
+				"blocks":[{"block_id":"block:dog-1","label":"dog-1"}]
+			}]}]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	view, err := c.SessionView(context.Background(), "session:a")
+	if err != nil {
+		t.Fatalf("SessionView: %v", err)
+	}
+	want := []rex.Block{
+		{ID: "block:dog-1", Label: "dog-1", Rect: [4]float64{0, 0, 1, 1}},
+		{ID: "block:dog-2", Label: "dog-2"},
+	}
+	if got := view.Windows[0].Blocks; !slices.Equal(got, want) {
+		t.Errorf("blocks = %+v, want %+v", got, want)
+	}
+}
+
+func TestSessionViewLayoutOnlyBlockStillAppears(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.view", `{
+		"session_id":"session:a","windows":[{"window_id":"window:Indigo","label":"Indigo",
+			"layers":[{
+				"blocks":[{"block_id":"block:dog-1","label":"dog-1"}],
+				"layout":{"rect":[0,0,1,1],"split":{"direction":"horizontal","ratio":0.5,
+					"before":{"rect":[0,0,0.5,1],"block_id":"block:dog-1"},
+					"after":{"rect":[0.5,0,0.5,1],"block_id":"block:dog-2"}}}
+			}]}]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	view, err := c.SessionView(context.Background(), "session:a")
+	if err != nil {
+		t.Fatalf("SessionView: %v", err)
+	}
+	want := []rex.Block{
+		{ID: "block:dog-1", Label: "dog-1", Rect: [4]float64{0, 0, 0.5, 1}},
+		{ID: "block:dog-2", Rect: [4]float64{0.5, 0, 0.5, 1}},
+	}
+	if got := view.Windows[0].Blocks; !slices.Equal(got, want) {
+		t.Errorf("blocks = %+v, want %+v", got, want)
+	}
 }

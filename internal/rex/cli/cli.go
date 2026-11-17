@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -196,6 +197,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 			Label          string `json:"label"`
 			FocusedBlockID string `json:"focused_block_id"`
 			Layers         []struct {
+				Layout *layoutTree `json:"layout"`
 				Blocks []struct {
 					ID    string `json:"block_id"`
 					Label string `json:"label"`
@@ -218,14 +220,71 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 			Label:          w.Label,
 			FocusedBlockID: rex.BlockID(w.FocusedBlockID),
 		}
+		index := map[rex.BlockID]int{}
+		add := func(id rex.BlockID, label string, rect [4]float64) {
+			if i, ok := index[id]; ok {
+				if label != "" && win.Blocks[i].Label == "" {
+					win.Blocks[i].Label = label
+				}
+				if win.Blocks[i].Rect == ([4]float64{}) {
+					win.Blocks[i].Rect = rect
+				}
+				return
+			}
+			index[id] = len(win.Blocks)
+			win.Blocks = append(win.Blocks, rex.Block{ID: id, Label: label, Rect: rect})
+		}
 		for _, layer := range w.Layers {
+			rects := layer.Layout.blockRects()
 			for _, b := range layer.Blocks {
-				win.Blocks = append(win.Blocks, rex.Block{ID: rex.BlockID(b.ID), Label: b.Label})
+				id := rex.BlockID(b.ID)
+				add(id, b.Label, rects[id])
+				delete(rects, id)
+			}
+			// Blocks only the layout tree knows about, in a stable order.
+			rest := make([]rex.BlockID, 0, len(rects))
+			for id := range rects {
+				rest = append(rest, id)
+			}
+			slices.Sort(rest)
+			for _, id := range rest {
+				add(id, "", rects[id])
 			}
 		}
 		view.Windows = append(view.Windows, win)
 	}
 	return view, nil
+}
+
+// layoutTree is one node of a session.view layer layout: a block leaf or a
+// binary split. Rect is [x, y, w, h], normalized to 0..1.
+type layoutTree struct {
+	Rect    [4]float64 `json:"rect"`
+	BlockID string     `json:"block_id"`
+	Split   *struct {
+		Before *layoutTree `json:"before"`
+		After  *layoutTree `json:"after"`
+	} `json:"split"`
+}
+
+// blockRects returns the rect of every block leaf under t. A nil tree has none.
+func (t *layoutTree) blockRects() map[rex.BlockID][4]float64 {
+	rects := map[rex.BlockID][4]float64{}
+	t.collect(rects)
+	return rects
+}
+
+func (t *layoutTree) collect(rects map[rex.BlockID][4]float64) {
+	if t == nil {
+		return
+	}
+	if t.BlockID != "" {
+		rects[rex.BlockID(t.BlockID)] = t.Rect
+	}
+	if t.Split != nil {
+		t.Split.Before.collect(rects)
+		t.Split.After.collect(rects)
+	}
 }
 
 // BlockProcess returns the process tree of a pane.
