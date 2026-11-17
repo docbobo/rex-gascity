@@ -3,8 +3,12 @@ package cli_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
 	"github.com/docbobo/rex-gas-city/internal/rex/cli"
@@ -100,6 +104,23 @@ func TestNewWindow(t *testing.T) {
 	if opts["cwd"] != "/work/indigo" {
 		t.Errorf("cwd = %v, want /work/indigo", opts["cwd"])
 	}
+	if focus, ok := args["focus"].(bool); !ok || focus {
+		t.Errorf("focus = %v, want false by default", args["focus"])
+	}
+}
+
+func TestNewWindowFocus(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.new_window", `{"window_id":"window:Indigo","block_ids":["block:dog-1"],"revision":1}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	if _, _, err := c.NewWindow(context.Background(), "session:a", "Indigo", rex.LaunchSpec{Focus: true}); err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+	args := argsFor(t, fake.calls(t), "session.new_window")
+	if focus, ok := args["focus"].(bool); !ok || !focus {
+		t.Errorf("focus = %v, want true", args["focus"])
+	}
 }
 
 func TestNewSplit(t *testing.T) {
@@ -123,6 +144,23 @@ func TestNewSplit(t *testing.T) {
 	}
 	if args["direction"] != "horizontal" || args["side"] != "after" {
 		t.Errorf("direction/side = %v/%v, want horizontal/after", args["direction"], args["side"])
+	}
+	if focus, ok := args["focus"].(bool); !ok || focus {
+		t.Errorf("focus = %v, want false by default", args["focus"])
+	}
+}
+
+func TestNewSplitFocus(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.new_split", `{"block_ids":["block:dog-2"],"revision":2}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	if _, err := c.NewSplit(context.Background(), "session:a", "block:dog-1", "horizontal", "after", rex.LaunchSpec{Focus: true}); err != nil {
+		t.Fatalf("NewSplit: %v", err)
+	}
+	args := argsFor(t, fake.calls(t), "session.new_split")
+	if focus, ok := args["focus"].(bool); !ok || !focus {
+		t.Errorf("focus = %v, want true", args["focus"])
 	}
 }
 
@@ -311,6 +349,85 @@ func TestSendKeysNoKeysIsANoOp(t *testing.T) {
 	}
 	if calls := fake.calls(t); len(calls) != 0 {
 		t.Errorf("calls = %v, want none", calls)
+	}
+}
+
+func TestListClients(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.list_clients", `{"clients":[{"client_id":"client:a","info":{"kind":"app","name":"Rex Beta"}},{"client_id":"client:cli","info":{"kind":"cli","name":"rex"}}]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	clients, err := c.ListClients(context.Background(), "session:a")
+	if err != nil {
+		t.Fatalf("ListClients: %v", err)
+	}
+	want := []rex.ClientInfo{
+		{ID: "client:a", Kind: "app", Name: "Rex Beta"},
+		{ID: "client:cli", Kind: "cli", Name: "rex"},
+	}
+	if !reflect.DeepEqual(clients, want) {
+		t.Errorf("clients = %+v, want %+v", clients, want)
+	}
+	args := argsFor(t, fake.calls(t), "session.list_clients")
+	if args["session_id"] != "session:a" {
+		t.Errorf("session_id = %v, want session:a", args["session_id"])
+	}
+}
+
+func TestBlockProgramStatus(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "program_status", `{"records":[{"id":"r1","state":"working","app":"pi","updated_at":"2026-11-17T20:18:53.239854+01:00"}]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	status, err := c.BlockProgramStatus(context.Background(), "session:a", "block:dog-1")
+	if err != nil {
+		t.Fatalf("BlockProgramStatus: %v", err)
+	}
+	if len(status.Records) != 1 {
+		t.Fatalf("records = %d, want 1", len(status.Records))
+	}
+	rec := status.Records[0]
+	if rec.ID != "r1" || rec.State != "working" || rec.App != "pi" {
+		t.Errorf("record = %+v", rec)
+	}
+	if rec.UpdatedAt.IsZero() {
+		t.Errorf("UpdatedAt is zero, want parsed time")
+	}
+	if want := time.Date(2026, 11, 17, 20, 18, 53, 239854000, time.FixedZone("", 3600)); !rec.UpdatedAt.Equal(want) {
+		t.Errorf("UpdatedAt = %v, want %v", rec.UpdatedAt, want)
+	}
+	args := blockMethodArgs(t, fake.calls(t))
+	if args["method"] != "program_status" {
+		t.Errorf("method = %v, want program_status", args["method"])
+	}
+}
+
+func TestNotFoundMapsToErrNotFound(t *testing.T) {
+	fake := newFakeRex(t)
+	if err := os.WriteFile(filepath.Join(fake.responses, "session.view.exit"), []byte("3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &cli.Client{Bin: fake.bin}
+
+	_, err := c.SessionView(context.Background(), "session:gone")
+	if !errors.Is(err, rex.ErrNotFound) {
+		t.Fatalf("SessionView err = %v, want rex.ErrNotFound", err)
+	}
+}
+
+func TestGenericFailureIsNotErrNotFound(t *testing.T) {
+	fake := newFakeRex(t)
+	if err := os.WriteFile(filepath.Join(fake.responses, "session.view.exit"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &cli.Client{Bin: fake.bin}
+
+	_, err := c.SessionView(context.Background(), "session:a")
+	if err == nil {
+		t.Fatal("SessionView succeeded, want error")
+	}
+	if errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("exit 1 err = %v, must not match rex.ErrNotFound", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
@@ -36,7 +37,7 @@ func TestResolveCacheHit(t *testing.T) {
 	store.Save(want)
 
 	got, ok, err := b.Resolve(context.Background(), want.Name)
-	if err != nil || !ok || got != want {
+	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
 	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 1 {
@@ -48,10 +49,10 @@ func TestResolveScanFallback(t *testing.T) {
 	b, store, _ := newTestBinder(t, indigoWindow())
 
 	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
-	if err != nil || !ok || got != indigoBinding() {
+	if err != nil || !ok || !reflect.DeepEqual(got, indigoBinding()) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
-	if saved, ok := store.Load("Indigo--dog-1"); !ok || saved != got {
+	if saved, ok := store.Load("Indigo--dog-1"); !ok || !reflect.DeepEqual(saved, got) {
 		t.Errorf("saved = %+v, %v", saved, ok)
 	}
 }
@@ -103,6 +104,42 @@ func TestResolveTransportErrorKeepsBinding(t *testing.T) {
 	}
 	if _, ok := store.Load("Indigo--dog-1"); !ok {
 		t.Error("binding was cleared on transport error")
+	}
+}
+
+func TestResolveStaleSessionIDRescansOnNotFound(t *testing.T) {
+	b, store, fake := newTestBinder(t, indigoWindow())
+	fake.Sessions = []rex.Session{{ID: "session:new", Label: testLabel}}
+	fake.NotFoundSessions = map[rex.SessionID]bool{"session:old": true}
+	old := indigoBinding()
+	old.SessionID = "session:old"
+	store.Save(old)
+
+	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	if err != nil || !ok || got.BlockID != "block:dog-1" || got.SessionID != "session:new" {
+		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+	}
+	if saved, _ := store.Load("Indigo--dog-1"); saved.SessionID != "session:new" {
+		t.Errorf("store not refreshed: %+v", saved)
+	}
+}
+
+func TestResolveForeignSessionLabelIgnored(t *testing.T) {
+	b, store, fake := newTestBinder(t, indigoWindow())
+	foreign := indigoBinding()
+	foreign.SessionID = "session:other"
+	foreign.SessionLabel = "gc:other"
+	store.Save(foreign)
+
+	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	if err != nil || !ok || got.SessionID != "session:acme" || got.SessionLabel != testLabel {
+		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+	}
+	if fake.ListSessionsCalls != 1 {
+		t.Errorf("ListSessions calls = %d, want a rescan", fake.ListSessionsCalls)
+	}
+	if saved, _ := store.Load("Indigo--dog-1"); saved.SessionLabel != testLabel {
+		t.Errorf("store not refreshed: %+v", saved)
 	}
 }
 

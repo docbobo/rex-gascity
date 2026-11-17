@@ -8,9 +8,11 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
 )
@@ -42,6 +44,13 @@ func (c *Client) run(ctx context.Context, argv ...string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			if msg != "" {
+				return nil, fmt.Errorf("rex %s: %w: %s", strings.Join(argv, " "), rex.ErrNotFound, msg)
+			}
+			return nil, fmt.Errorf("rex %s: %w", strings.Join(argv, " "), rex.ErrNotFound)
+		}
 		if msg != "" {
 			return nil, fmt.Errorf("rex %s: %w: %s", strings.Join(argv, " "), err, msg)
 		}
@@ -102,6 +111,27 @@ func (c *Client) ListSessions(ctx context.Context) ([]rex.Session, error) {
 	return sessions, nil
 }
 
+// ListClients returns the clients attached to a session.
+func (c *Client) ListClients(ctx context.Context, sessionID rex.SessionID) ([]rex.ClientInfo, error) {
+	var reply struct {
+		Clients []struct {
+			ID   string `json:"client_id"`
+			Info struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"info"`
+		} `json:"clients"`
+	}
+	if err := c.call(ctx, "session.list_clients", map[string]any{"session_id": string(sessionID)}, &reply); err != nil {
+		return nil, err
+	}
+	clients := make([]rex.ClientInfo, 0, len(reply.Clients))
+	for _, cl := range reply.Clients {
+		clients = append(clients, rex.ClientInfo{ID: cl.ID, Kind: cl.Info.Kind, Name: cl.Info.Name})
+	}
+	return clients, nil
+}
+
 // NewWindow creates a new tab holding one agent pane.
 func (c *Client) NewWindow(ctx context.Context, sessionID rex.SessionID, label string, spec rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
 	var reply struct {
@@ -111,6 +141,7 @@ func (c *Client) NewWindow(ctx context.Context, sessionID rex.SessionID, label s
 	args := map[string]any{
 		"session_id":   string(sessionID),
 		"window_label": label,
+		"focus":        spec.Focus,
 		"layout":       blockLayout(spec),
 	}
 	if err := c.call(ctx, "session.new_window", args, &reply); err != nil {
@@ -134,6 +165,7 @@ func (c *Client) NewSplit(ctx context.Context, sessionID rex.SessionID, anchor r
 		"direction":  direction,
 		"side":       side,
 		"layout":     blockLayout(spec),
+		"focus":      spec.Focus,
 	}
 	if err := c.call(ctx, "session.new_split", args, &reply); err != nil {
 		return "", err
@@ -291,6 +323,35 @@ func (c *Client) BlockEvent(ctx context.Context, sessionID rex.SessionID, block 
 // BlockClear clears a pane's scrollback.
 func (c *Client) BlockClear(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) error {
 	return c.blockMethod(ctx, sessionID, block, "clear", nil, nil)
+}
+
+// BlockProgramStatus returns the program-reported status records of a pane.
+// Records with an absent updated_at keep the zero time.
+func (c *Client) BlockProgramStatus(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (rex.ProgramStatus, error) {
+	var reply struct {
+		Records []struct {
+			ID        string `json:"id"`
+			State     string `json:"state"`
+			App       string `json:"app"`
+			UpdatedAt string `json:"updated_at"`
+		} `json:"records"`
+	}
+	if err := c.blockMethod(ctx, sessionID, block, "program_status", nil, &reply); err != nil {
+		return rex.ProgramStatus{}, err
+	}
+	status := rex.ProgramStatus{Records: make([]rex.ProgramStatusRecord, 0, len(reply.Records))}
+	for _, r := range reply.Records {
+		rec := rex.ProgramStatusRecord{ID: r.ID, State: r.State, App: r.App}
+		if r.UpdatedAt != "" {
+			t, err := time.Parse(time.RFC3339, r.UpdatedAt)
+			if err != nil {
+				return rex.ProgramStatus{}, fmt.Errorf("decode program_status updated_at %q: %w", r.UpdatedAt, err)
+			}
+			rec.UpdatedAt = t
+		}
+		status.Records = append(status.Records, rec)
+	}
+	return status, nil
 }
 
 // Events is not implemented in v1; activity tracking arrives in Phase 3.

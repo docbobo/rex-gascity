@@ -60,6 +60,10 @@ type Fake struct {
 	ProcessErr  error
 	SendKeysErr error
 
+	// CloseBlockErr, when set, is returned by CloseBlock before it changes
+	// anything.
+	CloseBlockErr error
+
 	// ListSessionsCalls and SessionViewCalls count calls to those methods.
 	ListSessionsCalls int
 	SessionViewCalls  int
@@ -68,6 +72,22 @@ type Fake struct {
 	// methods.
 	ListSessionsErr error
 	SessionViewErr  error
+
+	// NotFoundSessions lists sessions for which SessionView returns
+	// rex.ErrNotFound, as Rex does for a session that no longer exists.
+	NotFoundSessions map[rex.SessionID]bool
+
+	// Clients is what ListClients reports for every session.
+	Clients []rex.ClientInfo
+
+	// ProgramStatuses is the program status BlockProgramStatus reports, keyed by
+	// block.
+	ProgramStatuses map[rex.BlockID]rex.ProgramStatus
+
+	// ListClientsErr and ProgramStatusErr, when set, are returned by those
+	// methods.
+	ListClientsErr   error
+	ProgramStatusErr error
 }
 
 // BlockCall records one block-method call.
@@ -112,21 +132,34 @@ func (f *Fake) NewSplit(_ context.Context, sid rex.SessionID, anchor rex.BlockID
 }
 
 func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID) error {
+	if f.CloseBlockErr != nil {
+		return f.CloseBlockErr
+	}
 	f.ClosedBlocks = append(f.ClosedBlocks, block)
-	for i, w := range f.View.Windows {
+	var windows []rex.Window
+	for _, w := range f.View.Windows {
 		var kept []rex.Block
 		for _, b := range w.Blocks {
 			if b.ID != block {
 				kept = append(kept, b)
 			}
 		}
-		f.View.Windows[i].Blocks = kept
+		// Rex removes a tab when its last block closes.
+		if len(kept) == 0 {
+			continue
+		}
+		w.Blocks = kept
+		windows = append(windows, w)
 	}
+	f.View.Windows = windows
 	return nil
 }
 
 func (f *Fake) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionView, error) {
 	f.SessionViewCalls++
+	if f.NotFoundSessions[sid] {
+		return rex.SessionView{}, rex.ErrNotFound
+	}
 	if f.SessionViewErr != nil {
 		return rex.SessionView{}, f.SessionViewErr
 	}
@@ -172,6 +205,21 @@ func (f *Fake) SendKeys(_ context.Context, sid rex.SessionID, block rex.BlockID,
 	f.record(sid, block, "send-key")
 	f.SentKeys = append(f.SentKeys, SentKeys{SessionID: sid, BlockID: block, Keys: keys})
 	return f.SendKeysErr
+}
+
+func (f *Fake) ListClients(_ context.Context, _ rex.SessionID) ([]rex.ClientInfo, error) {
+	if f.ListClientsErr != nil {
+		return nil, f.ListClientsErr
+	}
+	return f.Clients, nil
+}
+
+func (f *Fake) BlockProgramStatus(_ context.Context, sid rex.SessionID, block rex.BlockID) (rex.ProgramStatus, error) {
+	f.record(sid, block, "program_status")
+	if f.ProgramStatusErr != nil {
+		return rex.ProgramStatus{}, f.ProgramStatusErr
+	}
+	return f.ProgramStatuses[block], nil
 }
 
 func (f *Fake) BlockEvent(_ context.Context, sid rex.SessionID, block rex.BlockID, _ rex.Event) error {

@@ -8,7 +8,13 @@ package rex
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"time"
 )
+
+// ErrNotFound is returned when Rex reports no such session, window, block or
+// stored result (the CLI exits 3).
+var ErrNotFound = errors.New("rex: not found")
 
 type (
 	SessionID string
@@ -30,6 +36,9 @@ type LaunchSpec struct {
 	Login       *bool
 	Interactive bool
 	Label       string // the pane label (the gc agent name)
+	// Focus makes the new tab active. Provider launches leave it false so
+	// starting an agent does not steal the user's view.
+	Focus bool
 }
 
 // Block is a Rex pane.
@@ -47,9 +56,25 @@ type Window struct {
 	Blocks         []Block
 }
 
-// ClientInfo identifies a client attached to a session.
+// ClientInfo identifies a client attached to a session. Kind is Rex info.kind:
+// "app" is a human app client, "cli" is a CLI connection. Name is info.name.
 type ClientInfo struct {
-	ID string
+	ID   string
+	Kind string
+	Name string
+}
+
+// ProgramStatusRecord is one program-reported status row (OSC 7501).
+type ProgramStatusRecord struct {
+	ID        string
+	State     string // idle|working|done|blocked|error
+	App       string
+	UpdatedAt time.Time
+}
+
+// ProgramStatus is a pane's program_status method reply.
+type ProgramStatus struct {
+	Records []ProgramStatusRecord
 }
 
 // SessionView is the session snapshot from session.view.
@@ -59,7 +84,6 @@ type SessionView struct {
 	ActiveWindowID WindowID
 	Revision       int64
 	Windows        []Window
-	Clients        []ClientInfo
 }
 
 // ExitStatus is how a terminal's program exited.
@@ -101,6 +125,9 @@ type Client interface {
 	CloseBlock(ctx context.Context, sessionID SessionID, blockID BlockID) error
 	SessionView(ctx context.Context, sessionID SessionID) (SessionView, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	// ListClients returns the clients attached to a session. It is the
+	// attachment source: session.view has no clients field.
+	ListClients(ctx context.Context, sessionID SessionID) ([]ClientInfo, error)
 
 	// Block methods address a block through the session that holds it: Rex
 	// requires session_id on block.method and block.event.
@@ -112,6 +139,8 @@ type Client interface {
 	SendKeys(ctx context.Context, sessionID SessionID, blockID BlockID, keys ...string) error
 	BlockEvent(ctx context.Context, sessionID SessionID, blockID BlockID, ev Event) error
 	BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
+	// BlockProgramStatus returns the program-reported status of a pane.
+	BlockProgramStatus(ctx context.Context, sessionID SessionID, blockID BlockID) (ProgramStatus, error)
 
 	Events(ctx context.Context, sessionID SessionID) (<-chan Event, error)
 }

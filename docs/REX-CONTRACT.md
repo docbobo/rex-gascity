@@ -414,14 +414,42 @@ Phase 0 also confirms the plan's decisions against the live surface:
   clients come from `session.list_clients`. That is where the D1 risk lands: any
   app client attached to the city session makes every agent in it read as
   attached, so resolve attachment to the active tab / `focused_block_id` and
-  report honestly when it cannot be refined.
+  report honestly when it cannot be refined. **Resolved (GCREX-4):** the
+  provider counts only `info.kind == "app"` clients (its own CLI connection is
+  listed too), and reports attached only when the agent's rig tab is the
+  session's active window and still contains the agent's pane — Option B tiles
+  a rig's agents in one tab, so a human watching that tab sees all of them,
+  while an inactive tab's remembered focused block is not visibility. An
+  unclassifiable client kind returns an error rather than a false yes.
+  **Live-verified:** a fresh scratch session already lists the server-wide Rex
+  app client(s), and its first window becomes active even with `focus:false`,
+  so a single-agent city still reads attached; `Start` does send `focus:false`
+  so a background rig does not steal the active window. Attachment remains
+  session-coarse: the surface cannot say which tab a given client is viewing.
 - **Version skew policy.** The CLI is `.20`/rev 16 while the running server is
   `.19`/rev 14. Decide whether Phase 5 promotion requires a restarted server
   before the pilot.
 - **RPP capability naming.** The plan's `carrier.ops`/`idle-boundary`/`observe.v1`
   vocabulary has no basis in gc 1.5.1 (§9). Rewrite the plan's capability
   language, or confirm a newer gc adds those tokens, before Phase 4.
-- **Pane process-identity stability:** `block_id` is persisted in the sidecar;
-  confirm ids survive a server restart (vs. address-by-label).
+  **Resolved (GCREX-8):** the plan now uses only the six gc 1.5.1 strings; the
+  earlier vocabulary is stated as not in the pinned baseline.
+- **Pane process-identity stability:** `block_id` is persisted in the sidecar.
+  **Resolved (GCREX-4):** ids are never trusted blindly — a binding is
+  re-validated against `session.view`, and a stale or post-restart id is cleared
+  and re-resolved by label, so a restart is absorbed.
+- **OSC 7501 policy (resolved, GCREX-4).** gc 1.5.1 ships no emitter, so v1
+  does not emit OSC 7501. `GetLastActivity` prefers `program_status` when Rex
+  reports records and otherwise polls `block format`, fingerprinting the output
+  in the activity sidecar; it returns which source is in force. The format-poll
+  fallback is the documented v1 path.
+- **State directory (resolved, GCREX-4).** Bindings, activity fingerprints and
+  metadata live under `$GC_REX_STATE_DIR/<city>`, else
+  `$XDG_STATE_HOME/rex-gas-city/<city>`, else
+  `~/.local/state/rex-gas-city/<city>`, one JSON file per `sha256(name)`.
+- **Empty-tab teardown (resolved, GCREX-4).** A live probe closed a scratch
+  session's only block and `session.view` then reported zero windows: Rex
+  removes a tab when its last block closes. Teardown is block-only
+  (`block.close`); the provider never calls `session.close_window`.
 - **Rig-tab growth:** repeated `session.new_split` into one tab has layout
   limits; decide the split policy when a rig has many agents.

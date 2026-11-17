@@ -49,7 +49,13 @@ if [ "$key" = "block.method" ]; then
     *'"method":"process"'*) key=process ;;
     *'"method":"write"'*) key=write ;;
     *'"method":"clear"'*) key=clear ;;
+    *'"method":"program_status"'*) key=program_status ;;
   esac
+fi
+# A scripted failure: <key>.exit holds the exit code to fail with.
+if [ -f "$dir/$key.exit" ]; then
+  cat "$dir/$key.exit" >&2
+  exit "$(cat "$dir/$key.exit")"
 fi
 # Serve <key>.<n>.json for the nth call when present, else <key>.json, so a
 # test can script a multi-call sequence such as two blob_reads.

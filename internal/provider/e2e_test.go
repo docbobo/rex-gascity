@@ -2,9 +2,13 @@ package provider_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -234,4 +238,196 @@ func nudgeUntilOutput(ctx context.Context, t *testing.T, p *provider.Provider, n
 	}
 	t.Fatalf("output missing %q within 60s; last output:\n%s", needle, last)
 	return ""
+}
+
+// TestE2EIdentityActivityAttachment drives a live Rex server through the
+// Phase 3 surface: binding identity across a process boundary, stale-binding
+// re-resolution, last activity, attachment, and teardown that leaves the
+// shared city session alone. It is opt-in:
+//
+//	REX_E2E=1 go test ./internal/provider -run TestE2EIdentityActivityAttachment -v
+func TestE2EIdentityActivityAttachment(t *testing.T) {
+	if os.Getenv("REX_E2E") == "" {
+		t.Skip("set REX_E2E=1 to run against the live Rex server")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	city := fmt.Sprintf("e2e-p3-%d", time.Now().UnixNano())
+	stateDir := t.TempDir()
+	p := provider.New(city, cli.New(), provider.WithStateDir(stateDir))
+
+	const name = "Indigo--dog-1"
+	defer func() {
+		_ = p.Stop(ctx, name)
+		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+	}()
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:    []string{"/bin/sh"},
+		WorkDir: os.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// AC #1: a second provider over the same state dir sees the same identity.
+	b1, ok := p.Binding(name)
+	if !ok {
+		t.Fatal("Binding after Start: not found")
+	}
+	p2 := provider.New(city, cli.New(), provider.WithStateDir(stateDir))
+	b2, ok := p2.Binding(name)
+	if !ok {
+		t.Fatal("second provider: Binding not found in shared state dir")
+	}
+	if b2.SessionID != b1.SessionID || b2.WindowID != b1.WindowID || b2.BlockID != b1.BlockID {
+		t.Errorf("binding across providers differs: %+v vs %+v", b2, b1)
+	}
+
+	// AC #2/#7: a stale sidecar binding is cleared and re-resolved by label.
+	e2eP3WriteStale(t, stateDir, name, b1, "gc:"+city)
+	var out string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		if out, err = p2.Peek(ctx, name); err == nil && out != "" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if out == "" {
+		t.Fatal("Peek with stale binding never returned output; pane not re-resolved")
+	}
+	if fresh, ok := p2.Binding(name); !ok || fresh.BlockID == "block:bogus" {
+		t.Errorf("stale binding not replaced: %+v (ok=%v)", fresh, ok)
+	}
+
+	// AC #3/#6: activity is reported with a real source and advances on output.
+	first, err := p.GetLastActivity(ctx, name)
+	if err != nil {
+		t.Fatalf("GetLastActivity: %v", err)
+	}
+	if first.Source == provider.ActivityNone || first.At.IsZero() {
+		t.Fatalf("first activity = %+v, want a source and non-zero time", first)
+	}
+	if err := p.Nudge(ctx, name, "echo PHASE3-ACTIVE"); err != nil {
+		t.Fatalf("Nudge: %v", err)
+	}
+	second := first
+	advanced := false
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if second, err = p.GetLastActivity(ctx, name); err != nil {
+			t.Fatalf("GetLastActivity after nudge: %v", err)
+		}
+		if second.At.After(first.At) {
+			advanced = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Logf("activity source=%s advanced=%v", second.Source, advanced)
+	if second.At.IsZero() || second.Source == provider.ActivityNone {
+		t.Errorf("second activity = %+v, want a source and non-zero time", second)
+	}
+	if !advanced && second.Source != provider.ActivityProgramStatus {
+		t.Errorf("activity did not advance after output (source %s)", second.Source)
+	}
+
+	// AC #4: attachment is true only when the session has an app client and
+	// the agent's rig tab is the active window still holding its block. A
+	// fresh single-window scratch session reads true: its first tab is active.
+	// A live call must never error.
+	attached, err := p.IsAttached(ctx, name)
+	if err != nil {
+		t.Fatalf("IsAttached: %v", err)
+	}
+	clients, err := cli.New().ListClients(ctx, b1.SessionID)
+	if err != nil {
+		t.Fatalf("ListClients: %v", err)
+	}
+	hasApp := false
+	for _, c := range clients {
+		if c.Kind == "app" {
+			hasApp = true
+		}
+	}
+	t.Logf("IsAttached=%v appClient=%v", attached, hasApp)
+	if attached {
+		if !hasApp {
+			t.Error("IsAttached = true with no app client on the session")
+		}
+		view, err := cli.New().SessionView(ctx, b1.SessionID)
+		if err != nil {
+			t.Fatalf("SessionView: %v", err)
+		}
+		if view.ActiveWindowID != b1.WindowID {
+			t.Errorf("IsAttached = true but active window = %s, want %s", view.ActiveWindowID, b1.WindowID)
+		}
+		holds := false
+		for _, w := range view.Windows {
+			if w.ID != b1.WindowID {
+				continue
+			}
+			for _, blk := range w.Blocks {
+				if blk.ID == b1.BlockID {
+					holds = true
+				}
+			}
+		}
+		if !holds {
+			t.Errorf("IsAttached = true but window %s does not contain %s", b1.WindowID, b1.BlockID)
+		}
+	} else {
+		t.Log("not attached: no app client, or the agent's tab is not the active window")
+	}
+
+	// AC #5: Stop removes the pane but leaves the shared city session.
+	if err := p.Stop(ctx, name); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if running, err := p.IsRunning(ctx, name); err != nil || running {
+		t.Errorf("IsRunning after Stop = %v, %v; want false, nil", running, err)
+	}
+	if out, err := p.Peek(ctx, name); err != nil || out != "" {
+		t.Errorf("Peek after Stop = %q, %v; want empty, nil", out, err)
+	}
+	sessions, err := cli.New().ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	found := false
+	for _, s := range sessions {
+		if s.Label == "gc:"+city {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("session gc:%s gone after Stop; teardown must leave the shared session", city)
+	}
+}
+
+// e2eP3WriteStale overwrites name's sidecar binding with bogus window and
+// block ids but the real session id and label.
+func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding, label string) {
+	t.Helper()
+	sum := sha256.Sum256([]byte(name))
+	path := filepath.Join(stateDir, "bindings", hex.EncodeToString(sum[:])+".json")
+	data, err := json.Marshal(map[string]any{
+		"gc_name":           name,
+		"rex_session_id":    string(real.SessionID),
+		"rex_session_label": label,
+		"window_id":         "window:bogus",
+		"block_id":          "block:bogus",
+		"launch_mode":       real.LaunchMode,
+		"created_at":        time.Now().UTC().Format(time.RFC3339),
+		"ready_prompt":      real.ReadyPrompt,
+	})
+	if err != nil {
+		t.Fatalf("marshal stale binding: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write stale binding: %v", err)
+	}
 }

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"time"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
 )
@@ -34,21 +36,80 @@ type Provider struct {
 	city   string
 	client rex.Client
 	binder *Binder
+
+	bindings BindingStore
+	activity ActivityStore
+	meta     MetaStore
 }
 
-// New builds a Provider for city, driving client.
-func New(city string, client rex.Client) *Provider {
-	return &Provider{
-		city:   city,
-		client: client,
-		binder: NewBinder(client, NewMemoryStore(), rexSessionLabel(city)),
+// Option configures a Provider.
+type Option func(*Provider)
+
+// WithBindingStore sets the binding store.
+func WithBindingStore(s BindingStore) Option { return func(p *Provider) { p.bindings = s } }
+
+// WithActivityStore sets the activity store.
+func WithActivityStore(s ActivityStore) Option { return func(p *Provider) { p.activity = s } }
+
+// WithMetaStore sets the metadata store.
+func WithMetaStore(s MetaStore) Option { return func(p *Provider) { p.meta = s } }
+
+// WithStateDir keeps bindings, activity and metadata on disk under
+// dir/bindings, dir/activity and dir/meta.
+func WithStateDir(dir string) Option {
+	return func(p *Provider) {
+		p.bindings = NewFileStore(filepath.Join(dir, "bindings"))
+		p.activity = NewFileActivityStore(filepath.Join(dir, "activity"))
+		p.meta = NewFileMetaStore(filepath.Join(dir, "meta"))
 	}
 }
 
+// New builds a Provider for city, driving client. Without options all state is
+// held in memory.
+func New(city string, client rex.Client, opts ...Option) *Provider {
+	p := &Provider{
+		city:     city,
+		client:   client,
+		bindings: NewMemoryStore(),
+		activity: NewMemoryActivityStore(),
+		meta:     NewMemoryMetaStore(),
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	p.binder = NewBinder(client, p.bindings, rexSessionLabel(city))
+	return p
+}
+
+// Binding returns the stored binding for name without contacting Rex. It is
+// the dispatcher-facing lookup; Resolve-based ops re-validate it against Rex.
+func (p *Provider) Binding(name string) (Binding, bool) {
+	return p.bindings.Load(SessionName(name))
+}
+
 // Start creates the city session, the rig's tab, and the agent's pane, and
-// records the pane's binding.
+// records the pane's binding. It is idempotent: a live pane is left alone, and
+// a pane whose agent has died is closed before a new one is launched.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	n := SessionName(name)
+
+	old, found, err := p.binder.Resolve(ctx, n)
+	if err != nil {
+		return err
+	}
+	if found {
+		alive, err := p.paneAlive(ctx, old)
+		if err != nil {
+			return err
+		}
+		if alive {
+			return nil
+		}
+		if err := p.client.CloseBlock(ctx, old.SessionID, old.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+			return err
+		}
+		p.binder.Forget(n)
+	}
 
 	sid, ok, err := p.binder.FindSession(ctx)
 	if err != nil {
@@ -76,7 +137,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 			if err != nil {
 				return err
 			}
-			p.record(n, sid, w.ID, block)
+			p.record(n, sid, w.ID, block, "split")
 			return nil
 		}
 	}
@@ -84,13 +145,13 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	p.record(n, sid, wid, block)
+	p.record(n, sid, wid, block, "window")
 	return nil
 }
 
-// record stores a binding for a new pane. A pane with no block ID is not
-// recorded.
-func (p *Provider) record(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID) {
+// record stores a binding for a new pane, started in the given mode ("window"
+// or "split"). A pane with no block ID is not recorded.
+func (p *Provider) record(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string) {
 	if block == "" {
 		return
 	}
@@ -100,17 +161,20 @@ func (p *Provider) record(n SessionName, sid rex.SessionID, wid rex.WindowID, bl
 		SessionLabel: rexSessionLabel(p.city),
 		WindowID:     wid,
 		BlockID:      block,
+		LaunchMode:   mode,
+		CreatedAt:    time.Now(),
 	})
 }
 
 // Stop closes the agent's pane and leaves the city session and other rigs
-// intact. It is a no-op when the agent has no pane.
+// intact. It is a no-op when the agent has no pane, and a pane that vanished
+// already counts as stopped. Closing a rig's last pane removes its tab.
 func (p *Provider) Stop(ctx context.Context, name string) error {
 	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
 	if err != nil || !ok {
 		return err
 	}
-	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil {
+	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return err
 	}
 	p.binder.Forget(SessionName(name))
@@ -124,11 +188,7 @@ func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
 	if err != nil || !ok {
 		return false, err
 	}
-	info, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID)
-	if err != nil {
-		return false, err
-	}
-	return info.LastExit == nil, nil
+	return p.paneAlive(ctx, binding)
 }
 
 // Peek returns the agent's rendered terminal output. An agent with no pane
@@ -210,11 +270,11 @@ func (p *Provider) livePane(ctx context.Context, name string) (Binding, error) {
 	if !ok {
 		return Binding{}, fmt.Errorf("%w: %s has no pane", ErrSessionNotFound, name)
 	}
-	info, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID)
+	alive, err := p.paneAlive(ctx, binding)
 	if err != nil {
 		return Binding{}, err
 	}
-	if info.LastExit != nil {
+	if !alive {
 		return Binding{}, fmt.Errorf("%w: %s agent program exited", ErrSessionNotFound, name)
 	}
 	return binding, nil

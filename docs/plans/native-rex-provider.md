@@ -1,11 +1,14 @@
 # Plan: native Rex session provider for Gas City
 
 Status: **IN PROGRESS** – D0–D6 confirmed (`docs/REX-CONTRACT.md` §11).
-Phases 0–2 are implemented: the Rex contract is pinned, and the `rex.Client`
+Phases 0–3 are implemented: the Rex contract is pinned; the `rex.Client`
 interface, its CLI implementation, a fake client, and the provider core
 (`SessionName`, `Binder`, `Provider` with Start/Stop/IsRunning/Peek/Nudge/
-SendKeys/Interrupt) exist and have tests. The RPP v0 dispatcher
-(`cmd/gc-runtime-rex`) does **not** exist yet – that is GCREX-5 / Phase 4.
+SendKeys/Interrupt) exist and have tests; and Phase 3 adds the file sidecar
+(bindings, activity fingerprints, metadata), idempotent `Start`, block-only
+teardown, per-agent attachment honesty, and `GetLastActivity`. The RPP v0
+dispatcher (`cmd/gc-runtime-rex`) does **not** exist yet – that is GCREX-5 /
+Phase 4.
 Pinned baseline: gc 1.5.1 and the Rex surface in `docs/REX-CONTRACT.md`; where
 this plan and that document disagree, the contract wins.
 Target: an opt-in Rex session backend for Gas City – a **standalone
@@ -111,7 +114,7 @@ removes several of herdr's bridges:
 | Clear scrollback | `block call clear` | herdr had **no** clear op |
 | Agent state | `program_status` method + `program_status_changed` / `program_status_removed` events | herdr native `agent_status` — parity |
 | Exit status | `child_exited` event (`exit_code`), `process.last_exit` | herdr via process-info — parity |
-| Activity | `process_changed.generation`, `session.view.revision`, `rex events --json` | herdr had **no** timestamp → tracker bridge |
+| Activity | `process_changed.generation`, `session.view.revision` (v1 does not consume `rex events`; it polls) | herdr had **no** timestamp → tracker bridge |
 | Attachment | `session.list_clients` (`session.view` has no `clients` field) | herdr best-effort → now first-class |
 | Create / destroy | `session.create`, `session.new_window`, `block.close` (the provider never calls `session.destroy`: it is destructive and forbidden by D3) | herdr workspace/tab/pane — parity |
 
@@ -162,8 +165,8 @@ internal/provider/*_test.go     # unit + e2e tests against the fake Client      
 internal/provider/e2e_test.go   # live opt-in tests gated by REX_E2E (lifecycle, input path) [done]
 # rex.LaunchSpec (type + CLI conversion) already lives in internal/rex/client.go.
 # No separate provider-side launch-policy module is planned.
-# Planned, not yet present: activity tracker, sidecar meta store, the
-# cmd/gc-runtime-rex dispatcher, and its RPP op tests.
+# Landed in GCREX-4: activity.go, stores.go (file sidecar), meta.go, attach.go.
+# Planned, not yet present: the cmd/gc-runtime-rex dispatcher and its RPP op tests.
 ```
 
 The module must not import `github.com/gastownhall/gascity/...`: Go forbids
@@ -185,7 +188,7 @@ type Client interface {
     NewSplit(ctx context.Context, sessionID SessionID, anchor BlockID, direction, side string, spec LaunchSpec) (BlockID, error)
     CloseBlock(ctx context.Context, sessionID SessionID, blockID BlockID) error
     SessionView(ctx context.Context, sessionID SessionID) (SessionView, error) // windows, layouts, blocks (no clients)
-    ListClients(ctx context.Context, sessionID SessionID) ([]Client, error)     // attachment source; PLANNED, not in client.go yet
+    ListClients(ctx context.Context, sessionID SessionID) ([]Client, error)     // attachment source
     ListSessions(ctx context.Context) ([]Session, error)
     // Terminal ops (block methods + events). Rex requires session_id next to
     // block_id on block.method and block.event.
@@ -195,7 +198,7 @@ type Client interface {
     SendKeys(ctx context.Context, sessionID SessionID, blockID BlockID, keys ...string) error
     BlockEvent(ctx context.Context, sessionID SessionID, blockID BlockID, ev Event) error
     BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
-    // Event stream
+    // Event stream (declared but unimplemented in v1; nothing consumes it)
     Events(ctx context.Context, sessionID SessionID) (<-chan Event, error)
 }
 ```
@@ -320,7 +323,7 @@ The Rex sidebar fills up with one session per agent.
 matches the way gc already groups work by rig — rigs become tabs, agents become
 the panes inside them. Trade-off: agents share a tab (tiled) instead of each
 having its own switchable tab (A), and attachment is coarser (one session holds
-all rigs), so `IsAttached` must resolve to the active tab/pane (§5). C is the
+all rigs), so `IsAttached` must resolve to the active tab and its panes (§5). C is the
 least code but loses grouping.
 
 `sessionname.go` holds `type SessionName string`, which owns the
@@ -330,16 +333,16 @@ agent pane label). A package-level `rexSessionLabel(city)` returns the city
 session label `gc:<city>`.
 Unlike herdr, Rex session/tab labels are cosmetic, so we do not need herdr's
 aggressive name-mangling for validity — but the **pane/block id** is not
-derivable from the name, so the persisted binding (the sidecar, once implemented) is the reverse map.
+derivable from the name, so the persisted binding (the file sidecar, GCREX-4) is the reverse map.
 
 ### Binding (`binding.go`)
 
 Rex ids are not guaranteed stable across server restarts (Rex persists
 sessions and "jumps ahead" the view revision on restore), and labels are not
-unique across windows. So key on ids. The intended design stores them in a
-sidecar. **Today (GCREX-7)** bindings live in the in-memory `MemoryStore`, the
-only `BindingStore` implementation; the file sidecar below is deferred behind
-that seam:
+unique across windows. So key on ids. The sidecar stores them (GCREX-4): one
+JSON file per gc session name under the per-city state directory —
+`$GC_REX_STATE_DIR/<city>`, else `$XDG_STATE_HOME/rex-gas-city/<city>`, else
+`~/.local/state/rex-gas-city/<city>` (the city component is percent-encoded by `safeName`) — with atomic (temp + rename) writes:
 
 ```
 <stateDir>/bindings/<sha256(gcName)>.json
@@ -347,16 +350,23 @@ that seam:
     window_id, block_id, launch_mode, created_at, ready_prompt }
 ```
 
+The default `New` keeps everything in memory so
+tests stay hermetic; `WithStateDir(dir)` opts into the file sidecar, which
+GCREX-5's dispatcher must pass on every op — one process per op means in-memory
+state would not survive.
+
 With Option B, `rex_session_id` is the shared city session and `window_id` is
 the rig tab — both the same for every agent in a city/rig; `block_id` is the
 agent's pane and is the field that actually identifies the agent.
 
-Resolution order (as herdr's `resolveBinding`):
+The store is a cache; `session.view` plus the label scan stays the source of
+truth. Resolution order (as herdr's `resolveBinding`):
 
-1. Read the stored binding (the sidecar, once implemented).
-2. Live-probe with `block inspect` / `session.view`.
-3. If confirmed gone, clear the binding (ids recycle) and maybe re-create.
-4. Transport/observation error clears nothing — report `ErrRuntimeUnavailable`.
+1. Read the stored binding.
+2. Live-probe with `session.view`.
+3. If confirmed gone, clear the binding and rescan by label. `Start` also
+   closes a stale pane before relaunching, so re-Start cannot leak a duplicate.
+4. Transport/observation error clears nothing — it is returned as is.
 
 ---
 
@@ -371,17 +381,17 @@ docs/REX-CONTRACT.md §9, which has no `CopyTo` or `RunLive` rows and adds
 | Provider behavior | Rex call(s) | Notes |
 |---|---|---|
 | `Start` | ensure the city session (`session.create {label: gc:city}`, tolerate "exists") → find-or-create the rig tab (`session.new_window` if this is the rig's first agent, else `session.new_split` beside an existing pane in that tab) with `{flavor: com.superlogical.terminal.shell, options: launchspec, label: agent}`, `focus=false` → record `window_id` (tab) + `block_ids[0]` | `launchspec` = `{command: cfg.Argv, cwd: cfg.WorkDir, login/interactive}`. `pre_start` on host before, `session_setup` after. Serialize same-rig Starts with a mutex (two agents can race to create the rig tab). |
-| `Stop` | `block.close {block_id}` (idempotent); if it was the rig tab's last pane, close the tab; leave the city session and other rigs alone | Never stop the server, and never destroy the shared city session out from under other rigs. `StopForCleanup` classifies "gone". |
+| `Stop` | `block.close {block_id}` (idempotent; a pane already gone is `rex.ErrNotFound` and counts as success); leave the city session and other rigs alone | Never stop the server, and never destroy the shared city session out from under other rigs. Rex removes a tab when its last block closes (live-verified), so teardown is block-only and needs no window call. |
 | `Interrupt` | `block.event` ctrl+c (or `rex send-key ctrl+c`) | Keystroke, not a signal — same as herdr. Hard kill = `block.close`. |
-| `IsRunning` | sidecar + `block inspect` live probe; use `process` `last_exit` + foreground to detect agent exit | A terminal may outlive its program; running means agent process present, not merely block present. |
-| `IsAttached` | `session.list_clients` on the city session; refine to the agent via the active tab / `focused_block_id` | Coarse by default: with B every agent shares the city session, so session-level attachment over-reports. Prefer the focused tab/pane; when it cannot be refined, report honestly (non-zero) rather than always-true. |
+| `IsRunning` | sidecar binding + `block call process`; `last_exit` only | Running means the pane exists and `last_exit` is unset. `IsRunning` and the input ops do not inspect foreground/process names; only `ProcessAlive(names)` does. |
+| `IsAttached` | `session.list_clients` on the city session (an app client must exist), then `session.view` | Attached only when the agent's rig tab is the session's active window and still contains the agent's pane. Tiled panes in the active tab are visible. An app client is listed on every session, so app presence alone is not attachment. `Start` launches with `focus=false` so a background rig does not steal focus. Unknown client kinds yield `ErrAttachmentUnknown`. |
 | `Attach` | `session.focus_block` + `session.focus_window` (the rig tab), via `rex api call` / client action | Focus in the user's Rex app rather than stealing a tty. |
-| `ProcessAlive` | `block call process`; match `foreground`/`ancestors` names/`argv0`/`path` against `processNames` | Empty `processNames` ⇒ true. |
-| `Nudge` | `block call write {"data": "<text>"}` then submit (Enter via `block.event` / `send-key enter`); confirm via `program_status_changed` | Two steps. Today (Phase 2): the text is written and Enter is sent; confirmation means the keystroke reached the pane. Handle busy (Phase 3): type nothing if a turn is running unless `ImmediateNudge`; confirm via agent/program state (Phase 3). |
+| `ProcessAlive` | `block call process`; strict tree matching of `foreground`/`ancestors` names/`argv0`/`path` against `processNames` | Empty `processNames` ⇒ true. Only this op inspects process names. |
+| `Nudge` | `block call write {"data": "<text>"}` then submit (Enter via `block.event` / `send-key enter`); transport-level confirmation | Two steps: the text is written and Enter is sent; confirmation means the keystroke reached the pane. Busy gating (type nothing while a turn runs unless `ImmediateNudge`) and agent-state/`program_status_changed` submit confirmation were **not** implemented in GCREX-4 and remain deferred. |
 | `SendKeys` | `block.event` with key presses (translate tmux `C-c`/`Enter` → Rex `ctrl+c`/`enter`) | |
 | `Peek` | `block call format {"format":"text","trim":true,"max_bytes":983040}`, follow `id` with `blob_read` until `eof` → take last `lines` | Full content; `lines<=0` ⇒ all. |
 | `ListRunning` | `session.list` for `gc:` city sessions, then `session.view` per session to enumerate rig tabs and their agent panes; reconstruct gc names via the sidecar | Miss = orphan reaping risk; the sidecar is authoritative for our own sessions. |
-| `GetLastActivity` | activity tracker (below) | |
+| `GetLastActivity` | `program_status` records, else `block format` poll fingerprint (§6) | The stored fingerprint is tied to the pane's block id, so a replaced pane starts a fresh baseline. |
 | `ClearScrollback` | `block call clear` | Real support (herdr lacked it). |
 | `CopyTo` | host filesystem copy | Provider-agnostic; gc does it on its own host. |
 | `RunLive` | re-issue `session_live` commands into the block (`write`) | Best-effort. |
@@ -395,7 +405,7 @@ gc 1.5.1 defines exactly six capability strings; unknown strings are ignored
 | Capability | Status for this provider |
 |---|---|
 | `report-attachment` | Planned: declared by the gc-runtime-rex handshake (GCREX-5). Backs `is-attached` (via `session.list_clients`). |
-| `report-activity` | Planned: declared by the gc-runtime-rex handshake (GCREX-5). Backs `get-last-activity` (activity tracker, §6). |
+| `report-activity` | Planned: declared by the gc-runtime-rex handshake (GCREX-5). Backs `get-last-activity` (§6). |
 | `proc.exec` | Planned with the dispatcher. gc drives input and reads output over `exec` when available, so this is the conformance path for the driving ops. |
 | `proc.provision` | Not planned for v1. Requires `proc.exec`. |
 | `proc.stream` | Reserved in gc; do not declare. |
@@ -412,11 +422,11 @@ The dedicated driving ops (`interrupt`, `nudge`, `peek`, `clear-scrollback`,
 
 Details:
 
-- **Idle.** Prefer `program_status`; otherwise poll `block call format` for the ready prompt
-  (`ready_prompt_prefix`, default `❯ `) with no busy indicator, two
-  consecutive reads 200 ms apart. Prefer `program_status` when it classifies
-  the agent. An indeterminate reading must report *indeterminate*, never a
-  false busy/idle.
+- **Idle.** `GetLastActivity` prefers `program_status`; otherwise it
+  fingerprints `block format` and reports when the fingerprint last changed.
+  It does not parse a ready prompt; a ready-prompt scan is a future option.
+  An indeterminate reading must report *indeterminate*, never a false
+  busy/idle.
 - **Relaunch.** Close the block, create a new block in the same rig tab with
   the new launch spec (the warm box is the city session + rig tab, which
   persist).
@@ -428,17 +438,24 @@ Details:
 
 ## 6. Activity and events
 
-- `activity.go`: a tracker seeded from `process_changed` generations and
-  `program_status_changed`, falling back to polling `format` /
-  `session.view.revision`. Planned: declared to gc via the RPP `report-activity`
-  handshake capability (GCREX-5); the claim backstop stays active.
-- `rex events --json` is consumed **inside the provider** by the activity
-  tracker, as **level-triggered hints to re-poll**, never authoritative
-  transitions (Rex replays/omits events under load).
+- `activity.go` (GCREX-4): `GetLastActivity` reads the pane's `program_status`
+  records (OSC 7501) and returns the latest `updated_at`. gc 1.5.1 ships no OSC
+  7501 emitter, so when Rex reports no records the provider falls back to
+  polling `block format` and fingerprints the output in the activity sidecar,
+  which keeps an idle pane's timestamp stable across the one-process-per-op
+  dispatcher. The call returns the source in force (`program_status` |
+  `format_poll` | `none`); the provider does **not** emit OSC 7501 in v1, and
+  the format-poll fallback is the documented v1 path (`provider.ActivityPolicy`).
+  Declared to gc via the RPP `report-activity` handshake capability (GCREX-5).
+- v1 does **not** consume `rex events`. `GetLastActivity` polls
+  `program_status` and, when there are no records, `block format`.
+  `rex.Client.Events` is unimplemented. A later version may use events as
+  level-triggered hints to re-poll, never as authoritative transitions (Rex
+  replays/omits events under load).
 - **No event push to gc in v1.** An out-of-tree provider cannot implement
   `runtime.SessionEventProvider`: RPP's `proc.stream` is reserved/
   unimplemented, and gc's controller does not consume any provider's event
-  stream today. Events stay internal.
+  stream today. The provider consumes no events either.
 - **Startup dialogs:** v1 relies on reading the launch's block like tmux/herdr's
   matcher; a dedicated dialog capability is a follow-up.
 
@@ -451,9 +468,12 @@ Details:
   store/return `GC_READY_PROMPT_PREFIX` byte-for-byte. This is our design, not an RPP rule:
   `GC_READY_PROMPT_PREFIX` is a tmux-provider variable.
 - **Attachment:** `session.list_clients` lists clients per session (`session.view` does not). With B every agent
-  shares the city session, so refine to the agent's rig tab /
-  `focused_block_id`; a client attached to that tab counts as attached to the
-  agent. Be honest: exit non-zero when attachment cannot be determined (this
+  shares the city session, and an app client is listed on every session, so
+  app presence alone is not attachment. The agent counts as attached only
+  when its rig tab is the session's active window and still contains the
+  agent's pane (tiled panes in the active tab are visible). `Start` launches
+  with `focus=false`, so a background rig does not steal focus. Exit non-zero
+  (`ErrAttachmentUnknown`) when attachment cannot be determined (this
   governs whether a session is held awake).
 - **Liveness honesty:** when the Rex server is unreachable, report
   `ErrRuntimeUnavailable` — never "no sessions exist". Destructive reconciler
@@ -543,13 +563,20 @@ detect liveness. The RPP dispatcher is deferred to Phase 4 (GCREX-5).
 keystroke (confirmation is transport-level: the Enter keystroke reached the
 pane); SendKeys delivers arbitrary translated keys; Interrupt sends ctrl+c and
 reports `ErrSessionNotFound` for a dead pane. Busy gating (`ImmediateNudge`,
-type nothing while a turn runs) and agent/program-state confirmation are
-deferred to Phase 3. *Gate: drive a real agent through
+type nothing while a turn runs) and agent/program-state confirmation were
+not done in GCREX-4 and remain deferred. *Gate: drive a real agent through
 a turn and an interrupt.*
 
-**Phase 3 — Identity, meta, activity, attachment.** Sidecar KV, activity
-tracker, attachment honesty (no gc event push — see §6). *Gate: idle
-detection and orphan sweep behave on a scratch city.*
+**Phase 3 — Identity, meta, activity, attachment. (Implemented.)** The file
+sidecar (bindings, activity fingerprints, metadata) under the per-city state
+dir, `WithStateDir` wiring, idempotent `Start`, block-only teardown, attachment
+honesty (`session.list_clients` filtered to app clients plus the active
+rig tab containing the agent's pane), a strict `ProcessAlive(names)` op, and `GetLastActivity`
+(program_status preferred, `block format` fingerprint fallback; see §6). No gc event push.
+*Gate: `TestE2EIdentityActivityAttachment` (live) verifies that identity
+persists across provider instances, a stale id re-resolves by label, activity
+is reported with a source that advances on output, attachment is per active
+rig tab, and teardown leaves the shared session.*
 
 **Phase 4 — Delivery + config (GCREX-5).** The `cmd/gc-runtime-rex` RPP v0
 dispatcher, the `protocol` handshake (`report-attachment`, `report-activity`),
@@ -572,21 +599,26 @@ acceptable.*
   Pin a version, keep live tests opt-in, re-run them on every bump (the
   herdr 0.7.4/0.7.5 storm is the cautionary tale).
 - **Idle detection accuracy.** The `full` sleep tier hinges on a reliable
-  ready-prompt read. Validate against real agent TUIs; default to
+  reliable activity signal; today it is `program_status` or a format
+  fingerprint, and a ready-prompt scan is a future option. Validate against real agent TUIs; default to
   `timed_only` if flaky.
 - **`ListRunning` completeness.** Under-reporting risks reaping live agents.
-  Once the file sidecar lands (deferred; today bindings are in-memory), it must
+  The file sidecar has landed (GCREX-4, `WithStateDir`); it must
   be authoritative for our own sessions.
 - **Attachment semantics.** With Option B every agent shares one city session,
-  so a client viewing *any* rig reads every agent as attached. Resolve to the
-  active tab / `focused_block_id`, and when it cannot be refined, report
+  so a client viewing *any* rig reads every agent as attached. Resolve to
+  the active tab containing the agent's pane, and when it cannot be refined, report
   honestly (non-zero) rather than always-true.
 - **Program status portability.** `program_status` classification may vary
   by agent CLI. Verify it classifies the harnesses we care about, and treat an
   empty or missing status (including a report that classifies nothing) as
   indeterminate. REX-CONTRACT lists `idle|working|done|blocked|error`, and gc
-  1.5.1 ships no OSC 7501 emitter, so nothing produces `program_status` today;
-  v1 must either emit OSC 7501 itself or scan `format` for the ready prompt.
+  1.5.1 ships no OSC 7501 emitter, so `program_status` is usually empty.
+  **Decided (GCREX-4): v1 does not emit OSC 7501.** `GetLastActivity` prefers
+  `program_status` when it is present and otherwise polls `format`, returning
+  the source in force; an empty or missing status is never reported as a false
+  idle/busy.
+- **Liveness is `last_exit`, deliberately (GCREX-4).** A live probe showed Rex runs a launched command as the default shell with `argv0` set to the command (`/bin/sh` arrives as `name: bash`, `path: /bin/bash`, `argv0: /bin/sh`), so argv0/process-name heuristics misclassify live panes and made a live input test fail as "agent exited". v1 therefore treats `last_exit` as the liveness truth for `IsRunning` and the input ops, and exposes `ProcessAlive(names)` (strict foreground/ancestor matching, empty => alive) for the RPP `process-alive` op where gc supplies authoritative names.
 - **Shared server.** Hard rule: never `server.stop`. Confirm teardown only
   closes city-owned blocks (`block.close`), leaves the shared city session,
   and never calls `session.destroy`.

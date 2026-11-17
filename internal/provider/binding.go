@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"time"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
 )
@@ -14,10 +16,17 @@ type Binding struct {
 	SessionLabel string
 	WindowID     rex.WindowID
 	BlockID      rex.BlockID
+	// LaunchMode is how the pane was started (for example "fresh" or
+	// "resume"); empty when unknown.
+	LaunchMode string
+	// CreatedAt is when the pane was started; zero when unknown.
+	CreatedAt time.Time
+	// ReadyPrompt is the prompt text the agent shows when ready for input.
+	ReadyPrompt string
 }
 
-// BindingStore persists bindings. The in-memory store is the only
-// implementation today; a file sidecar can replace it later.
+// BindingStore persists bindings. MemoryStore is the default; FileStore keeps
+// them on disk across restarts.
 type BindingStore interface {
 	// Load returns the binding for name, if any.
 	Load(name SessionName) (Binding, bool)
@@ -90,19 +99,31 @@ func (b *Binder) FindSession(ctx context.Context) (rex.SessionID, bool, error) {
 }
 
 // Resolve returns the binding for name. A stored binding is checked against
-// the session view; if it is gone it is deleted and the session is scanned by
-// label. A view error is returned as is and leaves the stored binding alone.
+// the requested name, the configured session label and the session view; if
+// any check fails, or Rex reports the session as not found, it is deleted and
+// the session is scanned by label. Any other view error is returned as is and
+// leaves the stored binding alone.
 // A name with no pane is reported as false with a nil error.
 func (b *Binder) Resolve(ctx context.Context, name SessionName) (Binding, bool, error) {
 	if stored, ok := b.store.Load(name); ok {
-		view, err := b.client.SessionView(ctx, stored.SessionID)
-		if err != nil {
-			return Binding{}, false, err
+		if stored.Name != name || stored.SessionLabel != b.sessionLabel {
+			// Written for another name or another city: do not trust it.
+			b.store.Delete(name)
+		} else {
+			view, err := b.client.SessionView(ctx, stored.SessionID)
+			switch {
+			case errors.Is(err, rex.ErrNotFound):
+				// The session is gone, for example after a restore under a
+				// new session id. Re-resolve by label.
+				b.store.Delete(name)
+			case err != nil:
+				return Binding{}, false, err
+			case stillBound(view, stored, name):
+				return stored, true, nil
+			default:
+				b.store.Delete(name)
+			}
 		}
-		if stillBound(view, stored, name) {
-			return stored, true, nil
-		}
-		b.store.Delete(name)
 	}
 	return b.scan(ctx, name)
 }
