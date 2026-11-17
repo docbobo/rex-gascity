@@ -4,11 +4,13 @@ title: 'Phase 5: pilot on a scratch city, then promote'
 status: To Do
 assignee: []
 created_date: '2026-11-17T16:25:00Z'
+updated_date: '2026-11-17T18:44:00Z'
 labels: []
 dependencies:
   - GCREX-5
 references:
   - docs/plans/native-rex-provider.md
+  - docs/REX-CONTRACT.md
 ordinal: 6000
 ---
 
@@ -25,4 +27,6 @@ Before making Rex the default, run it on a scratch city with the mayor still on 
 - [ ] #3 No orphan panes or sessions remain after teardown
 - [ ] #4 Observed errors are reviewed and either fixed or accepted with a documented reason
 - [ ] #5 Promotion to [session] provider = "rex" is recorded with the evidence behind it
+- [ ] #6 The promotion record states the CLI/server version skew and whether the pilot requires a restarted server at the same API revision
+- [ ] #7 The rig-tab split policy for a growing number of agents in one tab is decided and recorded
 <!-- AC:END -->

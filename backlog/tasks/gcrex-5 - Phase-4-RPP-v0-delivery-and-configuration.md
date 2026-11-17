@@ -4,6 +4,7 @@ title: 'Phase 4: RPP v0 delivery and configuration'
 status: To Do
 assignee: []
 created_date: '2026-11-17T16:25:00Z'
+updated_date: '2026-11-17T18:44:00Z'
 labels: []
 dependencies:
   - GCREX-4
@@ -21,8 +22,8 @@ The provider must ship as an out-of-tree executable so Rex support reaches users
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 gc-runtime-rex answers the protocol handshake with its capability set and locality
-- [ ] #2 Every RPP v0 op used by the provider is dispatched and returns protocol-correct exit codes
+- [ ] #1 gc-runtime-rex answers the protocol handshake with version 0 and only the capabilities it implements, drawn from report-attachment, report-activity, proc.exec, proc.provision, proc.stream and tty.attach (no locality field)
+- [ ] #2 Every RPP v0 op used by the provider is dispatched and returns protocol-correct exit codes: 1 on failure, 2 only for an unknown op, and 2 treated as a failure from start and provision
 - [ ] #3 A pack declares [runtimes.rex] and the runtime resolves by name
 - [ ] #4 gc runtime check rex and gc runtime conformance rex pass
 - [ ] #5 Docs explain selecting the provider with [session] provider = "rex" or GC_SESSION=rex

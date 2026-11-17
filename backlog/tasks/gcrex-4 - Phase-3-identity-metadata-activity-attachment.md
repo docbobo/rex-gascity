@@ -4,11 +4,13 @@ title: 'Phase 3: identity, metadata, activity, attachment'
 status: To Do
 assignee: []
 created_date: '2026-11-17T16:25:00Z'
+updated_date: '2026-11-17T18:44:00Z'
 labels: []
 dependencies:
   - GCREX-3
 references:
   - docs/plans/native-rex-provider.md
+  - docs/REX-CONTRACT.md
 ordinal: 4000
 ---
 
@@ -25,4 +27,6 @@ Gas City needs to know which Rex objects belong to which gc session, when an age
 - [ ] #3 GetLastActivity reports agent activity from program_status events, falling back to output polling
 - [ ] #4 IsAttached reports per agent using the active tab or focused block, and reports honestly when attachment cannot be determined
 - [ ] #5 Teardown removes only city-owned panes and never stops the shared Rex server
+- [ ] #6 The activity path accounts for gc 1.5.1 shipping no OSC 7501 emitter: either the provider emits OSC 7501 itself or the format-poll fallback is the documented v1 path, and GetLastActivity states which is in force
+- [ ] #7 Bindings re-resolve after a Rex server restart and leave no orphan panes
 <!-- AC:END -->
