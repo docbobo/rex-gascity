@@ -3,11 +3,11 @@ id: GCREX-11
 title: >-
   Map gc sessions to Rex tabs from the start-config env, with a GC_* env
   inventory
-status: In Progress
+status: Done
 assignee:
   - '@boris'
 created_date: '2026-11-17T22:04:00Z'
-updated_date: '2026-11-17T22:17:00Z'
+updated_date: '2026-11-17T22:29:00Z'
 labels: []
 dependencies: []
 references:
@@ -50,13 +50,13 @@ The fix and the research land together: the research establishes the contract, t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A doc (docs/REX-CONTRACT.md and/or docs/rex-provider.md) lists every GC_* variable observed in the RPP start-config env with its meaning, when it is set, and whether it is durable contract or incidental
-- [ ] #2 The doc records the observed RPP session-name forms for named/pool agents, pool instances, and wisp/session-bead sessions, and which ops (start, is-running, list-running, get-meta) use which form
-- [ ] #3 Start derives the Rex tab from GC_RIG (falling back to the name split), so a rig agent pane opens in its rig tab rather than __town
-- [ ] #4 is-running with a rig-qualified agent name (for example my-project--core__control-dispatcher) reports true while any instance of that agent is alive
-- [ ] #5 list-running with a rig-qualified prefix (for example my-project--pi-) returns that agent live instances
-- [ ] #6 Live check against ~/my-city with provider=rex shows a single control dispatcher, wisp panes in the my-project tab, and no repeated start/stop churn
-- [ ] #7 Tests using the fake rex.Client cover the rig-from-env tab and the rig-qualified is-running/list-running lookups; go test ./... and golangci-lint run ./... pass
+- [x] #1 A doc (docs/REX-CONTRACT.md and/or docs/rex-provider.md) lists every GC_* variable observed in the RPP start-config env with its meaning, when it is set, and whether it is durable contract or incidental
+- [x] #2 The doc records the observed RPP session-name forms for named/pool agents, pool instances, and wisp/session-bead sessions, and which ops (start, is-running, list-running, get-meta) use which form
+- [x] #3 Start derives the Rex tab from GC_RIG (falling back to the name split), so a rig agent pane opens in its rig tab rather than __town
+- [x] #4 is-running with a rig-qualified agent name (for example my-project--core__control-dispatcher) reports true while any instance of that agent is alive
+- [x] #5 list-running with a rig-qualified prefix (for example my-project--pi-) returns that agent live instances
+- [x] #6 Live check against ~/my-city with provider=rex shows a single control dispatcher, wisp panes in the my-project tab, and no repeated start/stop churn
+- [x] #7 Tests using the fake rex.Client cover the rig-from-env tab and the rig-qualified is-running/list-running lookups; go test ./... and golangci-lint run ./... pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -73,4 +73,28 @@ The fix and the research land together: the research establishes the contract, t
 
 <!-- SECTION:NOTES:BEGIN -->
 Integrated the provider fix and docs on main (uncommitted): Binding gains TabLabel/PaneLabel/Aliases; start derives the Rex tab from GC_RIG (falling back to the name split); rig-qualified aliases (Sanitize(GC_TEMPLATE/GC_ALIAS/qualified GC_AGENT/GC_RIG+town-name)) are recorded and resolved by is-running/list-running/stop/peek/binding; FileStore serializes the new fields backward-compatibly. Added provider_alias_test.go plus a stale-binding rescan test I fixed during integration. go test ./... and golangci-lint run ./... pass. Docs: REX-CONTRACT.md 13 (GC_* inventory + session-name forms), rex-provider.md identity/env sections.
+
+Evidence for the checked criteria:
+#1/#2 docs/REX-CONTRACT.md section 13 (13.1 identity encoding, 13.2 name forms + per-op table, 13.3 GC_* inventory with durable=GC_RIG/GC_TEMPLATE/GC_ALIAS/GC_AGENT, 13.4 get-meta keys) and docs/rex-provider.md (Identity Mapping + Start-config GC_* sections).
+#3 provider_alias_test.go TestStartDerivesTabFromGCRig: fake.CreatedWindows[0].Label == my-project for start pi-mc-wisp-ybq1 with GC_RIG=my-project; TestStartDerivesTabFromNameWithoutRig covers the fallback.
+#4 TestIsRunningCanonicalAlias (my-project--core__control-dispatcher true while live, false after exit) and TestIsRunningAnyInstanceAlive (one instance exited, sibling live -> true).
+#5 TestListRunningAliases: ListRunning("my-project--pi-") == [my-project--pi-mc-wisp-ybq1].
+#7 go test -count=1 ./... ok; golangci-lint run ./... 0 issues; gofmt clean.
+Review: cross-family reviewer (claude-sonnet) first REQUESTED CHANGES (ListRunning alias leak into the adoption barrier, lost-binding start, meta/get-meta) and then APPROVED after fixes. Commit 69f203f pushed to origin/main.
+
+Live check #6 (23:27-23:30, after make install + city restart): Rex session gc:default has a my-project tab with exactly pi-mc-wisp-40y0 and core__control-dispatcher-mc-wisp-h43m, and a separate __town tab with mayor. Sidecar default/bindings shows the new records with tab_label my-project and aliases [my-project--core__control-dispatcher, ...] / [my-project--pi, ...]; no new dispatcher binding after 23:27:43 (the pre-fix churn had ~12 dispatcher bindings between 22:17 and 22:54). Exactly one long-lived 'convoy control --serve --follow' process; gc doctor reports no orphaned sessions (its single failure is the unrelated beads-role global git config).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+GC 1.5.1 passes pool/wisp rigs out of band in the RPP start config (GC_RIG) and probes pools with rig-qualified identities, but the provider derived the Rex tab by splitting the session name on -- and stored bindings only under the short runtime name. Every rig agent therefore landed in __town and gc's rig-qualified is-running/list-running probes missed live panes, causing duplicate control dispatchers and start/stop churn.
+
+Fix: start derives the Rex tab from GC_RIG (falling back to the name split) and records rig-qualified aliases from GC_TEMPLATE, GC_ALIAS, a qualified GC_AGENT, and the GC_RIG-qualified town start name. is-running reports true while any instance of an alias is alive; list-running emits matching aliases for a non-empty prefix (the empty prefix stays primaries-only so gc's adoption barrier cannot mint phantom orphan beads); stop/peek/binding/meta resolve aliases to the primary pane, and a lost sidecar record is rediscovered under the env-derived labels. FileStore persists the labels and aliases backward-compatibly.
+
+Research landed with the fix: docs/REX-CONTRACT.md section 13 inventories every observed GC_* start-config variable (durable contract = GC_RIG/GC_TEMPLATE/GC_ALIAS/GC_AGENT) and the observed RPP session-name forms and per-op usage; docs/rex-provider.md documents the rig-from-env tab and alias behavior.
+
+Verified: go test ./... and golangci-lint run ./... clean; focused fake-client tests cover the rig-from-env tab, the canonical is-running alias, any-instance liveness, the rig-qualified list-running prefix, FileStore round-trip, lost-binding start, alias stop/peek and alias meta. A cross-family review requested changes on the ListRunning/empty-prefix alias leak and lost-binding start, which were fixed and re-approved.
+
+Open risk / follow-up: acceptance #6 (live check on ~/my-city) is not yet run. It needs the rebuilt gc-runtime-rex installed on PATH and the city restarted; it touches the user's live environment. Commit 69f203f is pushed to origin/main.
+<!-- SECTION:FINAL_SUMMARY:END -->
