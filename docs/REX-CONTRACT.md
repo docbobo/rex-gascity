@@ -1,16 +1,33 @@
 # Rex contract (pinned)
 
 Phase 0 artifact for `docs/plans/native-rex-provider.md`. The Rex surface the
-`rex` runtime provider relies on, captured against one pinned version. **Re-run
-the probes in §9 after any Rex upgrade** — the CLI/API is pre-1.0.
+`rex` runtime provider relies on, captured against pinned versions. **Re-run the
+probes in §10 after any Rex upgrade** — the CLI/API is pre-1.0.
+
+## 0. Pinned versions
+
+Two Rex versions matter, and they are not the same number. The provider drives
+the **CLI** (§7), but the **running server** answers. The server's version is
+fixed when that process starts and only moves when someone restarts it — a
+restart the provider must never perform (D3).
+
+| Side | Version | Commit | Built | API revision | Probe |
+|---|---|---|---|---|---|
+| `rex` CLI (pinned surface) | `0.1.0-preview.20` | `e33d2481b81b202b2600a0f40bd440a5282653a9` | 2026-11-16 | 16 (supports 0–16) | `rex version --json` |
+| Rex server (running process) | `0.1.0-preview.19` | `ad5a836cb95bf1685a2b2976762949c44f1d0828` | 2026-11-13 | 14 | `rex api call server.version` |
+
+The **effective surface is `min(16, 14) = 14`**: the CLI advertises 16 but
+negotiates down to the server's 14. Every table below was verified at revision
+14. A server restart on the current build moves it to 16; re-run §10 then.
 
 | Field | Value |
 |---|---|
-| Rex version | `0.1.0-preview.19` |
-| Rex API revision | `14` |
-| Server | unix socket (`REX_SERVER` / `~/.…/Application Support/rex/server.sock`) |
-| gc side | RPP v0 (`internal/runtime/protocol.go`, `docs/reference/exec-session-provider.md`) |
-| Captured | 2026-11-17 |
+| Server | unix socket (`REX_SERVER` / `~/Library/Application Support/rex/server.sock`) |
+| gc side | RPP v0, `docs/reference/exec-session-provider.md` in the gc repo (§9) |
+| gc version | `1.5.1` (pinned by `~/.config/nixpkgs/roles/gascity/default.nix` via numtide/llm-agents.nix) |
+| RPP verifier | `gc runtime check <executable>` / `gc runtime conformance <executable>` (the executable lands in Phase 4) |
+| Captured | 2026-11-17 (server `.19` / rev 14) |
+| Re-verified | 2026-11-17 against CLI `.20` / rev 16, negotiated to rev 14, and against the gc 1.5.1 source |
 
 ---
 
@@ -29,23 +46,32 @@ gc city → Rex session, gc rig → Rex tab, gc agent → Rex pane (Option B).
 - The `rex` CLI connects automatically and auto-starts a local server.
 - `-S <host>` targets another Rex server; `-C <client>` targets a client.
 - Every op is a short-lived CLI invocation in v1 (behind `rex.Client`; §7).
+- **Version skew is normal.** A CLI can be newer than the server it reaches
+  (§0). Pin both; the negotiated API revision is `min(cli, server)`.
+- **Block ops are session-scoped.** `rex block call`, `rex send-key`, and
+  `rex block inspect` resolve a block inside the caller's session unless `-s
+  <session>` (or `-w <window>`) narrows it. The provider always passes the
+  session explicitly. `rex api call` takes `session_id` in the JSON body.
+- **`--timeout` is a connect/request timeout, not a call budget.** It does not
+  bound `rex events` streaming (§5).
 
 ## 3. Topology methods
 
 | Method | Inputs | Returns / notes |
 |---|---|---|
-| `session.create` | `label`, `initial_windows[]` (`layout`, `window_label`) | `initial_windows[].block_ids`, `window_id`, `revision`; atomic (all-or-nothing) |
+| `session.create` | `label`, `initial_windows[]` (`layout`, `window_label`) | `session_id`, `initial_windows[] {window_id, block_ids[], revision}`; atomic (all-or-nothing) |
 | `session.new_window` | `session_id`, `layout` (block `{flavor, options, label}` or `split`), `window_label`, `focus` | `window_id`, `block_ids[]`, `revision` |
 | `session.new_split` | `session_id`, `anchor_id` **or** `window_id`, `direction` `horizontal|vertical`, `side` `before|after`, `ratio` (0<r<1), `layout`, `focus` | creates blocks beside an existing block/split |
-| `session.view` | `session_id` | `active_window_id`, `label`, `revision` (increments per change, jumps on restore), `windows[].{window_id, focused_block_id, layers[].blocks[]}`, `clients[]` |
+| `session.view` | `session_id` | `session_id`, `active_window_id`, `label`, `revision` (increments per change, jumps on restore), `windows[].{window_id, label, focused_block_id, layers[]}`; each `layers[].blocks[]` entry is `{block_id, flavor, label, owner, creator_name, host_id}`. **The view has no `clients` field** |
 | `session.list` | — | `sessions[] {session_id, label}` in creation order |
-| `session.destroy` | `session_id` | **requires the caller to be attached to the session; otherwise fails `conflict`.** Closes every block |
+| `session.list_clients` | `session_id` | `clients[] {client_id, principal, info, connected_at, connection_state}` — the attached-client source (§12), not `session.view` |
+| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe or in teardown**; the provider tears down with `block.close` and leaves the session (§12) |
 | `session.focus_block` / `session.focus_window` | ids | focus a pane / tab |
 | `session.set_block_label` / `session.set_window_label` / `session.set_label` | ids, label | ≤128 chars |
-| `block.close` | `session_id`, `block_id` **or** `window_id`, `keep_last` | closes a pane; `keep_last` refuses the last block in a window |
-| `block.event` | `session_id`, `block_id`, `event {type, payload}` | input event; `type` ∈ `key`, `paste`, `mouse`, `wheel`, `focus` |
+| `block.close` | `session_id`, `block_id` **or** `window_id`, `keep_last` | returns `{block_id, revision}`; `keep_last` refuses the last block in a window (`bad_request`, exit 1) |
+| `block.event` | `session_id`, `block_id`, `event {type, payload}` | input event; `type` ∈ `key`, `paste`, `mouse`, `wheel`, `focus`. A `paste` payload is `{"text": "..."}`; a `focus` payload is `{"action": "in"\|"out"}` |
 | `block.method` / `rex block call` | `session_id`, `block_id`, method name + JSON args | call a block method (§4); `session_id` is required even though `block_id` is unique |
-| `target.resolve` / `target.complete` | id/label/prefix | resolve labels, window positions, short ids |
+| `target.resolve` / `target.complete` | `kinds[]` (`session\|window\|block\|client`), `queries[]`, optional `context` | resolve labels, window positions, short ids; a target request needs at least one kind (`bad_request` otherwise) |
 
 Terminal block creator: `com.superlogical.terminal`, flavor
 `com.superlogical.terminal.shell`. Launch options:
@@ -54,41 +80,59 @@ Terminal block creator: `com.superlogical.terminal`, flavor
 
 ## 4. Terminal block methods
 
+Recurring shape: a method with no input is called with the arg omitted; a
+method with input takes one JSON object, and `rex block inspect <block> --json`
+carries every method's full input and output schema.
+
 | Method | Input | Output | Use |
 |---|---|---|---|
 | `process` | — | `{last_exit: {exit_code, error?} \| null, child, foreground, ancestors[], home}`; each process `{pid, user_id, user, name, path, invoked_path, argv0, cwd}` | `process-alive`; agent-exit detection (`last_exit`) |
-| `format` | `{format: text\|html\|vt, trim, unwrap, extra_charsets, extra_cursor, max_bytes}` | `{content, id?, total?, eof?}` — `id` set means more remains; continue with `blob_read {id, offset}`. With no `max_bytes` the whole output is returned in one reply, or the call fails `too_large`; with `max_bytes` set, `total`/`eof` describe the whole result | `peek`; send output; exec output |
-| `blob_read` | `{id, offset, max_bytes?}` | `{id, data, total, eof}` — all fields required; `eof` true when `data` reaches the end | `peek` paging; large events |
+| `format` | `{format: text\|html\|vt, trim, unwrap, extra_charsets, extra_cursor, extra_hyperlink, max_bytes}` | `content` always. With `max_bytes` set, `total` is always present and **either** `id` (more remains; `eof` is absent) **or** `eof: true` (complete). With no `max_bytes`, the whole capture comes in one reply or the call fails `too_large` | `peek`; send output; exec output |
+| `blob_read` | `{id?, offset?, max_bytes?}` | `{id, data, total, eof}` — all four always present. `id` 0/omitted reads the newest result, `offset` defaults to 0, `max_bytes` defaults to 49152 and is clamped to 983040; results are kept ~5 minutes, then `not_found` | `peek` paging; large events |
 | `write` | `{data}` | `{bytes_written}` | type text (`nudge`) |
-| `clear` | — | — | `clear-scrollback` (is a no-op while a full-screen program runs) |
+| `clear` | — | — | `clear-scrollback` (no-op while a full-screen program runs) |
 | `reset` | — | — | hard reset of a terminal (fallback) |
 | `program_status` | — | `{records[] {id, state: idle\|working\|done\|blocked\|error, kind, …}}` — programs report via **OSC 7501** | agent state; idle detection |
 | `input_mode` | — | `{echo, canonical, signals, …}` | detect a password/raw prompt |
-| `size` / `title` / `pwd` | — | terminal geometry / title+owner / cwd | diagnostics |
+| `size` / `title` / `pwd` | — | terminal geometry + owning client / title + owner / cwd + owner | diagnostics |
+
+**Reply cap.** A control response is capped at **1 048 576 bytes**; `format`
+with no `max_bytes` on a larger capture fails `too_large` (413, exit 1). The
+provider therefore asks for `max_bytes: 983040` and follows `id` with
+`blob_read` until `eof`. 983040 is also `blob_read`'s clamp: our request size,
+not the cap.
+
+**Paging rule.** More output remains when the reply carries `id`; read it with
+`blob_read {id, offset}` until the `eof` field is true. A `blob_read` with no
+`id` is legal (newest result); it fails `not_found` (exit 3) only when nothing
+is stored.
 
 `program_status` is **reported by the program itself** (OSC 7501), not detected
-by Rex. gc already ships a matching emitter (`internal/runtime/runtimetest/osc7501emitter`),
-so an agent that emits OSC 7501 gives us native idle/busy state; otherwise fall
-back to scanning `format` for the ready prompt.
+by Rex: a program that emits OSC 7501 gives us native idle/busy state. gc 1.5.1
+ships **no** OSC 7501 emitter (nothing in its tree mentions 7501), so nothing
+produces it today — the provider would have to emit it itself, or fall back to
+scanning `format` for the ready prompt.
 
 ## 5. Terminal block events
 
 `bell`, `child_exited` (`{exit_code, error?}`), `process_changed`
-(`{generation, foreground}`), `program_status_changed`,
+(`{generation, foreground, ancestors}`), `program_status_changed`,
 `program_status_removed`, `title_changed`, `pwd_changed`, `size_changed`,
 `clipboard_written`, `selection_copied`, `desktop_notification`,
 `progress_report`, `url_clicked`.
 
-`rex events --json` streams these plus session create/remove/state changes.
-Treat events as **level-triggered hints to re-poll**, never authoritative
-transitions (Rex replays/omits under load).
+`rex events --json` streams these plus session create/remove/state changes as
+newline-delimited JSON. It runs until interrupted; `--timeout` only covers
+connecting and starting delivery (§2). Treat events as **level-triggered hints
+to re-poll**, never authoritative transitions (Rex replays/omits under load).
 
 ## 6. Input/key names
 
 `rex send-key` / `block.event {type:"key"}` use Rex key bindings: modifiers
 joined with `+` (`ctrl+c`, `shift+left`); named keys (`enter`, `esc`); a
-bracketed name (`[Slash]`) selects a physical key. Translate gc/tmux names:
-`C-c` → `ctrl+c`, `Enter` → `enter`, `Escape` → `esc`.
+bracketed name (`[Slash]`) selects a physical key. `--action` sends one action
+instead of press+release. Translate gc/tmux names: `C-c` → `ctrl+c`,
+`Enter` → `enter`, `Escape` → `esc`.
 
 `write` types literal text (escape sequences allowed, e.g. `\u001b[A` for Up);
 `block.event {type:"paste", payload:{text}}` pastes. `nudge` = `write` text +
@@ -102,64 +146,281 @@ implementation talks the unix socket directly. Provider logic must not know
 which is in use. See plan §3 for the interface sketch.
 
 The socket protocol itself is **not documented/stable**; v1 uses the CLI
-deliberately.
+deliberately. The CLI is the pinned surface (§0): it reports its own version and
+API-revision range, and negotiates with whatever server it reaches.
 
-## 8. RPP v0 (gc → provider)
+## 8. Rex CLI exit and error codes
 
-Invocation: `executable <op> <name> [args…]`, JSON on stdin where the op takes
-structured input, JSON/text on stdout. No shell. One process per op.
+Observed at revision 14. Failures print `Error: <message>` on stderr. A
+server-side failure is wrapped as
+`Error: stream response "<conn>" failed: <server message> (status=<http> code=<code>)`
+— the HTTP status and API error code live in the message, not the exit code.
+This is the **CLI's** code space; RPP exit codes are separate and defined in §9.
 
-Exit codes: `0` success · `1` failure (stderr message) · `2` unknown op
-(forward-compatible; from a *declared* op it is a failure) · `66` `peek` no
-screen (v2-ready only) · `75` `start` temporary/capacity (retryable) · `80`
-input not delivered (`input-outcome` only).
+| Exit | Meaning | Evidence |
+|---|---|---|
+| `0` | success | any op |
+| `1` | server reported a failure, or the request/reply failed to decode | `format` over the cap → `control response exceeds 1048576 bytes (status=413 code=too_large)`; `block.close` + `keep_last` → `cannot close the last block in window <id> (status=400 code=bad_request)`; `block.close` with `window_id:"nonsense"` → `netapi: decoding args ... (status=400 code=bad_request)` |
+| `2` | client-side usage or validation error | unknown flag (`rex --version`), unknown command, invalid JSON args, a JSON argument that fails validation (`rex api call session.view '{"session_id":"deadbeef"}'`) |
+| `3` | target not found: client-side positional resolution or a server `404` | `rex api describe no.such.method`; `rex block call -b block:deadbeef …`; `rex block inspect block:deadbeef`; `rex window list -s session:deadbeef`; `blob_read` for an expired result → `not found: no result is stored (status=404 code=not_found)` |
 
-Ops: `start`, `stop`, `interrupt`, `send-keys`, `clear-scrollback`,
-`is-running`, `attach`, `process-alive`, `nudge`, `set-meta`, `get-meta`,
-`remove-meta`, `peek`, `list-running`, `get-last-activity`, `protocol`,
-`is-attached`, `exec`, `provision`, `observe`, `inventory`, `kill-object`,
-`server-stop`.
+A malformed id lands on different codes by path, all observed: a bad **JSON
+argument** is `2`, a bad **positional target** is `3`, and a bad field that
+reaches the **server decoder** is `1`.
+
+## 9. RPP v0 (gc → provider)
+
+Pinned baseline: gc **`1.5.1`** (verify with `gc version`). Source of truth:
+`docs/reference/exec-session-provider.md` (the protocol contract) and
+`internal/runtime/protocol.go` (the capability constants) in the gc repository
+`gastownhall/gascity` at that version; `internal/runtime/REQUIREMENTS.md` is the
+behaviour ledger (`RUNTIME-RPP` rows). Those paths are in the gc repo, **not in
+this repo**. The mechanical verifier is `gc runtime check <executable>` (or
+`gc runtime conformance`), which runs the handshake and exercises every declared
+capability; it is implemented in Phase 4.
+
+Invocation: `<script> <operation> <session-name> [args…]` — the script is exec'd
+directly, no shell, one process per op. Each call has a deadline: `start` and
+`provision` 120 s, `attach` none, everything else 30 s. Each invocation runs in
+its own process group; a cancelled call gets `SIGTERM` to the group and then
+`SIGKILL` after a 2 s grace (`exec` and `watch-startup` are killed outright).
+Trap `TERM`, not just `EXIT`.
+
+Exit codes — the spec has exactly three:
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `1` | failure; stderr carries the message |
+| `2` | unknown operation, treated as **success** (forward compatibility). From `start` and `provision` it is a failure — those two may never be unknown. |
+
+Operations — the spec's 17 rows:
+
+| Operation | Invocation | Stdin | Stdout |
+|---|---|---|---|
+| `start` | `script start <name>` | JSON config | — |
+| `stop` | `script stop <name>` | — | — |
+| `interrupt` | `script interrupt <name>` | — | — |
+| `is-running` | `script is-running <name>` | — | `true` or `false` |
+| `attach` | `script attach <name>` | tty passthrough | tty passthrough |
+| `process-alive` | `script process-alive <name>` | process names (1/line) | `true` or `false` |
+| `nudge` | `script nudge <name>` | message text | — |
+| `set-meta` | `script set-meta <name> <key>` | value on stdin | — |
+| `get-meta` | `script get-meta <name> <key>` | — | value (empty = not set) |
+| `remove-meta` | `script remove-meta <name> <key>` | — | — |
+| `peek` | `script peek <name> <lines>` | — | captured text |
+| `list-running` | `script list-running <prefix>` | — | one name per line |
+| `get-last-activity` | `script get-last-activity <name>` | — | RFC3339 or empty |
+| `protocol` | `script protocol` | — | handshake JSON (below) |
+| `is-attached` | `script is-attached <name>` | — | `true` or `false` |
+| `exec` | `script exec <name>` | command | combined output (op exit == command exit) |
+| `provision` | `script provision <name>` | JSON config | — |
+
+Beyond that table, gc also calls `clear-scrollback`, `send-keys`, and
+`watch-startup`. The dedicated **driving ops** (`interrupt`, `nudge`, `peek`,
+`clear-scrollback`, `send-keys`) are deliberately **not** conformance
+requirements: gc drives input and reads output over `exec` (`RPP-CONN-001`) when
+a runtime implements it, and falls back to the driving ops when `exec` is
+unsupported (exit 2). `watch-startup` stays dedicated because the
+request/response `exec` connection cannot carry a stream.
 
 Handshake (`protocol` op):
 
 ```json
-{"version": 0, "capabilities": ["fs.host", "report-attachment", "report-activity", "carrier.ops", "idle-boundary", "observe.v1"], "locality": "local"}
+{"version": 0, "capabilities": ["report-attachment", "report-activity"]}
 ```
 
-Capabilities we intend to declare: `fs.host` (boxes are gc's host/user),
-`report-attachment`, `report-activity`, `carrier.ops` (dedicated driving ops,
-no tmux), `idle-boundary` (needs `carrier.ops` + `set-meta`/`get-meta`
-round-tripping `GC_READY_PROMPT_PREFIX`), `observe.v1` (reconciler-v2 reads).
-**Do not declare `server-lifecycle`** — teardown would stop the shared Rex
-server (D3).
+There is **no `locality` field**. A script that does not implement `protocol`
+(exit 2) is version 0 with no optional capabilities. Unknown capability strings
+are ignored (forward compatibility); malformed handshake JSON is an error.
 
-## 9. Re-verification probes
+The pinned baseline has exactly **six** capability strings
+(`internal/runtime/protocol.go`):
 
-Run after any Rex upgrade; each must match the tables above.
+| Capability | Meaning |
+|---|---|
+| `report-attachment` | `is-attached <name>` is called and trusted |
+| `report-activity` | `get-last-activity <name>` is meaningful for idle/health decisions |
+| `proc.exec` | `exec`'s process exit carries the in-box command's exit, disambiguating the overloaded exit 2 |
+| `proc.provision` | implements `provision` (box without agent); requires `proc.exec` |
+| `proc.stream` | reserved: the persistent bidirectional `stream` op |
+| `tty.attach` | reserved: the interactive PTY `attach` connection op |
+
+**Not in the pinned baseline — do not declare.** The plan
+(`docs/plans/native-rex-provider.md`) and the research notes use capability names
+that do not exist in gc 1.5.1, so `gc runtime check` would ignore them:
+`fs.host`, `carrier.ops`, `observe.v1`, `input-outcome` appear nowhere in the
+source. `idle-boundary` is design-doc language for sleep tiers
+(`engdocs/design/idle-session-sleep.md`), not a token. `server-lifecycle`
+appears only in a release-gate evidence file for a provider interface, not in
+`protocol.go`. Treat all of them as design shorthand. Concretely, `fs.host` is
+not a declaration — agents simply run on gc's host (D4) — and idle state is
+reported through `report-activity` plus the block's `program_status`, not
+through a handshake token. `GC_READY_PROMPT_PREFIX` is real in gc but is a
+tmux-provider environment variable, not part of RPP; round-tripping it through
+`set-meta`/`get-meta` is our design.
+
+## 10. Re-verification probes
+
+Run after any Rex upgrade. Every line must match the tables above. Uses
+`REX_BLOCK` / `REX_SESSION` from the calling pane. It creates exactly one
+scratch session, kills only the id it just created, and never calls
+`session.destroy` — that op is destructive and the provider does not use it.
+Set `GC_SRC` to a gc checkout to re-check the §9 capability names.
 
 ```bash
-rex --version; rex whoami --json | jq .api_revision
-rex api describe session.create
-rex api describe session.new_window
-rex api describe session.new_split
-rex api describe session.view
-rex api describe session.destroy
-rex api describe block.close
-rex api describe block.event
-rex block inspect "$REX_BLOCK" --json | jq '.api.methods | keys'
-rex block call -b "$REX_BLOCK" process
-printf '{"format":"text","trim":true}' | rex block call -b "$REX_BLOCK" format -
-rex block call -b "$REX_BLOCK" program_status
-rex events --help
+set -uo pipefail
+say() { printf '\n== %s ==\n' "$1"; }
+
+say "CLI (pinned surface) — §0"
+rex version --json | jq '{rex_version, commit, built_at, api_revision}'
+
+say "Server (running process) — §0"
+rex api call server.version | jq '{rex_version, commit, built_at, api_revision}'
+
+say "Exit codes — §8 (want 3, 2, 2)"
+rex api describe no.such.method >/dev/null 2>&1; echo "unknown method -> $?"
+rex --version >/dev/null 2>&1;                echo "unknown flag   -> $?"
+rex block call -b "$REX_BLOCK" format 'nope' >/dev/null 2>&1; echo "bad JSON args  -> $?"
+
+say "Topology methods — §3"
+for m in session.create session.new_window session.new_split session.view \
+         session.list session.list_clients session.destroy session.focus_block \
+         session.focus_window session.set_block_label session.set_window_label \
+         session.set_label block.close block.event block.method target.resolve; do
+  rex api describe "$m" >/dev/null 2>&1 || echo "MISSING $m"
+done
+echo "checked 16 methods (no MISSING lines = all present)"
+
+say "Terminal block methods — §4 (names the provider relies on)"
+rex block inspect "$REX_BLOCK" --json \
+  | jq -r '.api.methods | keys[]' \
+  | grep -Ex 'process|format|blob_read|write|clear|reset|program_status|input_mode|size|title|pwd' \
+  | sort
+
+say "Terminal block events — §5"
+rex block inspect "$REX_BLOCK" --json | jq -r '.api.events | keys[]' | sort
+
+say "Scratch session round-trip — §3, §4, §6"
+# Safety: kill only a session:* id this block just created. An empty or
+# unexpected value aborts instead of being passed to a teardown command.
+SID=$(rex session new gc-probe-scratch --json | jq -r '.session_id // empty')
+case "$SID" in
+  session:*) ;;
+  *) echo "no scratch session id (got '$SID'); aborting"; exit 1 ;;
+esac
+trap 'rex session kill "$SID" >/dev/null 2>&1' EXIT
+view() { rex api call session.view "$(jq -nc --arg s "$SID" '{session_id:$s}')"; }
+WID=$(view | jq -r '.windows[0].window_id')
+BID=$(view | jq -r '.windows[0].layers[0].blocks[0].block_id')
+echo "session=$SID window=$WID block=$BID"
+
+rex api call session.new_split "$(jq -nc --arg s "$SID" --arg a "$BID" \
+  '{session_id:$s, anchor_id:$a, direction:"horizontal", side:"after", ratio:0.5,
+    layout:{block:{flavor:"com.superlogical.terminal.shell", label:"probe"}}}')" \
+  | jq -c '{block_ids}'
+
+rex block call -s "$SID" -b "$BID" write '{"data":"echo probe-ok; seq 1 40000\n"}'
+sleep 1
+fmt=$(rex block call -s "$SID" -b "$BID" format '{"format":"text","trim":true,"max_bytes":5000}')
+echo "$fmt" | jq -c '{saw_probe:(.content|contains("probe-ok")), has_id:(.id!=null), has_eof:has("eof"), total}'
+BRID=$(echo "$fmt" | jq -r '.id // empty')
+if [ -n "$BRID" ]; then
+  rex block call -s "$SID" -b "$BID" blob_read "$(jq -nc --argjson i "$BRID" '{id:$i, offset:5000}')" \
+    | jq -c '{datalen:(.data|length), total, eof}'
+else
+  echo "ERROR: format returned no id; paging path not exercised"
+fi
+rex block call -s "$SID" -b "$BID" process | jq -c '{last_exit, foreground:.foreground.name}'
+rex block call -s "$SID" -b "$BID" input_mode | jq -c .
+rex block call -s "$SID" -b "$BID" size | jq -c '{columns, rows}'
+rex block call -s "$SID" -b "$BID" pwd | jq -c '{pwd}'
+rex block call -s "$SID" -b "$BID" program_status | jq -c '.records|length'
+
+# Attached clients come from session.list_clients, not session.view.
+rex api call session.list_clients "$(jq -nc --arg s "$SID" '{session_id:$s}')" \
+  | jq -c '{client_count:(.clients|length)}'
+
+# Reply cap: >1 MiB with no max_bytes must fail too_large (exit 1).
+rex block call -s "$SID" -b "$BID" write '{"data":"head -c 1200000 /dev/zero | tr \"\\0\" x; echo\n"}'
+sleep 3
+rex block call -s "$SID" -b "$BID" format '{"format":"text"}' >/dev/null 2>&1
+echo "format over cap -> $? (want 1: too_large)"
+
+rex send-key -s "$SID" -b "$BID" ctrl+c && echo "ctrl+c ok"
+rex send-key -s "$SID" -b "$BID" '[Slash]' && echo '[Slash] ok'
+
+rex api call block.event "$(jq -nc --arg s "$SID" --arg b "$BID" \
+  '{session_id:$s, block_id:$b, event:{type:"paste", payload:{text:"x"}}}')" >/dev/null \
+  && echo "block.event paste ok"
+rex api call block.close "$(jq -nc --arg s "$SID" --arg b "$BID" '{session_id:$s, block_id:$b}')" \
+  | jq -c '{block_id, revision}'
+
+# session.destroy is checked from its schema, never executed (destructive).
+rex api describe session.destroy | grep -qE 'must be attached' \
+  && echo "session.destroy: attachment requirement present" \
+  || echo "MISSING session.destroy attachment requirement"
+rex api describe session.destroy | grep -qE 'session_not_found' \
+  && echo "session.destroy: session_not_found present" \
+  || echo "MISSING session_not_found"
+
+say "Events stream — §5 (exit 124 is the expected kill)"
+timeout 3 rex events --json >/dev/null 2>&1; echo "rex events --json -> $? (want 124)"
+
+say "gc side — §9"
+gc version
+gc runtime check --help | sed -n 's/^The protocol contract is /  protocol contract: /p'
+if [ -n "${GC_SRC:-}" ]; then
+  spec="$GC_SRC/docs/reference/exec-session-provider.md"
+  echo "  capabilities in $GC_SRC/internal/runtime/protocol.go:"
+  grep -oE 'ProtocolCapability[A-Za-z]+ *= *"[^"]+"' "$GC_SRC/internal/runtime/protocol.go" \
+    | sed 's/.*"\(.*\)"/    \1/'
+  echo "  exit-code rows in the spec :"
+  sed -n '/^## Exit Codes/,/^## Cancellation/p' "$spec" | grep -E '^\| [0-2] \|' | sed 's/^/    /'
+  echo "  op rows in the spec (want 17): $(sed -n '/^## Operations/,/^### Protocol Handshake/p' "$spec" | grep -cE '^\| `[a-z-]+` \|')"
+else
+  echo "  GC_SRC unset; set it to the gc checkout to re-check the capabilities, exit codes and op table"
+fi
 ```
 
-## 10. Open items to resolve in Phase 1
+## 11. Decisions confirmed (plan D0–D6)
 
-- **`format` paging:** resolved in Phase 1 (GCREX-2). `peek` requests
-  `format {max_bytes: 983040}` and follows `id` with `blob_read` until `eof`.
-  Verified against the live server with a ~4 MiB capture.
-- **`session.destroy` needs attachment:** teardown may have to `session.attach`
-  (or use `block.close` only and leave empty sessions).
+Phase 0 also confirms the plan's decisions against the live surface:
+
+| Decision | Confirmation |
+|---|---|
+| D0 delivery form | Out-of-tree RPP v0 executable via pack `[runtimes.rex]`. §9 records the op set and handshake; `gc runtime check` is the verifier. |
+| D1 mapping | session = city, tab = rig, pane = agent. §1; supported by `session.create` + `session.new_window` + `session.new_split`. |
+| D2 transport | Shell out to the CLI behind `rex.Client`; the socket protocol is undocumented and revision-numbered (§7). |
+| D3 server ownership | Never stop the shared server. `session.destroy` closes only that session's blocks; `server.stop` exists and must not be called. The version skew in §0 is another reason: the server only moves on restart. |
+| D4 scope | Local server via the default socket or `-S <host>`; agents run on gc's host. RPP has no declaration for this. |
+| D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — the emitter is ours to write, gc 1.5.1 ships none); fall back to `timed_only` if classification proves unreliable. |
+| D6 v1 breadth | Core `Provider` + idle/wait + relaunch + metadata sidecar + activity + attachment; skip `ExecProvider` and `DialogProvider`. |
+
+## 12. Open items
+
+- **Resolved since capture.** `format` paging (Phase 1, GCREX-2): the hard
+  control-response cap is 1 048 576 bytes; `peek` requests `max_bytes: 983040`
+  and follows `id` with `blob_read` until `eof`.
+- **`session.destroy` is destructive and unused.** The schema requires an
+  attached connection (or `conflict`) and rejects an unknown id with
+  `session_not_found`; `session_id` is mandatory. A fresh CLI call on a scratch
+  session returned exit 0 (observed once; the recurring probe only reads the
+  schema, never destroys), so the CLI satisfies the attachment itself — the
+  requirement is real, only the source of attachment differs. The provider
+  never calls it: teardown closes city-owned blocks with `block.close` (D3), and
+  §10 asserts its contract from the schema instead of executing it.
+- **Attachment signals.** `session.view` has no `clients` field; attached
+  clients come from `session.list_clients`. That is where the D1 risk lands: any
+  app client attached to the city session makes every agent in it read as
+  attached, so resolve attachment to the active tab / `focused_block_id` and
+  report honestly when it cannot be refined.
+- **Version skew policy.** The CLI is `.20`/rev 16 while the running server is
+  `.19`/rev 14. Decide whether Phase 5 promotion requires a restarted server
+  before the pilot.
+- **RPP capability naming.** The plan's `carrier.ops`/`idle-boundary`/`observe.v1`
+  vocabulary has no basis in gc 1.5.1 (§9). Rewrite the plan's capability
+  language, or confirm a newer gc adds those tokens, before Phase 4.
 - **Pane process-identity stability:** `block_id` is persisted in the sidecar;
   confirm ids survive a server restart (vs. address-by-label).
 - **Rig-tab growth:** repeated `session.new_split` into one tab has layout
