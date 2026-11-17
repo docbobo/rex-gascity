@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -45,6 +47,11 @@ type Config struct {
 	// launch options carry no env, so Start applies it by prefixing the launch
 	// argv with `env K=V ...` (see launchCommand).
 	Env map[string]string
+	// PreStart is an ordered list of shell commands run before the agent pane
+	// launches, with cwd set to WorkDir and the start-config env applied.
+	// A non-zero exit or start error aborts the launch and leaves no seeded
+	// identity or binding behind. An empty or absent slice is a no-op.
+	PreStart []string
 }
 
 // Provider drives Rex for one gc city.
@@ -192,6 +199,18 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 	if err != nil {
 		return err
 	}
+
+	// Run pre_start hooks before seeding identity or a provisional binding,
+	// so a failed hook leaves nothing behind.
+	if len(cfg.PreStart) > 0 {
+		merged := mergeEnv(os.Environ(), cfg.Env)
+		for i, cmd := range cfg.PreStart {
+			if err := runPreStart(ctx, cmd, cfg.WorkDir, merged); err != nil {
+				return fmt.Errorf("pre_start[%d]: %w", i, err)
+			}
+		}
+	}
+
 	// Seed the identity and a provisional binding before the launch call,
 	// which blocks while Rex dismisses startup dialogs. A reconciler tick in
 	// that window can then read the current GC_SESSION_ID/GC_INSTANCE_TOKEN
@@ -577,4 +596,39 @@ func (p *Provider) livePane(ctx context.Context, name string) (Binding, error) {
 		return Binding{}, fmt.Errorf("%w: %s agent program exited", ErrSessionNotFound, name)
 	}
 	return binding, nil
+}
+
+// mergeEnv merges the base environment slice with an overlay map, returning a
+// new sorted slice. Overlay entries replace base entries with the same key.
+func mergeEnv(base []string, overlay map[string]string) []string {
+	m := make(map[string]string, len(base)+len(overlay))
+	for _, kv := range base {
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			m[kv[:idx]] = kv[idx+1:]
+		}
+	}
+	for k, v := range overlay {
+		m[k] = v
+	}
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// runPreStart runs one pre_start shell command. It honours ctx cancellation.
+func runPreStart(ctx context.Context, command, workDir string, env []string) error {
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	cmd.Dir = workDir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			return fmt.Errorf("%s: %w\n%s", command, err, out)
+		}
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	return nil
 }

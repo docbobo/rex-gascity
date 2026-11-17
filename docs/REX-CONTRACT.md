@@ -479,7 +479,7 @@ Phase 0 also confirms the plan's decisions against the live surface:
   `gc:default`. Follow-up (still open): pin `GC_REX_CITY` at the supervisor
   level or add a supervisor-level env mechanism.
 - **Remaining start-config hooks are not applied (open, GCREX-5).** The
-  dispatcher ignores the start config's `nudge`, `pre_start`, `session_setup`,
+  dispatcher ignores the start config's `nudge`, `session_setup`,
   `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and
   `pack_overlay_dirs`. gc does not resend the startup `nudge`, and Rex launch
   options carry no `env` option of their own, so an agent's first prompt must
@@ -489,9 +489,14 @@ Phase 0 also confirms the plan's decisions against the live surface:
   `env` from the start config and wraps the launch argv with `env K=V ...`
   (sorted keys) at the command boundary, so a launched pane's process sees
   every managed-session variable. A bare shell (no command) cannot be seeded,
-  since Rex has no per-pane env option. The remaining hooks are still open and
-  were not exercised by the GCREX-6 pilot, which used a command-line-only
-  agent; see `docs/rex-pilot-phase5.md`.
+  since Rex has no per-pane env option.
+  **Resolved (GCREX-15):** the `pre_start` hook runs before the pane launches.
+  Each entry is executed in order via `/bin/sh -c`, with cwd set to the start
+  config's `work_dir` and the process environment merged with the start-config
+  `env` map. A non-zero exit aborts the launch and leaves no seeded identity
+  or binding behind. An empty or absent `pre_start` is a no-op. The remaining
+  hooks (`session_setup`, `session_setup_script`, `session_live`, `copy_files`,
+  `overlay_dir`, `pack_overlay_dirs`) are still unimplemented.
 - **Rig-tab growth (resolved, GCREX-6).** Always splitting the first pane
   halved it each time (14 splits: 1/2 ... 1/16384). The provider now splits
   the largest-area pane along its longer axis, side `after`, 50%, reading
