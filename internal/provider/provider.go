@@ -52,6 +52,10 @@ type Config struct {
 	// A non-zero exit or start error aborts the launch and leaves no seeded
 	// identity or binding behind. An empty or absent slice is a no-op.
 	PreStart []string
+	// Nudge is the text delivered to the pane after a successful launch,
+	// typed in and submitted with Enter so the agent gets its first prompt
+	// immediately. An empty string is a no-op.
+	Nudge string
 }
 
 // Provider drives Rex for one gc city.
@@ -147,8 +151,9 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
 	n := SessionName(name)
 	seeded := false
+	launchOK := false
 	defer func() {
-		if err == nil || !seeded {
+		if err == nil || !seeded || launchOK {
 			return
 		}
 		// A failed launch or a canceled start must not leave a seeded identity
@@ -220,6 +225,26 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 		return err
 	}
 	p.recordProvisionalBinding(n, sid, "", cfg)
+
+	// Deliver the startup nudge after a successful launch, using the
+	// just-recorded binding's SessionID/BlockID rather than a fresh
+	// livePane re-resolve, so the nudge does not race the pane
+	// program's readiness.
+	var launchedBlock rex.BlockID
+	defer func() {
+		if err != nil || cfg.Nudge == "" || launchedBlock == "" {
+			return
+		}
+		if dErr := p.client.BlockWrite(ctx, sid, launchedBlock, cfg.Nudge); dErr != nil {
+			err = fmt.Errorf("startup nudge %s: type text: %w", name, dErr)
+			return
+		}
+		if dErr := p.client.SendKeys(ctx, sid, launchedBlock, submitKey); dErr != nil {
+			err = fmt.Errorf("startup nudge %s: submit key: %w", name, dErr)
+			return
+		}
+	}()
+
 	tab := hint.TabLabel
 	spec := rex.LaunchSpec{
 		Command: launchCommand(cfg.Argv, cfg.Env),
@@ -237,6 +262,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 				return err
 			}
 			p.record(ctx, n, sid, w.ID, block, "split", cfg)
+			launchedBlock = block
+			launchOK = true
 			return nil
 		}
 	}
@@ -245,6 +272,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 		return err
 	}
 	p.record(ctx, n, sid, wid, block, "window", cfg)
+	launchedBlock = block
+	launchOK = true
 	return nil
 }
 

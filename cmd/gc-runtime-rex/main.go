@@ -57,6 +57,7 @@ type startConfig struct {
 	ReadyPromptPrefix string            `json:"ready_prompt_prefix"`
 	Env               map[string]string `json:"env"`
 	PreStart          []string          `json:"pre_start"`
+	Nudge             string            `json:"nudge"`
 }
 
 // opSpec describes a known op: how many positional args it requires after the
@@ -176,6 +177,7 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		ReadyPromptPrefix: cfg.ReadyPromptPrefix,
 		Env:               cfg.Env,
 		PreStart:          cfg.PreStart,
+		Nudge:             cfg.Nudge,
 	})
 	if errors.Is(err, provider.ErrAlreadyRunning) {
 		// gc's exec proxy recognizes "already running" as a start collision.

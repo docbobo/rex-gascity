@@ -479,17 +479,23 @@ Phase 0 also confirms the plan's decisions against the live surface:
   `gc:default`. Follow-up (still open): pin `GC_REX_CITY` at the supervisor
   level or add a supervisor-level env mechanism.
 - **Remaining start-config hooks are not applied (open, GCREX-5).** The
-  dispatcher ignores the start config's `nudge`, `session_setup`,
+  dispatcher ignores the start config's `session_setup`,
   `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and
-  `pack_overlay_dirs`. gc does not resend the startup `nudge`, and Rex launch
-  options carry no `env` option of their own, so an agent's first prompt must
-  come from its command line. Phase 5 must close the remaining hooks before a
-  real fleet runs.
+  `pack_overlay_dirs`. Rex launch options carry no `env` option of their own.
+  Phase 5 must close the remaining hooks before a real fleet runs.
   **Resolved (GCREX-10):** the `env` map is applied. The dispatcher decodes
   `env` from the start config and wraps the launch argv with `env K=V ...`
   (sorted keys) at the command boundary, so a launched pane's process sees
   every managed-session variable. A bare shell (no command) cannot be seeded,
   since Rex has no per-pane env option.
+  **Resolved (GCREX-14):** the `nudge` field is decoded and delivered.
+  After a successful pane launch, the startup nudge text is written to the
+  pane and submitted with Enter, so an agent receives its initial prompt
+  immediately. Delivery uses the just-recorded binding's SessionID/BlockID
+  directly — no `livePane` re-resolve — so there is no readiness race. The
+  nudge is not delivered on a failed launch, an already-running session
+  (Start's idempotent path or StartNew's ErrAlreadyRunning), or when the
+  nudge text is empty.
   **Resolved (GCREX-15):** the `pre_start` hook runs before the pane launches.
   Each entry is executed in order via `/bin/sh -c`, with cwd set to the start
   config's `work_dir` and the process environment merged with the start-config

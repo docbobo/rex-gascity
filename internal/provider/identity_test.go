@@ -182,3 +182,150 @@ func TestStartFailureClearsSeededIdentityAndProvisionalBinding(t *testing.T) {
 		t.Error("provisional binding survived a failed start")
 	}
 }
+
+func TestStartupNudgeDeliveredAfterLaunch(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The nudge writes the text then submits Enter, using the block from the
+	// launch result.
+	var calls []string
+	for _, c := range fake.BlockCalls {
+		calls = append(calls, c.Op)
+	}
+	hasWrite := false
+	hasSubmit := false
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" && c.BlockID == "block:dog-1" && c.SessionID == "session:gc:acme" {
+			hasWrite = true
+		}
+		if c.Op == "send-key" && c.BlockID == "block:dog-1" && c.SessionID == "session:gc:acme" {
+			hasSubmit = true
+		}
+	}
+	if !hasWrite {
+		t.Errorf("BlockCalls missing write for startup nudge: %v", calls)
+	}
+	if !hasSubmit {
+		t.Errorf("BlockCalls missing send-key for startup nudge: %v", calls)
+	}
+	if len(fake.SentKeys) == 0 {
+		t.Fatal("no send-keys call recorded")
+	}
+	last := fake.SentKeys[len(fake.SentKeys)-1]
+	if len(last.Keys) != 1 || last.Keys[0] != "enter" {
+		t.Errorf("submit keys = %v, want [enter]", last.Keys)
+	}
+}
+
+func TestStartupNudgeNotDeliveredOnLaunchFailure(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	boom := errors.New("launch failed")
+	fake := &failingNewWindow{Fake: faketest.New(), err: boom}
+	p := provider.New("acme", fake)
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "hello agent",
+	}); !errors.Is(err, boom) {
+		t.Fatalf("Start = %v, want %v", err, boom)
+	}
+
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" || c.Op == "send-key" {
+			t.Errorf("nudge delivered on failed launch: op=%s", c.Op)
+		}
+	}
+}
+
+func TestStartupNudgeNotDeliveredOnAlreadyAlive(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	// First start: no nudge, just set up a live pane.
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"claude"}}); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	callCount := len(fake.BlockCalls)
+
+	// Second start: same name, now with a nudge. The pane is already alive so
+	// start is idempotent — no new launch, no nudge (the liveness probe does
+	// call process, but no write or send-key should appear).
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "hello again",
+	}); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+
+	for _, c := range fake.BlockCalls[callCount:] {
+		if c.Op == "write" || c.Op == "send-key" {
+			t.Errorf("nudge delivered on idempotent start: op=%s", c.Op)
+		}
+	}
+}
+
+func TestStartupNudgeNotDeliveredOnErrAlreadyRunning(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	// First StartNew succeeds.
+	if err := p.StartNew(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "first prompt",
+	}); err != nil {
+		t.Fatalf("first StartNew: %v", err)
+	}
+	callCount := len(fake.BlockCalls)
+
+	// Second StartNew must fail ErrAlreadyRunning and not deliver any nudge.
+	// The IsRunning check does call process for the liveness probe, but no
+	// write or send-key should appear.
+	err := p.StartNew(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "second prompt",
+	})
+	if !errors.Is(err, provider.ErrAlreadyRunning) {
+		t.Fatalf("StartNew = %v, want ErrAlreadyRunning", err)
+	}
+
+	for _, c := range fake.BlockCalls[callCount:] {
+		if c.Op == "write" || c.Op == "send-key" {
+			t.Errorf("nudge delivered on ErrAlreadyRunning: op=%s", c.Op)
+		}
+	}
+}
+
+func TestStartupNudgeEmptyIsNoOp(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" || c.Op == "send-key" {
+			t.Errorf("empty nudge delivered: op=%s", c.Op)
+		}
+	}
+}
