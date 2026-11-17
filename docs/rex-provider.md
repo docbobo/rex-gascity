@@ -104,7 +104,7 @@ Gas City sessions map onto the three-level Rex hierarchy:
 | Agent | Pane (block) | `<agent>` for `<rig>--<agent>`, or the full session name for town-level agents |
 
 - Starting the first agent in a rig creates a new Rex tab labeled `<rig>` (or `__town`).
-- Starting more agents in the same rig splits panes into that rig's existing tab.
+- Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never calls `session.destroy`.
 
 ## Sidecar State and Environment Variables
@@ -141,6 +141,7 @@ RPP v0 passes no city identifier on argv or stdin, so `gc-runtime-rex` resolves 
 ## Known v1 Limits
 
 - **No city in RPP v0 invocations**: An RPP call carries only the operation and agent session name. Without `GC_REX_CITY`, cities fall back to `GC_CITY_PATH` / `GC_CITY` and then `"default"`. Because the `gc` controller does not pass `GC_CITY` or `GC_CITY_PATH` when running under `launchd`, cities without `GC_REX_CITY` share one `gc:default` Rex session and state directory. Set `GC_REX_CITY` explicitly when isolating cities on the same Rex server.
+- **Launched command exit closes its pane**: The provider sets no keep_open, so an agent command that exits closes its Rex block, and closing the last block removes the tab. `is-running` reports such a vanished pane as not running, not as an error.
 - **Start config `env` map is not applied**: Rex terminal launch options have no per-pane environment map. The `env` field in the `start` JSON payload is ignored, and agent panes inherit the Rex server's environment.
 - **Setup and live hooks are not run**: `pre_start`, `session_setup`, `session_setup_script`, and `session_live` from start config are ignored.
 - **Startup `nudge` is not sent**: The `nudge` field in the `start` JSON payload is ignored, and `gc` does not resend it later. An agent's first prompt must come from its command line or from a later explicit `gc session nudge`.
@@ -149,3 +150,5 @@ RPP v0 passes no city identifier on argv or stdin, so `gc-runtime-rex` resolves 
 - **Unimplemented operations exit 2**: `exec`, `provision`, `attach`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
 - **No OSC 7501 or busy-gated nudge**: OSC 7501 agent status frames are not emitted, and nudge busy-gating is deferred. `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
 - **Teardown leaves the server and session shell intact**: Stopping agents closes only city-owned blocks (`rex block close`); it never stops the shared Rex server and never calls `session.destroy`.
+
+See `docs/rex-pilot-phase5.md` for the pilot and promotion record (GCREX-6), including the observed `gc:default` namespace under a launchd supervisor.

@@ -427,8 +427,9 @@ Phase 0 also confirms the plan's decisions against the live surface:
   so a background rig does not steal the active window. Attachment remains
   session-coarse: the surface cannot say which tab a given client is viewing.
 - **Version skew policy.** The CLI is `.20`/rev 16 while the running server is
-  `.19`/rev 14. Decide whether Phase 5 promotion requires a restarted server
-  before the pilot.
+  `.19`/rev 14. **Resolved (GCREX-6):** server rev 14 is inside the CLI's
+  supported range 0..16, so the pilot and promotion need no restarted server;
+  none was restarted (D3). See `docs/rex-pilot-phase5.md`.
 - **RPP capability naming.** The plan's `carrier.ops`/`idle-boundary`/`observe.v1`
   vocabulary has no basis in gc 1.5.1 (§9). Rewrite the plan's capability
   language, or confirm a newer gc adds those tokens, before Phase 4.
@@ -459,17 +460,26 @@ Phase 0 also confirms the plan's decisions against the live surface:
   optional skips). The handshake declares version 0, `report-attachment` and
   `report-activity`, and no `locality` field; `proc.exec`/`proc.provision` are
   not declared because `exec`/`provision` stay unimplemented (exit 2).
-- **No city in an RPP invocation (open, GCREX-5).** RPP carries only the op and
+- **No city in an RPP invocation (open, GCREX-5; pilot-confirmed GCREX-6).** RPP carries only the op and
   session name, and the controller exports no per-city `GC_CITY*` under launchd,
   so the dispatcher resolves the `gc:<city>` namespace from `GC_REX_CITY` (then
   the `GC_CITY_PATH` basename, then `GC_CITY`, else `default`). Cities sharing a
   supervisor without `GC_REX_CITY` share one Rex session and state directory;
   Phase 5 must pin the namespace or move to a supervisor-level env change.
+  The pilot confirmed it: under the launchd supervisor the worker landed in
+  `gc:default`. Follow-up (still open): pin `GC_REX_CITY` at the supervisor
+  level or add a supervisor-level env mechanism.
 - **Start-config hooks are not applied (open, GCREX-5).** The dispatcher
   ignores the start config's `env`, `nudge`, `pre_start`, `session_setup`,
   `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and
   `pack_overlay_dirs`. gc does not resend the startup `nudge`, and Rex launch
   options carry no `env`, so an agent's first prompt must come from its command
   line. Phase 5 must close these before a real fleet runs.
-- **Rig-tab growth:** repeated `session.new_split` into one tab has layout
-  limits; decide the split policy when a rig has many agents.
+  Still open after the GCREX-6 pilot, which used a command-line-only agent;
+  see `docs/rex-pilot-phase5.md`.
+- **Rig-tab growth (resolved, GCREX-6).** Always splitting the first pane
+  halved it each time (14 splits: 1/2 ... 1/16384). The provider now splits
+  the largest-area pane along its longer axis, side `after`, 50%, reading
+  geometry from `session.view` `layers[].layout`; with no geometry it falls
+  back to the first block, horizontally. A live probe reached 45 panes with no
+  layout limit, so no cap was added.

@@ -1,6 +1,6 @@
 # Plan: native Rex session provider for Gas City
 
-Status: **IN PROGRESS** – D0–D6 confirmed (`docs/REX-CONTRACT.md` §11).
+Status: **DONE (Phase 5 complete; `rex` promoted as the supported opt-in backend)** – D0–D6 confirmed (`docs/REX-CONTRACT.md` §11).
 Phases 0–3 are implemented: the Rex contract is pinned; the `rex.Client`
 interface, its CLI implementation, a fake client, and the provider core
 (`SessionName`, `Binder`, `Provider` with Start/Stop/IsRunning/Peek/Nudge/
@@ -10,6 +10,7 @@ teardown, per-agent attachment honesty, and `GetLastActivity`. Phase 4
 (GCREX-5) adds the RPP v0 dispatcher (`cmd/gc-runtime-rex`), the `protocol`
 handshake, the pack `[runtimes.rex]` declaration, and the user docs;
 `gc runtime check rex` and `gc runtime conformance rex` pass against it.
+Phase 5 (GCREX-6) is done: the pilot passed and `[session] provider = "rex"` is promoted as an opt-in backend; see `docs/rex-pilot-phase5.md`.
 Pinned baseline: gc 1.5.1 and the Rex surface in `docs/REX-CONTRACT.md`; where
 this plan and that document disagree, the contract wins.
 Target: an opt-in Rex session backend for Gas City – a **standalone
@@ -595,6 +596,13 @@ pinned to tmux; watch liveness/wedge detection over several work cycles;
 then promote to `[session] provider = "rex"`. *Gate: errors reviewed and
 acceptable.*
 
+**Done (GCREX-6).** Pilot ran on scratch cities (worker on rex, mayor on tmux)
+with three kill/restart cycles and no wedge. Errors reviewed and acceptable:
+the rig-split and vanished-pane defects were fixed; the `gc:default` namespace
+under a supervisor stays open; server-restart recovery was not exercised live
+(D3). Promoted as an opt-in backend; tmux stays the default. Record:
+`docs/rex-pilot-phase5.md`.
+
 ---
 
 ## 11. Risks and open questions
@@ -604,7 +612,12 @@ acceptable.*
 - **Preview churn.** Rex is `0.1.0-preview.N`; the CLI/API surface can move.
   Pin a version, keep live tests opt-in, re-run them on every bump (the
   herdr 0.7.4/0.7.5 storm is the cautionary tale).
-- **Idle detection accuracy.** The `full` sleep tier hinges on a reliable
+- **Rig-tab growth (resolved, GCREX-6).** Each new pane splits the
+  largest-area pane along its longer axis, so panes stay balanced; a live
+  probe reached 45 panes with no layout limit, so no cap was added. See
+  `docs/rex-pilot-phase5.md`.
+- **Idle detection accuracy** (status: v1 uses `program_status` or the format
+  fingerprint; not changed by the pilot). The `full` sleep tier hinges on a reliable
   reliable activity signal; today it is `program_status` or a format
   fingerprint, and a ready-prompt scan is a future option. Validate against real agent TUIs; default to
   `timed_only` if flaky.
@@ -627,7 +640,9 @@ acceptable.*
 - **Liveness is `last_exit`, deliberately (GCREX-4).** A live probe showed Rex runs a launched command as the default shell with `argv0` set to the command (`/bin/sh` arrives as `name: bash`, `path: /bin/bash`, `argv0: /bin/sh`), so argv0/process-name heuristics misclassify live panes and made a live input test fail as "agent exited". v1 therefore treats `last_exit` as the liveness truth for `IsRunning` and the input ops, and exposes `ProcessAlive(names)` (strict foreground/ancestor matching, empty => alive) for the RPP `process-alive` op where gc supplies authoritative names.
 - **Shared server.** Hard rule: never `server.stop`. Confirm teardown only
   closes city-owned blocks (`block.close`), leaves the shared city session,
-  and never calls `session.destroy`.
+  and never calls `session.destroy`. Pilot note: `gc stop` still removed the
+  city's Rex session; the gc-side path is not identified and is accepted
+  (gc owns its sessions). The server was never restarted.
 
 ---
 
