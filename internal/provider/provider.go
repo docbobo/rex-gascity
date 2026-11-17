@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -101,10 +102,15 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	return p
 }
 
-// Binding returns the stored binding for name without contacting Rex. It is
-// the dispatcher-facing lookup; Resolve-based ops re-validate it against Rex.
+// Binding returns the stored binding that answers to name (its primary name
+// or one of its aliases) without contacting Rex. It is the dispatcher-facing
+// lookup; Resolve-based ops re-validate it against Rex.
 func (p *Provider) Binding(name string) (Binding, bool) {
-	return p.bindings.Load(SessionName(name))
+	cands := p.binder.lookup(SessionName(name))
+	if len(cands) == 0 {
+		return Binding{}, false
+	}
+	return cands[0], true
 }
 
 // Start creates the city session, the rig's tab, and the agent's pane, and
@@ -133,8 +139,16 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 	n := SessionName(name)
+	// The env-derived labels let Resolve rediscover a live pane whose sidecar
+	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
+	// cannot place the pane in its rig tab).
+	hint := Binding{
+		TabLabel:  tabLabelFor(n, cfg.Env),
+		PaneLabel: n.PaneLabel(),
+		Aliases:   aliasesFor(n, cfg.Env),
+	}
 
-	old, found, err := p.binder.Resolve(ctx, n)
+	old, found, err := p.binder.ResolveHint(ctx, n, hint)
 	if err != nil {
 		return err
 	}
@@ -167,13 +181,14 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	tab := hint.TabLabel
 	spec := rex.LaunchSpec{
 		Command: launchCommand(cfg.Argv, cfg.Env),
 		Cwd:     cfg.WorkDir,
 		Label:   n.PaneLabel(),
 	}
 	for _, w := range view.Windows {
-		if w.Label == n.TabLabel() {
+		if w.Label == tab {
 			anchor, direction, ok := nextSplit(w)
 			if !ok {
 				continue
@@ -186,7 +201,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 			return nil
 		}
 	}
-	wid, block, err := p.client.NewWindow(ctx, sid, n.TabLabel(), spec)
+	wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
 	if err != nil {
 		return err
 	}
@@ -275,6 +290,9 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		SessionLabel: rexSessionLabel(p.city),
 		WindowID:     wid,
 		BlockID:      block,
+		TabLabel:     tabLabelFor(n, cfg.Env),
+		PaneLabel:    n.PaneLabel(),
+		Aliases:      aliasesFor(n, cfg.Env),
 		LaunchMode:   mode,
 		CreatedAt:    time.Now(),
 		ReadyPrompt:  ready,
@@ -292,18 +310,52 @@ func (p *Provider) Stop(ctx context.Context, name string) error {
 	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return err
 	}
-	p.binder.Forget(SessionName(name))
+	p.binder.Forget(binding.Name)
 	return nil
 }
 
-// IsRunning reports whether the agent's program is still running. An agent
-// with no pane is not running.
+// IsRunning reports whether the agent's program is still running. It is
+// alias-aware: a rig-qualified name is running while any instance bound to it
+// is alive. An agent with no pane is not running.
 func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
-	if err != nil || !ok {
-		return false, err
+	n := SessionName(name)
+	cands := p.binder.lookup(n)
+	if len(cands) == 0 {
+		// Nothing cached: fall back to the label scan Resolve performs.
+		binding, ok, err := p.binder.Resolve(ctx, n)
+		if err != nil || !ok {
+			return false, err
+		}
+		return p.paneAlive(ctx, binding)
 	}
-	return p.paneAlive(ctx, binding)
+	for _, bd := range cands {
+		if !matchesName(bd, n) {
+			continue
+		}
+		got, ok, err := p.binder.revalidate(ctx, bd)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			// The stored address is stale; rediscover the pane under the
+			// labels it had, so a recreated instance still counts as alive.
+			if got, ok, err = p.binder.scan(ctx, bd.Name, bd); err != nil {
+				return false, err
+			}
+		}
+		if !ok {
+			p.binder.store.Delete(bd.Name)
+			continue
+		}
+		alive, err := p.paneAlive(ctx, got)
+		if err != nil {
+			return false, err
+		}
+		if alive {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Peek returns the agent's rendered terminal output. An agent with no pane
@@ -362,8 +414,9 @@ func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, er
 	}
 	names := []string{}
 	for _, b := range lister.List() {
-		name := string(b.Name)
-		if !strings.HasPrefix(name, prefix) {
+		// Skip a binding no name answers for before paying for a liveness probe:
+		// gc polls list-running with narrow prefixes constantly.
+		if !prefixMatches(b, prefix) {
 			continue
 		}
 		alive, err := p.paneAlive(ctx, b)
@@ -373,12 +426,44 @@ func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, er
 		if err != nil {
 			return nil, err
 		}
-		if alive {
-			names = append(names, name)
+		if !alive {
+			continue
+		}
+		if strings.HasPrefix(string(b.Name), prefix) {
+			names = append(names, string(b.Name))
+		}
+		// Only a non-empty prefix lists aliases. gc's adoption barrier and dead-
+		// session reconciler call ListRunning("") and treat every returned name
+		// as a real session, so an alias there would mint a phantom orphan bead.
+		if prefix == "" {
+			continue
+		}
+		for _, alias := range b.Aliases {
+			if strings.HasPrefix(string(alias), prefix) {
+				names = append(names, string(alias))
+			}
 		}
 	}
 	sort.Strings(names)
-	return names, nil
+	return slices.Compact(names), nil
+}
+
+// prefixMatches reports whether b is worth probing for prefix: its primary name
+// or one of its aliases carries the prefix. An empty prefix matches everything
+// and always probes.
+func prefixMatches(b Binding, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	if strings.HasPrefix(string(b.Name), prefix) {
+		return true
+	}
+	for _, a := range b.Aliases {
+		if strings.HasPrefix(string(a), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Nudge types text into the agent's pane and submits it. The text and the

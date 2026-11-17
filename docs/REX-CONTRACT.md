@@ -489,3 +489,113 @@ Phase 0 also confirms the plan's decisions against the live surface:
   geometry from `session.view` `layers[].layout`; with no geometry it falls
   back to the first block, horizontally. A live probe reached 45 panes with no
   layout limit, so no cap was added.
+
+---
+
+## 13. RPP start-config environment and session-name forms (gc 1.5.1)
+
+Added by GCREX-11. Evidence: a captured RPP argv/stdin trace from a live city
+(`~/my-city`, rig `my-project`, gc 1.5.1) cross-checked against the gc v1.5.1
+source (`internal/session/lifecycle.go`, `internal/agent/session_name.go`,
+`cmd/gc/pool_session_name.go`, `cmd/gc/build_desired_state.go`,
+`internal/runtime/envsecret.go`, `internal/runtime/fingerprint.go`,
+`docs/reference/exec-beads-provider.md`). Every `GC_*` below appeared in the
+`start` config `env` map unless the row says otherwise.
+
+### 13.1 Identity encoding (source of truth)
+
+`internal/agent/session_name.go`:
+
+- `SanitizeQualifiedNameForSession`: `/` → `--`, `.` → `__`.
+- `UnsanitizeQualifiedNameFromSession` (best effort, not lossless):
+  `--` → `/`, `__` → `.`.
+- `SessionNameFor(city, agentName, "")` ==
+  `SanitizeQualifiedNameForSession(agentName)` when no session template is set.
+
+`cmd/gc/pool_session_name.go`:
+
+- `PoolSessionName(template, beadID) = Sanitize(path.Base(template)) + "-" + beadID`.
+
+### 13.2 Session-name forms
+
+| Form | Observed example | Name rule |
+|---|---|---|
+| Named agent | `mayor` | `Sanitize(qualified name)` |
+| Pool instance (wisp) | `pi-mc-wisp-ybq1` | `PoolSessionName(GC_TEMPLATE, GC_SESSION_ID)` |
+| Wisp / session-bead session | `core__control-dispatcher-mc-wisp-6znw` | `PoolSessionName(GC_TEMPLATE, GC_SESSION_ID)` |
+| Rig-qualified identity (probe form) | `my-project--core__control-dispatcher`, `my-project--pi` | `Sanitize(rig + "/" + templateBase)` |
+
+A pool instance starts under the runtime name (`pi-mc-wisp-ybq1`,
+`core__control-dispatcher-mc-wisp-6znw`); it carries no `--`, so the rig is
+present only in `GC_RIG`. gc probes the pool with the rig-qualified identity
+(`my-project--core__control-dispatcher`, `my-project--pi`), which is also what
+`Unsanitize` derives from a live instance name.
+
+Which op uses which form (observed names):
+
+| Op | Form | Observed argv |
+|---|---|---|
+| `start` | runtime instance name | `start mayor`, `start pi-mc-wisp-ybq1`, `start core__control-dispatcher-mc-wisp-6znw` |
+| `is-running` | runtime instance name and rig-qualified identity | `is-running mayor`, `is-running pi-mc-wisp-ybq1`, `is-running my-project--core__control-dispatcher` |
+| `list-running` | rig-qualified sanitized prefix; also short runtime prefixes and empty | `list-running my-project--pi-`, `list-running my-project--core__control-dispatcher-`, `list-running my-project--gc__task-decomposer-`, `list-running pi-`, `list-running` |
+| `get-meta` | runtime instance name, and the canonical rig-qualified identity | `get-meta mayor GC_PROVIDER`, `get-meta pi-mc-wisp-ybq1 GC_DRAIN_ACK`, `get-meta core__control-dispatcher-mc-wisp-6znw GC_SESSION_ID`, `get-meta my-project--core__control-dispatcher suspended` |
+| `stop`, `nudge`, `peek`, … | runtime instance name | `stop mayor`, `stop pi-mc-wisp-ybq1` |
+
+The provider must therefore resolve a rig-qualified `is-running`/`list-running`
+(and a rig-qualified `get-meta`) against a live instance whose primary binding
+is the short runtime name (see the alias contract in `docs/rex-provider.md`).
+It must not return aliases from `list-running` with an empty prefix: gc's
+adoption barrier and dead-session reconciler treat every listed name as a real
+session and would mint a phantom orphan bead for an alias.
+
+### 13.3 `GC_*` inventory
+
+The **durable provider contract is exactly `GC_RIG`, `GC_TEMPLATE`, `GC_ALIAS`,
+`GC_AGENT`** (GCREX-11). The provider reads these four from the start config to
+derive the Rex tab and to record rig-qualified aliases. Every other `GC_*` is
+incidental to the provider: present in the start config, but not part of the
+provider contract.
+
+| Variable | Meaning | When set | Role |
+|---|---|---|---|
+| `GC_RIG` | rig name (`my-project`); empty for town-level sessions | rig-scoped sessions (empty otherwise) | **Durable**: tab label, alias |
+| `GC_TEMPLATE` | qualified template (`my-project/pi`, `my-project/core.control-dispatcher`, `mayor`) | when `Info.Template` is non-empty | **Durable**: alias `Sanitize(GC_TEMPLATE)` |
+| `GC_ALIAS` | public routing/display alias (`mayor`, `my-project/core.control-dispatcher`; empty for an unaliased pool instance) | always (explicit empty clears a stale default) | **Durable**: alias `Sanitize(GC_ALIAS)` |
+| `GC_AGENT` | durable ownership identity (`mayor`, `mc-wisp-ybq1`, `my-project/core.control-dispatcher`) | when the assignee identity is non-empty | **Durable**: alias `Sanitize(GC_AGENT)` when qualified |
+| `GC_SESSION_ID` | session/incarnation id (`mc-wisp-ybq1`) | always | incidental |
+| `GC_SESSION_NAME` | runtime session name (`pi-mc-wisp-ybq1`) | always | incidental (same value as the `start` argv name) |
+| `GC_SESSION_ORIGIN` | `named`, `ephemeral`, … | when `Info.SessionOrigin` is non-empty | incidental |
+| `GC_INSTANCE_TOKEN` | fence token against stale incarnations | always; secret, may be empty in the env | incidental |
+| `GC_CONTINUATION_EPOCH` | conversation identity epoch | always | incidental |
+| `GC_RUNTIME_EPOCH` | runtime incarnation counter (generation) | always | incidental |
+| `GC_PROVIDER` | gc provider family (`pi`) | agent sessions the manager starts; absent from the control-dispatcher start in the capture | incidental |
+| `GC_CITY`, `GC_CITY_PATH` | city root | always (city runtime env) | incidental |
+| `GC_CITY_RUNTIME_DIR` | canonical city runtime dir | always | incidental |
+| `GC_CONTROL_DISPATCHER_TRACE_DEFAULT` | default control-dispatcher trace path | always | incidental |
+| `GC_RIG_ROOT` | rig root path | rig-scoped sessions (empty otherwise) | incidental |
+| `GC_DIR` | agent work dir | always (`SyncWorkDirEnv`) | incidental |
+| `GC_HOME` | Gas City home (`~/.gc`) | always | incidental |
+| `GC_BIN` | gc binary wrapper path (`.gc-wrapped`) | always | incidental |
+| `GC_BEADS` | beads provider selector (`bd`) | always | incidental |
+| `GC_BEADS_SCOPE_ROOT` | bead-store scope root | always for managed sessions | incidental |
+| `GC_DOLT_HOST`, `GC_DOLT_PORT` | Dolt coordinates | always (may be empty) | incidental |
+| `GC_DISABLE_USAGE_METRICS` | usage-metrics opt-out (`1`) | when the parent sets it | incidental |
+| `GC_SUPERVISOR_PRESERVE_SESSIONS_ON_SIGNAL` | supervisor signal behavior (`1`) | managed-city sessions | incidental |
+| `GC_STARTUP_PROMPT_DELIVERED` | launch-only marker that the startup prompt was delivered | some launches (named/restart); absent from the control-dispatcher start | incidental |
+| `GC_CONTROLLER_TOKEN` | controller-only token | always; scrubbed to empty at the agent boundary | incidental |
+| `GC_SPAWN_ORIGIN`, `GC_TRIGGER_BEAD_ID`, `GC_TRIGGER_BEAD_STORE_REF`, `GC_TRIGGER_WORK_BEAD_ID`, `GC_TRIGGER_WORK_STORE_REF` | demand-spawn markers (`GC_SPAWN_ORIGIN="demand"`) | demand spawns only | incidental |
+| `GC_PACKER_PACK` | pack that requested the spawn | pack spawns only | incidental |
+
+`GC_WORKFLOW_TRACE` appears only inside the control-dispatcher launch command
+(a `sh -c` prefix), not in the start-config `env` map.
+
+### 13.4 Provider meta keys (get-meta, not start-config env)
+
+gc reads these from the provider over the `get-meta` op, not from the start
+config: `GC_PROVIDER`, `GC_SESSION_ID`, `GC_DRAIN_ACK`, `GC_ALIAS`, `GC_AGENT`,
+and `suspended`. The capture also shows `get-meta … GC_INSTANCE_TOKEN`, and the
+source reads `GC_CONTINUATION_EPOCH` and `GC_RUNTIME_EPOCH` the same way. The
+provider serves these from its metadata sidecar (`set-meta`/`get-meta`/
+`remove-meta`), which is separate from the launch environment. The meta ops
+resolve a rig-qualified alias to the pane's primary name, so a key written
+under the runtime instance name is readable under the canonical identity.

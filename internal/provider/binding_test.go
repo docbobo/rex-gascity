@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -28,7 +29,8 @@ func indigoWindow() rex.Window {
 
 func indigoBinding() Binding {
 	return Binding{Name: "Indigo--dog-1", SessionID: "session:acme", SessionLabel: testLabel,
-		WindowID: "window:Indigo", BlockID: "block:dog-1"}
+		WindowID: "window:Indigo", BlockID: "block:dog-1",
+		TabLabel: "Indigo", PaneLabel: "dog-1"}
 }
 
 func TestResolveCacheHit(t *testing.T) {
@@ -143,6 +145,54 @@ func TestResolveForeignSessionLabelIgnored(t *testing.T) {
 	}
 }
 
+// TestResolveLegacyBindingUsesNameLabels resolves a record written before
+// TabLabel/PaneLabel existed: the labels fall back to the name split.
+func TestResolveLegacyBindingUsesNameLabels(t *testing.T) {
+	b, store, _ := newTestBinder(t, indigoWindow())
+	legacy := indigoBinding()
+	legacy.TabLabel, legacy.PaneLabel = "", ""
+	store.Save(legacy)
+
+	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	if err != nil || !ok || got.BlockID != "block:dog-1" {
+		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+	}
+}
+
+// TestResolveAliasFindsPrimary checks a name stored only as an alias resolves
+// to the primary binding without scanning by the alias's derived labels.
+func TestResolveAliasFindsPrimary(t *testing.T) {
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Rig", Label: "Rig",
+		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}})
+	primary := indigoBinding()
+	primary.WindowID = "window:Rig"
+	primary.TabLabel, primary.PaneLabel = "Rig", "dog-1"
+	primary.Aliases = []SessionName{"Rig--dog-1"}
+	store.Save(primary)
+
+	got, ok, err := b.Resolve(context.Background(), "Rig--dog-1")
+	if err != nil || !ok || got.Name != "Indigo--dog-1" || got.BlockID != "block:dog-1" {
+		t.Fatalf("Resolve(alias) = %+v, %v, %v", got, ok, err)
+	}
+	if b, ok := store.Load("Indigo--dog-1"); !ok || b.Name != "Indigo--dog-1" {
+		t.Errorf("primary record missing: %+v, %v", b, ok)
+	}
+}
+
+func TestForgetAliasClearsPrimary(t *testing.T) {
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Rig", Label: "Rig",
+		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}})
+	primary := indigoBinding()
+	primary.WindowID = "window:Rig"
+	primary.Aliases = []SessionName{"Rig--dog-1"}
+	store.Save(primary)
+
+	b.Forget("Rig--dog-1")
+	if _, ok := store.Load("Indigo--dog-1"); ok {
+		t.Error("Forget(alias) left the primary record")
+	}
+}
+
 func TestResolveTownAgent(t *testing.T) {
 	b, _, _ := newTestBinder(t, rex.Window{ID: "window:__town", Label: "__town",
 		Blocks: []rex.Block{{ID: "block:mayor", Label: "mayor"}}})
@@ -150,5 +200,41 @@ func TestResolveTownAgent(t *testing.T) {
 	got, ok, err := b.Resolve(context.Background(), "mayor")
 	if err != nil || !ok || got.WindowID != "window:__town" || got.BlockID != "block:mayor" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+	}
+}
+
+func TestSanitizeQualified(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"my-project/core.control-dispatcher", "my-project--core__control-dispatcher"},
+		{"my-project/pi", "my-project--pi"},
+		{"mayor", "mayor"},
+	} {
+		if got := sanitizeQualified(tc.in); got != tc.want {
+			t.Errorf("sanitizeQualified(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestAliasesFor(t *testing.T) {
+	// All four sources distinct so a mutation that drops one is caught.
+	env := map[string]string{
+		"GC_RIG":      "rig",
+		"GC_TEMPLATE": "rig/template",
+		"GC_ALIAS":    "rig/alias",
+		"GC_AGENT":    "rig/owner",
+	}
+	got := aliasesFor("mc-wisp-1", env)
+	want := []SessionName{"rig--mc-wisp-1", "rig--owner", "rig--template", "rig--alias"}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("aliasesFor = %v, want %v", got, want)
+	}
+
+	// A town agent with no rig keeps only the qualified sources; the primary
+	// name and a duplicate template alias are dropped.
+	got = aliasesFor("mayor", map[string]string{"GC_TEMPLATE": "mayor", "GC_ALIAS": "mayor"})
+	if len(got) != 0 {
+		t.Errorf("aliasesFor(mayor) = %v, want none", got)
 	}
 }

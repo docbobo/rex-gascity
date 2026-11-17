@@ -138,6 +138,49 @@ Gas City sessions map onto the three-level Rex hierarchy:
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never calls `session.destroy`.
 
+### Rig from the start config
+
+gc 1.5.1 starts pool and wisp instances under a runtime name that carries no
+`--` (`pi-mc-wisp-ybq1`, `core__control-dispatcher-mc-wisp-6znw`); the rig
+arrives out of band in the start config `env` as `GC_RIG`. The provider
+therefore derives the Rex tab label as:
+
+- `GC_RIG` when it is non-empty; else
+- `SessionName(name).Rig()` (the name split, for older names and town-level
+  sessions).
+
+The pane label stays `SessionName(name).PaneLabel()`.
+
+At `start` the provider records the pane's binding under the runtime name it
+was started with, plus rig-qualified aliases derived from the start config
+(`Sanitize` maps `/` to `--` and `.` to `__`):
+
+- `Sanitize(GC_TEMPLATE)` when `GC_TEMPLATE` is non-empty (for example
+  `my-project--pi`, `my-project--core__control-dispatcher`);
+- `Sanitize(GC_ALIAS)` when `GC_ALIAS` is non-empty (usually the same as the
+  template alias);
+- `Sanitize(GC_AGENT)` when `GC_AGENT` is qualified (contains `/` or `.`);
+- `Sanitize(GC_RIG + "/" + name)` when `GC_RIG` is non-empty and the start
+  name is town-level (no `--`, for example `my-project--pi-mc-wisp-ybq1`).
+
+Empty names and duplicates are dropped; each alias points at the same pane as
+the primary binding.
+
+`IsRunning`, `Stop`, `ClearScrollback`, `Peek`, `Binding`, and the metadata ops
+resolve through those aliases. `IsRunning` is true when the name is the primary
+binding or an alias of any live primary binding that answers to it.
+`ListRunning(prefix)` emits a live primary name when it matches the prefix,
+plus each matching alias when the prefix is non-empty, sorted and deduped. This
+is what lets gc's rig-qualified probes (`is-running
+my-project--core__control-dispatcher`, `list-running my-project--pi-`) resolve
+to live instances. The empty prefix deliberately lists primary names only:
+gc's adoption barrier and dead-session reconciler treat every name returned by
+`list-running` as a real session, so emitting an alias there would mint a
+phantom orphan session bead.
+
+Bindings written before this change (or without a start-config env) carry no
+stored aliases and keep resolving by the name-derived tab and pane labels.
+
 ## Sidecar State and Environment Variables
 
 Because RPP invokes `gc-runtime-rex` as a short-lived process per operation, pane bindings, activity observations, and session metadata are stored on disk per city.
@@ -169,6 +212,23 @@ RPP v0 passes no city identifier on argv or stdin, so `gc-runtime-rex` resolves 
 | `GC_REX_CITY` | `basename($GC_CITY_PATH)`, `$GC_CITY`, else `"default"` | Overrides the city namespace used for the `gc:<city>` Rex session label and sidecar state subdirectory |
 | `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Overrides the base directory for per-city sidecar state |
 
+### Start-config `GC_*` environment
+
+RPP `start` carries the launch config as JSON on stdin, including an `env` map.
+gc 1.5.1 ships every managed-session variable there. The provider's durable
+contract is exactly four of them: `GC_RIG`, `GC_TEMPLATE`, `GC_ALIAS`, and
+`GC_AGENT` (used to derive the tab and the aliases above). The rest are
+incidental to the provider and are applied to the launched process unchanged
+(GCREX-10). The full inventory (meaning, when set, durable vs incidental) and
+the observed RPP session-name forms are in `docs/REX-CONTRACT.md` §13.
+
+gc also reads provider metadata over `get-meta` (not the start env):
+`GC_PROVIDER`, `GC_SESSION_ID`, `GC_DRAIN_ACK`, `GC_ALIAS`, `GC_AGENT`, and
+`suspended`. The provider serves these from its metadata sidecar. `set-meta`,
+`get-meta`, and `remove-meta` resolve a rig-qualified alias to the pane's
+primary name, because gc reads some keys (`suspended`, `GC_SESSION_ID`) under
+the canonical identity even when the pane was started under a short pool name.
+
 ## Known v1 Limits
 
 - **No city in RPP v0 invocations**: An RPP call carries only the operation and agent session name. Without `GC_REX_CITY`, cities fall back to `GC_CITY_PATH` / `GC_CITY` and then `"default"`. Because the `gc` controller does not pass `GC_CITY` or `GC_CITY_PATH` when running under `launchd`, cities without `GC_REX_CITY` share one `gc:default` Rex session and state directory. Set `GC_REX_CITY` explicitly when isolating cities on the same Rex server.
@@ -177,7 +237,7 @@ RPP v0 passes no city identifier on argv or stdin, so `gc-runtime-rex` resolves 
 - **Setup and live hooks are not run**: `pre_start`, `session_setup`, `session_setup_script`, and `session_live` from start config are ignored.
 - **Startup `nudge` is not sent**: The `nudge` field in the `start` JSON payload is ignored, and `gc` does not resend it later. An agent's first prompt must come from its command line or from a later explicit `gc session nudge`.
 - **File staging is not done**: `copy_files`, `overlay_dir`, and `pack_overlay_dirs` from start config are ignored; nothing is copied into the agent's work dir.
-- **`list-running` only sees known panes**: It is derived from the sidecar bindings plus a liveness check, not from a scan of Rex. A live pane with no cached binding (for example after the state dir was removed) is not listed.
+- **`list-running` only sees known panes**: It is derived from the sidecar bindings plus a liveness check, not from a scan of Rex. A live pane with no cached binding (for example after the state dir was removed) is not listed. It emits each live primary binding whose name matches the prefix, plus each matching rig-qualified alias when the prefix is non-empty; the empty prefix lists primary names only.
 - **Unimplemented operations exit 2**: `exec`, `provision`, `attach`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
 - **No OSC 7501 or busy-gated nudge**: OSC 7501 agent status frames are not emitted, and nudge busy-gating is deferred. `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
 - **Teardown leaves the server and session shell intact**: Stopping agents closes only city-owned blocks (`rex block close`); it never stops the shared Rex server and never calls `session.destroy`.

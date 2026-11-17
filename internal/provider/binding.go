@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,16 @@ type Binding struct {
 	SessionLabel string
 	WindowID     rex.WindowID
 	BlockID      rex.BlockID
+	// TabLabel is the Rex window (tab) label the pane opened under. Empty on
+	// legacy records, which fall back to Name.TabLabel().
+	TabLabel string
+	// PaneLabel is the Rex block (pane) label the pane opened under. Empty on
+	// legacy records, which fall back to Name.PaneLabel().
+	PaneLabel string
+	// Aliases are the extra gc session names this pane answers to. gc 1.5.1
+	// stops putting the rig in pool/wisp session names and instead probes the
+	// rig-qualified identity, which is recorded here.
+	Aliases []SessionName
 	// LaunchMode is how the pane was started (for example "fresh" or
 	// "resume"); empty when unknown.
 	LaunchMode string
@@ -24,6 +36,74 @@ type Binding struct {
 	CreatedAt time.Time
 	// ReadyPrompt is the prompt text the agent shows when ready for input.
 	ReadyPrompt string
+}
+
+// tabLabel returns the Rex tab label for the pane: the stored label when the
+// record has one, otherwise the name-derived label for legacy records.
+func (b Binding) tabLabel() string {
+	if b.TabLabel != "" {
+		return b.TabLabel
+	}
+	return b.Name.TabLabel()
+}
+
+// paneLabel returns the Rex pane label for the pane: the stored label when
+// present, otherwise the name-derived label for legacy records.
+func (b Binding) paneLabel() string {
+	if b.PaneLabel != "" {
+		return b.PaneLabel
+	}
+	return b.Name.PaneLabel()
+}
+
+// sanitizeQualified converts a gc qualified name (rig/agent, with dots) to its
+// session-name form, matching gc's SanitizeQualifiedNameForSession: "/"
+// becomes "--" and "." becomes "__".
+func sanitizeQualified(name string) string {
+	name = strings.ReplaceAll(name, "/", nameSep)
+	return strings.ReplaceAll(name, ".", "__")
+}
+
+// tabLabelFor returns the Rex tab label for a started session: GC_RIG when the
+// start config carries a non-empty rig (gc 1.5.1 does not put the rig in pool
+// names), otherwise the name-derived rig.
+func tabLabelFor(name SessionName, env map[string]string) string {
+	if rig := env["GC_RIG"]; rig != "" {
+		return rig
+	}
+	return name.TabLabel()
+}
+
+// aliasesFor lists the extra gc session names a started pane answers to,
+// derived from the start-config env. Names are sanitized, deduped, and any
+// equal to the start name (the primary) are dropped.
+func aliasesFor(name SessionName, env map[string]string) []SessionName {
+	seen := map[SessionName]bool{name: true}
+	var out []SessionName
+	add := func(v string) {
+		if v == "" {
+			return
+		}
+		sn := SessionName(v)
+		if seen[sn] {
+			return
+		}
+		seen[sn] = true
+		out = append(out, sn)
+	}
+	if t := env["GC_TEMPLATE"]; t != "" {
+		add(sanitizeQualified(t))
+	}
+	if a := env["GC_ALIAS"]; a != "" {
+		add(sanitizeQualified(a))
+	}
+	if g := env["GC_AGENT"]; g != "" && strings.ContainsAny(g, "/.") {
+		add(sanitizeQualified(g))
+	}
+	if rig := env["GC_RIG"]; rig != "" && name.IsTown() {
+		add(sanitizeQualified(rig + "/" + string(name)))
+	}
+	return out
 }
 
 // BindingStore persists bindings. MemoryStore is the default; FileStore keeps
@@ -117,48 +197,127 @@ func (b *Binder) FindSession(ctx context.Context) (rex.SessionID, bool, error) {
 	return "", false, nil
 }
 
-// Resolve returns the binding for name. A stored binding is checked against
-// the requested name, the configured session label and the session view; if
-// any check fails, or Rex reports the session as not found, it is deleted and
-// the session is scanned by label. Any other view error is returned as is and
-// leaves the stored binding alone.
-// A name with no pane is reported as false with a nil error.
-func (b *Binder) Resolve(ctx context.Context, name SessionName) (Binding, bool, error) {
-	if stored, ok := b.store.Load(name); ok {
-		if stored.Name != name || stored.SessionLabel != b.sessionLabel {
-			// Written for another name or another city: do not trust it.
-			b.store.Delete(name)
-		} else {
-			view, err := b.client.SessionView(ctx, stored.SessionID)
-			switch {
-			case errors.Is(err, rex.ErrNotFound):
-				// The session is gone, for example after a restore under a
-				// new session id. Re-resolve by label.
-				b.store.Delete(name)
-			case err != nil:
-				return Binding{}, false, err
-			case stillBound(view, stored, name):
-				return stored, true, nil
-			default:
-				b.store.Delete(name)
-			}
+// lookup returns the stored bindings that answer to name: the primary binding
+// stored under name first, then any primary binding that lists name as an
+// alias. The result is empty when nothing is known. It does not contact Rex.
+func (b *Binder) lookup(name SessionName) []Binding {
+	var out []Binding
+	seen := map[SessionName]bool{}
+	if bd, ok := b.store.Load(name); ok {
+		out = append(out, bd)
+		seen[bd.Name] = true
+	}
+	lister, ok := b.store.(BindingLister)
+	if !ok {
+		return out
+	}
+	for _, bd := range lister.List() {
+		if seen[bd.Name] {
+			continue
+		}
+		if slices.Contains(bd.Aliases, name) {
+			out = append(out, bd)
+			seen[bd.Name] = true
 		}
 	}
-	return b.scan(ctx, name)
+	return out
 }
 
-// stillBound reports whether view still holds the binding's block under the
-// labels the name implies.
-func stillBound(view rex.SessionView, bd Binding, name SessionName) bool {
+// matchesName reports whether bd legitimately answers to name: it is stored
+// under name, or name is one of its aliases.
+func matchesName(bd Binding, name SessionName) bool {
+	return bd.Name == name || slices.Contains(bd.Aliases, name)
+}
+
+// revalidate checks a stored binding against the live Rex session view. A
+// binding whose session, tab or block is gone reports ok=false so the caller
+// can drop it; any other view error is returned as is and leaves the binding
+// alone.
+func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, error) {
+	if bd.Name == "" || bd.SessionLabel != b.sessionLabel {
+		// Written for no name or another city: do not trust it.
+		return Binding{}, false, nil
+	}
+	view, err := b.client.SessionView(ctx, bd.SessionID)
+	switch {
+	case errors.Is(err, rex.ErrNotFound):
+		// The session is gone, for example after a restore under a new
+		// session id. Re-resolve by label.
+		return Binding{}, false, nil
+	case err != nil:
+		return Binding{}, false, err
+	case stillBound(view, bd):
+		return bd, true, nil
+	default:
+		return Binding{}, false, nil
+	}
+}
+
+// Resolve returns the binding for name, resolving aliases to their primary
+// binding. A stored binding is checked against the requested name, the
+// configured session label and the session view; if any check fails, or Rex
+// reports the session as not found, it is deleted and the session is scanned
+// by its stored (or name-derived) labels. Any other view error is returned as
+// is and leaves the stored binding alone.
+// A name with no pane is reported as false with a nil error.
+func (b *Binder) Resolve(ctx context.Context, name SessionName) (Binding, bool, error) {
+	return b.ResolveHint(ctx, name, Binding{})
+}
+
+// ResolveHint is Resolve with an optional hint carrying the env-derived tab and
+// pane labels a lost sidecar record used. gc 1.5.1 starts pool/wisp instances
+// under a name with no rig, so without the hint a lost record cannot be
+// rediscovered from the name alone and a live pane looks dead.
+func (b *Binder) ResolveHint(ctx context.Context, name SessionName, envHint Binding) (Binding, bool, error) {
+	var stale []Binding
+	var hint Binding
+	for _, bd := range b.lookup(name) {
+		if !matchesName(bd, name) {
+			// The record stored under this key answers to a different name:
+			// drop the key, never the record's own name.
+			b.store.Delete(name)
+			continue
+		}
+		got, ok, err := b.revalidate(ctx, bd)
+		if err != nil {
+			return Binding{}, false, err
+		}
+		if ok {
+			return got, true, nil
+		}
+		stale = append(stale, bd)
+		if hint.Name == "" {
+			hint = bd
+		}
+	}
+	for _, bd := range stale {
+		b.store.Delete(bd.Name)
+	}
+	// Re-scan under the labels the caller knows (a lost record) or the stale
+	// record used, so a pane recreated with the same env-derived labels is
+	// rediscovered; otherwise scan by the requested name.
+	scanName, scanHint := name, envHint
+	if scanHint.TabLabel == "" && scanHint.PaneLabel == "" {
+		if hint.Name != "" {
+			scanName, scanHint = hint.Name, hint
+		}
+	}
+	return b.scan(ctx, scanName, scanHint)
+}
+
+// stillBound reports whether view still holds the binding's block under its
+// stored tab and pane labels (falling back to the name-derived labels for
+// legacy records).
+func stillBound(view rex.SessionView, bd Binding) bool {
 	if view.Label != bd.SessionLabel {
 		return false
 	}
 	for _, w := range view.Windows {
-		if w.ID != bd.WindowID || w.Label != name.TabLabel() {
+		if w.ID != bd.WindowID || w.Label != bd.tabLabel() {
 			continue
 		}
 		for _, blk := range w.Blocks {
-			if blk.ID == bd.BlockID && blk.Label == name.PaneLabel() {
+			if blk.ID == bd.BlockID && blk.Label == bd.paneLabel() {
 				return true
 			}
 		}
@@ -167,7 +326,10 @@ func stillBound(view rex.SessionView, bd Binding, name SessionName) bool {
 }
 
 // scan finds name by session label, tab label and pane label, and saves it.
-func (b *Binder) scan(ctx context.Context, name SessionName) (Binding, bool, error) {
+// hint supplies the labels an earlier record used, so a pane recreated under
+// env-derived labels is found again; empty fields fall back to the labels the
+// name implies.
+func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Binding, bool, error) {
 	sid, ok, err := b.FindSession(ctx)
 	if err != nil || !ok {
 		return Binding{}, false, err
@@ -176,18 +338,29 @@ func (b *Binder) scan(ctx context.Context, name SessionName) (Binding, bool, err
 	if err != nil {
 		return Binding{}, false, err
 	}
+	tab := hint.TabLabel
+	if tab == "" {
+		tab = name.TabLabel()
+	}
+	pane := hint.PaneLabel
+	if pane == "" {
+		pane = name.PaneLabel()
+	}
 	for _, w := range view.Windows {
-		if w.Label != name.TabLabel() {
+		if w.Label != tab {
 			continue
 		}
 		for _, blk := range w.Blocks {
-			if blk.Label == name.PaneLabel() {
+			if blk.Label == pane {
 				bd := Binding{
 					Name:         name,
 					SessionID:    sid,
 					SessionLabel: b.sessionLabel,
 					WindowID:     w.ID,
 					BlockID:      blk.ID,
+					TabLabel:     tab,
+					PaneLabel:    pane,
+					Aliases:      hint.Aliases,
 				}
 				b.store.Save(bd)
 				return bd, true, nil
@@ -200,5 +373,15 @@ func (b *Binder) scan(ctx context.Context, name SessionName) (Binding, bool, err
 // Record stores binding, replacing any earlier one for the same name.
 func (b *Binder) Record(binding Binding) { b.store.Save(binding) }
 
-// Forget drops the stored binding for name.
-func (b *Binder) Forget(name SessionName) { b.store.Delete(name) }
+// Forget drops the stored binding that answers to name, clearing the whole
+// primary record including its aliases. An alias drops the primary it names.
+func (b *Binder) Forget(name SessionName) {
+	if bd, ok := b.store.Load(name); ok {
+		b.store.Delete(bd.Name)
+		b.store.Delete(name)
+		return
+	}
+	if cands := b.lookup(name); len(cands) > 0 {
+		b.store.Delete(cands[0].Name)
+	}
+}

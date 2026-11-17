@@ -68,14 +68,21 @@ func readJSON(path string, v any) (bool, error) {
 
 // bindingRecord is the on-disk shape of a Binding.
 type bindingRecord struct {
-	GCName       string    `json:"gc_name"`
-	SessionID    string    `json:"rex_session_id"`
-	SessionLabel string    `json:"rex_session_label"`
-	WindowID     string    `json:"window_id"`
-	BlockID      string    `json:"block_id"`
-	LaunchMode   string    `json:"launch_mode"`
-	CreatedAt    time.Time `json:"created_at"`
-	ReadyPrompt  string    `json:"ready_prompt"`
+	GCName       string `json:"gc_name"`
+	SessionID    string `json:"rex_session_id"`
+	SessionLabel string `json:"rex_session_label"`
+	WindowID     string `json:"window_id"`
+	BlockID      string `json:"block_id"`
+	// TabLabel, PaneLabel and Aliases were added after the first records.
+	// They are omitted when empty so old and new records stay compatible: a
+	// record without them decodes with empty values and callers fall back to
+	// the name-derived labels.
+	TabLabel    string    `json:"tab_label,omitempty"`
+	PaneLabel   string    `json:"pane_label,omitempty"`
+	Aliases     []string  `json:"aliases,omitempty"`
+	LaunchMode  string    `json:"launch_mode"`
+	CreatedAt   time.Time `json:"created_at"`
+	ReadyPrompt string    `json:"ready_prompt"`
 }
 
 // FileStore is a BindingStore that keeps one JSON file per binding under a
@@ -108,12 +115,19 @@ func (s *FileStore) Load(name SessionName) (Binding, bool) {
 }
 
 func (r bindingRecord) binding() Binding {
+	var aliases []SessionName
+	for _, a := range r.Aliases {
+		aliases = append(aliases, SessionName(a))
+	}
 	return Binding{
 		Name:         SessionName(r.GCName),
 		SessionID:    rex.SessionID(r.SessionID),
 		SessionLabel: r.SessionLabel,
 		WindowID:     rex.WindowID(r.WindowID),
 		BlockID:      rex.BlockID(r.BlockID),
+		TabLabel:     r.TabLabel,
+		PaneLabel:    r.PaneLabel,
+		Aliases:      aliases,
 		LaunchMode:   r.LaunchMode,
 		CreatedAt:    r.CreatedAt,
 		ReadyPrompt:  r.ReadyPrompt,
@@ -142,12 +156,19 @@ func (s *FileStore) List() []Binding {
 func (s *FileStore) Save(b Binding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var aliases []string
+	for _, a := range b.Aliases {
+		aliases = append(aliases, string(a))
+	}
 	_ = writeJSON(s.path(b.Name), bindingRecord{
 		GCName:       string(b.Name),
 		SessionID:    string(b.SessionID),
 		SessionLabel: b.SessionLabel,
 		WindowID:     string(b.WindowID),
 		BlockID:      string(b.BlockID),
+		TabLabel:     b.TabLabel,
+		PaneLabel:    b.PaneLabel,
+		Aliases:      aliases,
 		LaunchMode:   b.LaunchMode,
 		CreatedAt:    b.CreatedAt,
 		ReadyPrompt:  b.ReadyPrompt,

@@ -13,9 +13,40 @@ func fullBinding(name SessionName) Binding {
 	return Binding{
 		Name: name, SessionID: "session:acme", SessionLabel: "gc:acme",
 		WindowID: "window:Indigo", BlockID: "block:dog-1",
+		TabLabel:    "Indigo",
+		PaneLabel:   "dog-1",
+		Aliases:     []SessionName{"Indigo--dog", "Indigo--dog-1"},
 		LaunchMode:  "resume",
 		CreatedAt:   time.Date(2026, 11, 17, 19, 0, 0, 0, time.UTC),
 		ReadyPrompt: "ready ▶ ",
+	}
+}
+
+// TestFileStoreLegacyRecordFallsBackToNameLabels writes a record in the shape
+// produced before TabLabel, PaneLabel and Aliases existed and checks it still
+// loads with the new fields empty, so callers fall back to name-derived labels.
+func TestFileStoreLegacyRecordFallsBackToNameLabels(t *testing.T) {
+	dir := t.TempDir()
+	name := SessionName("Indigo--dog-1")
+	raw := `{"gc_name":"Indigo--dog-1","rex_session_id":"session:acme",` +
+		`"rex_session_label":"gc:acme","window_id":"window:Indigo",` +
+		`"block_id":"block:dog-1","launch_mode":"window"}`
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nameKey(name)+".json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := NewFileStore(dir).Load(name)
+	if !ok {
+		t.Fatal("legacy record did not load")
+	}
+	if got.TabLabel != "" || got.PaneLabel != "" || got.Aliases != nil {
+		t.Errorf("legacy record decoded new fields = %q/%q/%v, want empty", got.TabLabel, got.PaneLabel, got.Aliases)
+	}
+	if got.tabLabel() != "Indigo" || got.paneLabel() != "dog-1" {
+		t.Errorf("legacy labels = %q/%q, want Indigo/dog-1", got.tabLabel(), got.paneLabel())
 	}
 }
 
@@ -93,7 +124,7 @@ func TestFileStoreRecordFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"gc_name", "rex_session_id", "rex_session_label", "window_id",
-		"block_id", "launch_mode", "created_at", "ready_prompt"} {
+		"block_id", "tab_label", "pane_label", "aliases", "launch_mode", "created_at", "ready_prompt"} {
 		if !strings.Contains(string(data), `"`+f+`"`) {
 			t.Errorf("record missing field %q: %s", f, data)
 		}
