@@ -93,6 +93,18 @@ make check
 make conformance
 ```
 
+The pack also ships a `gc doctor` check named `rex:rex-binary`. It reports a
+missing provider binary or `rex` CLI with a remediation instead of leaving the
+city's agents in an opaque `unknown` state:
+
+```sh
+gc doctor --check rex:rex-binary --city /path/to/city
+```
+
+The check resolves the runtime command from `pack/pack.toml` (a bare name on
+`PATH` or a path relative to the pack directory), probes the provider's RPP v0
+handshake, and resolves the `rex` CLI, honoring `GC_REX_BIN`.
+
 ## Configuration
 
 ### Environment variables

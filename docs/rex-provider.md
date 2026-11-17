@@ -80,6 +80,37 @@ From this repository, `make check` and `make conformance` build `bin/gc-runtime-
 
 Always verify that the output includes `resolved runtime "rex" from pack ...`. If `city.toml` fails to load, `gc runtime check rex` falls back to any bare `rex` executable on `PATH` instead of running `gc-runtime-rex`.
 
+### Doctor Check
+
+The pack registers a `gc doctor` check named `rex:rex-binary` (from
+`pack/doctor/rex-binary/`). Run it directly, or as part of the full sweep:
+
+```sh
+gc doctor --check rex:rex-binary --city /path/to/city
+gc doctor --city /path/to/city
+```
+
+The check:
+
+- resolves the runtime command from `pack/pack.toml`, accepting a bare name on
+  `PATH` or a path relative to the pack directory;
+- confirms the provider answers the `protocol` op with an RPP v0 handshake;
+- resolves the `rex` CLI, honoring `GC_REX_BIN`.
+
+It exits `0` when both are present, `1` for a warning, and `2` when the provider
+binary or the `rex` CLI cannot be resolved. The first stdout line is the
+message; later lines name the missing binary and give a remediation. A missing
+provider otherwise surfaces only as opaque agent state (`unknown (partial
+status)`) and a supervisor log line:
+
+```text
+exec: "gc-runtime-rex": executable file not found in $PATH
+```
+
+A supervisor or controller resolves the provider with its own `PATH`, so the
+directory that holds `gc-runtime-rex` must be on that environment's `PATH`, not
+just your interactive shell's.
+
 ## Protocol and Capabilities
 
 `gc-runtime-rex protocol` returns the RPP v0 handshake:
