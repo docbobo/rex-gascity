@@ -1,0 +1,53 @@
+---
+id: GCREX-14
+title: Send the agent's startup nudge from the Rex runtime provider
+status: In Progress
+assignee:
+  - '@pi'
+created_date: '2026-11-17T23:03:00Z'
+updated_date: '2026-11-17T23:53:00Z'
+labels: []
+dependencies:
+  - GCREX-5
+references:
+  - /Users/boris/my-city/.pi-agent/sessions
+  - /Users/boris/my-city/.gc/runtime/session-reconciler-trace
+documentation:
+  - docs/rex-provider.md
+  - docs/REX-CONTRACT.md
+priority: high
+type: feature
+ordinal: 14000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Send the start-config `nudge` from the Rex runtime provider so a freshly launched agent begins work immediately instead of waiting for gc's timed backstop.
+
+**Observed problem.** Fresh pool/rig seats (the `pi-mc-wisp-*` sessions on ~/my-city) sit with an empty prompt for ~100 s after launch. Measured from Pi session files: session created 22:43:18, first user message 22:45:07 (109 s); session 22:50:20 -> first message 22:52:07 (107 s). The first message is the agent's configured `nudge` ("Run gc hook --claim --drain-ack --json now; ..."), i.e. the wisp is up in ~10 s but is not told to work until the backstop fires.
+
+**Root cause.** `gc-runtime-rex start` decodes only `work_dir`, `command`, `ready_prompt_prefix`, and `env` from the start config (`startConfig`, cmd/gc-runtime-rex/main.go). gc 1.5.1 sends the initial prompt in the start config's `nudge` field and does not resend it, so the dispatcher drops it. The wisp then only moves when gc's queued-nudge store drains (per-session `gc nudge poll` sidecar; 2 min claim TTL, 15 s retry, 5 attempts) or the reconciler's `nudge_stalled_pool_claims` backstop runs. Confirmation of delivery is weak because no busy/idle frames are emitted (see the separate OSC 7501 question / nudge-unconfirmed.log: "submit delivered but not confirmed (no busy-state indicator for this provider family)").
+
+This is documented as open: docs/rex-provider.md "Startup `nudge` is not sent" and docs/REX-CONTRACT.md section 12 / GCREX-5.
+
+**Fix direction.** In `opStart`/`Provider.Start`, capture the start config's `nudge` and, after the pane launches successfully (launch returns), write the nudge text and submit it (reuse the existing `Nudge` path: text + enter). Keep the current `Nudge` semantics. On launch failure, do not deliver. Add a `nudge` field to `startConfig`.
+
+**Non-goals.** Busy-gated nudge / OSC 7501 idle detection (separate item); the remaining start hooks pre_start/session_setup/etc. (GCREX-5 / the pre_start item).
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 startConfig decodes the start-config nudge field, and gc-runtime-rex start passes it through to the provider
+- [ ] #2 On a successful launch the provider delivers the startup nudge (text + submit) exactly once; on a failed or already-running start the nudge is not delivered
+- [ ] #3 A fresh rex-gascity/pi (and my-project/pi) pool spawn begins work in single-digit seconds, not ~100 s; the reconciler nudge_stalled_pool_claims backstop is no longer the first thing that wakes it
+- [ ] #4 Tests using the fake rex.Client cover: nudge delivered after launch, not delivered on ErrAlreadyRunning / launch failure, and empty nudge is a no-op
+- [ ] #5 go test ./... and golangci-lint run ./... pass
+- [ ] #6 Live check on ~/my-city: spawn a rex pool seat and confirm the first user message timestamp is within a few seconds of the Pi session start (compare .pi-agent/sessions/*.jsonl vs events.jsonl)
+<!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add nudge to startConfig and provider.Config; pass through opStart. 2. Deliver the nudge (text + enter) exactly once after a successful launch only, via the recorded binding; skip on launch failure, already-running/already-alive, and empty nudge. 3. Fake-rex tests for delivered/not-delivered/no-op. 4. Update docs/rex-provider.md. 5. go test ./... + golangci-lint run ./...; parent merges and runs the live check.
+<!-- SECTION:PLAN:END -->
