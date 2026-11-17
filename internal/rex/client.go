@@ -38,11 +38,13 @@ type Block struct {
 	Label string
 }
 
-// Window is a Rex tab.
+// Window is a Rex tab. Blocks is every block in the window flattened across
+// its layers; FocusedBlockID is the block that receives typing.
 type Window struct {
-	ID     WindowID
-	Label  string
-	Blocks []Block
+	ID             WindowID
+	Label          string
+	FocusedBlockID BlockID
+	Blocks         []Block
 }
 
 // ClientInfo identifies a client attached to a session.
@@ -62,19 +64,19 @@ type SessionView struct {
 
 // ExitStatus is how a terminal's program exited.
 type ExitStatus struct {
-	ExitCode int
-	Error    string
+	ExitCode int    `json:"exit_code"`
+	Error    string `json:"error"`
 }
 
 // Process is one process in a terminal's process tree.
 type Process struct {
-	PID    int
-	UserID int
-	User   string
-	Name   string
-	Path   string
-	Argv0  string
-	Cwd    string
+	PID    int    `json:"pid"`
+	UserID int    `json:"user_id"`
+	User   string `json:"user"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Argv0  string `json:"argv0"`
+	Cwd    string `json:"cwd"`
 }
 
 // ProcessInfo is the result of the terminal's `process` method.
@@ -86,8 +88,8 @@ type ProcessInfo struct {
 
 // Event is a Rex event. Payload is the raw event fields.
 type Event struct {
-	Type    string
-	Payload json.RawMessage
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // Client is the Rex control surface the provider uses. It is SDK-style: one

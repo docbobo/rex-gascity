@@ -1,0 +1,96 @@
+package cli_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// fakeRex is a fake `rex` executable. It records every invocation and prints a
+// canned reply keyed by the operation, so the adapter's argv and JSON mapping
+// can be asserted without a live Rex server.
+type fakeRex struct {
+	bin       string
+	log       string
+	responses string
+}
+
+func newFakeRex(t *testing.T) *fakeRex {
+	t.Helper()
+	dir := t.TempDir()
+	f := &fakeRex{
+		bin:       filepath.Join(dir, "rex"),
+		log:       filepath.Join(dir, "args.log"),
+		responses: filepath.Join(dir, "responses"),
+	}
+	if err := os.MkdirAll(f.responses, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+log=` + shellQuote(f.log) + `
+dir=` + shellQuote(f.responses) + `
+{
+  for a in "$@"; do printf '%s\n' "$a"; done
+  printf '%s\n' '---'
+} >> "$log"
+
+if [ "$1" = "events" ]; then
+  key=events
+else
+  key="$3"
+fi
+if [ "$key" = "block.method" ]; then
+  case "$*" in
+    *'"method":"format"'*) key=format ;;
+    *'"method":"blob_read"'*) key=blob_read ;;
+    *'"method":"process"'*) key=process ;;
+    *'"method":"write"'*) key=write ;;
+    *'"method":"clear"'*) key=clear ;;
+  esac
+fi
+if [ -f "$dir/$key.json" ]; then
+  cat "$dir/$key.json"
+fi
+`
+	if err := os.WriteFile(f.bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// respond sets the canned stdout for a key.
+func (f *fakeRex) respond(t *testing.T, key, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.responses, key+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// calls returns each recorded argv, in order.
+func (f *fakeRex) calls(t *testing.T) [][]string {
+	t.Helper()
+	data, err := os.ReadFile(f.log)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var calls [][]string
+	var cur []string
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case line == "---":
+			calls = append(calls, cur)
+			cur = nil
+		case line != "" || len(cur) > 0:
+			cur = append(cur, line)
+		}
+	}
+	return calls
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

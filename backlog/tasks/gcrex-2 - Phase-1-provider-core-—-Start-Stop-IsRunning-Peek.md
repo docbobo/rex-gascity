@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@boris'
 created_date: '2026-11-17T16:25:00Z'
-updated_date: '2026-11-17T16:45:00Z'
+updated_date: '2026-11-17T17:02:00Z'
 labels: []
 dependencies: []
 references:
@@ -47,4 +47,6 @@ First usable provider: map a gc session (city/rig/agent) onto a Rex city session
 In place: go.mod (module github.com/docbobo/rex-gas-city), internal/rex/client.go (Client interface + types), internal/rex/faketest (recording fake), internal/provider/provider.go (Start + parseName), internal/provider/provider_test.go (first slice, green). Next slice: Start joins an existing rig tab via NewSplit.
 
 Core slices green: Start (creates city session + rig tab, joins an existing rig tab via NewSplit), Stop (closes only the agent pane, idempotent when the session or pane is absent), IsRunning (block process LastExit), Peek (block format). go test ./... and go vet ./... pass. Remaining for Phase 1's smoke gate: the rex/cli adapter (S2) that maps Client onto the rex CLI, and paged format following (AC #5) inside that adapter. Provider core still needs no gascity imports.
+
+CLI adapter (rex/cli) added: implements rex.Client by shelling out to the rex CLI. Topology via 'rex api call' (session.create/list/view/new_window/new_split, block.close), block methods via 'rex api call block.method' (process, format with blob_read paging, write, clear), events via block.event. Events() streaming is deferred to Phase 3. Tested against a fake rex binary on the adapter seam (S2): CreateSession, ListSessions, NewWindow (layout JSON), NewSplit, CloseBlock, SessionView (layer flattening), BlockProcess, BlockFormat paging and single-page, BlockWrite, BlockEvent. go test ./..., go vet ./..., gofmt clean.
 <!-- SECTION:NOTES:END -->
