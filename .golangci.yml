@@ -1,0 +1,46 @@
+# golangci-lint v2 configuration.
+#
+# .githooks/pre-commit runs `golangci-lint run` from the repo root and picks
+# this file up automatically. Run it by hand with:
+#
+#     golangci-lint run ./...
+version: "2"
+
+linters:
+  # Pin the set explicitly instead of relying on the "standard" default, so a
+  # golangci-lint upgrade cannot silently add or drop checks.
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      # Unchecked type assertions panic on failure, so treat them as errors.
+      check-type-assertions: true
+      # Writes to a terminal or test buffer cannot be acted on. Unlike the
+      # std-error-handling preset, this leaves deferred Close, os.Remove and
+      # syscall failures reported.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+
+  exclusions:
+    rules:
+      # Tests may discard errors from writes and cleanup. Drop this rule to hold
+      # test files to the same errcheck bar as production code.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  # Never truncate the report: a pre-commit hook must show every finding.
+  max-issues-per-linter: 0
+  max-same-issues: 0

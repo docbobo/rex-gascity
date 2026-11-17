@@ -22,3 +22,19 @@ Do not edit Backlog task, draft, document, decision, or milestone markdown files
 
 </CRITICAL_INSTRUCTION>
 <!-- BACKLOG.MD GUIDELINES END -->
+
+## Git hooks
+
+Commit hooks are versioned in `.githooks/`. Enable them once per clone:
+
+```sh
+make hooks
+```
+
+That sets `core.hooksPath=.githooks`. The `pre-commit` hook runs `golangci-lint` on the Go files staged for commit and blocks the commit on findings. Bypass a run with `git commit --no-verify`.
+
+`.golangci.yml` pins the enabled linters (errcheck, govet, ineffassign, staticcheck, unused) and the exclusion policy. Run the whole repo by hand with:
+
+```sh
+golangci-lint run ./...
+```

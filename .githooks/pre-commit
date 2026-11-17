@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: run golangci-lint over the Go lines staged for this commit.
+#
+# Enable once per clone:  make hooks
+# Bypass a single commit: git commit --no-verify
+#
+# Requires golangci-lint v2+ (uses --new-from-patch).
+set -euo pipefail
+
+# GUI clients run hooks with a thin PATH, so a missing binary must not fail the commit.
+if ! command -v golangci-lint >/dev/null 2>&1; then
+	echo "pre-commit: golangci-lint not found on PATH, skipping lint" >&2
+	exit 0
+fi
+
+# Lint exactly the staged hunks: golangci-lint analyzes the working tree, then
+# filters its findings by this patch. Only the new lines are reported, so
+# pre-existing debt never blocks a commit.
+patch=$(mktemp -t golangci-patch.XXXXXX)
+trap 'rm -f "$patch"' EXIT
+
+git diff --cached --no-color --no-ext-diff --diff-filter=ACMR -- '*.go' >"$patch"
+
+# Nothing to lint when no Go files are staged.
+if [[ ! -s "$patch" ]]; then
+	exit 0
+fi
+
+golangci-lint run --timeout=5m --new-from-patch="$patch" ./...
