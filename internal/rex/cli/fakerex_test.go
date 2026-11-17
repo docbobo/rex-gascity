@@ -49,7 +49,14 @@ if [ "$key" = "block.method" ]; then
     *'"method":"clear"'*) key=clear ;;
   esac
 fi
-if [ -f "$dir/$key.json" ]; then
+# Serve <key>.<n>.json for the nth call when present, else <key>.json, so a
+# test can script a multi-call sequence such as two blob_reads.
+n=$(cat "$dir/$key.n" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s' "$n" > "$dir/$key.n"
+if [ -f "$dir/$key.$n.json" ]; then
+  cat "$dir/$key.$n.json"
+elif [ -f "$dir/$key.json" ]; then
   cat "$dir/$key.json"
 fi
 `

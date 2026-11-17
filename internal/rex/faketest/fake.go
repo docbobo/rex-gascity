@@ -37,10 +37,21 @@ type Fake struct {
 	// Formats is the rendered output BlockFormat reports, keyed by block.
 	Formats map[rex.BlockID]string
 
+	// BlockCalls records each block-method call with the session that held the
+	// block, so tests can assert the provider scopes the call correctly.
+	BlockCalls []BlockCall
+
 	CreatedSessions []string
 	CreatedWindows  []CreatedWindow
 	CreatedSplits   []CreatedSplit
 	ClosedBlocks    []rex.BlockID
+}
+
+// BlockCall records one block-method call.
+type BlockCall struct {
+	SessionID rex.SessionID
+	BlockID   rex.BlockID
+	Op        string
 }
 
 func New() *Fake { return &Fake{} }
@@ -75,19 +86,35 @@ func (f *Fake) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionVie
 
 func (f *Fake) ListSessions(_ context.Context) ([]rex.Session, error) { return f.Sessions, nil }
 
-func (f *Fake) BlockProcess(_ context.Context, block rex.BlockID) (rex.ProcessInfo, error) {
+func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.BlockID) (rex.ProcessInfo, error) {
+	f.record(sid, block, "process")
 	return f.Processes[block], nil
 }
 
-func (f *Fake) BlockFormat(_ context.Context, block rex.BlockID) (string, error) {
+func (f *Fake) BlockFormat(_ context.Context, sid rex.SessionID, block rex.BlockID) (string, error) {
+	f.record(sid, block, "format")
 	return f.Formats[block], nil
 }
 
-func (f *Fake) BlockWrite(_ context.Context, _ rex.BlockID, _ string) error { return nil }
+func (f *Fake) BlockWrite(_ context.Context, sid rex.SessionID, block rex.BlockID, _ string) error {
+	f.record(sid, block, "write")
+	return nil
+}
 
-func (f *Fake) BlockEvent(_ context.Context, _ rex.BlockID, _ rex.Event) error { return nil }
+func (f *Fake) BlockEvent(_ context.Context, sid rex.SessionID, block rex.BlockID, _ rex.Event) error {
+	f.record(sid, block, "event")
+	return nil
+}
 
-func (f *Fake) BlockClear(_ context.Context, _ rex.BlockID) error { return nil }
+func (f *Fake) BlockClear(_ context.Context, sid rex.SessionID, block rex.BlockID) error {
+	f.record(sid, block, "clear")
+	return nil
+}
+
+// record appends a block-method call to the recording.
+func (f *Fake) record(sid rex.SessionID, block rex.BlockID, op string) {
+	f.BlockCalls = append(f.BlockCalls, BlockCall{SessionID: sid, BlockID: block, Op: op})
+}
 
 func (f *Fake) Events(_ context.Context, _ rex.SessionID) (<-chan rex.Event, error) {
 	return nil, errors.New("events: not implemented")

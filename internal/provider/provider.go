@@ -133,7 +133,7 @@ func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
 	if err != nil || block == "" {
 		return false, err
 	}
-	info, err := p.client.BlockProcess(ctx, block)
+	info, err := p.client.BlockProcess(ctx, sid, block)
 	if err != nil {
 		return false, err
 	}
@@ -151,5 +151,5 @@ func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
 	if err != nil || block == "" {
 		return "", err
 	}
-	return p.client.BlockFormat(ctx, block)
+	return p.client.BlockFormat(ctx, sid, block)
 }

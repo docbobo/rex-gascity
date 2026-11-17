@@ -172,7 +172,7 @@ func TestBlockProcess(t *testing.T) {
 	fake.respond(t, "process", `{"last_exit":null,"foreground":{"pid":42,"name":"claude"}}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	info, err := c.BlockProcess(context.Background(), "block:dog-1")
+	info, err := c.BlockProcess(context.Background(), "session:a", "block:dog-1")
 	if err != nil {
 		t.Fatalf("BlockProcess: %v", err)
 	}
@@ -182,41 +182,73 @@ func TestBlockProcess(t *testing.T) {
 	if info.Foreground == nil || info.Foreground.PID != 42 {
 		t.Errorf("Foreground = %+v", info.Foreground)
 	}
-	if method := argsFor(t, fake.calls(t), "block.method")["method"]; method != "process" {
-		t.Errorf("method = %v, want process", method)
+	args := blockMethodArgs(t, fake.calls(t))
+	if args["method"] != "process" {
+		t.Errorf("method = %v, want process", args["method"])
 	}
+}
+
+// blockMethodArgs returns the args of the single block.method call, checking
+// that the adapter scoped it to a session and a block as Rex requires.
+func blockMethodArgs(t *testing.T, calls [][]string) map[string]any {
+	t.Helper()
+	args := argsFor(t, calls, "block.method")
+	if args["session_id"] != "session:a" {
+		t.Errorf("session_id = %v, want session:a", args["session_id"])
+	}
+	if args["block_id"] != "block:dog-1" {
+		t.Errorf("block_id = %v, want block:dog-1", args["block_id"])
+	}
+	return args
 }
 
 func TestBlockFormatFollowsPaging(t *testing.T) {
 	fake := newFakeRex(t)
-	fake.respond(t, "format", `{"content":"part1","id":7,"total":10}`)
-	fake.respond(t, "blob_read", `{"data":"part2","id":7,"total":10}`)
+	fake.respond(t, "format", `{"content":"part1","id":7,"total":15}`)
+	fake.respond(t, "blob_read", `{"data":"part2","id":7,"total":15,"eof":false}`)
+	fake.respond(t, "blob_read.2", `{"data":"part3","id":7,"total":15,"eof":true}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	out, err := c.BlockFormat(context.Background(), "block:dog-1")
+	out, err := c.BlockFormat(context.Background(), "session:a", "block:dog-1")
 	if err != nil {
 		t.Fatalf("BlockFormat: %v", err)
 	}
-	if out != "part1part2" {
-		t.Errorf("output = %q, want part1part2", out)
+	if out != "part1part2part3" {
+		t.Errorf("output = %q, want part1part2part3", out)
 	}
 	calls := fake.calls(t)
-	if len(calls) != 2 {
-		t.Fatalf("calls = %d, want 2 (format then blob_read)", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3 (format plus two blob_reads)", len(calls))
+	}
+	// The format request must ask for pages, or a large capture fails with
+	// too_large instead of paging.
+	format := blockMethodArgs(t, calls[:1])
+	inner, _ := format["args"].(map[string]any)
+	if inner["max_bytes"] == nil || inner["max_bytes"] == float64(0) {
+		t.Errorf("format max_bytes = %v, want a positive byte budget", inner["max_bytes"])
+	}
+	// Each blob_read continues from the previous offset in the same result.
+	second := argsFor(t, calls[1:2], "block.method")
+	inner, _ = second["args"].(map[string]any)
+	if inner["offset"] != float64(len("part1")) {
+		t.Errorf("second offset = %v, want %d", inner["offset"], len("part1"))
 	}
 }
 
 func TestBlockFormatSinglePage(t *testing.T) {
 	fake := newFakeRex(t)
-	fake.respond(t, "format", `{"content":"all of it"}`)
+	fake.respond(t, "format", `{"content":"all of it","eof":true}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	out, err := c.BlockFormat(context.Background(), "block:dog-1")
+	out, err := c.BlockFormat(context.Background(), "session:a", "block:dog-1")
 	if err != nil {
 		t.Fatalf("BlockFormat: %v", err)
 	}
 	if out != "all of it" {
 		t.Errorf("output = %q, want %q", out, "all of it")
+	}
+	if calls := fake.calls(t); len(calls) != 1 {
+		t.Errorf("calls = %d, want 1 (no blob_read when eof)", len(calls))
 	}
 }
 
@@ -225,10 +257,10 @@ func TestBlockWrite(t *testing.T) {
 	fake.respond(t, "write", `{"bytes_written":5}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	if err := c.BlockWrite(context.Background(), "block:dog-1", "hello"); err != nil {
+	if err := c.BlockWrite(context.Background(), "session:a", "block:dog-1", "hello"); err != nil {
 		t.Fatalf("BlockWrite: %v", err)
 	}
-	args := argsFor(t, fake.calls(t), "block.method")
+	args := blockMethodArgs(t, fake.calls(t))
 	inner, _ := args["args"].(map[string]any)
 	if inner["data"] != "hello" {
 		t.Errorf("data = %v, want hello", inner["data"])
@@ -240,10 +272,13 @@ func TestBlockEvent(t *testing.T) {
 	fake.respond(t, "block.event", `{}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	if err := c.BlockEvent(context.Background(), "block:dog-1", rex.Event{Type: "key"}); err != nil {
+	if err := c.BlockEvent(context.Background(), "session:a", "block:dog-1", rex.Event{Type: "key"}); err != nil {
 		t.Fatalf("BlockEvent: %v", err)
 	}
 	args := argsFor(t, fake.calls(t), "block.event")
+	if args["session_id"] != "session:a" || args["block_id"] != "block:dog-1" {
+		t.Errorf("session_id/block_id = %v/%v, want session:a/block:dog-1", args["session_id"], args["block_id"])
+	}
 	ev, _ := args["event"].(map[string]any)
 	if ev["type"] != "key" {
 		t.Errorf("event.type = %v, want key", ev["type"])

@@ -102,11 +102,13 @@ type Client interface {
 	SessionView(ctx context.Context, sessionID SessionID) (SessionView, error)
 	ListSessions(ctx context.Context) ([]Session, error)
 
-	BlockProcess(ctx context.Context, blockID BlockID) (ProcessInfo, error)
-	BlockFormat(ctx context.Context, blockID BlockID) (string, error)
-	BlockWrite(ctx context.Context, blockID BlockID, data string) error
-	BlockEvent(ctx context.Context, blockID BlockID, ev Event) error
-	BlockClear(ctx context.Context, blockID BlockID) error
+	// Block methods address a block through the session that holds it: Rex
+	// requires session_id on block.method and block.event.
+	BlockProcess(ctx context.Context, sessionID SessionID, blockID BlockID) (ProcessInfo, error)
+	BlockFormat(ctx context.Context, sessionID SessionID, blockID BlockID) (string, error)
+	BlockWrite(ctx context.Context, sessionID SessionID, blockID BlockID, data string) error
+	BlockEvent(ctx context.Context, sessionID SessionID, blockID BlockID, ev Event) error
+	BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
 
 	Events(ctx context.Context, sessionID SessionID) (<-chan Event, error)
 }

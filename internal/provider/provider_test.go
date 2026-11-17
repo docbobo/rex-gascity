@@ -194,6 +194,13 @@ func TestPeekReturnsAgentOutput(t *testing.T) {
 	if out != "hello from dog-1\n" {
 		t.Errorf("Peek = %q, want %q", out, "hello from dog-1\n")
 	}
+	// Peek must scope the block call to the city session Rex requires.
+	if len(fake.BlockCalls) != 1 {
+		t.Fatalf("block calls = %v, want one", fake.BlockCalls)
+	}
+	if call := fake.BlockCalls[0]; call.SessionID != "session:gc:acme" || call.BlockID != "block:dog-1" || call.Op != "format" {
+		t.Errorf("block call = %+v, want session:gc:acme/block:dog-1/format", call)
+	}
 }
 
 func TestPeekEmptyWhenNoPane(t *testing.T) {

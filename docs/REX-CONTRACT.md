@@ -44,7 +44,7 @@ gc city → Rex session, gc rig → Rex tab, gc agent → Rex pane (Option B).
 | `session.set_block_label` / `session.set_window_label` / `session.set_label` | ids, label | ≤128 chars |
 | `block.close` | `session_id`, `block_id` **or** `window_id`, `keep_last` | closes a pane; `keep_last` refuses the last block in a window |
 | `block.event` | `session_id`, `block_id`, `event {type, payload}` | input event; `type` ∈ `key`, `paste`, `mouse`, `wheel`, `focus` |
-| `block.method` / `rex block call` | method name + JSON args | call a block method (§4) |
+| `block.method` / `rex block call` | `session_id`, `block_id`, method name + JSON args | call a block method (§4); `session_id` is required even though `block_id` is unique |
 | `target.resolve` / `target.complete` | id/label/prefix | resolve labels, window positions, short ids |
 
 Terminal block creator: `com.superlogical.terminal`, flavor
@@ -57,7 +57,8 @@ Terminal block creator: `com.superlogical.terminal`, flavor
 | Method | Input | Output | Use |
 |---|---|---|---|
 | `process` | — | `{last_exit: {exit_code, error?} \| null, child, foreground, ancestors[], home}`; each process `{pid, user_id, user, name, path, invoked_path, argv0, cwd}` | `process-alive`; agent-exit detection (`last_exit`) |
-| `format` | `{format: text\|html\|vt, trim, unwrap, extra_charsets, extra_cursor}` | `{content, id?, total?}` — `id` set means more remains; continue with `blob_read {id, offset}` | `peek`; send output; exec output |
+| `format` | `{format: text\|html\|vt, trim, unwrap, extra_charsets, extra_cursor, max_bytes}` | `{content, id?, total?, eof?}` — `id` set means more remains; continue with `blob_read {id, offset}`. With no `max_bytes` the whole output is returned in one reply, or the call fails `too_large`; with `max_bytes` set, `total`/`eof` describe the whole result | `peek`; send output; exec output |
+| `blob_read` | `{id, offset, max_bytes?}` | `{id, data, total, eof}` — all fields required; `eof` true when `data` reaches the end | `peek` paging; large events |
 | `write` | `{data}` | `{bytes_written}` | type text (`nudge`) |
 | `clear` | — | — | `clear-scrollback` (is a no-op while a full-screen program runs) |
 | `reset` | — | — | hard reset of a terminal (fallback) |
@@ -154,8 +155,9 @@ rex events --help
 
 ## 10. Open items to resolve in Phase 1
 
-- **`format` paging:** large captures return `id` + `total`; `peek` must follow
-  `blob_read` to completion.
+- **`format` paging:** resolved in Phase 1 (GCREX-2). `peek` requests
+  `format {max_bytes: 983040}` and follows `id` with `blob_read` until `eof`.
+  Verified against the live server with a ~4 MiB capture.
 - **`session.destroy` needs attachment:** teardown may have to `session.attach`
   (or use `block.close` only and leave empty sessions).
 - **Pane process-identity stability:** `block_id` is persisted in the sidecar;

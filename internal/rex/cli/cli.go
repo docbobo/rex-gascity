@@ -197,7 +197,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 }
 
 // BlockProcess returns the process tree of a pane.
-func (c *Client) BlockProcess(ctx context.Context, block rex.BlockID) (rex.ProcessInfo, error) {
+func (c *Client) BlockProcess(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (rex.ProcessInfo, error) {
 	var reply struct {
 		LastExit *struct {
 			ExitCode int    `json:"exit_code"`
@@ -206,7 +206,7 @@ func (c *Client) BlockProcess(ctx context.Context, block rex.BlockID) (rex.Proce
 		Foreground *rex.Process  `json:"foreground"`
 		Ancestors  []rex.Process `json:"ancestors"`
 	}
-	if err := c.blockMethod(ctx, block, "process", nil, &reply); err != nil {
+	if err := c.blockMethod(ctx, sessionID, block, "process", nil, &reply); err != nil {
 		return rex.ProcessInfo{}, err
 	}
 	info := rex.ProcessInfo{Foreground: reply.Foreground, Ancestors: reply.Ancestors}
@@ -216,38 +216,44 @@ func (c *Client) BlockProcess(ctx context.Context, block rex.BlockID) (rex.Proce
 	return info, nil
 }
 
-// BlockFormat returns a pane's rendered output, following paged replies with
-// blob_read until the whole result has been read.
-func (c *Client) BlockFormat(ctx context.Context, block rex.BlockID) (string, error) {
-	var first struct {
-		Content string `json:"content"`
-		ID      int64  `json:"id"`
-	}
-	args := map[string]any{"format": "text", "trim": true}
-	if err := c.blockMethod(ctx, block, "format", args, &first); err != nil {
+// formatMaxBytes is the most content a single format reply returns. Rex caps
+// it at 983040 (960 KiB); asking for it makes Rex page large captures instead
+// of failing with too_large, and the paging flag (`id`) then drives blob_read.
+const formatMaxBytes = 983040
+
+// formatPage is one format or blob_read reply. id is set only while more
+// output remains; eof marks the last page.
+type formatPage struct {
+	Content string `json:"content,omitempty"`
+	Data    string `json:"data,omitempty"`
+	ID      int64  `json:"id"`
+	Total   int64  `json:"total"`
+	EOF     bool   `json:"eof"`
+}
+
+// BlockFormat returns a pane's whole rendered output, following paged replies
+// with blob_read until the result is complete.
+func (c *Client) BlockFormat(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (string, error) {
+	var first formatPage
+	args := map[string]any{"format": "text", "trim": true, "max_bytes": formatMaxBytes}
+	if err := c.blockMethod(ctx, sessionID, block, "format", args, &first); err != nil {
 		return "", err
-	}
-	if first.ID == 0 {
-		return first.Content, nil
 	}
 
 	var out strings.Builder
 	out.WriteString(first.Content)
 	offset := len(first.Content)
-	id := first.ID
-	for {
-		var page struct {
-			Data  string `json:"data"`
-			ID    int64  `json:"id"`
-			Total int    `json:"total"`
-		}
+	// The format reply carries an id only while more output remains. Read the
+	// rest one page at a time, always from the same result id.
+	for id := first.ID; id != 0; {
+		var page formatPage
 		args := map[string]any{"id": id, "offset": offset}
-		if err := c.blockMethod(ctx, block, "blob_read", args, &page); err != nil {
+		if err := c.blockMethod(ctx, sessionID, block, "blob_read", args, &page); err != nil {
 			return "", err
 		}
 		out.WriteString(page.Data)
 		offset += len(page.Data)
-		if page.Data == "" || page.Total <= offset {
+		if page.EOF || page.Data == "" {
 			break
 		}
 		id = page.ID
@@ -256,21 +262,22 @@ func (c *Client) BlockFormat(ctx context.Context, block rex.BlockID) (string, er
 }
 
 // BlockWrite types text into a pane.
-func (c *Client) BlockWrite(ctx context.Context, block rex.BlockID, data string) error {
-	return c.blockMethod(ctx, block, "write", map[string]any{"data": data}, nil)
+func (c *Client) BlockWrite(ctx context.Context, sessionID rex.SessionID, block rex.BlockID, data string) error {
+	return c.blockMethod(ctx, sessionID, block, "write", map[string]any{"data": data}, nil)
 }
 
 // BlockEvent sends an input event to a pane.
-func (c *Client) BlockEvent(ctx context.Context, block rex.BlockID, ev rex.Event) error {
+func (c *Client) BlockEvent(ctx context.Context, sessionID rex.SessionID, block rex.BlockID, ev rex.Event) error {
 	return c.call(ctx, "block.event", map[string]any{
-		"block_id": string(block),
-		"event":    ev,
+		"session_id": string(sessionID),
+		"block_id":   string(block),
+		"event":      ev,
 	}, nil)
 }
 
 // BlockClear clears a pane's scrollback.
-func (c *Client) BlockClear(ctx context.Context, block rex.BlockID) error {
-	return c.blockMethod(ctx, block, "clear", nil, nil)
+func (c *Client) BlockClear(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) error {
+	return c.blockMethod(ctx, sessionID, block, "clear", nil, nil)
 }
 
 // Events is not implemented in v1; activity tracking arrives in Phase 3.
@@ -278,11 +285,13 @@ func (c *Client) Events(context.Context, rex.SessionID) (<-chan rex.Event, error
 	return nil, fmt.Errorf("cli: Events is not implemented")
 }
 
-// blockMethod calls a terminal block method via the block.method API.
-func (c *Client) blockMethod(ctx context.Context, block rex.BlockID, method string, args, out any) error {
+// blockMethod calls a terminal block method via the block.method API. Rex
+// requires session_id next to block_id, even though the block id is unique.
+func (c *Client) blockMethod(ctx context.Context, sessionID rex.SessionID, block rex.BlockID, method string, args, out any) error {
 	call := map[string]any{
-		"block_id": string(block),
-		"method":   method,
+		"session_id": string(sessionID),
+		"block_id":   string(block),
+		"method":     method,
 	}
 	if args != nil {
 		call["args"] = args

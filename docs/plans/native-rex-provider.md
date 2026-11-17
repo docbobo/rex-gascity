@@ -173,12 +173,13 @@ type Client interface {
     CloseBlock(ctx context.Context, blockID BlockID) error
     SessionView(ctx context.Context, sessionID SessionID) (SessionView, error) // windows, layouts, blocks, clients
     ListSessions(ctx context.Context) ([]Session, error)
-    // Terminal ops (block methods + events)
-    BlockProcess(ctx context.Context, blockID BlockID) (ProcessInfo, error)
-    BlockFormat(ctx context.Context, blockID BlockID) (string, error)
-    BlockWrite(ctx context.Context, blockID BlockID, data string) error
-    BlockEvent(ctx context.Context, blockID BlockID, ev Event) error
-    BlockClear(ctx context.Context, blockID BlockID) error
+    // Terminal ops (block methods + events). Rex requires session_id next to
+    // block_id on block.method and block.event.
+    BlockProcess(ctx context.Context, sessionID SessionID, blockID BlockID) (ProcessInfo, error)
+    BlockFormat(ctx context.Context, sessionID SessionID, blockID BlockID) (string, error)
+    BlockWrite(ctx context.Context, sessionID SessionID, blockID BlockID, data string) error
+    BlockEvent(ctx context.Context, sessionID SessionID, blockID BlockID, ev Event) error
+    BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
     // Event stream
     Events(ctx context.Context, sessionID SessionID) (<-chan Event, error)
 }
@@ -350,7 +351,7 @@ makes. The op names match gc's provider semantics.
 | `ProcessAlive` | `block call process`; match `foreground`/`ancestors` names/`argv0`/`path` against `processNames` | Empty `processNames` ⇒ true. |
 | `Nudge` | `block call write {"data": "<text>"}` then submit (Enter via `block.event` / `send-key enter`); confirm via `program_status_changed` | Two steps. Handle busy: type nothing if a turn is running unless `ImmediateNudge`; confirm the submit. |
 | `SendKeys` | `block.event` with key presses (translate tmux `C-c`/`Enter` → Rex `ctrl+c`/`enter`) | |
-| `Peek` | `block call format {"format":"text","trim":true}` → take last `lines` | Full content available; `lines<=0` ⇒ all. |
+| `Peek` | `block call format {"format":"text","trim":true,"max_bytes":983040}`, follow `id` with `blob_read` until `eof` → take last `lines` | Full content; `lines<=0` ⇒ all. |
 | `ListRunning` | `session.list` for `gc:` city sessions, then `session.view` per session to enumerate rig tabs and their agent panes; reconstruct gc names via the sidecar | Miss = orphan reaping risk; the sidecar is authoritative for our own sessions. |
 | `GetLastActivity` | activity tracker (below) | |
 | `ClearScrollback` | `block call clear` | Real support (herdr lacked it). |
