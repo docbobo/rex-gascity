@@ -451,5 +451,25 @@ Phase 0 also confirms the plan's decisions against the live surface:
   session's only block and `session.view` then reported zero windows: Rex
   removes a tab when its last block closes. Teardown is block-only
   (`block.close`); the provider never calls `session.close_window`.
+- **Delivery and handshake (resolved, GCREX-5).** `gc-runtime-rex`
+  (`cmd/gc-runtime-rex`) is the out-of-tree RPP v0 dispatcher; `pack/pack.toml`
+  declares `[runtimes.rex]` with `command = "gc-runtime-rex"` and `protocol = 0`,
+  and both `gc runtime check rex` and `gc runtime conformance rex` pass against
+  `testdata/city` (14/14 checks; 6/8 requirements with `exec`/`provision` as
+  optional skips). The handshake declares version 0, `report-attachment` and
+  `report-activity`, and no `locality` field; `proc.exec`/`proc.provision` are
+  not declared because `exec`/`provision` stay unimplemented (exit 2).
+- **No city in an RPP invocation (open, GCREX-5).** RPP carries only the op and
+  session name, and the controller exports no per-city `GC_CITY*` under launchd,
+  so the dispatcher resolves the `gc:<city>` namespace from `GC_REX_CITY` (then
+  the `GC_CITY_PATH` basename, then `GC_CITY`, else `default`). Cities sharing a
+  supervisor without `GC_REX_CITY` share one Rex session and state directory;
+  Phase 5 must pin the namespace or move to a supervisor-level env change.
+- **Start-config hooks are not applied (open, GCREX-5).** The dispatcher
+  ignores the start config's `env`, `nudge`, `pre_start`, `session_setup`,
+  `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and
+  `pack_overlay_dirs`. gc does not resend the startup `nudge`, and Rex launch
+  options carry no `env`, so an agent's first prompt must come from its command
+  line. Phase 5 must close these before a real fleet runs.
 - **Rig-tab growth:** repeated `session.new_split` into one tab has layout
   limits; decide the split policy when a rig has many agents.

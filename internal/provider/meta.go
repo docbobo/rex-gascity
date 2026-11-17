@@ -10,9 +10,16 @@ func (p *Provider) SetMeta(_ context.Context, name, key, value string) error {
 }
 
 // GetMeta returns the value stored under key, or "" and nil if it was never
-// set. It never contacts Rex; ctx is unused.
+// set. A store that cannot be read is an error. It never contacts Rex; ctx is
+// unused.
 func (p *Provider) GetMeta(_ context.Context, name, key string) (string, error) {
-	v, _ := p.meta.Get(SessionName(name), key)
+	v, ok, err := p.meta.Get(SessionName(name), key)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
 	return v, nil
 }
 

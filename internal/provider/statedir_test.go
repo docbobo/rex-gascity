@@ -60,6 +60,19 @@ func TestStateDirNamesDoNotCollide(t *testing.T) {
 	if dir("a/b") == dir("a_b") {
 		t.Error(`"a/b" and "a_b" share a state dir`)
 	}
+	if dir("Acme") == dir("acme") {
+		t.Error(`"Acme" and "acme" share a state dir`)
+	}
+	// On a case-insensitive filesystem (macOS APFS) dirs that differ only
+	// by case are the same directory, so compare case-folded.
+	cases := []string{"acme", "Acme", "ACME", "aCmE", "acmE", "a-b", "A-B", "rex9", "REX9"}
+	for i, a := range cases {
+		for _, b := range cases[i+1:] {
+			if strings.EqualFold(dir(a), dir(b)) {
+				t.Errorf("StateDir(%q) and StateDir(%q) collide case-insensitively: %q, %q", a, b, dir(a), dir(b))
+			}
+		}
+	}
 	if got := dir("acme"); got != filepath.Join("/tmp/gcrex", "acme") {
 		t.Errorf("plain name changed: %q", got)
 	}
@@ -95,6 +108,14 @@ func TestSafeNameInjective(t *testing.T) {
 			if o != c && safeName(o) == got {
 				t.Errorf("safeName(%q) == safeName(%q)", c, o)
 			}
+		}
+	}
+	if got := safeName("Acme"); got != "%41cme" {
+		t.Errorf("safeName(Acme) = %q, want %%41cme", got)
+	}
+	for _, c := range []string{"a", "z", "0", "9", "-"} {
+		if safeName(c) != c {
+			t.Errorf("safeName(%q) = %q, want kept", c, safeName(c))
 		}
 	}
 	if safeName("") != "%00" {

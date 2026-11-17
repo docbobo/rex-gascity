@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,6 +37,12 @@ type BindingStore interface {
 	Delete(name SessionName)
 }
 
+// BindingLister is implemented by stores that can enumerate their bindings.
+type BindingLister interface {
+	// List returns all bindings, sorted by Name.
+	List() []Binding
+}
+
 // MemoryStore is a BindingStore held in memory. It is safe for concurrent use.
 type MemoryStore struct {
 	mu sync.RWMutex
@@ -60,6 +67,18 @@ func (s *MemoryStore) Save(b Binding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.m[b.Name] = b
+}
+
+// List implements BindingLister.
+func (s *MemoryStore) List() []Binding {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Binding, 0, len(s.m))
+	for _, b := range s.m {
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Delete implements BindingStore.

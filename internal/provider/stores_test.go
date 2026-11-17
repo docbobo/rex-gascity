@@ -58,16 +58,16 @@ func TestMetaStoreRoundTripAndDelete(t *testing.T) {
 	for kind, mk := range metaStores(t) {
 		t.Run(kind, func(t *testing.T) {
 			s := mk()
-			if _, ok := s.Get("a", "GC_READY_PROMPT_PREFIX"); ok {
-				t.Fatal("Get before Set found a value")
+			if _, ok, err := s.Get("a", "GC_READY_PROMPT_PREFIX"); ok || err != nil {
+				t.Fatalf("Get before Set = %v, %v; want not set, nil", ok, err)
 			}
 			for _, v := range prompts {
 				if err := s.Set("a", "GC_READY_PROMPT_PREFIX", v); err != nil {
 					t.Fatalf("Set: %v", err)
 				}
-				got, ok := s.Get("a", "GC_READY_PROMPT_PREFIX")
-				if !ok || got != v {
-					t.Errorf("Get = %q, %v; want %q", got, ok, v)
+				got, ok, err := s.Get("a", "GC_READY_PROMPT_PREFIX")
+				if !ok || err != nil || got != v {
+					t.Errorf("Get = %q, %v, %v; want %q", got, ok, err, v)
 				}
 			}
 			for _, kv := range [][3]string{{"a", "GC_READY_PROMPT_PREFIX", "> "}, {"a", "other", "keep"}, {"b", "GC_READY_PROMPT_PREFIX", "b-value"}} {
@@ -78,14 +78,14 @@ func TestMetaStoreRoundTripAndDelete(t *testing.T) {
 			if err := s.Delete("a", "GC_READY_PROMPT_PREFIX"); err != nil {
 				t.Fatalf("Delete: %v", err)
 			}
-			if _, ok := s.Get("a", "GC_READY_PROMPT_PREFIX"); ok {
-				t.Error("deleted key still set")
+			if _, ok, err := s.Get("a", "GC_READY_PROMPT_PREFIX"); ok || err != nil {
+				t.Errorf("deleted key = %v, %v; want not set, nil", ok, err)
 			}
-			if v, ok := s.Get("a", "other"); !ok || v != "keep" {
-				t.Errorf("other key = %q, %v", v, ok)
+			if v, ok, err := s.Get("a", "other"); !ok || err != nil || v != "keep" {
+				t.Errorf("other key = %q, %v, %v", v, ok, err)
 			}
-			if v, ok := s.Get("b", "GC_READY_PROMPT_PREFIX"); !ok || v != "b-value" {
-				t.Errorf("other name = %q, %v", v, ok)
+			if v, ok, err := s.Get("b", "GC_READY_PROMPT_PREFIX"); !ok || err != nil || v != "b-value" {
+				t.Errorf("other name = %q, %v, %v", v, ok, err)
 			}
 			if err := s.Delete("a", "missing"); err != nil {
 				t.Errorf("Delete missing: %v", err)
@@ -99,8 +99,8 @@ func TestMetaFileStorePersists(t *testing.T) {
 	if err := NewFileMetaStore(dir).Set("a", "k", "v ▶ "); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if v, ok := NewFileMetaStore(dir).Get("a", "k"); !ok || v != "v ▶ " {
-		t.Fatalf("Get = %q, %v", v, ok)
+	if v, ok, err := NewFileMetaStore(dir).Get("a", "k"); !ok || err != nil || v != "v ▶ " {
+		t.Fatalf("Get = %q, %v, %v", v, ok, err)
 	}
 }
 
@@ -121,5 +121,61 @@ func TestMetaFileStoreSetFailureIsReported(t *testing.T) {
 	s := NewFileMetaStore(filepath.Join(file, "sub"))
 	if err := s.Set("a", "k", "v"); err == nil {
 		t.Error("Set into an uncreatable dir returned nil")
+	}
+}
+
+func TestMetaFileStoreKeepsInvalidUTF8(t *testing.T) {
+	dir := t.TempDir()
+	want := string([]byte{0x80, 0xff})
+	if err := NewFileMetaStore(dir).Set("a", "k", want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := NewFileMetaStore(dir).Get("a", "k")
+	if !ok || err != nil || got != want {
+		t.Errorf("Get = %q, %v, %v; want %q", got, ok, err, want)
+	}
+}
+
+func TestMetaFileStoreBadEntries(t *testing.T) {
+	dir := t.TempDir()
+	s := NewFileMetaStore(dir).(*fileMetaStore)
+	for _, tc := range []struct {
+		body    string
+		wantErr bool
+	}{
+		{"not json", true},
+		{`{"key":"k","value_b64":"!!"}`, true},
+		// An old-format entry (no value_b64) is not set, not an error.
+		{`{"key":"k","value":"old"}`, false},
+	} {
+		path := s.path("a", "k")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := s.Get("a", "k")
+		if ok || got != "" || (err != nil) != tc.wantErr {
+			t.Errorf("%s: Get = %q, %v, %v; want not set, error=%v", tc.body, got, ok, err, tc.wantErr)
+		}
+	}
+}
+
+func TestMetaFileStoreMissingKeyIsUnset(t *testing.T) {
+	s := NewFileMetaStore(t.TempDir())
+	if got, ok, err := s.Get("a", "missing"); ok || err != nil || got != "" {
+		t.Errorf("Get = %q, %v, %v; want \"\", false, nil", got, ok, err)
+	}
+}
+
+func TestMetaFileStoreUnreadableDirIsError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "plainfile")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewFileMetaStore(filepath.Join(file, "meta"))
+	if got, ok, err := s.Get("a", "k"); err == nil || ok || got != "" {
+		t.Errorf("Get = %q, %v, %v; want a read error", got, ok, err)
 	}
 }

@@ -6,9 +6,10 @@ interface, its CLI implementation, a fake client, and the provider core
 (`SessionName`, `Binder`, `Provider` with Start/Stop/IsRunning/Peek/Nudge/
 SendKeys/Interrupt) exist and have tests; and Phase 3 adds the file sidecar
 (bindings, activity fingerprints, metadata), idempotent `Start`, block-only
-teardown, per-agent attachment honesty, and `GetLastActivity`. The RPP v0
-dispatcher (`cmd/gc-runtime-rex`) does **not** exist yet – that is GCREX-5 /
-Phase 4.
+teardown, per-agent attachment honesty, and `GetLastActivity`. Phase 4
+(GCREX-5) adds the RPP v0 dispatcher (`cmd/gc-runtime-rex`), the `protocol`
+handshake, the pack `[runtimes.rex]` declaration, and the user docs;
+`gc runtime check rex` and `gc runtime conformance rex` pass against it.
 Pinned baseline: gc 1.5.1 and the Rex surface in `docs/REX-CONTRACT.md`; where
 this plan and that document disagree, the contract wins.
 Target: an opt-in Rex session backend for Gas City – a **standalone
@@ -153,7 +154,7 @@ proxy provider, bound to the pack-declared name `rex`.
 
 ```
 go.mod                          # github.com/docbobo/rex-gas-city; requires nothing from gascity
-cmd/gc-runtime-rex/             # PLANNED (GCREX-5 / Phase 4): RPP v0 op dispatcher. Not present yet.
+cmd/gc-runtime-rex/             # RPP v0 op dispatcher (GCREX-5 / Phase 4)             [done]
 internal/rex/client.go          # Client interface: one method per Rex op (below)          [done]
 internal/rex/cli/               #   the only implementation in v1: shells out to `rex`     [done]
 internal/rex/faketest/          #   fake Client for provider-core tests                    [done]
@@ -166,7 +167,8 @@ internal/provider/e2e_test.go   # live opt-in tests gated by REX_E2E (lifecycle,
 # rex.LaunchSpec (type + CLI conversion) already lives in internal/rex/client.go.
 # No separate provider-side launch-policy module is planned.
 # Landed in GCREX-4: activity.go, stores.go (file sidecar), meta.go, attach.go.
-# Planned, not yet present: the cmd/gc-runtime-rex dispatcher and its RPP op tests.
+# Landed in GCREX-5: cmd/gc-runtime-rex, its RPP op tests, and the live REX_E2E test.
+# pack/pack.toml declares [runtimes.rex]; testdata/city/ is the verification fixture.
 ```
 
 The module must not import `github.com/gastownhall/gascity/...`: Go forbids
@@ -404,9 +406,9 @@ gc 1.5.1 defines exactly six capability strings; unknown strings are ignored
 
 | Capability | Status for this provider |
 |---|---|
-| `report-attachment` | Planned: declared by the gc-runtime-rex handshake (GCREX-5). Backs `is-attached` (via `session.list_clients`). |
-| `report-activity` | Planned: declared by the gc-runtime-rex handshake (GCREX-5). Backs `get-last-activity` (§6). |
-| `proc.exec` | Planned with the dispatcher. gc drives input and reads output over `exec` when available, so this is the conformance path for the driving ops. |
+| `report-attachment` | Declared by the gc-runtime-rex handshake (GCREX-5). Backs `is-attached` (via `session.list_clients`). |
+| `report-activity` | Declared by the gc-runtime-rex handshake (GCREX-5). Backs `get-last-activity` (§6). |
+| `proc.exec` | Not declared in v1: the disabled `exec` op is left unimplemented (exit 2), so gc drives through the dedicated ops. Declare it once `exec` propagates the in-box command's exit code. |
 | `proc.provision` | Not planned for v1. Requires `proc.exec`. |
 | `proc.stream` | Reserved in gc; do not declare. |
 | `tty.attach` | Reserved in gc; do not declare. |
@@ -578,11 +580,15 @@ persists across provider instances, a stale id re-resolves by label, activity
 is reported with a source that advances on output, attachment is per active
 rig tab, and teardown leaves the shared session.*
 
-**Phase 4 — Delivery + config (GCREX-5).** The `cmd/gc-runtime-rex` RPP v0
-dispatcher, the `protocol` handshake (`report-attachment`, `report-activity`),
-the pack `[runtimes.rex]` declaration, and the build. Then docs, `gc config show`,
-`gc runtime check rex` / `gc runtime conformance rex`, Nix/pack packaging.
-*Gate: `gc runtime conformance rex` green; docs reviewed.*
+**Phase 4 — Delivery + config (GCREX-5). (Implemented.)** The
+`cmd/gc-runtime-rex` RPP v0 dispatcher, the `protocol` handshake
+(`report-attachment`, `report-activity`), the pack `[runtimes.rex]` declaration
+(`pack/pack.toml`), the Makefile/install path, and `docs/rex-provider.md`.
+Both `gc runtime check rex` and `gc runtime conformance rex` pass against the
+pack (§9 S3/S4). `exec`, `provision`, `attach` and `watch-startup` stay
+unimplemented (exit 2), so `proc.exec`/`proc.provision` are not declared.
+Nix/pack packaging beyond `go install` is still open.
+*Gate: `gc runtime check rex` and `gc runtime conformance rex` green; docs reviewed.*
 
 **Phase 5 — Pilot.** `GC_SESSION=rex` on a scratch city with the mayor
 pinned to tmux; watch liveness/wedge detection over several work cycles;

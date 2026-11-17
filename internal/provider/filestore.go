@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -103,6 +104,10 @@ func (s *FileStore) Load(name SessionName) (Binding, bool) {
 	if err != nil || !ok {
 		return Binding{}, false
 	}
+	return r.binding(), true
+}
+
+func (r bindingRecord) binding() Binding {
 	return Binding{
 		Name:         SessionName(r.GCName),
 		SessionID:    rex.SessionID(r.SessionID),
@@ -112,7 +117,24 @@ func (s *FileStore) Load(name SessionName) (Binding, bool) {
 		LaunchMode:   r.LaunchMode,
 		CreatedAt:    r.CreatedAt,
 		ReadyPrompt:  r.ReadyPrompt,
-	}, true
+	}
+}
+
+// List implements BindingLister. Missing and corrupt files are skipped.
+func (s *FileStore) List() []Binding {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	paths, _ := filepath.Glob(filepath.Join(s.dir, "*.json"))
+	out := []Binding{}
+	for _, path := range paths {
+		var r bindingRecord
+		if ok, err := readJSON(path, &r); err != nil || !ok {
+			continue
+		}
+		out = append(out, r.binding())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Save implements BindingStore. The interface has no error return, so a

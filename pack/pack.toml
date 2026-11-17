@@ -1,0 +1,9 @@
+[pack]
+name = "rex"
+version = "0.1.0"
+schema = 2
+description = "Gas City runtime pack for Rex: a native Rex session provider speaking RPP v0."
+
+[runtimes.rex]
+command = "gc-runtime-rex"
+protocol = 0

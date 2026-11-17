@@ -1,6 +1,13 @@
 package provider
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -25,8 +32,9 @@ type ActivityStore interface {
 
 // MetaStore is a per-session key/value store. Values are kept byte-for-byte.
 type MetaStore interface {
-	// Get returns the value for key, if set.
-	Get(name SessionName, key string) (string, bool)
+	// Get returns the value for key and whether it is set. A key that is not
+	// set is ("", false, nil); a store that cannot be read returns an error.
+	Get(name SessionName, key string) (string, bool, error)
 	// Set stores value under key.
 	Set(name SessionName, key, value string) error
 	// Delete removes key only.
@@ -106,11 +114,11 @@ func NewMemoryMetaStore() MetaStore {
 	return &memoryMetaStore{m: make(map[SessionName]map[string]string)}
 }
 
-func (s *memoryMetaStore) Get(name SessionName, key string) (string, bool) {
+func (s *memoryMetaStore) Get(name SessionName, key string) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.m[name][key]
-	return v, ok
+	return v, ok, nil
 }
 
 func (s *memoryMetaStore) Set(name SessionName, key, value string) error {
@@ -130,56 +138,64 @@ func (s *memoryMetaStore) Delete(name SessionName, key string) error {
 	return nil
 }
 
-// metaRecord is the on-disk shape of a session's metadata.
-type metaRecord struct {
-	Values map[string]string `json:"values"`
+// metaEntry is the on-disk shape of one metadata key.
+type metaEntry struct {
+	Key string `json:"key"`
+	// ValueB64 is the value in standard base64, so any byte string (including
+	// invalid UTF-8) survives JSON. It is a pointer so a file without it reads
+	// as not set rather than as an empty value.
+	ValueB64 *string `json:"value_b64"`
 }
 
-// fileMetaStore is a file-backed MetaStore.
+// fileMetaStore is a file-backed MetaStore. It keeps one file per key so that
+// separate processes setting different keys never overwrite each other.
 type fileMetaStore struct {
 	mu  sync.Mutex
 	dir string
 }
 
-// NewFileMetaStore returns a MetaStore that keeps one JSON file per name
-// under dir.
+// NewFileMetaStore returns a MetaStore that keeps one JSON file per key under
+// dir/<name hash>/.
 func NewFileMetaStore(dir string) MetaStore { return &fileMetaStore{dir: dir} }
 
-func (s *fileMetaStore) path(name SessionName) string {
-	return filepath.Join(s.dir, nameKey(name)+".json")
+func (s *fileMetaStore) path(name SessionName, key string) string {
+	sum := sha256.Sum256([]byte(string(name) + "\x00" + key))
+	return filepath.Join(s.dir, nameKey(name), hex.EncodeToString(sum[:])+".json")
 }
 
-// read returns the stored values; a missing or corrupt file reads as empty.
-func (s *fileMetaStore) read(name SessionName) map[string]string {
-	var r metaRecord
-	if ok, err := readJSON(s.path(name), &r); err != nil || !ok || r.Values == nil {
-		return make(map[string]string)
-	}
-	return r.Values
-}
-
-func (s *fileMetaStore) Get(name SessionName, key string) (string, bool) {
+// Get reads the entry for key. A missing file, or an old-format entry with no
+// value_b64, is not set. An unreadable or corrupt file, or a value that is not
+// valid base64, is an error.
+func (s *fileMetaStore) Get(name SessionName, key string) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	v, ok := s.read(name)[key]
-	return v, ok
+	var e metaEntry
+	ok, err := readJSON(s.path(name, key), &e)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || e.ValueB64 == nil {
+		return "", false, nil
+	}
+	v, err := base64.StdEncoding.DecodeString(*e.ValueB64)
+	if err != nil {
+		return "", false, fmt.Errorf("meta %s: decode value: %w", key, err)
+	}
+	return string(v), true, nil
 }
 
 func (s *fileMetaStore) Set(name SessionName, key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	vals := s.read(name)
-	vals[key] = value
-	return writeJSON(s.path(name), metaRecord{Values: vals})
+	enc := base64.StdEncoding.EncodeToString([]byte(value))
+	return writeJSON(s.path(name, key), metaEntry{Key: key, ValueB64: &enc})
 }
 
 func (s *fileMetaStore) Delete(name SessionName, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	vals := s.read(name)
-	if _, ok := vals[key]; !ok {
-		return nil
+	if err := os.Remove(s.path(name, key)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
-	delete(vals, key)
-	return writeJSON(s.path(name), metaRecord{Values: vals})
+	return nil
 }

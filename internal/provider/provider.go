@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/docbobo/rex-gas-city/internal/rex"
@@ -18,8 +20,14 @@ import (
 // dispatcher maps it to a failed op with a clear message.
 var ErrSessionNotFound = errors.New("session not found")
 
+// ErrAlreadyRunning reports that StartNew found a live pane for the session.
+// The RPP dispatcher maps it to gc's "already running" start collision.
+var ErrAlreadyRunning = errors.New("provider: already running")
+
 // submitKey submits typed input; interruptKey is the soft interrupt keystroke.
 // Rex has no signal API, so both are keys.
+const readyPromptMetaKey = "GC_READY_PROMPT_PREFIX"
+
 const (
 	submitKey    = "enter"
 	interruptKey = "ctrl+c"
@@ -29,6 +37,9 @@ const (
 type Config struct {
 	Argv    []string
 	WorkDir string
+	// ReadyPromptPrefix is the prompt text the agent shows when ready. When
+	// empty, Start falls back to the GC_READY_PROMPT_PREFIX meta key.
+	ReadyPromptPrefix string
 }
 
 // Provider drives Rex for one gc city.
@@ -40,6 +51,10 @@ type Provider struct {
 	bindings BindingStore
 	activity ActivityStore
 	meta     MetaStore
+
+	// stateDir is the root state dir set by WithStateDir; it holds the
+	// cross-process lock file. Empty means no cross-process locking.
+	stateDir string
 }
 
 // Option configures a Provider.
@@ -58,6 +73,7 @@ func WithMetaStore(s MetaStore) Option { return func(p *Provider) { p.meta = s }
 // dir/bindings, dir/activity and dir/meta.
 func WithStateDir(dir string) Option {
 	return func(p *Provider) {
+		p.stateDir = dir
 		p.bindings = NewFileStore(filepath.Join(dir, "bindings"))
 		p.activity = NewFileActivityStore(filepath.Join(dir, "activity"))
 		p.meta = NewFileMetaStore(filepath.Join(dir, "meta"))
@@ -91,6 +107,27 @@ func (p *Provider) Binding(name string) (Binding, bool) {
 // records the pane's binding. It is idempotent: a live pane is left alone, and
 // a pane whose agent has died is closed before a new one is launched.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
+	return p.withStateLock(ctx, func() error { return p.start(ctx, name, cfg) })
+}
+
+// StartNew starts the agent like Start, but fails with ErrAlreadyRunning when
+// its pane is already live. The liveness check and the launch run under one
+// state lock, so of two concurrent StartNew calls for one name sharing a state
+// dir, exactly one launches and the other sees ErrAlreadyRunning.
+func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error {
+	return p.withStateLock(ctx, func() error {
+		running, err := p.IsRunning(ctx, name)
+		if err != nil {
+			return err
+		}
+		if running {
+			return fmt.Errorf("%w: %s", ErrAlreadyRunning, name)
+		}
+		return p.start(ctx, name, cfg)
+	})
+}
+
+func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 	n := SessionName(name)
 
 	old, found, err := p.binder.Resolve(ctx, n)
@@ -137,7 +174,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 			if err != nil {
 				return err
 			}
-			p.record(n, sid, w.ID, block, "split")
+			p.record(ctx, n, sid, w.ID, block, "split", cfg)
 			return nil
 		}
 	}
@@ -145,15 +182,20 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	p.record(n, sid, wid, block, "window")
+	p.record(ctx, n, sid, wid, block, "window", cfg)
 	return nil
 }
 
 // record stores a binding for a new pane, started in the given mode ("window"
 // or "split"). A pane with no block ID is not recorded.
-func (p *Provider) record(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string) {
+func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string, cfg Config) {
 	if block == "" {
 		return
+	}
+	ready := cfg.ReadyPromptPrefix
+	if ready == "" {
+		// Best effort: a meta read failure must not fail Start.
+		ready, _, _ = p.meta.Get(n, readyPromptMetaKey)
 	}
 	p.binder.Record(Binding{
 		Name:         n,
@@ -163,6 +205,7 @@ func (p *Provider) record(n SessionName, sid rex.SessionID, wid rex.WindowID, bl
 		BlockID:      block,
 		LaunchMode:   mode,
 		CreatedAt:    time.Now(),
+		ReadyPrompt:  ready,
 	})
 }
 
@@ -194,11 +237,76 @@ func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
 // Peek returns the agent's rendered terminal output. An agent with no pane
 // has no output.
 func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
+	return p.PeekLines(ctx, name, 0)
+}
+
+// PeekLines returns the last lines lines of the agent's rendered output, or
+// all of it when lines <= 0. An agent with no pane has no output.
+func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (string, error) {
 	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
 	if err != nil || !ok {
 		return "", err
 	}
-	return p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
+	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
+	if err != nil || lines <= 0 {
+		return out, err
+	}
+	return lastLines(out, lines), nil
+}
+
+// lastLines returns the last n lines of s, keeping a trailing newline.
+func lastLines(s string, n int) string {
+	body := strings.TrimSuffix(s, "\n")
+	parts := strings.Split(body, "\n")
+	if len(parts) <= n {
+		return s
+	}
+	out := strings.Join(parts[len(parts)-n:], "\n")
+	if len(body) != len(s) {
+		out += "\n"
+	}
+	return out
+}
+
+// ClearScrollback clears the agent's pane scrollback. It is best effort: an
+// agent with no pane, or a pane that vanished, is not an error.
+func (p *Provider) ClearScrollback(ctx context.Context, name string) error {
+	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	if err != nil || !ok {
+		return err
+	}
+	if err := p.client.BlockClear(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+// ListRunning returns the sorted names of known sessions with the given
+// prefix (all when empty) whose pane is still alive.
+func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, error) {
+	lister, ok := p.bindings.(BindingLister)
+	if !ok {
+		return nil, errors.New("provider: binding store cannot list")
+	}
+	names := []string{}
+	for _, b := range lister.List() {
+		name := string(b.Name)
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		alive, err := p.paneAlive(ctx, b)
+		if errors.Is(err, rex.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if alive {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // Nudge types text into the agent's pane and submits it. The text and the
