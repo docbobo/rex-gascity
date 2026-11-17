@@ -19,10 +19,12 @@ const (
 	ActivityNone ActivitySource = "none"
 )
 
-// ActivityPolicy states which activity path is in force in v1. gc 1.5.1 ships
-// no OSC 7501 emitter, so the provider emits none either: it reads
-// program_status when Rex reports records and otherwise polls the pane.
-const ActivityPolicy = "program_status preferred; format_poll fallback (gc 1.5.1 ships no OSC 7501 emitter)"
+// ActivityPolicy states which activity path is in force in v1. The OSC 7501
+// emitter is the program in the pane, not the provider: Pi implements the
+// protocol and gc-managed Pi panes report idle/working/blocked/done/error
+// under Rex, so program_status is normally present. The provider reads it when
+// Rex reports records and otherwise polls the pane.
+const ActivityPolicy = "program_status preferred; format_poll fallback (OSC 7501 is emitted by the pane program, e.g. Pi)"
 
 // LastActivity is a session's last-activity time and the source it came from.
 type LastActivity struct {

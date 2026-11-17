@@ -442,14 +442,16 @@ Details:
 ## 6. Activity and events
 
 - `activity.go` (GCREX-4): `GetLastActivity` reads the pane's `program_status`
-  records (OSC 7501) and returns the latest `updated_at`. gc 1.5.1 ships no OSC
-  7501 emitter, so when Rex reports no records the provider falls back to
-  polling `block format` and fingerprints the output in the activity sidecar,
-  which keeps an idle pane's timestamp stable across the one-process-per-op
-  dispatcher. The call returns the source in force (`program_status` |
-  `format_poll` | `none`); the provider does **not** emit OSC 7501 in v1, and
-  the format-poll fallback is the documented v1 path (`provider.ActivityPolicy`).
-  Declared to gc via the RPP `report-activity` handshake capability (GCREX-5).
+  records (OSC 7501) and returns the latest `updated_at`. The emitter is the
+  pane program, not the provider: Pi implements OSC 7501 and gc-managed Pi
+  panes report under Rex, so records are normally present. When Rex reports
+  none the provider falls back to polling `block format` and fingerprints the
+  output in the activity sidecar, which keeps an idle pane's timestamp stable
+  across the one-process-per-op dispatcher. The call returns the source in
+  force (`program_status` | `format_poll` | `none`); the provider does **not**
+  emit OSC 7501 in v1, and the format-poll fallback is the documented v1 path
+  (`provider.ActivityPolicy`). Declared to gc via the RPP `report-activity`
+  handshake capability (GCREX-5).
 - v1 does **not** consume `rex events`. `GetLastActivity` polls
   `program_status` and, when there are no records, `block format`.
   `rex.Client.Events` is unimplemented. A later version may use events as
@@ -631,8 +633,9 @@ under a supervisor stays open; server-restart recovery was not exercised live
 - **Program status portability.** `program_status` classification may vary
   by agent CLI. Verify it classifies the harnesses we care about, and treat an
   empty or missing status (including a report that classifies nothing) as
-  indeterminate. REX-CONTRACT lists `idle|working|done|blocked|error`, and gc
-  1.5.1 ships no OSC 7501 emitter, so `program_status` is usually empty.
+  indeterminate. REX-CONTRACT lists `idle|working|done|blocked|error`. The
+  emitter is the pane program, not the provider: Pi implements OSC 7501 and
+  gc-managed Pi panes report under Rex, so `program_status` is normally present.
   **Decided (GCREX-4): v1 does not emit OSC 7501.** `GetLastActivity` prefers
   `program_status` when it is present and otherwise polls `format`, returning
   the source in force; an empty or missing status is never reported as a false

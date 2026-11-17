@@ -109,9 +109,14 @@ is stored.
 
 `program_status` is **reported by the program itself** (OSC 7501), not detected
 by Rex: a program that emits OSC 7501 gives us native idle/busy state. gc 1.5.1
-ships **no** OSC 7501 emitter (nothing in its tree mentions 7501), so nothing
-produces it today — the provider would have to emit it itself, or fall back to
-scanning `format` for the ready prompt.
+ships no emitter, and the provider cannot add one — writing the sequence to the
+pane reaches the program's stdin, not Rex's parser. The emitter is the program
+in the pane: **Pi implements the Program Status Protocol** (interactive mode
+reports `working`/`blocked`/`done`/`error`/`idle`, gated on terminal capability
+detection or `PI_PROGRAM_STATUS=1`), and gc-managed Pi panes report under Rex
+(live-verified `{"state":"idle","app":"pi"}`), so `program_status` is populated
+for our sessions. When it is empty the provider falls back to scanning `format`
+for the ready prompt.
 
 ## 5. Terminal block events
 
@@ -394,7 +399,7 @@ Phase 0 also confirms the plan's decisions against the live surface:
 | D2 transport | Shell out to the CLI behind `rex.Client`; the socket protocol is undocumented and revision-numbered (§7). |
 | D3 server ownership | Never stop the shared server. `session.destroy` closes only that session's blocks; `server.stop` exists and must not be called. The version skew in §0 is another reason: the server only moves on restart. |
 | D4 scope | Local server via the default socket or `-S <host>`; agents run on gc's host. RPP has no declaration for this. |
-| D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — the emitter is ours to write, gc 1.5.1 ships none); fall back to `timed_only` if classification proves unreliable. |
+| D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — emitted by the pane program; Pi does, and gc-managed Pi panes report under Rex). Fall back to `timed_only` if classification proves unreliable. |
 | D6 v1 breadth | Core `Provider` + idle/wait + relaunch + metadata sidecar + activity + attachment; skip `ExecProvider` and `DialogProvider`. |
 
 ## 12. Open items
@@ -439,11 +444,15 @@ Phase 0 also confirms the plan's decisions against the live surface:
   **Resolved (GCREX-4):** ids are never trusted blindly — a binding is
   re-validated against `session.view`, and a stale or post-restart id is cleared
   and re-resolved by label, so a restart is absorbed.
-- **OSC 7501 policy (resolved, GCREX-4).** gc 1.5.1 ships no emitter, so v1
-  does not emit OSC 7501. `GetLastActivity` prefers `program_status` when Rex
-  reports records and otherwise polls `block format`, fingerprinting the output
-  in the activity sidecar; it returns which source is in force. The format-poll
-  fallback is the documented v1 path.
+- **OSC 7501 policy (resolved, GCREX-4; emitter clarified).** The provider does
+  not emit OSC 7501 — it cannot, because the pane program owns that stream. Pi
+  implements the protocol and gc-managed Pi panes report under Rex
+  (live-verified `{"state":"idle","app":"pi"}`), so `program_status` is normally
+  populated. `GetLastActivity` prefers `program_status` when Rex reports records
+  and otherwise polls `block format`, fingerprinting the output in the activity
+  sidecar; it returns which source is in force. The format-poll fallback is the
+  documented v1 path. Consuming `program_status` for nudge busy-gating and
+  submit confirmation is a separate, still-open item.
 - **State directory (resolved, GCREX-4).** Bindings, activity fingerprints and
   metadata live under `$GC_REX_STATE_DIR/<city>`, else
   `$XDG_STATE_HOME/rex-gascity/<city>`, else
