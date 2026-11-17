@@ -31,6 +31,12 @@ type Fake struct {
 	Sessions []rex.Session
 	View     rex.SessionView
 
+	// Processes is the process state BlockProcess reports, keyed by block.
+	Processes map[rex.BlockID]rex.ProcessInfo
+
+	// Formats is the rendered output BlockFormat reports, keyed by block.
+	Formats map[rex.BlockID]string
+
 	CreatedSessions []string
 	CreatedWindows  []CreatedWindow
 	CreatedSplits   []CreatedSplit
@@ -69,11 +75,13 @@ func (f *Fake) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionVie
 
 func (f *Fake) ListSessions(_ context.Context) ([]rex.Session, error) { return f.Sessions, nil }
 
-func (f *Fake) BlockProcess(_ context.Context, _ rex.BlockID) (rex.ProcessInfo, error) {
-	return rex.ProcessInfo{}, nil
+func (f *Fake) BlockProcess(_ context.Context, block rex.BlockID) (rex.ProcessInfo, error) {
+	return f.Processes[block], nil
 }
 
-func (f *Fake) BlockFormat(_ context.Context, _ rex.BlockID) (string, error) { return "", nil }
+func (f *Fake) BlockFormat(_ context.Context, block rex.BlockID) (string, error) {
+	return f.Formats[block], nil
+}
 
 func (f *Fake) BlockWrite(_ context.Context, _ rex.BlockID, _ string) error { return nil }
 

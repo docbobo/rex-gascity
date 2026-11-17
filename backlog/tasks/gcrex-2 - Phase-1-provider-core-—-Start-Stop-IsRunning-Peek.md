@@ -2,8 +2,10 @@
 id: GCREX-2
 title: 'Phase 1: provider core — Start, Stop, IsRunning, Peek'
 status: In Progress
-assignee: []
+assignee:
+  - '@boris'
 created_date: '2026-11-17T16:25:00Z'
+updated_date: '2026-11-17T16:45:00Z'
 labels: []
 dependencies: []
 references:
@@ -20,16 +22,29 @@ First usable provider: map a gc session (city/rig/agent) onto a Rex city session
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Start creates the city session, rig tab, and agent pane, and joins an existing rig tab instead of creating a second one
-- [ ] #2 Stop closes the agent pane and leaves the shared city session and other rigs intact
-- [ ] #3 Stop is idempotent for an unknown session
-- [ ] #4 IsRunning and ProcessAlive distinguish a live agent from a terminal whose program exited
+- [x] #1 Start creates the city session, rig tab, and agent pane, and joins an existing rig tab instead of creating a second one
+- [x] #2 Stop closes the agent pane and leaves the shared city session and other rigs intact
+- [x] #3 Stop is idempotent for an unknown session
+- [x] #4 IsRunning and ProcessAlive distinguish a live agent from a terminal whose program exited
 - [ ] #5 Peek returns the agent output, following paged format results to completion
-- [ ] #6 go test ./... passes with the provider core tested against a fake rex.Client
+- [x] #6 go test ./... passes with the provider core tested against a fake rex.Client
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Slice: Start joins an existing rig tab. Red test: when the city session already has a tab labeled Indigo, a second agent Start creates no new window and goes in via NewSplit beside the existing pane.
+2. Implement tab lookup in Start from the session view, then split into the found tab.
+3. Slice: Stop closes the agent pane, leaves the city session and other rigs intact, and is idempotent for an unknown session.
+4. Slice: IsRunning/ProcessAlive read block process state and distinguish a live agent from a terminal whose program exited.
+5. Slice: Peek reads format output and follows paged results to completion.
+6. Verify go test ./... and record evidence per acceptance criterion.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 In place: go.mod (module github.com/docbobo/rex-gas-city), internal/rex/client.go (Client interface + types), internal/rex/faketest (recording fake), internal/provider/provider.go (Start + parseName), internal/provider/provider_test.go (first slice, green). Next slice: Start joins an existing rig tab via NewSplit.
+
+Core slices green: Start (creates city session + rig tab, joins an existing rig tab via NewSplit), Stop (closes only the agent pane, idempotent when the session or pane is absent), IsRunning (block process LastExit), Peek (block format). go test ./... and go vet ./... pass. Remaining for Phase 1's smoke gate: the rex/cli adapter (S2) that maps Client onto the rex CLI, and paged format following (AC #5) inside that adapter. Provider core still needs no gascity imports.
 <!-- SECTION:NOTES:END -->

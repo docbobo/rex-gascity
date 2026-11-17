@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/docbobo/rex-gas-city/internal/provider"
+	"github.com/docbobo/rex-gas-city/internal/rex"
 	"github.com/docbobo/rex-gas-city/internal/rex/faketest"
 )
 
@@ -39,5 +40,183 @@ func TestStartCreatesCitySessionRigTabAndAgentPane(t *testing.T) {
 	}
 	if w.Spec.Cwd != "/work/indigo" {
 		t.Errorf("pane cwd = %q, want %q", w.Spec.Cwd, "/work/indigo")
+	}
+}
+
+func TestStartJoinsExistingRigTab(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{{
+			ID:     "window:Indigo",
+			Label:  "Indigo",
+			Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}},
+		}},
+	}
+	p := provider.New("acme", fake)
+
+	err := p.Start(context.Background(), "Indigo--dog-2", provider.Config{
+		Argv:    []string{"claude"},
+		WorkDir: "/work/indigo",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if len(fake.CreatedSessions) != 0 {
+		t.Errorf("created sessions = %v, want none (city session exists)", fake.CreatedSessions)
+	}
+	if len(fake.CreatedWindows) != 0 {
+		t.Errorf("created windows = %d, want 0 (rig tab exists)", len(fake.CreatedWindows))
+	}
+	if len(fake.CreatedSplits) != 1 {
+		t.Fatalf("created splits = %d, want 1", len(fake.CreatedSplits))
+	}
+	s := fake.CreatedSplits[0]
+	if s.Anchor != "block:dog-1" {
+		t.Errorf("split anchor = %q, want %q", s.Anchor, "block:dog-1")
+	}
+	if s.Spec.Label != "dog-2" {
+		t.Errorf("pane label = %q, want %q", s.Spec.Label, "dog-2")
+	}
+}
+
+func TestStopClosesOnlyTheAgentPane(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{
+			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+			{ID: "window:Saffron", Label: "Saffron", Blocks: []rex.Block{{ID: "block:dog-3", Label: "dog-3"}}},
+		},
+	}
+	p := provider.New("acme", fake)
+
+	if err := p.Stop(context.Background(), "Indigo--dog-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got, want := fake.ClosedBlocks, []rex.BlockID{"block:dog-1"}; !slices.Equal(got, want) {
+		t.Errorf("closed blocks = %v, want %v", got, want)
+	}
+}
+
+func TestStopIsIdempotentForUnknownSession(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{
+			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+		},
+	}
+	p := provider.New("acme", fake)
+
+	if err := p.Stop(context.Background(), "Indigo--ghost"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed blocks = %v, want none", fake.ClosedBlocks)
+	}
+}
+
+func TestIsRunningTrueWhileProgramRuns(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{
+			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+		},
+	}
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {Foreground: &rex.Process{PID: 42, Name: "claude"}},
+	}
+	p := provider.New("acme", fake)
+
+	running, err := p.IsRunning(context.Background(), "Indigo--dog-1")
+	if err != nil {
+		t.Fatalf("IsRunning: %v", err)
+	}
+	if !running {
+		t.Error("IsRunning = false, want true while the program runs")
+	}
+}
+
+func TestIsRunningFalseWhenProgramExited(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{
+			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+		},
+	}
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+	}
+	p := provider.New("acme", fake)
+
+	running, err := p.IsRunning(context.Background(), "Indigo--dog-1")
+	if err != nil {
+		t.Fatalf("IsRunning: %v", err)
+	}
+	if running {
+		t.Error("IsRunning = true, want false after the program exited")
+	}
+}
+
+func TestIsRunningFalseWhenNoPane(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	running, err := p.IsRunning(context.Background(), "Indigo--ghost")
+	if err != nil {
+		t.Fatalf("IsRunning: %v", err)
+	}
+	if running {
+		t.Error("IsRunning = true, want false when the agent has no pane")
+	}
+}
+
+func TestPeekReturnsAgentOutput(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.View = rex.SessionView{
+		Windows: []rex.Window{
+			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+		},
+	}
+	fake.Formats = map[rex.BlockID]string{"block:dog-1": "hello from dog-1\n"}
+	p := provider.New("acme", fake)
+
+	out, err := p.Peek(context.Background(), "Indigo--dog-1")
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if out != "hello from dog-1\n" {
+		t.Errorf("Peek = %q, want %q", out, "hello from dog-1\n")
+	}
+}
+
+func TestPeekEmptyWhenNoPane(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	out, err := p.Peek(context.Background(), "Indigo--ghost")
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if out != "" {
+		t.Errorf("Peek = %q, want empty for a missing pane", out)
+	}
+}
+
+func TestStopUnknownSessionIsANoOp(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	if err := p.Stop(context.Background(), "Indigo--ghost"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed blocks = %v, want none", fake.ClosedBlocks)
 	}
 }
