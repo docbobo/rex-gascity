@@ -107,6 +107,9 @@ type Client interface {
 	BlockProcess(ctx context.Context, sessionID SessionID, blockID BlockID) (ProcessInfo, error)
 	BlockFormat(ctx context.Context, sessionID SessionID, blockID BlockID) (string, error)
 	BlockWrite(ctx context.Context, sessionID SessionID, blockID BlockID, data string) error
+	// SendKeys presses named keys in the pane using Rex's key-binding syntax
+	// ("ctrl+c", "enter", "up"), without appending a submit.
+	SendKeys(ctx context.Context, sessionID SessionID, blockID BlockID, keys ...string) error
 	BlockEvent(ctx context.Context, sessionID SessionID, blockID BlockID, ev Event) error
 	BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
 

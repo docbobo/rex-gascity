@@ -266,6 +266,19 @@ func (c *Client) BlockWrite(ctx context.Context, sessionID rex.SessionID, block 
 	return c.blockMethod(ctx, sessionID, block, "write", map[string]any{"data": data}, nil)
 }
 
+// SendKeys presses named keys in a pane via `rex send-key`. Rex resolves the
+// key bindings, so the adapter passes Rex key syntax straight through; the
+// session scope is required next to the block. No keys is a no-op.
+func (c *Client) SendKeys(ctx context.Context, sessionID rex.SessionID, block rex.BlockID, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	argv := []string{"send-key", "-s", string(sessionID), "-b", string(block), "--"}
+	argv = append(argv, keys...)
+	_, err := c.run(ctx, argv...)
+	return err
+}
+
 // BlockEvent sends an input event to a pane.
 func (c *Client) BlockEvent(ctx context.Context, sessionID rex.SessionID, block rex.BlockID, ev rex.Event) error {
 	return c.call(ctx, "block.event", map[string]any{

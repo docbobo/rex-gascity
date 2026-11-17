@@ -37,6 +37,8 @@ dir=` + shellQuote(f.responses) + `
 
 if [ "$1" = "events" ]; then
   key=events
+elif [ "$1" = "send-key" ]; then
+  key=send-key
 else
   key="$3"
 fi

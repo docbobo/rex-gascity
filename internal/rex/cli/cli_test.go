@@ -285,6 +285,35 @@ func TestBlockEvent(t *testing.T) {
 	}
 }
 
+func TestSendKeys(t *testing.T) {
+	fake := newFakeRex(t)
+	c := &cli.Client{Bin: fake.bin}
+
+	if err := c.SendKeys(context.Background(), "session:a", "block:dog-1", "ctrl+c", "enter"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	calls := fake.calls(t)
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	want := []string{"send-key", "-s", "session:a", "-b", "block:dog-1", "--", "ctrl+c", "enter"}
+	if !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("argv = %v, want %v", calls[0], want)
+	}
+}
+
+func TestSendKeysNoKeysIsANoOp(t *testing.T) {
+	fake := newFakeRex(t)
+	c := &cli.Client{Bin: fake.bin}
+
+	if err := c.SendKeys(context.Background(), "session:a", "block:dog-1"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	if calls := fake.calls(t); len(calls) != 0 {
+		t.Errorf("calls = %v, want none", calls)
+	}
+}
+
 // nodeBlock pulls the layout's block node out of a decoded call.
 func nodeBlock(t *testing.T, args map[string]any) map[string]any {
 	t.Helper()

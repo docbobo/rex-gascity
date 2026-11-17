@@ -26,6 +26,13 @@ type CreatedSplit struct {
 	Spec      rex.LaunchSpec
 }
 
+// SentKeys records a SendKeys call.
+type SentKeys struct {
+	SessionID rex.SessionID
+	BlockID   rex.BlockID
+	Keys      []string
+}
+
 // Fake is a recording rex.Client.
 type Fake struct {
 	Sessions []rex.Session
@@ -45,6 +52,13 @@ type Fake struct {
 	CreatedWindows  []CreatedWindow
 	CreatedSplits   []CreatedSplit
 	ClosedBlocks    []rex.BlockID
+	SentKeys        []SentKeys
+
+	// WriteErr, ProcessErr and SendKeysErr, when set, are returned by those
+	// methods.
+	WriteErr    error
+	ProcessErr  error
+	SendKeysErr error
 
 	// ListSessionsCalls and SessionViewCalls count calls to those methods.
 	ListSessionsCalls int
@@ -138,6 +152,9 @@ func (f *Fake) ListSessions(_ context.Context) ([]rex.Session, error) {
 
 func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.BlockID) (rex.ProcessInfo, error) {
 	f.record(sid, block, "process")
+	if f.ProcessErr != nil {
+		return rex.ProcessInfo{}, f.ProcessErr
+	}
 	return f.Processes[block], nil
 }
 
@@ -148,7 +165,13 @@ func (f *Fake) BlockFormat(_ context.Context, sid rex.SessionID, block rex.Block
 
 func (f *Fake) BlockWrite(_ context.Context, sid rex.SessionID, block rex.BlockID, _ string) error {
 	f.record(sid, block, "write")
-	return nil
+	return f.WriteErr
+}
+
+func (f *Fake) SendKeys(_ context.Context, sid rex.SessionID, block rex.BlockID, keys ...string) error {
+	f.record(sid, block, "send-key")
+	f.SentKeys = append(f.SentKeys, SentKeys{SessionID: sid, BlockID: block, Keys: keys})
+	return f.SendKeysErr
 }
 
 func (f *Fake) BlockEvent(_ context.Context, sid rex.SessionID, block rex.BlockID, _ rex.Event) error {
