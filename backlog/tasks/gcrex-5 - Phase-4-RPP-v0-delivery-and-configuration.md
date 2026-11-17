@@ -4,7 +4,7 @@ title: 'Phase 4: RPP v0 delivery and configuration'
 status: To Do
 assignee: []
 created_date: '2026-11-17T16:25:00Z'
-updated_date: '2026-11-17T19:35:00Z'
+updated_date: '2026-11-17T19:38:00Z'
 labels: []
 dependencies:
   - GCREX-4
@@ -42,4 +42,6 @@ Verification notes (from the GCREX-8 plan review). Gaps the verification found b
 - Unimplemented provider methods the dispatcher will need: IsAttached, Attach, ProcessAlive, ListRunning, GetLastActivity, ClearScrollback, CopyTo, RunLive and the metadata ops. BlockClear exists at the transport layer only. provider.Peek also takes no line count, while the wire peek op passes <lines>.
 
 Deferred from GCREX-4 (do not silently drop): (1) Cross-process Start serialization - two dispatcher processes can both resolve a name as missing and create duplicate panes, or both create the city session; an in-process mutex is not enough. (2) The file stores are best-effort for bindings/activity (Save has no error return and a failed write is recovered by the label scan); only MetaStore.Set/Delete return errors. (3) Metadata is a single JSON map read-modify-written per session, so two processes setting different keys can lose one; use an interprocess lock or one file per key. (4) GCREX-4 implemented IsAttached, ProcessAlive and GetLastActivity; Attach, ListRunning, ClearScrollback, CopyTo, RunLive and the meta ops still need the dispatcher. (5) Start must keep sending focus=false and must pass WithStateDir(StateDir(city)) so bindings survive the one-process-per-op model.
+
+GCREX-4 closure corrections and additions. (Correction) internal/rex/cli NOW sends focus on session.new_window/new_split via rex.LaunchSpec.Focus, default false; login/interactive are still not sent. (New) Binding.ReadyPrompt is persisted but nothing populates it: Start should read the GC_READY_PROMPT_PREFIX metadata (the meta KV stores values byte-for-byte) and record it, or the field should be dropped as unused. (New) rex.Client.Events remains unimplemented and v1 does not consume the event stream by design - do not build dispatcher behavior on events; activity is pull-based through GetLastActivity.
 <!-- SECTION:NOTES:END -->
