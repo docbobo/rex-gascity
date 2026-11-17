@@ -36,6 +36,13 @@ type Binding struct {
 	CreatedAt time.Time
 	// ReadyPrompt is the prompt text the agent shows when ready for input.
 	ReadyPrompt string
+	// GCBin is the basename of the GC_BIN binary the agent was launched with,
+	// when the start config carried one. gc's configured process_names hint for
+	// the control dispatcher is "gc", but a wrapped gc runs as e.g.
+	// ".gc-wrapped"; process-alive expands the "gc" hint with this basename so
+	// gc's reconciler does not mistake a live dispatcher for a dead seat. Empty
+	// on legacy records (fall back to the provider's own GC_BIN).
+	GCBin string
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the

@@ -296,6 +296,7 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		LaunchMode:   mode,
 		CreatedAt:    time.Now(),
 		ReadyPrompt:  ready,
+		GCBin:        gcBinBasename(cfg.Env),
 	})
 }
 

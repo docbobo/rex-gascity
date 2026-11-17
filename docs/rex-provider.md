@@ -229,6 +229,17 @@ gc also reads provider metadata over `get-meta` (not the start env):
 primary name, because gc reads some keys (`suspended`, `GC_SESSION_ID`) under
 the canonical identity even when the pane was started under a short pool name.
 
+### Wrapped-gc process names
+
+The provider captures `GC_BIN` from the start config and persists its basename
+on the pane binding. `process-alive` expands the incoming gc hints with that
+basename when a hint is `gc` (and with gc's `kimi` -> `kimi-code` alias), so a
+control dispatcher launched as `$GC_BIN` (`/nix/store/.../bin/.gc-wrapped`, not
+`gc`) is still observed as a live agent. Without the expansion gc reads the
+live pane as a dead/zombie seat and closes the session bead without issuing
+`stop`, leaving the pane and its process behind. This mirrors
+`runtime-herdr-core`'s `expand_names`; see `docs/REX-RETIRE.md`.
+
 ## Known v1 Limits
 
 - **No city in RPP v0 invocations**: An RPP call carries only the operation and agent session name. Without `GC_REX_CITY`, cities fall back to `GC_CITY_PATH` / `GC_CITY` and then `"default"`. Because the `gc` controller does not pass `GC_CITY` or `GC_CITY_PATH` when running under `launchd`, cities without `GC_REX_CITY` share one `gc:default` Rex session and state directory. Set `GC_REX_CITY` explicitly when isolating cities on the same Rex server.
@@ -243,3 +254,5 @@ the canonical identity even when the pane was started under a short pool name.
 - **Teardown leaves the server and session shell intact**: Stopping agents closes only city-owned blocks (`rex block close`); it never stops the shared Rex server and never calls `session.destroy`.
 
 See `docs/rex-pilot-phase5.md` for the pilot and promotion record (GCREX-6), including the observed `gc:default` namespace under a launchd supervisor.
+See `docs/REX-RETIRE.md` for the retire/drain comparison against
+`runtime-herdr-core` and the wrapped-gc decision (GCREX-12).

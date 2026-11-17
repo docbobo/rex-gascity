@@ -83,6 +83,9 @@ type bindingRecord struct {
 	LaunchMode  string    `json:"launch_mode"`
 	CreatedAt   time.Time `json:"created_at"`
 	ReadyPrompt string    `json:"ready_prompt"`
+	// GCBin was added after the first records; omitted when empty so old
+	// records stay compatible.
+	GCBin string `json:"gc_bin,omitempty"`
 }
 
 // FileStore is a BindingStore that keeps one JSON file per binding under a
@@ -131,6 +134,7 @@ func (r bindingRecord) binding() Binding {
 		LaunchMode:   r.LaunchMode,
 		CreatedAt:    r.CreatedAt,
 		ReadyPrompt:  r.ReadyPrompt,
+		GCBin:        r.GCBin,
 	}
 }
 
@@ -172,6 +176,7 @@ func (s *FileStore) Save(b Binding) {
 		LaunchMode:   b.LaunchMode,
 		CreatedAt:    b.CreatedAt,
 		ReadyPrompt:  b.ReadyPrompt,
+		GCBin:        b.GCBin,
 	})
 }
 
