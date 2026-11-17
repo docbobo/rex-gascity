@@ -137,8 +137,19 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 	})
 }
 
-func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
+func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
 	n := SessionName(name)
+	seeded := false
+	defer func() {
+		if err == nil || !seeded {
+			return
+		}
+		// A failed launch or a canceled start must not leave a seeded identity
+		// or a provisional binding behind. Stop clears the same keys on the
+		// successful retire path.
+		_ = p.clearStartIdentity(n)
+		p.binder.Forget(n)
+	}()
 	// The env-derived labels let Resolve rediscover a live pane whose sidecar
 	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
 	// cannot place the pane in its rig tab).
@@ -181,6 +192,15 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// Seed the identity and a provisional binding before the launch call,
+	// which blocks while Rex dismisses startup dialogs. A reconciler tick in
+	// that window can then read the current GC_SESSION_ID/GC_INSTANCE_TOKEN
+	// instead of an empty identity and must not roll the pending create back.
+	seeded = true
+	if err := p.seedStartIdentity(n, cfg.Env); err != nil {
+		return err
+	}
+	p.recordProvisionalBinding(n, sid, "", cfg)
 	tab := hint.TabLabel
 	spec := rex.LaunchSpec{
 		Command: launchCommand(cfg.Argv, cfg.Env),
@@ -304,11 +324,24 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
-	if err != nil || !ok {
+	return p.withStateLock(ctx, func() error { return p.stop(ctx, name) })
+}
+
+func (p *Provider) stop(ctx context.Context, name string) error {
+	n := SessionName(name)
+	binding, ok, err := p.binder.Resolve(ctx, n)
+	if err != nil {
 		return err
 	}
+	if !ok {
+		// Even with no pane, a seed left by a failed or rolled-back start must
+		// not outlive its life.
+		return p.clearStartIdentity(n)
+	}
 	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return err
+	}
+	if err := p.clearStartIdentity(binding.Name); err != nil {
 		return err
 	}
 	p.binder.Forget(binding.Name)

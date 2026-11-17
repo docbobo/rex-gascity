@@ -229,6 +229,21 @@ gc also reads provider metadata over `get-meta` (not the start env):
 primary name, because gc reads some keys (`suspended`, `GC_SESSION_ID`) under
 the canonical identity even when the pane was started under a short pool name.
 
+### Identity metadata before launch
+
+`start` seeds the start-config identity keys into the metadata sidecar and
+records a provisional binding **before** the blocking `NewWindow`/`NewSplit`
+call. gc's pending-create ownership check reads `GC_SESSION_ID`,
+`GC_INSTANCE_TOKEN`, and `GC_RUNTIME_EPOCH` through `get-meta`; without the seed,
+a reconciler tick during Rex's startup-dialog dismissal sees an empty identity
+and rolls the fresh pending create back as "live runtime belongs to another
+session". The provisional binding carries no block ID yet, but lets `get-meta`
+resolve the runtime name and its rig-qualified aliases. The final binding
+replaces it when the launch returns. A failed start clears the seeded identity
+and provisional binding; `stop` clears the same keys before forgetting the pane,
+so a prior life's token cannot outlive it. See `docs/REX-IDENTITY.md` for the
+`runtime-herdr-core` comparison.
+
 ### Wrapped-gc process names
 
 The provider captures `GC_BIN` from the start config and persists its basename
@@ -250,7 +265,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **File staging is not done**: `copy_files`, `overlay_dir`, and `pack_overlay_dirs` from start config are ignored; nothing is copied into the agent's work dir.
 - **`list-running` only sees known panes**: It is derived from the sidecar bindings plus a liveness check, not from a scan of Rex. A live pane with no cached binding (for example after the state dir was removed) is not listed. It emits each live primary binding whose name matches the prefix, plus each matching rig-qualified alias when the prefix is non-empty; the empty prefix lists primary names only.
 - **Unimplemented operations exit 2**: `exec`, `provision`, `attach`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
-- **No OSC 7501 or busy-gated nudge**: OSC 7501 agent status frames are not emitted, and nudge busy-gating is deferred. `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
+- **No busy-gated nudge (OSC 7501 is emitted by the agent)**: OSC 7501 agent status frames are emitted by the pane program, not the provider — Pi implements the protocol and gc-managed Pi panes report `idle`/`working`/… under Rex, so `program_status` is normally populated. The provider does not yet consume it: nudge busy-gating and submit confirmation are deferred, so `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
 - **Teardown leaves the server and session shell intact**: Stopping agents closes only city-owned blocks (`rex block close`); it never stops the shared Rex server and never calls `session.destroy`.
 
 See `docs/rex-pilot-phase5.md` for the pilot and promotion record (GCREX-6), including the observed `gc:default` namespace under a launchd supervisor.
