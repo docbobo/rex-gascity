@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docbobo/rex-gascity/internal/launch"
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
@@ -40,7 +41,7 @@ type Config struct {
 	WorkDir string
 	// Env is the per-session environment gc ships in the start config. Rex
 	// launch options carry no env, so Start applies it by prefixing the launch
-	// argv with `env K=V ...` (see launchCommand).
+	// argv with `env K=V ...` (see launch.Command).
 	Env map[string]string
 	// PreStart is an ordered list of shell commands run before the agent pane
 	// launches, with cwd set to WorkDir and the start-config env applied.
@@ -239,9 +240,9 @@ type startResult struct {
 	blockID   rex.BlockID
 }
 
-func (p *Provider) start(ctx context.Context, name string, cfg Config) (launch startResult, err error) {
+func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
 	n := SessionName(name)
-	cfg.Env = projectPoolRouting(cfg.Env)
+	cfg.Env = launch.ProjectPoolRouting(cfg.Env)
 	seeded := false
 	defer func() {
 		if err == nil || !seeded {
@@ -299,7 +300,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (launch s
 	// Run pre_start hooks before seeding identity or a provisional binding,
 	// so a failed hook leaves nothing behind.
 	if len(cfg.PreStart) > 0 {
-		merged := mergeEnv(os.Environ(), cfg.Env)
+		merged := launch.MergeEnv(os.Environ(), cfg.Env)
 		for i, cmd := range cfg.PreStart {
 			if err := runPreStart(ctx, cmd, cfg.WorkDir, merged); err != nil {
 				return startResult{}, fmt.Errorf("pre_start[%d]: %w", i, err)
@@ -335,7 +336,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (launch s
 
 	tab := hint.TabLabel
 	spec := rex.LaunchSpec{
-		Command: launchCommand(cfg.Argv, cfg.Env),
+		Command: launch.Command(cfg.Argv, cfg.Env),
 		Cwd:     cfg.WorkDir,
 		Label:   n.PaneLabel(),
 	}
@@ -359,86 +360,6 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (launch s
 	}
 	p.record(ctx, n, sid, wid, block, "window", cfg)
 	return startResult{sessionID: sid, blockID: block}, nil
-}
-
-// launchCommand returns argv with the environment applied at the command
-// boundary, since Rex terminal launch options have no per-pane env. With no
-// env, or no command, argv is returned unchanged: a bare shell cannot be
-// seeded (a documented limitation), and an empty argv must stay empty so the
-// pane starts its default shell. Keys are sorted for deterministic output,
-// and the caller's slice is never mutated.
-func launchCommand(argv []string, env map[string]string) []string {
-	if len(argv) == 0 || len(env) == 0 {
-		return argv
-	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(env)+1+len(argv))
-	out = append(out, "env")
-	// `env` stops parsing options at the first KEY=V assignment, so every
-	// -u option must precede every assignment.
-	for _, k := range keys {
-		if env[k] == "" {
-			// Empty means unset, like RPP and gc's tmux adapter; a literal
-			// empty variable would mask gc's own fallbacks.
-			out = append(out, "-u", k)
-		}
-	}
-	for _, k := range keys {
-		if env[k] != "" {
-			out = append(out, k+"="+env[k])
-		}
-	}
-	return append(out, argv...)
-}
-
-// projectPoolRouting makes an unaliased pool or demand seat's work query reach
-// its routed work without giving up the per-seat claim identity.
-//
-// gc 1.5.1 ships GC_ALIAS empty and GC_AGENT/BEADS_ACTOR as the session bead
-// id for an unaliased pool seat, and expects `gc hook --claim` to find work
-// routed to GC_TEMPLATE. It does not: hookSessionAgentForQuery
-// (cmd/gc/cmd_hook.go:818 at v1.5.1) falls back to BEADS_ACTOR/GC_AGENT (the
-// bead id), and hookWorkQueryStores (cmd/gc/hook_cross_store.go:107) then
-// cannot resolve the rig from that agent query, so the query never reads the
-// store the routed step lives in (gastownhall/gascity#5716).
-//
-// Routing the agent query back to the template fixes discovery. GC_ALIAS stays
-// empty, so gc's claim writer hookClaimAssigneeIdentity
-// (cmd/gc/cmd_hook.go:866) records the claim under GC_SESSION_ID, the concrete
-// session bead id: a live session answers to it (sessionBeadAssigneeIdentities,
-// cmd/gc/pool_session_name.go:29) and every pool slot has its own, so seats
-// single-flight. Setting GC_ALIAS to the template instead (the GCREX-18
-// deviation) made every slot claim under one shared string no session bead
-// answers to, so a second seat adopted the first seat's in_progress bead and
-// releaseOrphanedPoolAssignments (cmd/gc/pool_session_name.go:211) reopened it
-// (GCREX-32).
-//
-// It applies only when GC_ALIAS is empty, GC_TEMPLATE is set and differs from
-// GC_AGENT, and GC_SESSION_ID is set: only BEADS_ACTOR is set to GC_TEMPLATE.
-// A non-empty GC_ALIAS, GC_AGENT, GC_SESSION_ID, the tokens and the caller's
-// map are never changed. With no GC_SESSION_ID there is no durable claim
-// identity to protect, so the env is passed through unchanged.
-func projectPoolRouting(env map[string]string) map[string]string {
-	if env["GC_ALIAS"] != "" {
-		return env
-	}
-	tmpl := env["GC_TEMPLATE"]
-	if tmpl == "" || tmpl == env["GC_AGENT"] {
-		return env
-	}
-	if env["GC_SESSION_ID"] == "" || env["BEADS_ACTOR"] == tmpl {
-		return env
-	}
-	out := make(map[string]string, len(env)+1)
-	for k, v := range env {
-		out[k] = v
-	}
-	out["BEADS_ACTOR"] = tmpl
-	return out
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the
@@ -781,26 +702,6 @@ func (p *Provider) livePane(ctx context.Context, name string) (Binding, error) {
 		return Binding{}, fmt.Errorf("%w: %s agent program exited", ErrSessionNotFound, name)
 	}
 	return binding, nil
-}
-
-// mergeEnv merges the base environment slice with an overlay map, returning a
-// new sorted slice. Overlay entries replace base entries with the same key.
-func mergeEnv(base []string, overlay map[string]string) []string {
-	m := make(map[string]string, len(base)+len(overlay))
-	for _, kv := range base {
-		if idx := strings.IndexByte(kv, '='); idx >= 0 {
-			m[kv[:idx]] = kv[idx+1:]
-		}
-	}
-	for k, v := range overlay {
-		m[k] = v
-	}
-	out := make([]string, 0, len(m))
-	for k, v := range m {
-		out = append(out, k+"="+v)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // runPreStart runs one pre_start shell command. It honours ctx cancellation.
