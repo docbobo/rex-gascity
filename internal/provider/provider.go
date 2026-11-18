@@ -723,6 +723,9 @@ func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) er
 	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, rexKeys...); err != nil {
 		return fmt.Errorf("send-keys %s: %w", name, err)
 	}
+	// Keys pressed into the pane are input even when the screen does not
+	// change, so record the floor for idle detection.
+	p.noteInput(binding)
 	return nil
 }
 

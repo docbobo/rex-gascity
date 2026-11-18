@@ -148,6 +148,9 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 	if err := p.client.BlockWrite(submitCtx, binding.SessionID, binding.BlockID, text); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: type text: %w", name, err)
 	}
+	// The text is in the pane now: stamp the input floor so the delivery is
+	// visible to idle detection before the program's output renders.
+	p.noteInput(binding)
 	// The text is in the pane now, so the Enter must be attempted even if the
 	// parent was cancelled. It keeps the same submit deadline, so a cancel or
 	// stall cannot make this run forever.

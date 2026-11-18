@@ -41,6 +41,23 @@ func statusFunc(records ...rex.ProgramStatusRecord) func(rex.BlockID) rex.Progra
 	}
 }
 
+func TestNudgeRecordsInputFloor(t *testing.T) {
+	fake := faketest.New()
+	store := provider.NewMemoryActivityStore()
+	p := nudgeStarted(t, fake, provider.WithActivityStore(store))
+
+	if err := p.Nudge(context.Background(), activityName, "hello"); err != nil {
+		t.Fatalf("Nudge: %v", err)
+	}
+	rec, ok := store.Load(activityName)
+	if !ok || rec.InputAt.IsZero() {
+		t.Fatalf("activity record = %+v ok=%v, want a non-zero input floor", rec, ok)
+	}
+	if rec.Identity != string(activityBlock) {
+		t.Errorf("identity = %q, want %q", rec.Identity, activityBlock)
+	}
+}
+
 func TestNudgeRefusesWorkingPane(t *testing.T) {
 	fake := faketest.New()
 	fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{

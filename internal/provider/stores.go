@@ -20,6 +20,11 @@ type ActivityRecord struct {
 	Identity    string
 	Fingerprint string
 	At          time.Time
+	// InputAt is the last time the pack typed into the pane. It is a floor
+	// for the reported activity, so input whose output has not rendered yet
+	// is not read as idle. Zero means no input was recorded for this
+	// incarnation; it is ignored when Identity is not the current pane.
+	InputAt time.Time
 }
 
 // ActivityStore persists activity fingerprints per session name.
@@ -70,6 +75,7 @@ type activityRecord struct {
 	Identity    string    `json:"identity"`
 	Fingerprint string    `json:"fingerprint"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	InputAt     time.Time `json:"input_updated_at,omitempty"`
 }
 
 // fileActivityStore is a file-backed ActivityStore.
@@ -94,13 +100,13 @@ func (s *fileActivityStore) Load(name SessionName) (ActivityRecord, bool) {
 	if err != nil || !ok {
 		return ActivityRecord{}, false
 	}
-	return ActivityRecord{Identity: r.Identity, Fingerprint: r.Fingerprint, At: r.UpdatedAt}, true
+	return ActivityRecord{Identity: r.Identity, Fingerprint: r.Fingerprint, At: r.UpdatedAt, InputAt: r.InputAt}, true
 }
 
 func (s *fileActivityStore) Save(name SessionName, rec ActivityRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = writeJSON(s.path(name), activityRecord{Identity: rec.Identity, Fingerprint: rec.Fingerprint, UpdatedAt: rec.At})
+	_ = writeJSON(s.path(name), activityRecord{Identity: rec.Identity, Fingerprint: rec.Fingerprint, UpdatedAt: rec.At, InputAt: rec.InputAt})
 }
 
 // memoryMetaStore is an in-memory MetaStore.

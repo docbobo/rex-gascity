@@ -170,6 +170,23 @@ func TestNudgeClosedPaneFails(t *testing.T) {
 	}
 }
 
+func TestSendKeysRecordsInputFloor(t *testing.T) {
+	fake := faketest.New()
+	store := provider.NewMemoryActivityStore()
+	p := provider.New("acme", fake, provider.WithActivityStore(store))
+	if err := p.Start(context.Background(), activityName, provider.Config{Argv: []string{"claude"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := p.SendKeys(context.Background(), activityName, "Enter"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	rec, ok := store.Load(activityName)
+	if !ok || rec.InputAt.IsZero() {
+		t.Fatalf("activity record = %+v ok=%v, want a non-zero input floor", rec, ok)
+	}
+}
+
 func TestSendKeysTranslatesKeyNames(t *testing.T) {
 	fake, p := started(t)
 

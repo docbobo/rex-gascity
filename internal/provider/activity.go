@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // ActivitySource names where a LastActivity timestamp came from.
@@ -40,10 +42,14 @@ type LastActivity struct {
 }
 
 // GetLastActivity reports when the agent's pane was last active. It prefers
-// the latest program_status record. Without one it fingerprints the rendered
-// output and stores the time the fingerprint last changed, so an idle pane
-// reports a stable timestamp across provider processes. A session with no
-// pane reports ActivityNone and a zero time.
+// the latest program_status record; a newest state of working or blocked means
+// now, so a silent but busy program is not mistaken for idle. Without a
+// program_status record it fingerprints the rendered output and stores the
+// time the fingerprint last changed, so an idle pane reports a stable
+// timestamp across provider processes. In both paths a recorded pack-input
+// time from the same incarnation is a floor, so typing into a pane is visible
+// before its output changes. A session with no pane reports ActivityNone and a
+// zero time.
 func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivity, error) {
 	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
 	if err != nil {
@@ -57,14 +63,13 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 	if err != nil {
 		return LastActivity{}, err
 	}
-	var latest time.Time
-	for _, rec := range status.Records {
-		if rec.UpdatedAt.After(latest) {
-			latest = rec.UpdatedAt
-		}
+	latest, state, present := newestProgramStatus(status.Records)
+	inputAt := p.inputFloor(binding)
+	if present && (state == "working" || state == "blocked") {
+		return LastActivity{At: laterOf(time.Now().UTC(), inputAt), Source: ActivityProgramStatus}, nil
 	}
 	if !latest.IsZero() {
-		return LastActivity{At: latest, Source: ActivityProgramStatus}, nil
+		return LastActivity{At: laterOf(latest, inputAt), Source: ActivityProgramStatus}, nil
 	}
 
 	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
@@ -73,9 +78,65 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 	}
 	fp := formatFingerprint(out)
 	if rec, found := p.activity.Load(binding.Name); found && rec.Identity == string(binding.BlockID) && rec.Fingerprint == fp {
-		return LastActivity{At: rec.At, Source: ActivityFormatPoll}, nil
+		return LastActivity{At: laterOf(rec.At, rec.InputAt), Source: ActivityFormatPoll}, nil
 	}
 	now := time.Now().UTC()
-	p.activity.Save(binding.Name, ActivityRecord{Identity: string(binding.BlockID), Fingerprint: fp, At: now})
-	return LastActivity{At: now, Source: ActivityFormatPoll}, nil
+	rec, found := p.activity.Load(binding.Name)
+	if !found || rec.Identity != string(binding.BlockID) {
+		// A new incarnation starts clean: a floor from a recycled pane must
+		// not leak into this one.
+		rec = ActivityRecord{}
+	}
+	rec.Identity = string(binding.BlockID)
+	rec.Fingerprint = fp
+	rec.At = now
+	p.activity.Save(binding.Name, rec)
+	return LastActivity{At: laterOf(now, rec.InputAt), Source: ActivityFormatPoll}, nil
+}
+
+// newestProgramStatus returns the newest program_status record's updated time
+// and state. A tie keeps the later record.
+func newestProgramStatus(records []rex.ProgramStatusRecord) (time.Time, string, bool) {
+	var latest time.Time
+	var state string
+	present := false
+	for _, rec := range records {
+		if !present || !rec.UpdatedAt.Before(latest) {
+			latest, state, present = rec.UpdatedAt, rec.State, true
+		}
+	}
+	return latest, state, present
+}
+
+// inputFloor is the recorded pack-input time for the pane's current
+// incarnation, or the zero time when there is none. A record from another
+// incarnation is ignored so a stale stamp cannot leak across a recycle.
+func (p *Provider) inputFloor(b Binding) time.Time {
+	rec, ok := p.activity.Load(b.Name)
+	if !ok || rec.Identity != string(b.BlockID) {
+		return time.Time{}
+	}
+	return rec.InputAt
+}
+
+// noteInput records that the pack typed into the pane. The stored time is a
+// floor for GetLastActivity, so input whose output has not rendered yet is not
+// read as idle. It keeps the existing fingerprint and screen time for the same
+// incarnation.
+func (p *Provider) noteInput(b Binding) {
+	rec, found := p.activity.Load(b.Name)
+	if !found || rec.Identity != string(b.BlockID) {
+		rec = ActivityRecord{Identity: string(b.BlockID)}
+	}
+	rec.InputAt = time.Now().UTC()
+	p.activity.Save(b.Name, rec)
+}
+
+// laterOf returns the later of two times, so an input floor can never be
+// reported below a real activity stamp.
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }

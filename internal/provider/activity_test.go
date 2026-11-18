@@ -145,6 +145,80 @@ func TestGetLastActivityZeroUpdatedAtDoesNotBeatPoll(t *testing.T) {
 	}
 }
 
+func TestGetLastActivityWorkingOrBlockedRecordYieldsNow(t *testing.T) {
+	for _, state := range []string{"working", "blocked"} {
+		t.Run(state, func(t *testing.T) {
+			fake, p := started(t)
+			old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+			fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{
+				activityBlock: {Records: []rex.ProgramStatusRecord{{ID: "a", State: state, UpdatedAt: old}}},
+			}
+			before := time.Now().UTC()
+
+			got, err := p.GetLastActivity(context.Background(), activityName)
+			if err != nil {
+				t.Fatalf("GetLastActivity: %v", err)
+			}
+			if got.Source != provider.ActivityProgramStatus {
+				t.Errorf("Source = %q, want program_status", got.Source)
+			}
+			// A silent but busy program must not read as idle: the stamp is now,
+			// not the stale record time.
+			if got.At.Before(before) || got.At.After(time.Now().UTC().Add(time.Second)) {
+				t.Errorf("At = %v, want ~now (>= %v)", got.At, before)
+			}
+		})
+	}
+}
+
+func TestGetLastActivityInputFloorDominatesStaleScreenHash(t *testing.T) {
+	fake, p := started(t)
+	ctx := context.Background()
+	fake.Formats = map[rex.BlockID]string{activityBlock: "steady"}
+
+	first, err := p.GetLastActivity(ctx, activityName)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	if err := p.SendKeys(ctx, activityName, "Up"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	got, err := p.GetLastActivity(ctx, activityName)
+	if err != nil {
+		t.Fatalf("after input: %v", err)
+	}
+	if got.Source != provider.ActivityFormatPoll {
+		t.Errorf("Source = %q, want format_poll", got.Source)
+	}
+	// The screen is unchanged, but typing into the pane happened after the
+	// stored hash time, so the input floor must dominate the stale stamp.
+	if !got.At.After(first.At) {
+		t.Errorf("At = %v, want after input floor (first %v)", got.At, first.At)
+	}
+}
+
+func TestGetLastActivityUnknownSourceIgnoresInputFloor(t *testing.T) {
+	fake := faketest.New()
+	store := provider.NewMemoryActivityStore()
+	p := provider.New("acme", fake, provider.WithActivityStore(store))
+	// A leftover input record must not resurrect activity for a session that
+	// no longer resolves to a pane.
+	store.Save(activityName, provider.ActivityRecord{
+		Identity: string(activityBlock),
+		InputAt:  time.Now().UTC(),
+	})
+
+	got, err := p.GetLastActivity(context.Background(), activityName)
+	if err != nil {
+		t.Fatalf("GetLastActivity: %v", err)
+	}
+	if got.Source != provider.ActivityNone || !got.At.IsZero() {
+		t.Errorf("got %+v, want zero time and source none", got)
+	}
+}
+
 func TestActivityPolicyAndSources(t *testing.T) {
 	policy := strings.ToLower(provider.ActivityPolicy)
 	for _, want := range []string{"fallback", "osc 7501"} {
