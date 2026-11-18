@@ -76,8 +76,13 @@ type Provider struct {
 	// revalidation accept all so a legacy namespace still resolves).
 	ns Namespace
 
-	// nudgeConfig holds the nudge and startup-delivery tunables and the
-	// external process Runner (see nudge.go).
+	// runner runs the external processes the provider shells out to: the gc
+	// claim probe (nudge.go) and the git drain-diagnostic calls
+	// (drain_diag.go). It is shared, so it lives on Provider rather than in
+	// nudgeConfig.
+	runner Runner
+
+	// nudgeConfig holds the nudge and startup-delivery tunables (see nudge.go).
 	nudgeConfig
 }
 
@@ -169,6 +174,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		bindings:    NewMemoryStore(),
 		activity:    NewMemoryActivityStore(),
 		meta:        NewMemoryMetaStore(),
+		runner:      ExecRunner{},
 		nudgeConfig: defaultNudgeConfig(),
 	}
 	p.claimProbe = p.probeLiveClaim

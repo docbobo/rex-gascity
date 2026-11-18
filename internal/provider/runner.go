@@ -8,11 +8,12 @@ import (
 	"time"
 )
 
-// Runner runs an external command and returns its stdout. It is the one seam
-// through which the provider shells out: the `gc` claim probe (nudge.go) and
-// the `git` calls of the drain diagnostic (drain_diag.go). Production uses
-// ExecRunner; tests inject a FakeRunner with WithRunner instead of installing
-// PATH shims.
+// Runner runs an external command and returns its stdout. It is the seam for
+// the provider's probe and diagnostic shell-outs: the `gc` claim probe
+// (nudge.go) and the `git` calls of the drain diagnostic (drain_diag.go).
+// pre_start hooks do not use it: runPreStart runs /bin/sh directly because it
+// needs the hook's combined output (provider.go). Production uses ExecRunner;
+// tests inject a FakeRunner with WithRunner instead of installing PATH shims.
 //
 // dir is the working directory ("" keeps the caller's). env holds extra
 // KEY=VALUE entries added to the inherited environment. A non-zero exit or a

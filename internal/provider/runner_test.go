@@ -2,9 +2,12 @@ package provider_test
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
 )
@@ -29,5 +32,22 @@ func TestExecRunner(t *testing.T) {
 	}
 	if _, err := (provider.ExecRunner{}).Run(context.Background(), "", nil, "sh", "-c", "exit 3"); err == nil {
 		t.Error("Run of a failing command returned nil error")
+	}
+}
+
+// TestExecRunnerBoundsAChildHoldingStdout checks that Run does not wait for a
+// child that outlives the command and keeps stdout open: WaitDelay bounds it.
+// The gc claim probe and the git drain calls rely on that bound.
+func TestExecRunnerBoundsAChildHoldingStdout(t *testing.T) {
+	start := time.Now()
+	_, err := (provider.ExecRunner{}).Run(context.Background(), "", nil, "sh", "-c", "sleep 5 & exit 0")
+	if err == nil {
+		t.Fatal("Run returned nil error, want the WaitDelay error")
+	}
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Errorf("Run error = %v, want exec.ErrWaitDelay", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Run took %v, want it bounded by WaitDelay", elapsed)
 	}
 }

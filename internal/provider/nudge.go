@@ -65,10 +65,6 @@ type nudgeConfig struct {
 	// resends after a delivered-but-unconfirmed submit. An empty ladder
 	// disables resending.
 	startupNudgeBackoffs []time.Duration
-
-	// runner runs the external processes the provider shells out to (the gc
-	// claim probe and the drain diagnostic's git calls).
-	runner Runner
 }
 
 // defaultNudgeConfig returns the production nudge and startup-delivery config.
@@ -80,7 +76,6 @@ func defaultNudgeConfig() nudgeConfig {
 		startupReadyWindow:   defaultStartupReadyWindow,
 		startupSettleDelay:   defaultStartupSettleDelay,
 		startupNudgeBackoffs: defaultStartupNudgeBackoffs,
-		runner:               ExecRunner{},
 	}
 }
 

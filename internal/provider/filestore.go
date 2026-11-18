@@ -161,6 +161,18 @@ type bindingRecord struct {
 	ClaimSessionID string `json:"claim_session_id,omitempty"`
 }
 
+// bindingFromRecord converts a stored record to a Binding. The cast keeps the
+// compile-time check that every Binding field has a record field; an empty
+// aliases list is normalized to nil because the pre-refactor field-by-field
+// conversion returned nil, and a refactor must not change the value.
+func bindingFromRecord(r bindingRecord) Binding {
+	b := Binding(r)
+	if len(b.Aliases) == 0 {
+		b.Aliases = nil
+	}
+	return b
+}
+
 // FileStore is a BindingStore that keeps one JSON file per binding under a
 // directory, so bindings survive a process restart. It is safe for concurrent
 // use within a process; writes are atomic renames.
@@ -181,7 +193,7 @@ func (s *FileStore) Load(name SessionName) (Binding, bool) {
 	if err != nil || !ok {
 		return Binding{}, false
 	}
-	return Binding(r), true
+	return bindingFromRecord(r), true
 }
 
 // List implements BindingLister. Missing and corrupt files are skipped.
@@ -189,7 +201,7 @@ func (s *FileStore) List() []Binding {
 	records := s.t.list()
 	out := make([]Binding, 0, len(records))
 	for _, r := range records {
-		out = append(out, Binding(r))
+		out = append(out, bindingFromRecord(r))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

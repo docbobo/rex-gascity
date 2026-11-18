@@ -49,6 +49,33 @@ func TestFileStoreLegacyRecordFallsBackToNameLabels(t *testing.T) {
 	}
 }
 
+// TestFileStoreEmptyAliasesLoadAsNil writes a record with an explicit empty
+// aliases list (a shape an older or hand-written file could have) and checks it
+// loads as nil. The record is cast to a Binding, which leaves an empty non-nil
+// slice; the pre-refactor field-by-field conversion returned nil, and the
+// refactor must not change the value.
+func TestFileStoreEmptyAliasesLoadAsNil(t *testing.T) {
+	dir := t.TempDir()
+	name := SessionName("Indigo--dog-1")
+	raw := `{"gc_name":"Indigo--dog-1","rex_session_id":"session:acme",` +
+		`"rex_session_label":"gc:acme","window_id":"window:Indigo",` +
+		`"block_id":"block:dog-1","aliases":[],"launch_mode":"window"}`
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nameKey(name)+".json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := NewFileStore(dir).Load(name)
+	if !ok {
+		t.Fatal("record did not load")
+	}
+	if got.Aliases != nil {
+		t.Errorf("Aliases = %#v, want nil for an empty stored list", got.Aliases)
+	}
+}
+
 func TestFileStoreRoundTrip(t *testing.T) {
 	s := NewFileStore(filepath.Join(t.TempDir(), "bindings"))
 	want := fullBinding("Indigo--dog-1")
