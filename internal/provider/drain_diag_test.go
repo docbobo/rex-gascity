@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
+	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
@@ -47,11 +48,16 @@ func gitRepo(t *testing.T) string {
 // provider, its state dir, and the diagnostics dir path.
 func drainStarted(t *testing.T, workDir, stateDir string) *provider.Provider {
 	t.Helper()
+	return drainStartedWith(t, faketest.New(), workDir, stateDir)
+}
+
+func drainStartedWith(t *testing.T, client rex.Client, workDir, stateDir string) *provider.Provider {
+	t.Helper()
 	var opts []provider.Option
 	if stateDir != "" {
 		opts = append(opts, provider.WithStateDir(stateDir))
 	}
-	p := provider.New("acme", faketest.New(), opts...)
+	p := provider.New("acme", client, opts...)
 	err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{
 		Argv:    []string{"claude"},
 		WorkDir: workDir,
@@ -132,6 +138,13 @@ func TestStopWritesNoDiagnosticWhenNothingToReport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dirty, "a.txt"), []byte("two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	untracked := gitRepo(t)
+	if err := os.MkdirAll(filepath.Join(untracked, ".pi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(untracked, ".pi", "x"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name    string
 		workDir string
@@ -141,6 +154,7 @@ func TestStopWritesNoDiagnosticWhenNothingToReport(t *testing.T) {
 		{"non-git dir", t.TempDir(), func(t *testing.T) string { return t.TempDir() }},
 		{"no state dir", dirty, func(*testing.T) string { return "" }},
 		{"empty work dir", "", func(t *testing.T) string { return t.TempDir() }},
+		{"untracked files only", untracked, func(t *testing.T) string { return t.TempDir() }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,5 +182,66 @@ func TestBindingWorkDirRoundTripsThroughFileStore(t *testing.T) {
 	b, ok := reader.Binding("Indigo--dog-1")
 	if !ok || b.WorkDir != repo {
 		t.Errorf("reloaded WorkDir = %q (ok=%v), want %q", b.WorkDir, ok, repo)
+	}
+}
+
+// closeProbe records whether the diagnostic already existed when the pane was
+// closed: the tree must be sampled while the worker process is still alive.
+type closeProbe struct {
+	*faketest.Fake
+	diagDir        string
+	diagAtClose    []string
+	closeWasCalled bool
+}
+
+func (c *closeProbe) CloseBlock(ctx context.Context, sid rex.SessionID, blk rex.BlockID) error {
+	c.closeWasCalled = true
+	c.diagAtClose, _ = filepath.Glob(filepath.Join(c.diagDir, "*.json"))
+	return c.Fake.CloseBlock(ctx, sid, blk)
+}
+
+func TestStopWritesDiagnosticBeforeClosingPane(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	probe := &closeProbe{Fake: faketest.New(), diagDir: filepath.Join(state, "diagnostics")}
+	p := drainStartedWith(t, probe, repo, state)
+
+	if err := p.Stop(context.Background(), "Indigo--dog-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !probe.closeWasCalled {
+		t.Fatal("pane was not closed")
+	}
+	if len(probe.diagAtClose) != 1 {
+		t.Errorf("diagnostics present at CloseBlock = %v, want one: the diagnostic must run before the pane closes", probe.diagAtClose)
+	}
+}
+
+// A drained worker's process has often exited already, so its pane is gone
+// when Stop runs. The diagnostic must still be written from the stored binding.
+func TestStopWritesDiagnosticWhenPaneIsAlreadyGone(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	fake := faketest.New()
+	p := drainStartedWith(t, fake, repo, state)
+	fake.View.Windows = nil // the pane vanished
+
+	if err := p.Stop(context.Background(), "Indigo--dog-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if files := diagFiles(t, state); len(files) != 1 {
+		t.Fatalf("diagnostic files = %v, want exactly one", files)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed = %v, want none for a vanished pane", fake.ClosedBlocks)
+	}
+	if _, ok := p.Binding("Indigo--dog-1"); ok {
+		t.Error("binding still stored after Stop")
 	}
 }

@@ -233,24 +233,33 @@ the template name: the template is recorded as a binding alias independently of
 `GC_ALIAS`.
 
 The provider must **not** synthesize a `GC_ALIAS` from `GC_TEMPLATE` (the
-GCREX-18 deviation, removed in GCREX-32). gc's claim writer
+GCREX-18 deviation, removed in GCREX-32). It broke pools in two ways. First,
+the work query runs its assigned and in-progress tiers over `GC_SESSION_ID`,
+`GC_SESSION_NAME` and `GC_ALIAS` (`internal/config/workquery.go:459` at gc
+v1.5.1), so with `GC_ALIAS` set to the bare template every seat probed the same
+identity, and a second seat adopted the first seat's `in_progress` bead at once
+(`hookClaimExistingAssignment` / `certifyHookAdoption`,
+`cmd/gc/cmd_hook_claim.go:472-477`). Second, gc's claim writer
 `hookClaimAssigneeIdentity` (`cmd/gc/cmd_hook.go:866`) records a claim under
-`alias` first, so a bare-template alias makes every pool slot claim under one
-shared string that no open session bead answers to; then
-`releaseOrphanedPoolAssignments` (`cmd/gc/pool_session_name.go:211`) reopens the
-work: the pool respawns and a duplicate seat can close the shared step and
-drain the real worker mid-edit. A blank `GC_ALIAS` still discovers routed work:
+`alias` first, so claims landed under one shared string that no open session
+bead answers to; then `releaseOrphanedPoolAssignments`
+(`cmd/gc/pool_session_name.go:211`) reopened the work: the pool respawns and a
+duplicate seat can close the shared step and drain the real worker mid-edit.
+A blank `GC_ALIAS` still discovers routed work:
 the pool-demand tier is gated on `GC_SESSION_ORIGIN=ephemeral`
 (`internal/config/workquery.go:873`, which gc sets for pool seats
 at `cmd/gc/template_resolve.go:307`) and probes the template target independently
 of `GC_ALIAS`.
 
-On `stop`, if the pane's work dir is a git work tree with uncommitted changes,
-the provider writes `<state dir>/diagnostics/<name>.json` naming the worker, its
-aliases, its `GC_SESSION_ID`, the changed files and the file edited last. This
-leaves a trace when gc drains a worker that still held edits. It is best effort:
-the git calls are bounded to 3 s, every error is swallowed, and a clean tree, a
-non-git dir, or an unset state dir writes nothing and never affects `stop`.
+On `stop`, if the pane's work dir is a git work tree with modified tracked
+files, the provider writes `<state dir>/diagnostics/<name>.json` naming the
+worker, its aliases, its `GC_SESSION_ID`, the changed files and the file edited
+last. Untracked files are ignored. The check runs before the pane is closed (or
+from the stored binding when the pane is already gone), and git runs with
+`GIT_OPTIONAL_LOCKS=0` so it never takes the index lock. This leaves a trace
+when gc drains a worker that still held edits. It is best effort: both git calls
+share one 3 s budget, every error is swallowed, and a clean tree, a non-git dir,
+or an unset state dir writes nothing and never affects `stop`.
 The full inventory (meaning, when set, durable vs incidental) and the observed
 RPP session-name forms are in `docs/REX-CONTRACT.md` §13.
 

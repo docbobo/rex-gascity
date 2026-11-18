@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
@@ -236,5 +237,34 @@ func TestAliasesFor(t *testing.T) {
 	got = aliasesFor("mayor", map[string]string{"GC_TEMPLATE": "mayor", "GC_ALIAS": "mayor"})
 	if len(got) != 0 {
 		t.Errorf("aliasesFor(mayor) = %v, want none", got)
+	}
+}
+
+// TestScanRebuiltBindingKeepsHintFields rediscovers a pane by label after its
+// stored address went stale. The rebuilt binding must carry the hint's launch
+// details, or a later Stop loses WorkDir and skips the drain diagnostic.
+func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
+	b, store, _ := newTestBinder(t, indigoWindow())
+	stale := indigoBinding()
+	stale.SessionID = "session:old"
+	stale.WindowID = "window:old"
+	stale.BlockID = "block:old"
+	stale.WorkDir = "/work/dog-1"
+	stale.GCBin = ".gc-wrapped"
+	stale.ReadyPrompt = "> "
+	stale.LaunchMode = "split"
+	stale.CreatedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	store.Save(stale)
+
+	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	if err != nil || !ok || got.BlockID != "block:dog-1" {
+		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+	}
+	if got.WorkDir != stale.WorkDir || got.GCBin != stale.GCBin || got.ReadyPrompt != stale.ReadyPrompt ||
+		got.LaunchMode != stale.LaunchMode || !got.CreatedAt.Equal(stale.CreatedAt) {
+		t.Errorf("rebuilt binding lost hint fields: %+v", got)
+	}
+	if saved, _ := store.Load("Indigo--dog-1"); saved.WorkDir != stale.WorkDir {
+		t.Errorf("saved WorkDir = %q, want %q", saved.WorkDir, stale.WorkDir)
 	}
 }

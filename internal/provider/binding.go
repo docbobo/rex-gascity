@@ -372,6 +372,13 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 					TabLabel:     tab,
 					PaneLabel:    pane,
 					Aliases:      hint.Aliases,
+					// Launch details the labels do not carry: dropping them
+					// would silently disable the Stop-time drain diagnostic.
+					LaunchMode:  hint.LaunchMode,
+					CreatedAt:   hint.CreatedAt,
+					ReadyPrompt: hint.ReadyPrompt,
+					GCBin:       hint.GCBin,
+					WorkDir:     hint.WorkDir,
 				}
 				b.store.Save(bd)
 				return bd, true, nil

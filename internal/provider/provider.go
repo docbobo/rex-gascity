@@ -155,13 +155,18 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 	// demand seat gc already ships the concrete identity: GC_ALIAS is empty,
 	// and GC_AGENT/BEADS_ACTOR are the session bead id (RuntimeEnvWithSessionContext,
 	// internal/session/lifecycle.go:67-78, merged at cmd/gc/session_lifecycle_parallel.go:1261).
-	// Synthesizing a claimable GC_ALIAS from GC_TEMPLATE is wrong: gc's claim
-	// writer hookClaimAssigneeIdentity (cmd/gc/cmd_hook.go:866 v1.5.1) records
-	// the claim under alias first, so a bare-template alias makes every pool
-	// slot claim under one shared string no open session bead answers to, and
-	// releaseOrphanedPoolAssignments (cmd/gc/pool_session_name.go:211) reopens
-	// the work (GCREX-32). launchCommand turns the empty GC_ALIAS into
-	// `env -u GC_ALIAS`, matching RPP and gc's tmux adapter.
+	// Synthesizing a claimable GC_ALIAS from GC_TEMPLATE is wrong, and broke
+	// pools twice (GCREX-32). With GC_ALIAS = <bare template>, every seat ran
+	// the work query's assigned/in-progress tiers over the same identity
+	// (internal/config/workquery.go:459 v1.5.1: GC_SESSION_ID, GC_SESSION_NAME,
+	// GC_ALIAS), so a second seat adopted the first seat's in_progress bead at
+	// once (hookClaimExistingAssignment / certifyHookAdoption,
+	// cmd/gc/cmd_hook_claim.go:472-477). Then gc's claim writer
+	// hookClaimAssigneeIdentity (cmd/gc/cmd_hook.go:866) recorded claims under
+	// that shared alias, which no open session bead answers to, and
+	// releaseOrphanedPoolAssignments (cmd/gc/pool_session_name.go:211) reopened
+	// the work. launchCommand turns the empty GC_ALIAS into `env -u GC_ALIAS`,
+	// matching RPP and gc's tmux adapter.
 	seeded := false
 	defer func() {
 		if err == nil || !seeded {
@@ -406,19 +411,28 @@ func (p *Provider) Stop(ctx context.Context, name string) error {
 
 func (p *Provider) stop(ctx context.Context, name string) error {
 	n := SessionName(name)
+	// Load the stored binding before Resolve: Resolve drops a stale record when
+	// its pane is gone, and a drained worker's process has often exited already.
+	stored, hadStored := p.bindings.Load(n)
 	binding, ok, err := p.binder.Resolve(ctx, n)
 	if err != nil {
 		return err
 	}
 	if !ok {
+		// No pane: the worker already exited, which is the usual drain case.
+		// Sample its work tree from the stored binding.
+		if hadStored {
+			p.writeDrainDiagnostic(ctx, stored)
+		}
 		// Even with no pane, a seed left by a failed or rolled-back start must
 		// not outlive its life.
 		return p.clearStartIdentity(n)
 	}
+	// Sample the work tree before the pane closes, while the worker is alive.
+	p.writeDrainDiagnostic(ctx, binding)
 	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return err
 	}
-	p.writeDrainDiagnostic(ctx, binding)
 	if err := p.clearStartIdentity(binding.Name); err != nil {
 		return err
 	}

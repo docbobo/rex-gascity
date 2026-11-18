@@ -10,12 +10,13 @@ import (
 	"time"
 )
 
-// drainDiagTimeout bounds each git call made for the drain diagnostic, so a
-// slow or wedged work tree cannot delay Stop.
-const drainDiagTimeout = 3 * time.Second
+// drainDiagTimeout bounds the git calls made for the drain diagnostic, taken
+// together, so a slow or wedged work tree cannot delay Stop or hold the state
+// lock for long. It is a var only so tests can shorten it.
+var drainDiagTimeout = 3 * time.Second
 
 // drainDiagnostic is the JSON written when a worker is stopped while its work
-// tree holds uncommitted edits. It names the worker, its session and the file
+// tree holds modified tracked files. It names the worker, its session and the file
 // edited last, so an operator can tell which seat lost work.
 type drainDiagnostic struct {
 	Worker         string    `json:"worker"`
@@ -31,20 +32,24 @@ type drainDiagnostic struct {
 var unsafeNameChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // writeDrainDiagnostic leaves <stateDir>/diagnostics/<name>.json when the
-// stopped binding's work dir is a git work tree with uncommitted changes.
-// gc's drain/retire path calls provider stop; a worker drained while it still
-// held edits is otherwise silent. It is best effort: every error is swallowed
-// and the git calls are time bounded, so it never fails or delays Stop.
+// stopped binding's work dir is a git work tree with modified tracked files.
+// Untracked files are ignored: a dir such as .pi/ is always present and would
+// be a permanent false positive. gc's drain/retire path calls provider stop; a
+// worker drained while it still held edits is otherwise silent. It is best
+// effort: every error is swallowed and both git calls share one time budget, so
+// it never fails or delays Stop.
 func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
 	if b.WorkDir == "" || p.stateDir == "" {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, drainDiagTimeout)
+	defer cancel()
 	root, ok := gitOutput(ctx, b.WorkDir, "rev-parse", "--show-toplevel")
 	if !ok {
 		return
 	}
-	root = strings.TrimSpace(root)
-	status, ok := gitOutput(ctx, b.WorkDir, "status", "--porcelain", "-z", "--untracked-files=all")
+	root = strings.TrimRight(root, "\r\n")
+	status, ok := gitOutput(ctx, b.WorkDir, "status", "--porcelain", "-z", "--untracked-files=no")
 	if !ok {
 		return
 	}
@@ -78,12 +83,17 @@ func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
 	_ = writeJSON(filepath.Join(p.stateDir, "diagnostics", name+".json"), d)
 }
 
-// gitOutput runs git in dir with a bounded timeout, returning its stdout.
+// gitOutput runs git in dir under ctx, returning its stdout. It sets
+// GIT_OPTIONAL_LOCKS=0 (like --no-optional-locks) so `git status` never takes
+// .git/index.lock and cannot race a worker's `git add` or `git commit` in a
+// shared work tree.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, bool) {
-	ctx, cancel := context.WithTimeout(ctx, drainDiagTimeout)
-	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	// A git child that outlives the kill must not hold stdout open past the
+	// deadline.
+	cmd.WaitDelay = 100 * time.Millisecond
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
