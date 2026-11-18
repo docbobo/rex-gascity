@@ -66,28 +66,98 @@ func readJSON(path string, v any) (bool, error) {
 	return true, nil
 }
 
-// bindingRecord is the on-disk shape of a Binding.
+// flatPath places a record at dir/<name hash>.json.
+func flatPath(dir string) func(SessionName) string {
+	return func(name SessionName) string { return filepath.Join(dir, nameKey(name)+".json") }
+}
+
+// fileTable is the one file-backed table behind every file store: JSON records
+// addressed by a path function, written atomically, guarded by a mutex. The
+// stores only add their key and record types.
+type fileTable[K, R any] struct {
+	mu   sync.Mutex
+	dir  string
+	path func(K) string
+}
+
+func newFileTable[K, R any](dir string, path func(K) string) *fileTable[K, R] {
+	return &fileTable[K, R]{dir: dir, path: path}
+}
+
+// read returns the record for k. A missing file is (zero, false, nil); a
+// corrupt or unreadable one is an error.
+func (t *fileTable[K, R]) read(k K) (R, bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var r R
+	ok, err := readJSON(t.path(k), &r)
+	return r, ok, err
+}
+
+func (t *fileTable[K, R]) write(k K, r R) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return writeJSON(t.path(k), r)
+}
+
+// remove deletes the record for k. A missing file is not an error.
+func (t *fileTable[K, R]) remove(k K) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return removeIfPresent(t.path(k))
+}
+
+// removeAll deletes path and everything under it. A missing path is success.
+func (t *fileTable[K, R]) removeAll(path string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return os.RemoveAll(path)
+}
+
+// list returns every record directly under dir, in no particular order.
+// Missing and corrupt files are skipped.
+func (t *fileTable[K, R]) list() []R {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	paths, _ := filepath.Glob(filepath.Join(t.dir, "*.json"))
+	out := []R{}
+	for _, path := range paths {
+		var r R
+		if ok, err := readJSON(path, &r); err != nil || !ok {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func removeIfPresent(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// bindingRecord is the on-disk shape of a Binding. It has the same fields in
+// the same order, so Go converts between the two and a new Binding field
+// fails to compile until the record has it too. The newer fields are omitted
+// when empty so old and new records stay compatible: a record without them
+// decodes with empty values and callers fall back to the name-derived labels.
 type bindingRecord struct {
-	GCName       string `json:"gc_name"`
-	SessionID    string `json:"rex_session_id"`
-	SessionLabel string `json:"rex_session_label"`
-	WindowID     string `json:"window_id"`
-	BlockID      string `json:"block_id"`
+	Name         SessionName   `json:"gc_name"`
+	SessionID    rex.SessionID `json:"rex_session_id"`
+	SessionLabel string        `json:"rex_session_label"`
+	WindowID     rex.WindowID  `json:"window_id"`
+	BlockID      rex.BlockID   `json:"block_id"`
 	// TabLabel, PaneLabel and Aliases were added after the first records.
-	// They are omitted when empty so old and new records stay compatible: a
-	// record without them decodes with empty values and callers fall back to
-	// the name-derived labels.
-	TabLabel   string    `json:"tab_label,omitempty"`
-	PaneLabel  string    `json:"pane_label,omitempty"`
-	Aliases    []string  `json:"aliases,omitempty"`
-	LaunchMode string    `json:"launch_mode"`
-	CreatedAt  time.Time `json:"created_at"`
-	// GCBin was added after the first records; omitted when empty so old
-	// records stay compatible.
-	GCBin string `json:"gc_bin,omitempty"`
-	// WorkDir was added after the first records; omitted when empty.
-	WorkDir string `json:"work_dir,omitempty"`
-	// ClaimSessionID was added after the first records; omitted when empty.
+	TabLabel   string        `json:"tab_label,omitempty"`
+	PaneLabel  string        `json:"pane_label,omitempty"`
+	Aliases    []SessionName `json:"aliases,omitempty"`
+	LaunchMode string        `json:"launch_mode"`
+	CreatedAt  time.Time     `json:"created_at"`
+	// GCBin, WorkDir and ClaimSessionID were added after the first records.
+	GCBin          string `json:"gc_bin,omitempty"`
+	WorkDir        string `json:"work_dir,omitempty"`
 	ClaimSessionID string `json:"claim_session_id,omitempty"`
 }
 
@@ -95,65 +165,31 @@ type bindingRecord struct {
 // directory, so bindings survive a process restart. It is safe for concurrent
 // use within a process; writes are atomic renames.
 type FileStore struct {
-	mu  sync.Mutex
-	dir string
+	t *fileTable[SessionName, bindingRecord]
 }
 
 // NewFileStore returns a FileStore rooted at dir. The directory is created on
 // the first Save.
-func NewFileStore(dir string) *FileStore { return &FileStore{dir: dir} }
-
-func (s *FileStore) path(name SessionName) string {
-	return filepath.Join(s.dir, nameKey(name)+".json")
+func NewFileStore(dir string) *FileStore {
+	return &FileStore{t: newFileTable[SessionName, bindingRecord](dir, flatPath(dir))}
 }
 
 // Load implements BindingStore. A missing, unreadable or corrupt file reads
 // as not found.
 func (s *FileStore) Load(name SessionName) (Binding, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var r bindingRecord
-	ok, err := readJSON(s.path(name), &r)
+	r, ok, err := s.t.read(name)
 	if err != nil || !ok {
 		return Binding{}, false
 	}
-	return r.binding(), true
-}
-
-func (r bindingRecord) binding() Binding {
-	var aliases []SessionName
-	for _, a := range r.Aliases {
-		aliases = append(aliases, SessionName(a))
-	}
-	return Binding{
-		Name:           SessionName(r.GCName),
-		SessionID:      rex.SessionID(r.SessionID),
-		SessionLabel:   r.SessionLabel,
-		WindowID:       rex.WindowID(r.WindowID),
-		BlockID:        rex.BlockID(r.BlockID),
-		TabLabel:       r.TabLabel,
-		PaneLabel:      r.PaneLabel,
-		Aliases:        aliases,
-		LaunchMode:     r.LaunchMode,
-		CreatedAt:      r.CreatedAt,
-		GCBin:          r.GCBin,
-		WorkDir:        r.WorkDir,
-		ClaimSessionID: r.ClaimSessionID,
-	}
+	return Binding(r), true
 }
 
 // List implements BindingLister. Missing and corrupt files are skipped.
 func (s *FileStore) List() []Binding {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	paths, _ := filepath.Glob(filepath.Join(s.dir, "*.json"))
-	out := []Binding{}
-	for _, path := range paths {
-		var r bindingRecord
-		if ok, err := readJSON(path, &r); err != nil || !ok {
-			continue
-		}
-		out = append(out, r.binding())
+	records := s.t.list()
+	out := make([]Binding, 0, len(records))
+	for _, r := range records {
+		out = append(out, Binding(r))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -161,33 +197,7 @@ func (s *FileStore) List() []Binding {
 
 // Save implements BindingStore. The interface has no error return, so a
 // failed write is dropped; the next Resolve rebuilds the binding by scanning.
-func (s *FileStore) Save(b Binding) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var aliases []string
-	for _, a := range b.Aliases {
-		aliases = append(aliases, string(a))
-	}
-	_ = writeJSON(s.path(b.Name), bindingRecord{
-		GCName:         string(b.Name),
-		SessionID:      string(b.SessionID),
-		SessionLabel:   b.SessionLabel,
-		WindowID:       string(b.WindowID),
-		BlockID:        string(b.BlockID),
-		TabLabel:       b.TabLabel,
-		PaneLabel:      b.PaneLabel,
-		Aliases:        aliases,
-		LaunchMode:     b.LaunchMode,
-		CreatedAt:      b.CreatedAt,
-		GCBin:          b.GCBin,
-		ClaimSessionID: b.ClaimSessionID,
-		WorkDir:        b.WorkDir,
-	})
-}
+func (s *FileStore) Save(b Binding) { _ = s.t.write(b.Name, bindingRecord(b)) }
 
 // Delete implements BindingStore. A missing file is not an error.
-func (s *FileStore) Delete(name SessionName) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_ = os.Remove(s.path(name))
-}
+func (s *FileStore) Delete(name SessionName) { _ = s.t.remove(name) }

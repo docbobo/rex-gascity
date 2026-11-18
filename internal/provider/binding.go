@@ -6,7 +6,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -141,48 +140,29 @@ type BindingLister interface {
 
 // MemoryStore is a BindingStore held in memory. It is safe for concurrent use.
 type MemoryStore struct {
-	mu sync.RWMutex
-	m  map[SessionName]Binding
+	t *memTable[SessionName, Binding]
 }
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{m: make(map[SessionName]Binding)}
+	return &MemoryStore{t: newMemTable[SessionName, Binding]()}
 }
 
 // Load implements BindingStore.
-func (s *MemoryStore) Load(name SessionName) (Binding, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	b, ok := s.m[name]
-	return b, ok
-}
+func (s *MemoryStore) Load(name SessionName) (Binding, bool) { return s.t.get(name) }
 
 // Save implements BindingStore.
-func (s *MemoryStore) Save(b Binding) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.m[b.Name] = b
-}
+func (s *MemoryStore) Save(b Binding) { s.t.put(b.Name, b) }
 
 // List implements BindingLister.
 func (s *MemoryStore) List() []Binding {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Binding, 0, len(s.m))
-	for _, b := range s.m {
-		out = append(out, b)
-	}
+	out := s.t.values()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
 // Delete implements BindingStore.
-func (s *MemoryStore) Delete(name SessionName) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.m, name)
-}
+func (s *MemoryStore) Delete(name SessionName) { s.t.remove(name) }
 
 // Binder resolves gc session names to Rex addresses, using a store as a
 // cache and the Rex session view as the source of truth.
