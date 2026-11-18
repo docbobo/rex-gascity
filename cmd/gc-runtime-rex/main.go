@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/docbobo/rex-gascity/internal/launch"
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/cli"
@@ -199,7 +200,7 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		}
 	}
 	err = p.StartNew(ctx, name, provider.Config{
-		Argv:            commandArgv(cfg.Command),
+		Argv:            launch.CommandArgv(cfg.Command),
 		WorkDir:         cfg.WorkDir,
 		Env:             cfg.Env,
 		PreStart:        cfg.PreStart,
@@ -359,92 +360,4 @@ func opGetMeta(ctx context.Context, p *provider.Provider, args []string, _ io.Re
 
 func opRemoveMeta(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.RemoveMeta(ctx, args[0], args[1])
-}
-
-// commandArgv turns the start config's command string into an argv. A plain
-// command is split with shell quoting rules; anything a plain split cannot
-// represent faithfully (unbalanced quotes, operators, expansions, globs, env
-// assignments) runs under /bin/sh -lc instead. An empty command yields nil:
-// the pane starts its default shell.
-func commandArgv(command string) []string {
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	argv, ok := splitCommand(command)
-	if !ok || len(argv) == 0 || strings.Contains(argv[0], "=") {
-		return []string{"/bin/sh", "-lc", command}
-	}
-	return argv
-}
-
-// splitCommand splits s into words using POSIX shell quoting: single quotes
-// are literal, double quotes allow backslash escapes of $ ` " \ and newline,
-// and an unquoted backslash escapes the next byte. It reports false when s
-// does not parse (unterminated quote, trailing backslash) or needs a shell
-// (an unquoted operator, glob or comment, or an expansion outside single
-// quotes).
-func splitCommand(s string) ([]string, bool) {
-	var (
-		words  []string
-		cur    strings.Builder
-		inWord bool
-	)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == ' ' || c == '\t':
-			if inWord {
-				words = append(words, cur.String())
-				cur.Reset()
-				inWord = false
-			}
-		case c == '\\':
-			if i+1 >= len(s) {
-				return nil, false
-			}
-			i++
-			if s[i] != '\n' { // backslash-newline is a line continuation
-				cur.WriteByte(s[i])
-			}
-			inWord = true
-		case c == '\'':
-			end := strings.IndexByte(s[i+1:], '\'')
-			if end < 0 {
-				return nil, false
-			}
-			cur.WriteString(s[i+1 : i+1+end])
-			i += end + 1
-			inWord = true
-		case c == '"':
-			i++
-			for ; i < len(s) && s[i] != '"'; i++ {
-				switch s[i] {
-				case '$', '`':
-					return nil, false
-				case '\\':
-					if i+1 < len(s) && strings.IndexByte("$`\"\\\n", s[i+1]) >= 0 {
-						i++
-						if s[i] != '\n' {
-							cur.WriteByte(s[i])
-						}
-						continue
-					}
-				}
-				cur.WriteByte(s[i])
-			}
-			if i >= len(s) {
-				return nil, false
-			}
-			inWord = true
-		case strings.IndexByte("|&;<>()$`*?[]{}~#!\n", c) >= 0:
-			return nil, false
-		default:
-			cur.WriteByte(c)
-			inWord = true
-		}
-	}
-	if inWord {
-		words = append(words, cur.String())
-	}
-	return words, true
 }
