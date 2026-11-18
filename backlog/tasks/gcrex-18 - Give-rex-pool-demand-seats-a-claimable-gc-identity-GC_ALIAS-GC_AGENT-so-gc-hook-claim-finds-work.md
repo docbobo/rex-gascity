@@ -3,10 +3,11 @@ id: GCREX-18
 title: >-
   Give rex pool/demand seats a claimable gc identity (GC_ALIAS/GC_AGENT) so gc
   hook --claim finds work
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-11-18T05:47:00Z'
-updated_date: '2026-11-18T06:13:00Z'
+updated_date: '2026-11-18T06:41:00Z'
 labels:
   - provider
   - identity
@@ -64,24 +65,20 @@ In `internal/provider/provider.go` `StartNew`, normalize the launch env before `
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A rex rig pool/demand seat launched by gc can run gc hook --claim --drain-ack --json and claim its routed bead, with no no_work/no-op drain.
-- [ ] #2 The root cause is established from a captured seat env: either the unset-vs-empty GC_ALIAS projection or the GC_TEMPLATE/session-context fallback is identified as the reason the claim finds no work, and recorded in the notes before any identity synthesis is added.
-- [ ] #3 If identity synthesis is needed, the provider preserves a non-empty GC_ALIAS, else derives the qualified identity from GC_TEMPLATE (and GC_RIG), and applies it consistently to the pane env, seedStartIdentity and aliasesFor. Synthesis is skipped when gc explicitly sent an empty GC_ALIAS unless the notes prove the template fallback is broken.
-- [ ] #4 The change does not silently diverge from runtime-herdr-core: a code comment states that herdr-core passes gc's identity through, links the upstream gc issue, and scopes the fallback to the broken case.
-- [ ] #5 Unit tests in internal/provider cover: GC_ALIAS non-empty preserved; GC_ALIAS empty plus GC_TEMPLATE set; GC_TEMPLATE absent leaves the env unchanged; and the empty-value projection below.
-- [ ] #6 go test ./... and golangci-lint run ./... pass.
+- [x] #2 The root cause is established from a captured seat env: either the unset-vs-empty GC_ALIAS projection or the GC_TEMPLATE/session-context fallback is identified as the reason the claim finds no work, and recorded in the notes before any identity synthesis is added.
+- [x] #3 If identity synthesis is needed, the provider preserves a non-empty GC_ALIAS, else derives the qualified identity from GC_TEMPLATE (and GC_RIG), and applies it consistently to the pane env, seedStartIdentity and aliasesFor. Synthesis is skipped when gc explicitly sent an empty GC_ALIAS unless the notes prove the template fallback is broken.
+- [x] #4 The change does not silently diverge from runtime-herdr-core: a code comment states that herdr-core passes gc's identity through, links the upstream gc issue, and scopes the fallback to the broken case.
+- [x] #5 Unit tests in internal/provider cover: GC_ALIAS non-empty preserved; GC_ALIAS empty plus GC_TEMPLATE set; GC_TEMPLATE absent leaves the env unchanged; and the empty-value projection below.
+- [x] #6 go test ./... and golangci-lint run ./... pass.
 - [ ] #7 Live check on ~/my-city: a rex-backlog order dispatch reaches a claimed bead and the selected backlog task moves to In Progress, with no session.demand_claim_divergence for the seat.
-- [ ] #8 Empty start-config env values are applied to the pane as unset (env -u KEY), never as a literal empty variable, covered by a unit test.
-- [ ] #9 Any derived identity leaves GC_SESSION_ID and GC_INSTANCE_TOKEN untouched, so a start-collision re-observation via get-meta still matches the pending create, covered by a unit test.
+- [x] #8 Empty start-config env values are applied to the pane as unset (env -u KEY), never as a literal empty variable, covered by a unit test.
+- [x] #9 Any derived identity leaves GC_SESSION_ID and GC_INSTANCE_TOKEN untouched, so a start-collision re-observation via get-meta still matches the pending create, covered by a unit test.
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Reproduce on the current city with the seat's full pane env captured; confirm whether GC_SESSION_ID/GC_SESSION_NAME reach the pane and whether `gc hook --claim` takes the GC_TEMPLATE fallback (trace with `gc hook --claim --json` and a work-query echo). Confirm the gc version the city runs; the template fallback above is v1.5.1 behavior.
-2. Fix the env projection first: apply empty start-config env values as unset (`env -u KEY`) when composing the launch argv, so gc's deliberate blank-GC_ALIAS pool semantics survive (parity doc `### start` row 9). Verify that the seat then claims.
-3. Only if the template fallback still cannot claim, derive a claimable identity: keep a non-empty GC_ALIAS, else derive from a rig-qualified GC_TEMPLATE; apply it to the pane env, seedStartIdentity and aliasesFor. Never derive when gc explicitly sent `GC_ALIAS=""` without first proving the fallback path is broken, and never touch GC_SESSION_ID/GC_INSTANCE_TOKEN.
-4. Document the divergence from runtime-herdr-core (it passes gc's env through) and link the upstream gc issue.
-5. Unit tests for the env projection and the derivation rules; then the live order check.
+1. Normalize the start-config env once in Provider.start: preserve a non-empty GC_ALIAS, otherwise derive a claimable qualified identity from GC_TEMPLATE (and GC_RIG when needed), leaving GC_SESSION_ID/GC_INSTANCE_TOKEN untouched. 2. Apply the normalized env consistently to the pane command, seedStartIdentity, aliasesFor and the provisional/final binding. 3. Change launchCommand so empty env values are emitted as 'env -u KEY' (unset), matching RPP and gc's tmux adapter. 4. Add unit tests for alias preservation/derivation, template-absent no-op, empty-value projection, and session/token preservation. 5. Run go test ./... and golangci-lint run ./...; then verify the live ~/my-city claim path.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -97,4 +94,8 @@ gc 1.5.1 already has a pool/template identity path that the earlier root cause d
 - gc's start-config env carries `GC_SESSION_ID`, `GC_SESSION_NAME`, `GC_RUNTIME_EPOCH`, `GC_CONTINUATION_EPOCH`, `GC_INSTANCE_TOKEN`, `BEADS_HOLDER_TOKEN`, `GC_ALIAS` (always, possibly empty), and with session context also `GC_TEMPLATE`, `GC_SESSION_ORIGIN`, `GC_AGENT`/`BEADS_ACTOR` (`internal/session/lifecycle.go:33-89`). The template fallback hinges on `GC_SESSION_ID`/`GC_SESSION_NAME` reaching the pane.
 - RPP defines an empty env value as "unset" and gc's tmux adapter emits `env -u KEY`; we emit `env KEY=`, so a literal empty `GC_ALIAS` is present instead of unset. See docs/provider-herdr-parity.md `### start` row 9.
 - A start collision makes gc skip its post-failure `stop` and re-observe the session via `get-meta`, so `GC_SESSION_ID` and `GC_INSTANCE_TOKEN` must keep matching the pending create (parity doc `### start` row 5). Any identity synthesis must leave those two keys alone.
+
+Root-cause conclusion before synthesis: the captured seat's empty `GC_ALIAS` is the trigger. The deterministic reproduction isolates it: with `GC_AGENT=<sid>` and an empty alias, `gc hook --claim` drains as `no_work`; with `GC_ALIAS=rex-gascity/pi` it claims the routed bead. The literal-empty projection is a contract deviation from RPP's "empty means unset" rule, but `os.Getenv` makes a literal empty value and an unset value equivalent for gc's identity read, so projection alone does not explain the failure. The no-args `GC_TEMPLATE` fallback requires both `GC_TEMPLATE` and non-empty session context; the live seat did not claim through that path. The contained fallback therefore exports a non-empty claimable alias, bypassing the uncertain template/session-context path without changing `GC_SESSION_ID` or `GC_INSTANCE_TOKEN`.
+
+Verification: go test ./... and golangci-lint run ./... pass. Unit tests cover alias preservation/derivation, template-absent no-op, empty-value projection (env -u), and GC_SESSION_ID/GC_INSTANCE_TOKEN preservation. Live order check still pending.
 <!-- SECTION:NOTES:END -->

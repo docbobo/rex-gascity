@@ -335,3 +335,32 @@ func TestAliasResolutionThroughFileStore(t *testing.T) {
 		t.Fatalf("IsRunning(instance alias) after reload = %v, %v; want true, nil", running, err)
 	}
 }
+
+func TestStartDerivesAliasForPoolSeat(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	env := wispEnv()
+	env["GC_SESSION_ID"] = "mc-wisp-ybq1"
+	env["GC_INSTANCE_TOKEN"] = "tok-1"
+	if err := p.Start(ctx, wispStart, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	cmd := fake.CreatedWindows[0].Spec.Command
+	want := []string{"env", "GC_AGENT=mc-wisp-ybq1", "GC_ALIAS=" + aliasRig + "/pi",
+		"GC_INSTANCE_TOKEN=tok-1", "GC_RIG=" + aliasRig, "GC_SESSION_ID=mc-wisp-ybq1",
+		"GC_TEMPLATE=" + aliasRig + "/pi", "pi"}
+	if !slices.Equal(cmd, want) {
+		t.Errorf("command = %v, want %v", cmd, want)
+	}
+	for key, w := range map[string]string{
+		"GC_ALIAS": aliasRig + "/pi", "GC_SESSION_ID": "mc-wisp-ybq1", "GC_INSTANCE_TOKEN": "tok-1",
+	} {
+		if got, _ := p.GetMeta(ctx, wispStart, key); got != w {
+			t.Errorf("meta %s = %q, want %q", key, got, w)
+		}
+	}
+	if env["GC_ALIAS"] != "" {
+		t.Errorf("caller env mutated: %v", env)
+	}
+}

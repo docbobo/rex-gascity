@@ -219,8 +219,18 @@ gc 1.5.1 ships every managed-session variable there. The provider's durable
 contract is exactly four of them: `GC_RIG`, `GC_TEMPLATE`, `GC_ALIAS`, and
 `GC_AGENT` (used to derive the tab and the aliases above). The rest are
 incidental to the provider and are applied to the launched process unchanged
-(GCREX-10). The full inventory (meaning, when set, durable vs incidental) and
-the observed RPP session-name forms are in `docs/REX-CONTRACT.md` §13.
+(GCREX-10). Empty values in the start-config env are applied as unset
+(`env -u KEY`) at the launch boundary, matching RPP and gc's tmux adapter.
+
+When `GC_ALIAS` is empty or absent and `GC_TEMPLATE` is set and differs from
+`GC_AGENT`, the provider derives a claimable alias from `GC_TEMPLATE` (prefixed
+with `GC_RIG` when the template is unqualified). This is a contained deviation
+from runtime-herdr-core, which passes gc's identity through: it is scoped to
+gc's empty-alias pool/demand seat and leaves `GC_SESSION_ID` and
+`GC_INSTANCE_TOKEN` untouched. See
+https://github.com/gastownhall/gascity/issues/5716 for the upstream gc issue.
+The full inventory (meaning, when set, durable vs incidental) and the observed
+RPP session-name forms are in `docs/REX-CONTRACT.md` §13.
 
 gc also reads provider metadata over `get-meta` (not the start env):
 `GC_PROVIDER`, `GC_SESSION_ID`, `GC_DRAIN_ACK`, `GC_ALIAS`, `GC_AGENT`, and

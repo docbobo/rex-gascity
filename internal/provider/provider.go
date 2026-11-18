@@ -151,6 +151,7 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
 	n := SessionName(name)
+	cfg.Env = normalizeStartEnv(cfg.Env)
 	seeded := false
 	defer func() {
 		if err == nil || !seeded {
@@ -300,10 +301,51 @@ func launchCommand(argv []string, env map[string]string) []string {
 	sort.Strings(keys)
 	out := make([]string, 0, len(env)+1+len(argv))
 	out = append(out, "env")
+	// `env` stops parsing options at the first KEY=V assignment, so every
+	// -u option must precede every assignment.
 	for _, k := range keys {
-		out = append(out, k+"="+env[k])
+		if env[k] == "" {
+			// Empty means unset, like RPP and gc's tmux adapter; a literal
+			// empty variable would mask gc's own fallbacks.
+			out = append(out, "-u", k)
+		}
+	}
+	for _, k := range keys {
+		if env[k] != "" {
+			out = append(out, k+"="+env[k])
+		}
 	}
 	return append(out, argv...)
+}
+
+// normalizeStartEnv returns the start-config env with a claimable GC_ALIAS.
+//
+// runtime-herdr-core passes gc's identity through and does not synthesize
+// one. This fallback is a contained deviation for the broken pool/demand-seat
+// case: gc ships GC_ALIAS empty and GC_AGENT as the session id, so
+// `gc hook --claim` finds no work routed to that id. See
+// https://github.com/gastownhall/gascity/issues/5716 for the upstream gc
+// issue. It applies only when GC_ALIAS is empty or absent and GC_TEMPLATE is
+// set and differs from GC_AGENT; a non-empty GC_ALIAS is never overwritten,
+// and GC_SESSION_ID and GC_INSTANCE_TOKEN are never touched. The caller's map
+// is not mutated.
+func normalizeStartEnv(env map[string]string) map[string]string {
+	if env["GC_ALIAS"] != "" {
+		return env
+	}
+	tmpl := env["GC_TEMPLATE"]
+	if tmpl == "" || tmpl == env["GC_AGENT"] {
+		return env
+	}
+	if !strings.Contains(tmpl, "/") && env["GC_RIG"] != "" {
+		tmpl = env["GC_RIG"] + "/" + tmpl
+	}
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["GC_ALIAS"] = tmpl
+	return out
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the
