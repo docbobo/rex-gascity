@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -219,5 +220,14 @@ func TestProcessAliveMissingPane(t *testing.T) {
 	alive, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
 	if err != nil || alive {
 		t.Errorf("ProcessAlive = %v, %v, want false, nil", alive, err)
+	}
+}
+
+func TestProcessAliveVanishedPane(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.ProcessErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
+	alive, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
+	if err != nil || alive {
+		t.Errorf("ProcessAlive after pane vanished = %v, %v; want false, nil", alive, err)
 	}
 }

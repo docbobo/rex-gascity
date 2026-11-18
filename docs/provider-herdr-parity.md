@@ -64,7 +64,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `list-running` | implemented | 6 | intentional (with a mistake inside) |
 | `is-attached` | implemented | 6 | intentional |
 | `get-last-activity` | implemented | 5 | intentional |
-| `peek` | implemented | 7 | intentional (with a mistake inside) |
+| `peek` | implemented | 7 | intentional |
 | `nudge` | implemented | 11 | intentional |
 | `send-keys` | implemented | 8 | intentional |
 | `interrupt` | implemented | 5 | intentional |
@@ -121,7 +121,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `is-running` | side effects | Deletes stale sidecar bindings on read | Read-only apart from start kick | intentional | Sidecar self-heal; race safety unverified |
 | `process-alive` | match scope | Rex foreground process plus ancestors | whole box process subtree | intentional | Rex API exposes only foreground and ancestors |
 | `process-alive` | interpreter scripts | no node/bun script-argument matching | matches script arg after node/bun/npx/deno | mistake | gc rule; needs live probe of Rex argv0 |
-| `process-alive` | missing pane | BlockProcess not-found returns error, exit non-zero | dead record answers false | mistake | gc reads both as dead; fix is for op correctness. |
+| `process-alive` | missing pane | `ErrNotFound` from `BlockProcess` returns `false`, nil (GCREX-23) | dead record answers false | intentional | Same answer; a pane that vanished mid-call no longer exits 1. |
 | `process-alive` | cannot-tell answer | any Rex error exits 1; strict false on no match | empty stdout (alive) when unreadable or launching | intentional | gc reads an error as dead, so a transient Rex error can mark the agent dead. |
 | `process-alive` | zombie / liveness gate | LastExit non-nil forces false | zombie never matches; intact-record gate | intentional | last_exit is Rex liveness truth (GCREX-4) |
 | `process-alive` | stdin line splitting | split on newline only, trim later | splitlines then strip | intentional | same result for gc newline input |
@@ -144,7 +144,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `get-last-activity` | state locking | In-process mutex, last writer wins | flock with 0.5 s wait | intentional | One process per op. Race only shifts stamp slightly. |
 | `get-last-activity` | reported-pane source | Queries Rex program_status each call | Reads cached state, no host query | intentional | Different carrier data sources. |
 | `peek` | missing session | exit 0, empty stdout | exit 66 no screen, empty stdout | intentional | gc has no exit-66 handling; it checks is-running first. |
-| `peek` | pane vanishes mid-call | Rex not-found becomes exit 1 | hc not_found becomes exit 66 no screen | mistake | missing-pane case is empty/0; ClearScrollback tolerates it already |
+| `peek` | pane vanishes mid-call | `ErrNotFound` from `BlockFormat` returns empty output and exit 0 (GCREX-23) | hc not_found becomes exit 66 no screen | intentional | Matches the already-missing case and ClearScrollback; gc sees the same empty answer. |
 | `peek` | empty `lines` arg | empty string treated as 0 | empty string fails exit 1 | intentional | harmless; gc passes a number or nothing |
 | `peek` | `lines`>0 row count and trailing newline | strips trailing newline before counting rows, restores it | trailing newline counts as a row; always appends newline | intentional | ours returns exactly N text rows; hc text ending unverified |
 | `peek` | scrollback vs viewport | Rex format of block, bounded by scrollback | screen only, never scrolls | intentional | exact Rex format coverage unverified; needs live check |
@@ -218,19 +218,20 @@ intentional, because gc reads a failure and `false` alike as dead) and `attach`
 (from conformant omission to mistake). GCREX-20 has since resolved `attach` by
 answering exit 0 with a hint, so it is no longer listed here. GCREX-22 has
 since resolved `is-attached` by answering true for an unclassifiable client
-kind. GCREX-24 has since resolved `get-last-activity` (return now for
-`working`/`blocked`, plus the pack-input floor from nudge/send-keys), so it is
-no longer listed either.
+kind. GCREX-23 has since resolved the missing-pane handling in `process-alive`
+and `peek`, so those items are no longer listed; the interpreter-script gap in
+`process-alive` remains. GCREX-24 has since resolved `get-last-activity` (return
+now for `working`/`blocked`, plus the pack-input floor from nudge/send-keys), so
+it is no longer listed either.
 
 | # | Where | Mistake | Consequence in gc 1.5.1 | Sections |
 |---|---|---|---|---|
-| 1 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
-| 2 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
-| 3 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
-| 4 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
-| 5 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
-| 6 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
-| 7 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
+| 1 | `process-alive` | No interpreter-script matching, so `node agent.js` does not match `agent` | An agent run as `node agent.js` with hint `agent` reads dead; unverified whether Rex `name`/`argv0` ever carry the script | §process-alive row 2 |
+| 2 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
+| 3 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
+| 4 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
+| 5 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
+| 6 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
 
 Two earlier candidates were withdrawn after the gc check: the missing SIGTERM
 handler in `start` (gc runs `stop <name>` after every failed or cancelled start,
@@ -272,17 +273,16 @@ in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
 Not implemented in this task. Each item closes a set of the sections above; the
 numbering of the mistake table is what they refer to.
 
-1. **Liveness answers.** Catch `ErrNotFound` in `PeekLines`; map `ErrNotFound`
-   from `BlockProcess` to `false` in `ProcessAlive`; decide on
-   interpreter-script matching after a live probe. Closes 1, 2.
+1. **Liveness answers.** Decide on interpreter-script matching after a live
+   probe. Closes 1.
 2. **Start robustness.** Emit `env -u KEY` for empty values; add a per-hook
    timeout; move `pre_start` out of the city-wide lock; add a SIGTERM handler
-   so rollback runs before gc's forced kill. Closes 3, 4.
+   so rollback runs before gc's forced kill. Closes 2, 3.
 3. **Incarnation hygiene.** Clear all meta for the name (and the activity
    entry) on stop and on the no-binding path; reject empty meta keys; decide
-   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 5, 7.
+   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 4, 6.
 4. **List output guard.** Skip names that are empty, padded or contain control
-   characters. Closes 6.
+   characters. Closes 5.
 5. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
    transport failure (see "Operational risks"); probe `block.method clear` and
    `format` coverage; probe a `node agent.js` pane's `argv0` for the
@@ -512,13 +512,13 @@ GCREX-11 — env-derived tab/pane labels used in rescans
 |---|---|---|---|---|---|
 | 1 | match scope | Rex-reported foreground process plus its ancestors (`liveness.go:66-72`) | every process in the box's subtree (`procs.py:608-613`) | intentional | Rex exposes only foreground/ancestors via `process` (`docs/REX-CONTRACT.md:89`); no host process table walk. A background child of the agent is not seen. |
 | 2 | interpreter scripts | none: `node foo.js` matches `node`, not `foo` (`liveness.go:79-98`) | matches script arg of node/bun/npx/deno (`procs.py:63,576-582`) | mistake | gc's process-table rule (cited in `procs.py:21-26`) has it; an agent run as `node agent.js` with hint `agent` reads dead. Unverified whether Rex `name`/`argv0` ever carry the script; needs a live probe. |
-| 3 | missing pane | `BlockProcess` `ErrNotFound` is returned as an error (`liveness.go:125-128`), so exit non-zero | not applicable; a dead record answers `false` (`reads.py:295-296`) | mistake | `paneAlive` maps `ErrNotFound` to dead (`liveness.go:107-110`) but `ProcessAlive` does not. Verified: gc reads exit 1 as not alive, the same as `false` (`exec/exec.go:709-711`), and in production a missing pane already reads dead earlier because `is-running` returns false (`seam_adapter.go:88-99`). The fix is for the op's own correctness, not for gc. |
+| 3 | missing pane | `BlockProcess` `ErrNotFound` maps to `false`, nil (`liveness.go:125-131`, GCREX-23) | not applicable; a dead record answers `false` (`reads.py:295-296`) | intentional | Matches `paneAlive` (`liveness.go:107-110`); a pane that vanished mid-call now answers dead instead of exiting 1. |
 | 4 | cannot-tell answer | any Rex error is an exit-1 error; never an empty answer | empty stdout (reads as alive) when unreadable or launching (`reads.py:301-302`) | intentional | Rex gives a definite process record or an error; no opaque-process case. Strict `false` on no match is a deliberate choice (`liveness.go:55-58`). Verified: gc reads empty stdout and exit 2 as alive and only `false` or an error as dead (`exec/exec.go:712-718`), so on a transient Rex error answering `false` (as we do) can put the agent on gc's zombie path. |
 | 5 | zombie / liveness gate | `LastExit != nil` forces `false` (`liveness.go:60-62`) | zombie never matches (`procs.py:567`); intact record gate (`reads.py:295`) | intentional | Same intent, different primitive: Rex `last_exit` is its liveness truth (GCREX-4). |
 | 6 | stdin line splitting | split on `\n` only (`main.go:231`); whitespace trimmed later in `expandProcessNames` | `splitlines()` (also `\r`, `\v`, `\f`, U+2028 etc.) then strip (`reads.py:64-65`) | intentional | gc sends `\n`-separated names; result is identical for that input. All-blank stdin gives alive in both. |
 | 7 | matched fields | Rex `name`, `argv0`, `basename(path)`, `basename(argv0)` (`liveness.go:80-86`) | basename of `comm`, basename of `argv[0]` (`procs.py:569-573`) | intentional | Different process data model. Ours also matches a full-path name equal to `argv0` and the Rex `name` (Rex runs commands under the default shell with `argv0` set; see `docs/plans/native-rex-provider.md:643`). |
 
-**Verdict.** intentional (with a mistake inside). Output vocabulary, stdin shape, empty-input and any-of semantics, aliases and the `gc`→`GC_BIN` basename rule match herdr-core. The foreground/ancestor scope is forced by the Rex `process` API. Rows 2 and 3 are the gaps: no interpreter-script matching and an unhandled missing pane.
+**Verdict.** intentional (with a mistake inside). Output vocabulary, stdin shape, empty-input and any-of semantics, aliases and the `gc`→`GC_BIN` basename rule match herdr-core. The foreground/ancestor scope is forced by the Rex `process` API. Row 2 is the remaining gap: no interpreter-script matching.
 
 **Cross-references.**
 GCREX-4 — made `last_exit` the liveness truth and `ProcessAlive` strict with empty ⇒ alive
@@ -529,7 +529,6 @@ GCREX-18 — `GC_BIN`/claim identity seeding that the `gc` hint depends on
 `docs/plans/native-rex-provider.md:643` — why name heuristics are not used for `is-running`
 
 **Follow-ups.**
-- Map `rex.ErrNotFound` from `BlockProcess` in `ProcessAlive` to `false`, nil, as `paneAlive` does. (mistake)
 - Probe a live pane running `node script.js` and decide whether to add interpreter-script matching to `processMatches`. (gap)
 - Add a test for all-blank stdin and CRLF input in `opProcessAlive`. (gap)
 
@@ -644,14 +643,14 @@ GCREX-17 — session resolution that feeds `binder.Resolve`
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
 | 1 | missing session | exit 0, empty stdout (`provider.go:458-461`) | exit 66 `no screen for …`, empty stdout (`reads.py:364-371`) | intentional | 66 is v2-ready only (`exitcodes.py:22`); RPP v0 has exit codes 0/1/2, and gc has no exit-66 handling, so 66 would be an ordinary error (`exec/exec.go:153-170`). gc checks `is-running` before it peeks (`seam_adapter.go:189-194`; `runtime_handle.go:186-190`), so this case rarely reaches the op. |
-| 2 | pane vanishes between resolve and format | Rex exit 3 becomes `ErrNotFound`, which `PeekLines` does not catch, so exit 1 (`cli.go:46-54`, `provider.go:462-464`) | hc `not_found` is the same "no screen" answer as a missing record (`reads.py:369-371`) | mistake | The missing-session case returns empty and exit 0, but this race fails. `ClearScrollback` already tolerates `ErrNotFound` (`provider.go:490`). gc reads exit 1 as a failed peek and skips its forensics or shows an error; no state changes, so severity is low. |
+| 2 | pane vanishes between resolve and format | Rex exit 3 becomes `ErrNotFound`; `PeekLines` returns empty output and exit 0 (`cli.go:46-54`, `provider.go:462-470`, GCREX-23) | hc `not_found` is the same "no screen" answer as a missing record (`reads.py:369-371`) | intentional | Matches the missing-session case and `ClearScrollback` (`provider.go:490`); gc sees empty output on exit 0. |
 | 3 | `lines` empty-string arg | `""` is treated as 0, so the whole capture (`main.go:245`) | `""` fails exit 1 (`reads.py:359-363`) | intentional | gc always sends a decimal integer (`exec/exec.go:622`), so an empty arg is unreachable from gc; harmless if it happens. The dispatcher already rejects an empty name (`main.go:124`). |
 | 4 | `lines` > 0 row counting and trailing newline | Strips one trailing `\n` before counting rows, then restores it only if the capture had one (`provider.go:471-479`); empty capture returns `""` | Splits the raw text, so a trailing `\n` adds an empty last row that counts toward N; always appends `\n`, so an empty screen returns `\n` (`reads.py:375-378`) | intentional | Ours returns exactly N text rows. gc strips every trailing `\n` from the result (`exec/exec.go:104`), so trailing-newline differences are invisible to it. |
 | 5 | scrollback vs viewport | Rex `format` of the block, described as "bounded by terminal scrollback" (`backlog/tasks/gcrex-2…Peek.md` final notes, line 73); not a viewport-only read | Screen only; scrolling is avoided because it sends input to full-screen programs (`hc/client.py:250-252`) | intentional | The Rex `format` method is non-destructive. Exactly what it covers (scrollback plus viewport, or viewport) is unverified; would need a live `format` on a pane with history. |
 | 6 | output cap | Pages to completion at 983040 bytes per reply; no total cap (`cli.go:310-357`) | Fails exit 1 with no stdout above 1 MiB (`perop.py:158-159`, `ops.py:33`) | intentional | The cap is herdr's `observe.v1` contract. Verified: gc 1.5.1 has no cap and no truncation, it buffers stdout whole and strips only trailing `\n` (`exec/exec.go:95`, `:104`); the 30 s op timeout is the only bound. A large scrollback is multi-MiB for us (`e2e_test.go` reads ~4 MiB), which is fine. |
 | 7 | unreachable core / server | exit 1 with the Rex error text (`main.go:138-141`) | exit 1, or exit 66 when the city is parked or nothing runs (`reads.py:272-278`) | intentional | Our provider has no "parked city" state. A down Rex server is a plain failure for us. |
 
-**Verdict.** intentional (with a mistake inside). The `peek` contract is the same on the happy path: whole output, or the last N rows, to stdout on exit 0. The deviations stem from RPP v0 (no exit 66) and Rex's paged `format`; row 2 is the one real bug; rows 5 and 6 need live checks.
+**Verdict.** intentional. The `peek` contract is the same on the happy path: whole output, or the last N rows, to stdout on exit 0. The deviations stem from RPP v0 (no exit 66) and Rex's paged `format`; rows 5 and 6 need live checks.
 
 **Cross-references.**
 GCREX-2 — built Peek and paged `format` following; notes that Peek is bounded by terminal scrollback.
@@ -661,8 +660,7 @@ GCREX-17 — name resolution across the candidate set that `Resolve` uses.
 `docs/REX-CONTRACT.md` §9 (`format`/`blob_read` rows, line 90-91; RPP table, line 216) and §12 (line 408).
 
 **Follow-ups.**
-- Catch `rex.ErrNotFound` from `BlockFormat` in `PeekLines` and return `""`, nil, as `ClearScrollback` does (mistake).
-- Add a dispatch test for the vanished-pane case and for an empty `lines` arg (gap).
+- Add a dispatch test for an empty `lines` arg (gap).
 - Run a live `rex api call block.method format` on a pane with history and record whether it returns scrollback or only the viewport in `docs/REX-CONTRACT.md` (gap).
 - Keep answering exit 2 to `exec`: gc reads exit 1 from `exec` as the command's result with no fallback (`exec/exec.go:906-908`), which would break the driving-op fallback (gap).
 

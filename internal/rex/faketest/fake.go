@@ -55,6 +55,9 @@ type Fake struct {
 	// model output that changes between calls.
 	FormatFunc func(rex.BlockID) string
 
+	// FormatErr, when set, is returned by BlockFormat instead of output.
+	FormatErr error
+
 	// BlockCalls records each block-method call with the session that held the
 	// block, so tests can assert the provider scopes the call correctly.
 	BlockCalls []BlockCall
@@ -231,6 +234,9 @@ func (f *Fake) BlockFormat(_ context.Context, sid rex.SessionID, block rex.Block
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record(sid, block, "format")
+	if f.FormatErr != nil {
+		return "", f.FormatErr
+	}
 	if f.FormatFunc != nil {
 		return f.FormatFunc(block), nil
 	}

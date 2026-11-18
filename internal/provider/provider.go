@@ -838,6 +838,11 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 		return "", err
 	}
 	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
+	if errors.Is(err, rex.ErrNotFound) {
+		// A pane that vanished between resolve and format has no output, the
+		// same as an already-missing pane.
+		return "", nil
+	}
 	if err != nil || lines <= 0 {
 		return out, err
 	}

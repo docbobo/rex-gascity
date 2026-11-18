@@ -205,6 +205,10 @@ func TestPeekLines(t *testing.T) {
 		t.Errorf("peek = %q", got)
 	}
 	assertFailure(t, h.run("", "peek", dog, "many"), exitFail)
+	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
+	if got := h.must("", "peek", dog, "2").stdout; got != "" {
+		t.Errorf("peek after pane vanished = %q, want empty", got)
+	}
 }
 
 func TestListRunning(t *testing.T) {
@@ -251,6 +255,10 @@ func TestProcessAlive(t *testing.T) {
 	}
 	if got := h.must("sleep\n", "process-alive", "never-started").stdout; got != "false\n" {
 		t.Errorf("process-alive missing = %q", got)
+	}
+	fake.ProcessErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
+	if got := h.must("sleep\n", "process-alive", dog).stdout; got != "false\n" {
+		t.Errorf("process-alive after pane vanished = %q, want false", got)
 	}
 }
 

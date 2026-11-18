@@ -123,6 +123,10 @@ func (p *Provider) ProcessAlive(ctx context.Context, name string, names []string
 		return false, err
 	}
 	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
+	if errors.Is(err, rex.ErrNotFound) {
+		// A pane that vanished between resolve and process has no live agent.
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

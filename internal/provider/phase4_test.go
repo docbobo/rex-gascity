@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -32,6 +33,15 @@ func TestPeekLines(t *testing.T) {
 	}
 	if got, _ := p.Peek(ctx, teardownDog); got != "a\nb\nc\nd\n" {
 		t.Errorf("Peek = %q", got)
+	}
+}
+
+func TestPeekLinesVanishedPane(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
+	got, err := p.PeekLines(context.Background(), teardownDog, 2)
+	if err != nil || got != "" {
+		t.Errorf("PeekLines after pane vanished = %q, %v; want empty, nil", got, err)
 	}
 }
 
