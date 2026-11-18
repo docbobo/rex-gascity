@@ -33,16 +33,29 @@ func ops(fake *faketest.Fake) []string {
 	return got
 }
 
+// hasOpsInOrder reports whether want appears in got as a subsequence.
+func hasOpsInOrder(got, want []string) bool {
+	i := 0
+	for _, op := range got {
+		if i < len(want) && op == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
+}
+
 func TestNudgeWritesTextThenSubmits(t *testing.T) {
-	fake, p := started(t)
+	fake := faketest.New()
+	p := nudgeStarted(t, fake)
 
 	if err := p.Nudge(context.Background(), "Indigo--dog-1", "hello agent"); err != nil {
 		t.Fatalf("Nudge: %v", err)
 	}
 
-	// The liveness probe runs first, then the text, then the submit.
-	if got, want := ops(fake), []string{"process", "write", "send-key"}; !slices.Equal(got, want) {
-		t.Errorf("block ops = %v, want %v", got, want)
+	// The liveness probe and program-status read run first, then the text,
+	// then the submit.
+	if got, want := ops(fake), []string{"process", "write", "send-key"}; !hasOpsInOrder(got, want) {
+		t.Errorf("block ops = %v, want %v in order", got, want)
 	}
 	if len(fake.SentKeys) != 1 {
 		t.Fatalf("send-keys calls = %d, want 1", len(fake.SentKeys))
@@ -57,7 +70,8 @@ func TestNudgeWritesTextThenSubmits(t *testing.T) {
 }
 
 func TestNudgeFailsWhenSubmitIsNotDelivered(t *testing.T) {
-	fake, p := started(t)
+	fake := faketest.New()
+	p := nudgeStarted(t, fake)
 	fake.SendKeysErr = errors.New("pane vanished")
 
 	err := p.Nudge(context.Background(), "Indigo--dog-1", "hello")
@@ -68,13 +82,14 @@ func TestNudgeFailsWhenSubmitIsNotDelivered(t *testing.T) {
 		t.Errorf("error = %q, want it to name the failed submit", err)
 	}
 	// The text was typed; only the submit failed.
-	if got, want := ops(fake), []string{"process", "write", "send-key"}; !slices.Equal(got, want) {
-		t.Errorf("block ops = %v, want %v", got, want)
+	if got, want := ops(fake), []string{"process", "write", "send-key"}; !hasOpsInOrder(got, want) {
+		t.Errorf("block ops = %v, want %v in order", got, want)
 	}
 }
 
 func TestNudgeTypingFailureSkipsSubmit(t *testing.T) {
-	fake, p := started(t)
+	fake := faketest.New()
+	p := nudgeStarted(t, fake)
 	fake.WriteErr = errors.New("write failed")
 
 	err := p.Nudge(context.Background(), "Indigo--dog-1", "hello")
@@ -83,8 +98,8 @@ func TestNudgeTypingFailureSkipsSubmit(t *testing.T) {
 	}
 	// Enter must not be sent when the text never landed: the pane would hold a
 	// half-typed line.
-	if got, want := ops(fake), []string{"process", "write"}; !slices.Equal(got, want) {
-		t.Errorf("block ops = %v, want %v", got, want)
+	if got := ops(fake); !slices.Contains(got, "write") || slices.Contains(got, "send-key") {
+		t.Errorf("block ops = %v, want write and no send-key", got)
 	}
 }
 

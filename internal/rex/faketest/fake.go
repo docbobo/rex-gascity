@@ -50,6 +50,11 @@ type Fake struct {
 	// Formats is the rendered output BlockFormat reports, keyed by block.
 	Formats map[rex.BlockID]string
 
+	// FormatFunc, when non-nil, supersedes Formats. It is called with the
+	// fake's lock held, so it must not call Fake methods; tests use it to
+	// model output that changes between calls.
+	FormatFunc func(rex.BlockID) string
+
 	// BlockCalls records each block-method call with the session that held the
 	// block, so tests can assert the provider scopes the call correctly.
 	BlockCalls []BlockCall
@@ -89,6 +94,11 @@ type Fake struct {
 	// ProgramStatuses is the program status BlockProgramStatus reports, keyed by
 	// block.
 	ProgramStatuses map[rex.BlockID]rex.ProgramStatus
+
+	// ProgramStatusFunc, when non-nil, supersedes ProgramStatuses. It is called
+	// with the fake's lock held, so it must not call Fake methods; tests use it
+	// to model a program that reacts to typed input between calls.
+	ProgramStatusFunc func(rex.BlockID) rex.ProgramStatus
 
 	// ListClientsErr and ProgramStatusErr, when set, are returned by those
 	// methods.
@@ -218,6 +228,9 @@ func (f *Fake) BlockFormat(_ context.Context, sid rex.SessionID, block rex.Block
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record(sid, block, "format")
+	if f.FormatFunc != nil {
+		return f.FormatFunc(block), nil
+	}
 	return f.Formats[block], nil
 }
 
@@ -251,6 +264,9 @@ func (f *Fake) BlockProgramStatus(_ context.Context, sid rex.SessionID, block re
 	f.record(sid, block, "program_status")
 	if f.ProgramStatusErr != nil {
 		return rex.ProgramStatus{}, f.ProgramStatusErr
+	}
+	if f.ProgramStatusFunc != nil {
+		return f.ProgramStatusFunc(block), nil
 	}
 	return f.ProgramStatuses[block], nil
 }

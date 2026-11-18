@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -229,6 +230,11 @@ func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.
 	text, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("read message: %w", err)
+	}
+	if !utf8.Valid(text) {
+		// json.Marshal would rewrite the bytes to U+FFFD and type corrupted
+		// text. Reject before touching Rex so nothing reaches the pane.
+		return fmt.Errorf("nudge: message is not valid UTF-8")
 	}
 	return bestEffort(p.Nudge(ctx, args[0], string(text)))
 }

@@ -77,7 +77,20 @@ type Provider struct {
 	// sessions use the first label; lookups and binding revalidation accept
 	// all of them so a legacy namespace still resolves.
 	sessionLabels []string
+
+	// nudgeConfirmWindow bounds how long Nudge waits for a turn start before
+	// reporting the delivery unconfirmed. nudgePollInterval spaces the
+	// observations within that window.
+	nudgeConfirmWindow time.Duration
+	nudgePollInterval  time.Duration
+	nudgeSubmitBudget  time.Duration
 }
+
+// Defaults for the bounded nudge confirmation window.
+const (
+	defaultNudgeConfirmWindow = 3 * time.Second
+	defaultNudgePollInterval  = 100 * time.Millisecond
+)
 
 // Option configures a Provider.
 type Option func(*Provider)
@@ -90,6 +103,18 @@ func WithActivityStore(s ActivityStore) Option { return func(p *Provider) { p.ac
 
 // WithMetaStore sets the metadata store.
 func WithMetaStore(s MetaStore) Option { return func(p *Provider) { p.meta = s } }
+
+// WithNudgeConfirmation sets how long Nudge waits for a turn start and how
+// often it observes the pane while waiting. A window <= 0 takes one
+// observation and returns immediately.
+func WithNudgeConfirmation(window, interval time.Duration) Option {
+	return func(p *Provider) {
+		p.nudgeConfirmWindow = window
+		if interval > 0 {
+			p.nudgePollInterval = interval
+		}
+	}
+}
 
 // WithStateDir keeps bindings, activity and metadata on disk under
 // dir/bindings, dir/activity and dir/meta.
@@ -151,11 +176,14 @@ func WithCityNamespaces(cities []string) Option {
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
 	p := &Provider{
-		city:     city,
-		client:   client,
-		bindings: NewMemoryStore(),
-		activity: NewMemoryActivityStore(),
-		meta:     NewMemoryMetaStore(),
+		city:               city,
+		client:             client,
+		bindings:           NewMemoryStore(),
+		activity:           NewMemoryActivityStore(),
+		meta:               NewMemoryMetaStore(),
+		nudgeConfirmWindow: defaultNudgeConfirmWindow,
+		nudgePollInterval:  defaultNudgePollInterval,
+		nudgeSubmitBudget:  defaultNudgeSubmitBudget,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -675,29 +703,6 @@ func prefixMatches(b Binding, prefix string) bool {
 		}
 	}
 	return false
-}
-
-// Nudge types text into the agent's pane and submits it. The text and the
-// submit are two steps: a pane that closes between them is reported, not
-// silently treated as a delivered nudge. The submit is confirmed at the
-// transport: Rex returns from send-key once the pane has received the key, so
-// a nil error means the Enter keystroke reached the pane. Whether the agent
-// acted on it needs idle/program_status and is Phase 3 work.
-func (p *Provider) Nudge(ctx context.Context, name, text string) error {
-	if text == "" {
-		return nil
-	}
-	binding, err := p.livePane(ctx, name)
-	if err != nil {
-		return err
-	}
-	if err := p.client.BlockWrite(ctx, binding.SessionID, binding.BlockID, text); err != nil {
-		return fmt.Errorf("nudge %s: type text: %w", name, err)
-	}
-	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, submitKey); err != nil {
-		return fmt.Errorf("nudge %s: submit key: %w", name, err)
-	}
-	return nil
 }
 
 // SendKeys presses keys in the agent's pane without submitting. gc passes

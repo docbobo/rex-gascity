@@ -65,7 +65,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `is-attached` | implemented | 6 | mistake |
 | `get-last-activity` | implemented | 5 | intentional (with a mistake inside) |
 | `peek` | implemented | 7 | intentional (with a mistake inside) |
-| `nudge` | implemented | 11 | intentional (with a mistake inside) |
+| `nudge` | implemented | 11 | intentional |
 | `send-keys` | implemented | 8 | intentional |
 | `interrupt` | implemented | 5 | intentional |
 | `clear-scrollback` | implemented | 6 | intentional |
@@ -150,16 +150,16 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `peek` | scrollback vs viewport | Rex format of block, bounded by scrollback | screen only, never scrolls | intentional | exact Rex format coverage unverified; needs live check |
 | `peek` | output cap | pages 983040-byte replies, no total cap | exit 1 above 1 MiB | intentional | gc has no cap or truncation; the 30 s timeout is the bound. |
 | `peek` | unreachable core/server | exit 1 with Rex error | exit 1, or 66 if city parked | intentional | we have no parked-city state |
-| `nudge` | busy / program_status gating | none; writes over working or blocked pane | hc refuses: busy, pending_interaction | not-implemented | GCREX-16 open; program_status already read elsewhere |
-| `nudge` | submit confirmation | send-key return only; no turn-start check | hc `started` flag: delivered vs delivered_unobserved | not-implemented | needs OSC 7501 idle→working; gc 1.5.1 ignores words |
+| `nudge` | busy / program_status gating | reads `program_status` first; refuses `working` with `ErrNudgeBusy` and `blocked` (kind named) with `ErrNudgeBlocked`, typing nothing; `NudgeModeImmediate` overrides | hc refuses: busy, pending_interaction | intentional | GCREX-16 implemented. gc 1.5.1 reads only the exit code, so the gate must be provider-side. |
+| `nudge` | submit confirmation | polls `program_status` for idle→working or a newer `updated_at` within a bounded window; format-fingerprint fallback; unconfirmed is a report, not an error | hc `started` flag: delivered vs delivered_unobserved | intentional | GCREX-16 implemented; gc 1.5.1 ignores the report/words, so retyping stays avoided by not erroring. |
 | `nudge` | exit code when pane gone | exit 0 (bestEffort) | exit 80 `gone` | intentional | gc 1.5.1 treats nudge to dead agent as no-op |
 | `nudge` | exit code when server down | exit 1 with Rex exec error | exit 80 `unavailable` | intentional | both fail for baseline gc; Rex exit code unverified |
-| `nudge` | framing: text and submit | write then enter, two non-atomic calls | one atomic terminal.send | intentional | no atomic Rex primitive; retry may double-type |
-| `nudge` | multi-line and control chars | verbatim write; no paste; behavior unverified | one JSON string to hc; unverified | not-implemented | needs live multi-line test; paste event unused |
+| `nudge` | framing: text and submit | write then enter, two non-atomic calls under one shared submit deadline; a post-write Enter failure says the text was typed and records `GC_NUDGE_SUBMIT_FAILED` | one atomic terminal.send | intentional | no atomic Rex primitive; GCREX-21 bounds the split and makes it visible. |
+| `nudge` | multi-line and control chars | verified live: a two-line nudge reached Pi as one submitted turn; `write` inserts the newline without submitting; `block.event paste` still unused | one JSON string to hc; unverified | intentional | GCREX-21 live probe into Pi 1.5.2; observed once on Rex revision 14. |
 | `nudge` | empty message | no-op exit 0 before pane lookup | sent like any text; hc reaction unverified | intentional | empty Enter would submit blank prompt |
-| `nudge` | non-UTF-8 stdin | json.Marshal rewrites bytes to U+FFFD | rejected, nothing typed | mistake | silent prompt corruption |
-| `nudge` | deadline and cancellation | no internal budget; kill can split write and Enter | send stops 5 s before deadline | mistake | leaves typed, unsubmitted text |
-| `nudge` | retries / settle time | none | none for nudge op | intentional | behavior matches; Enter-ingest race unverified |
+| `nudge` | non-UTF-8 stdin | `opNudge` rejects invalid UTF-8 with exit 1 and stderr before any Rex call | rejected, nothing typed | intentional | GCREX-21. herdr answers exit 80; gc 1.5.1 reads either non-zero as failure, so exit 1 is the usable answer. |
+| `nudge` | deadline and cancellation | one submit deadline (10 s or the op context's earlier deadline) covers write and Enter; Enter still runs after a successful write when the parent is cancelled; an already-cancelled context writes nothing | send stops 5 s before deadline | intentional | GCREX-21 bounds the split; the remaining window is the transport's own call latency. |
+| `nudge` | retries / settle time | none | none for nudge op | intentional | behavior matches; multi-line ingest is now verified, other Enter-ingest races unverified |
 | `nudge` | activity bookkeeping | no input-time record | note_input stamps input time | not-implemented | low impact; screen change is seen anyway |
 | `send-keys` | unknown key names | pass through; Rex errors, exit 1 | typed as literal chars, or rejected exit 80 | intentional | Rex send-key has no literal-text mode |
 | `send-keys` | key vocabulary | no BTab/PPage/NPage; case-insensitive, F1-F24 | exact-case table with BTab/PPage/NPage, F1-F12 | intentional | BTab etc. likely fail in Rex |
@@ -220,16 +220,15 @@ answering exit 0 with a hint, so it is no longer listed here.
 
 | # | Where | Mistake | Consequence in gc 1.5.1 | Sections |
 |---|---|---|---|---|
-| 1 | `nudge` | Text and Enter are two calls with no internal deadline, and non-UTF-8 stdin is silently rewritten to U+FFFD by `json.Marshal` | gc retries a failed nudge from the queue (15 s, 5 attempts) or the idle backstop (3), re-typing the whole text, so an exit 1 after the write duplicates the prompt; bad bytes corrupt it silently | §nudge rows 5, 8, 9; §start row 15 |
-| 2 | `get-last-activity` | No "working or blocked means now" rule, and no pack-input floor | gc idle-stops or sleeps a session whose stamp is older than the timeout, and the same value gates drain-escalation kills, progress-stall recycle and the claim backstop, so a silent but busy agent is treated as idle | §get-last-activity rows 2, 3 |
-| 3 | `is-attached` | An unclassifiable client kind becomes `ErrAttachmentUnknown`/exit 1 | gc reads any error as "not attached", which is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill proceed against a watched pane | §is-attached row 3 |
-| 4 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
-| 5 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
-| 6 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
-| 7 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
-| 8 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
-| 9 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
-| 10 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
+| 1 | `get-last-activity` | No "working or blocked means now" rule, and no pack-input floor | gc idle-stops or sleeps a session whose stamp is older than the timeout, and the same value gates drain-escalation kills, progress-stall recycle and the claim backstop, so a silent but busy agent is treated as idle | §get-last-activity rows 2, 3 |
+| 2 | `is-attached` | An unclassifiable client kind becomes `ErrAttachmentUnknown`/exit 1 | gc reads any error as "not attached", which is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill proceed against a watched pane | §is-attached row 3 |
+| 3 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
+| 4 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
+| 5 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
+| 6 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
+| 7 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
+| 8 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
+| 9 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
 
 Two earlier candidates were withdrawn after the gc check: the missing SIGTERM
 handler in `start` (gc runs `stop <name>` after every failed or cancelled start,
@@ -246,9 +245,10 @@ matching capability declared, so their absence is inert too; `watch-startup`
 exiting 2 is handled by gc falling back to `peek` polling every 500 ms. `attach`
 was the one user-visible exit-2 omission; GCREX-20 now answers it with exit 0
 and a hint, so no omission is user-visible.
-`nudge` busy-gating and submit confirmation are open work under GCREX-16, and
-the start-config gaps (hooks, file staging, post-launch liveness check, warning
-channel) are recorded in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
+`nudge` busy-gating and submit confirmation landed under GCREX-16, and input
+validation plus the bounded submit under GCREX-21. The start-config gaps
+(hooks, file staging, post-launch liveness check, warning channel) are recorded
+in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
 
 ## Operational risks that are not parity bugs
 
@@ -270,26 +270,21 @@ channel) are recorded in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
 Not implemented in this task. Each item closes a set of the sections above; the
 numbering of the mistake table is what they refer to.
 
-1. **Input path hardening.** Bound the write→Enter window with a context
-   deadline shorter than gc's 30 s; reject non-UTF-8 stdin before any write;
-   keep `BTab`/`PPage`/`NPage` as optional hardening. Closes 1.
-2. **Liveness answers.** Catch `ErrNotFound` in `PeekLines`; map `ErrNotFound`
+1. **Liveness answers.** Catch `ErrNotFound` in `PeekLines`; map `ErrNotFound`
    from `BlockProcess` to `false` in `ProcessAlive`; answer `true` from
    `is-attached` when a client kind cannot be classified; decide on
-   interpreter-script matching after a live probe. Closes 3, 4, 5.
-3. **Start robustness.** Emit `env -u KEY` for empty values; add a per-hook
+   interpreter-script matching after a live probe. Closes 2, 3, 4.
+2. **Start robustness.** Emit `env -u KEY` for empty values; add a per-hook
    timeout; move `pre_start` out of the city-wide lock; add a SIGTERM handler
-   so rollback runs before gc's forced kill. Closes 6, 7.
-4. **Incarnation hygiene.** Clear all meta for the name (and the activity
+   so rollback runs before gc's forced kill. Closes 5, 6.
+3. **Incarnation hygiene.** Clear all meta for the name (and the activity
    entry) on stop and on the no-binding path; reject empty meta keys; decide
-   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 8, 10.
-5. **Activity truthfulness.** Return now for `working`/`blocked`; record pack
-   input time in `nudge`/`send-keys` and use it as a floor. Closes 2.
-6. **List output guard.** Skip names that are empty, padded or contain control
-   characters. Closes 9.
-7. **GCREX-16** (existing): `program_status` busy gating and submit
-   confirmation for `nudge`.
-8. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
+   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 7, 9.
+4. **Activity truthfulness.** Return now for `working`/`blocked`; record pack
+   input time in `nudge`/`send-keys` and use it as a floor. Closes 1.
+5. **List output guard.** Skip names that are empty, padded or contain control
+   characters. Closes 8.
+6. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
    transport failure (see "Operational risks"); probe `block.method clear` and
    `format` coverage; probe a `node agent.js` pane's `argv0` for the
    interpreter-script decision.
@@ -680,7 +675,7 @@ GCREX-17 — name resolution across the candidate set that `Resolve` uses.
 
 **Status** — implemented
 
-**Our implementation.** Dispatch is `ops["nudge"]` with 1 required arg (`cmd/gc-runtime-rex/main.go:86`). `opNudge` reads all of stdin, then calls `Provider.Nudge` and passes the result through `bestEffort`, which turns `ErrSessionNotFound` into exit 0 (`main.go:206-211,151-156`). `Nudge` returns nil for an empty message before touching Rex (`internal/provider/provider.go:564-566`). Otherwise `livePane` resolves the binding and probes `BlockProcess`; no binding, a missing block, or `LastExit != nil` gives `ErrSessionNotFound` (`provider.go:614-634`, `liveness.go:105-115`). It then does two separate calls: `BlockWrite` of the raw text (`block.method write {data}`), then `rex send-key … -- enter` (`provider.go:570-577`, `internal/rex/cli/cli.go:356-370`). No trailing newline is added, there is no bracketed paste (the `block.event paste` path is unused), no `program_status` read, no busy gate, no retry or settle delay, and no confirmation beyond `send-key` returning (comment `provider.go:557-562`; deferred per `docs/rex-provider.md:269`, GCREX-16). Any other error, such as a Rex exec failure or a failed write or submit, exits 1 with stderr text (`main.go:138-141`). The process uses `context.Background()`, so the only deadline is gc's 30 s kill (`main.go:138`). Nothing is written to stdout and no state is touched.
+**Our implementation.** Dispatch is `ops["nudge"]` with 1 required arg (`cmd/gc-runtime-rex/main.go:86`). `opNudge` reads all of stdin (`main.go:229-238`); it rejects invalid UTF-8 with exit 1 and a stderr message before any Rex call (`main.go:234-238`), then calls `Provider.Nudge` and passes the result through `bestEffort`, which turns `ErrSessionNotFound` into exit 0 (`main.go:206-211,151-156`). `Nudge` returns nil for an empty message before touching Rex. Otherwise `livePane` resolves the binding and probes `BlockProcess`; no binding, a missing block, or `LastExit != nil` gives `ErrSessionNotFound` (`provider.go:614-634`, `liveness.go:105-115`). `NudgeReport` reads `program_status` and refuses a `working` pane with `ErrNudgeBusy` or a `blocked` pane with `ErrNudgeBlocked` (kind named), typing nothing; `NudgeModeImmediate` bypasses that gate (`internal/provider/nudge.go:103-142`). It captures a format fingerprint when no status record exists, then writes the raw text (`block.method write {data}`) and sends `rex send-key … -- enter` (`nudge.go:148-160`, `internal/rex/cli/cli.go:356-370`). One submit deadline covers both calls: the op context's earlier deadline, else 10 s (`nudge.go:215-228`). After a successful write the Enter is attempted on a context detached from parent cancellation but still bounded by that deadline (`nudge.go:151-160`), so a cancel cannot leave text typed and unsubmitted. A failed Enter returns "text was typed but submit key failed" and stores `GC_NUDGE_SUBMIT_FAILED` in the session meta; the next successful submit clears it (`nudge.go:157-162,231-235`). After the submit it confirms a turn start (program_status idle→working or newer `updated_at`, else a format-fingerprint change) within the bounded confirmation window; a delivered-but-unconfirmed nudge is a report, not an error, so gc does not retype it (`nudge.go:164-205`). Any other error, such as a Rex exec failure or a failed write, exits 1 with stderr text (`main.go:138-141`). The process uses `context.Background()`, so gc's 30 s kill is the outer bound; the provider now has its own shorter submit budget. Nothing is written to stdout.
 
 **herdr-core.** Dispatch is `spec(inputs.op_nudge, stdin=True)` (`herdrcore/ops_table.py:83`). `op_nudge` UTF-8-decodes stdin and answers `rejected` (exit 80) on bad bytes without typing (`herdrcore/inputs.py:342-348`). `nudge` lists the city's terminals and takes the newest record; a missing or non-intact record is `gone` and a core that cannot be reached is `unavailable` (`inputs.py:209-229,269-274`). It then calls `hc terminal.send` once, which types and submits in one request (`hc/client.py:256-262`). The send gets all the op's remaining time minus a 5 s reserve (`inputs.py:162-165`, `hc/client.py:259-262`). Busy and blocked gating happens in the hc core, and the pack maps its refusals: `status_mismatch` → `busy`, `blocked` → `pending_interaction`, `unavailable` → `not_sent`, `not_found`/`finished` → `gone` (`inputs.py:61-66,197-206`). A send hc took whole is `delivered`, or `delivered_unobserved` when the program reports status but was not seen starting the turn (`inputs.py:238-241`). A send that hc may have typed but whose reply was lost is also `delivered_unobserved` (`inputs.py:260-264`). A non-delivery is exit 80 with one `{"outcome":…}` line (`rpp/outcome.py:103-115`); only unknown outcomes and unsupported-core refusals exit 1. The op notes the input time for activity (`inputs.py:232-235`, `activity.py:88-91`). It does not retry `unavailable`; only the startup nudge does (`retry_unavailable=True`, `herdrcore/lifecycle.py:1129`, `inputs.py:256-258`).
 
@@ -688,34 +683,31 @@ GCREX-17 — name resolution across the candidate set that `Resolve` uses.
 
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
-| 1 | busy / program_status gating | None. Writes whatever the pane is doing, including over a `working` turn or a `blocked` dialog (`provider.go:563-578`) | hc refuses on status: `busy`, `pending_interaction` (`inputs.py:61-66`) | not-implemented | GCREX-16 is open. `activity.go` already reads `program_status`; `Nudge` does not. Gap is documented in `docs/rex-provider.md:269`. gc reads only the exit code (verified), so the gating must happen inside the provider. |
-| 2 | submit confirmation | `send-key` returning means Enter reached the pane; nothing observes a turn start (`provider.go:557-562`) | `started` flag from hc gives `delivered` vs `delivered_unobserved` (`inputs.py:238-241`) | not-implemented | Verified in gc 1.5.1: no outcome vocabulary exists and stdout is discarded (`exec.go:613-638`); only the exit code is read. Same GCREX-16 work, needs OSC 7501 idle→working. |
+| 1 | busy / program_status gating | Reads `program_status` first; refuses `working` with `ErrNudgeBusy` and `blocked` with `ErrNudgeBlocked` (kind named), writing nothing; `NudgeModeImmediate` overrides (`nudge.go:103-142`) | hc refuses on status: `busy`, `pending_interaction` (`inputs.py:61-66`) | intentional | GCREX-16 implemented. gc reads only the exit code (verified), so the gate must happen inside the provider. |
+| 2 | submit confirmation | Polls `program_status` for idle→working or a newer `updated_at` within a bounded window, with a format-fingerprint fallback; an unconfirmed delivery is a report, not an error (`nudge.go:164-205`) | `started` flag from hc gives `delivered` vs `delivered_unobserved` (`inputs.py:238-241`) | intentional | GCREX-16 implemented. Verified in gc 1.5.1: no outcome vocabulary exists and stdout is discarded (`exec.go:613-638`); only the exit code is read, so not erroring is what prevents a retype. |
 | 3 | exit code when the pane or session is gone | Exit 0 (`bestEffort`, `main.go:151-156`) | Exit 80 `gone` (`inputs.py:213-228`, `outcome.py:114-115`) | intentional | gc 1.5.1 treats nudge to a dead agent as a no-op, like tmux `send-keys`. Exit 80 is a plain error to gc (`exec.go:153-171`), so herdr's outcome code is not usable at baseline. |
 | 4 | exit code when the server is down | Exit 1 with the Rex exec error. A non-3 `rex` exit is not `ErrNotFound` (`cli.go:41-62`, `provider.go:621-623`). Exit 3 on a down server is unverified | Exit 80 `unavailable`, nothing typed (`inputs.py:192-194,224`) | intentional | For a baseline gc both are failure. Risk to confirm with the Rex CLI: `internal/rex/cli/cli.go` maps any `rex` exit 3 to `ErrNotFound`, which `bestEffort` turns into exit 0, so if Rex exits 3 for a transport failure a nudge to a down server would report success. |
-| 5 | framing: text and submit | Two non-atomic calls: raw `write`, then `enter`. A submit failure exits 1 after the text is already typed (`provider.go:570-577`, `input_test.go:50-70`) | One atomic `terminal.send` type+submit (`hc/client.py:256-262`) | intentional | Rex has no atomic type-and-submit primitive (`REX-CONTRACT.md:143` defines nudge as write+Enter). gc retries a failed nudge from the queue (15 s delay, 5 attempts) or the idle backstop (3 attempts), re-typing the whole text each time (`cmd/gc/cmd_nudge.go:44-45`, `:1917-1952`), so an exit 1 after the write but before Enter will duplicate the text. |
-| 6 | multi-line and control characters | Text goes verbatim to `write`; the contract says `write` interprets escape sequences (`REX-CONTRACT.md:141-143`), so embedded newlines or ESC bytes act as keystrokes. Whether Rex wraps in bracketed paste is unverified | Passed as one JSON string to hc `terminal.send` (`inputs.py:254`); hc's paste/newline handling is unverified | not-implemented | Verified for gc: it sends raw `\n`-joined text on stdin and uses no bracketed paste (`runtime.go:131-146`, `exec.go:613-619`), so the provider decides. `block.event paste` exists (`REX-CONTRACT.md:143`) and is not used. Rex-side behavior still needs a live multi-line test into Pi. |
+| 5 | framing: text and submit | Two non-atomic calls under one shared submit deadline: raw `write`, then `enter`. A post-write Enter failure exits 1 with "text was typed but submit key failed" and stores `GC_NUDGE_SUBMIT_FAILED` (`nudge.go:143-162`, `input_test.go`). | One atomic `terminal.send` type+submit (`hc/client.py:256-262`) | intentional | Rex has no atomic type-and-submit primitive (`REX-CONTRACT.md:143` defines nudge as write+Enter). gc retries a failed nudge from the queue (15 s delay, 5 attempts) or the idle backstop (3 attempts), re-typing the whole text each time (`cmd/gc/cmd_nudge.go:44-45`, `:1917-1952`); GCREX-21 bounds the split and makes the typed-but-unsubmitted case distinguishable in stderr and meta. |
+| 6 | multi-line and control characters | Verified live (GCREX-21): a nudge of `line one\nline two` into an idle Pi 1.5.2 pane arrived as one submitted turn; both lines were in the same message. `write` inserts the newline without submitting; the separate Enter submits the whole text. `block.event paste` remains unused. | Passed as one JSON string to hc `terminal.send` (`inputs.py:254`); hc's paste/newline handling is unverified | intentional | Live probe on Rex revision 14, 2026-11-18 (recorded in `REX-CONTRACT.md` §6). One observation; control bytes other than newline were not re-tested. |
 | 7 | empty message | Returns nil before resolving the pane, so exit 0 even for a dead pane (`provider.go:564-566`) | Empty text goes through `_target` and `client.send` like any text (`inputs.py:269-274`); hc's reaction is unverified | intentional | Typing nothing and pressing Enter would submit an empty prompt. No-op is safer. Only differs for a dead pane (exit 0 vs 80). |
-| 8 | non-UTF-8 stdin | `string(text)` goes into `json.Marshal`, which replaces invalid bytes with U+FFFD, so mangled text is typed and submitted (`main.go:211`, `cli.go:68`) | Rejected, nothing typed (`inputs.py:344-348`) | mistake | Silent corruption of a prompt. Low likelihood; gc's text is normally UTF-8. |
-| 9 | deadline and cancellation | `context.Background()`; no internal budget or reserve; a gc SIGTERM at 30 s can land between write and Enter (`main.go:138`, `provider.go:570-577`) | Send waits until deadline minus a 5 s reserve so the answer always reaches gc (`inputs.py:162-165`) | mistake | A kill between the two steps leaves typed, unsubmitted text. Each `rex` call has no per-call timeout either. Small window, but cheap to bound. |
-| 10 | retries / settle time | None; no pause between write and Enter | None for the nudge op (only the startup nudge retries `unavailable`, `lifecycle.py:1129`) | intentional | Behavior matches at the provider level: gc never retries the call itself, and it retries from the queue only on error. With `write`+`enter` an agent TUI slow to ingest the write could miss the Enter. Unverified. |
+| 8 | non-UTF-8 stdin | `opNudge` validates the stdin bytes and rejects invalid UTF-8 with exit 1 and a stderr message before any Rex call (`main.go:229-238`), so nothing is typed and `json.Marshal` cannot rewrite the bytes | Rejected, nothing typed (`inputs.py:344-348`) | intentional | GCREX-21 closed the mistake. herdr answers exit 80; gc 1.5.1 reads either non-zero as failure, so exit 1 is the usable answer. |
+| 9 | deadline and cancellation | One submit deadline covers write and Enter: the op context's earlier deadline, else 10 s (`nudge.go:215-228`). After a successful write the Enter runs on a context detached from parent cancellation but bounded by the same deadline; an already-cancelled context writes nothing (`nudge.go:103-108,143-160`) | Send waits until deadline minus a 5 s reserve so the answer always reaches gc (`inputs.py:162-165`) | intentional | GCREX-21 closed the mistake: a cancel or unbounded stall can no longer split the two steps, and an entered submit still reports the typed-but-unsubmitted case. |
+| 10 | retries / settle time | None; no pause between write and Enter | None for the nudge op (only the startup nudge retries `unavailable`, `lifecycle.py:1129`) | intentional | Behavior matches at the provider level: gc never retries the call itself, and it retries from the queue only on error. The multi-line Pi probe now shows a complete write is ingested before the separate Enter; other TUI ingest races remain unverified. |
 | 11 | activity bookkeeping | Does not record that input was typed (no hit in `activity.go`) | `note_input` stamps input time (`inputs.py:232-235,263-265`) | not-implemented | Ours reads `program_status` or a format fingerprint (`activity.go`), so a nudge changes the screen anyway. Low impact. |
 
-**Verdict.** intentional (with a mistake inside). The fire-and-forget model, exit 0 for a gone pane, and exit 1 for transport failure fit gc 1.5.1's tmux-parity baseline, where herdr's typed exit-80 outcomes are not readable. The real gaps are the open `program_status` gating and confirmation work (GCREX-16), non-UTF-8 handling, and an unbounded write→Enter window. Multi-line behavior is unverified.
+**Verdict.** intentional. The fire-and-forget model, exit 0 for a gone pane, and exit 1 for transport failure fit gc 1.5.1's tmux-parity baseline, where herdr's typed exit-80 outcomes are not readable. GCREX-16 closed the `program_status` gating and confirmation gaps; GCREX-21 closed non-UTF-8 input, bounded the write→Enter window, made a post-write Enter failure distinguishable, and verified multi-line delivery into Pi.
 
 **Cross-references.**
 GCREX-3 — original input path: write text then Enter, `livePane` → `ErrSessionNotFound`
 GCREX-16 — `program_status` busy gating and submit confirmation; closes rows 1, 2
+GCREX-21 — non-UTF-8 rejection, bounded write→Enter submit, distinguishable post-write Enter failure; closes rows 5, 6, 8, 9
 GCREX-14 — startup nudge: same write+Enter, best effort, no retry (`provider.go:236-255`)
 GCREX-4 — deferred nudge gating; `activity.go` already consumes `program_status`
 `docs/REX-CONTRACT.md` §6 (`write`, nudge = write + Enter), §9 (nudge row, driving ops not conformance)
 `docs/rex-provider.md` — Known v1 Limits, "No busy-gated nudge"
 
 **Follow-ups.**
-- Gate `Nudge` on `program_status`: refuse or queue on `working`, surface `blocked`, keep the format-poll fallback (gap; GCREX-16).
-- Confirm submit by polling for an idle→working transition after Enter (gap; GCREX-16).
-- Reject non-UTF-8 stdin with exit 1 before any write instead of letting `json.Marshal` rewrite it (mistake).
-- Bound the write→Enter window: derive a ctx deadline shorter than gc's 30 s and skip or fail cleanly (mistake).
-- Live-test a multi-line nudge and one with control characters into a Pi pane; decide between `write` and `block.event paste` (gap).
+- Probe control characters other than newline (ESC, Tab) through `write` into Pi; the multi-line path is verified, the control-byte path is not (gap).
 - Check what `rex` exits with when the server is down; make sure it is not exit 3, so `bestEffort` does not turn it into success (gap).
 - Record input time for activity on a successful nudge, if idle detection needs it (gap).
 

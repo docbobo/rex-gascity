@@ -26,6 +26,13 @@ const (
 // Rex reports records and otherwise polls the pane.
 const ActivityPolicy = "program_status preferred; format_poll fallback (OSC 7501 is emitted by the pane program, e.g. Pi)"
 
+// formatFingerprint identifies one rendered-output sample so a later poll can
+// tell whether the pane changed.
+func formatFingerprint(out string) string {
+	sum := sha256.Sum256([]byte(out))
+	return hex.EncodeToString(sum[:])
+}
+
 // LastActivity is a session's last-activity time and the source it came from.
 type LastActivity struct {
 	At     time.Time
@@ -64,8 +71,7 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 	if err != nil {
 		return LastActivity{}, err
 	}
-	sum := sha256.Sum256([]byte(out))
-	fp := hex.EncodeToString(sum[:])
+	fp := formatFingerprint(out)
 	if rec, found := p.activity.Load(binding.Name); found && rec.Identity == string(binding.BlockID) && rec.Fingerprint == fp {
 		return LastActivity{At: rec.At, Source: ActivityFormatPoll}, nil
 	}

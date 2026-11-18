@@ -390,7 +390,7 @@ docs/REX-CONTRACT.md §9, which has no `CopyTo` or `RunLive` rows and adds
 | `IsAttached` | `session.list_clients` on the city session (an app client must exist), then `session.view` | Attached only when the agent's rig tab is the session's active window and still contains the agent's pane. Tiled panes in the active tab are visible. An app client is listed on every session, so app presence alone is not attachment. `Start` launches with `focus=false` so a background rig does not steal focus. Unknown client kinds yield `ErrAttachmentUnknown`. |
 | `Attach` | `session.focus_block` + `session.focus_window` (the rig tab), via `rex api call` / client action | Focus in the user's Rex app rather than stealing a tty. |
 | `ProcessAlive` | `block call process`; strict tree matching of `foreground`/`ancestors` names/`argv0`/`path` against `processNames` | Empty `processNames` ⇒ true. Only this op inspects process names. |
-| `Nudge` | `block call write {"data": "<text>"}` then submit (Enter via `block.event` / `send-key enter`); transport-level confirmation | Two steps: the text is written and Enter is sent; confirmation means the keystroke reached the pane. Busy gating (type nothing while a turn runs unless `ImmediateNudge`) and agent-state/`program_status_changed` submit confirmation were **not** implemented in GCREX-4 and remain deferred. |
+| `Nudge` | read `program_status` → refuse `working`/`blocked` (typed errors, nothing typed) → `block call write {"data": "<text>"}` then submit (Enter via `block.event` / `send-key enter`) → poll for an idle→working transition or a newer `updated_at`, else a format-fingerprint change | Busy gating and submit confirmation were deferred from GCREX-4 and are implemented in GCREX-16 (`NudgeModeImmediate` / `GC_REX_NUDGE_IMMEDIATE` overrides the gate). An unconfirmed delivery is a report, not an error, so gc does not retype it. |
 | `SendKeys` | `block.event` with key presses (translate tmux `C-c`/`Enter` → Rex `ctrl+c`/`enter`) | |
 | `Peek` | `block call format {"format":"text","trim":true,"max_bytes":983040}`, follow `id` with `blob_read` until `eof` → take last `lines` | Full content; `lines<=0` ⇒ all. |
 | `ListRunning` | `session.list` for `gc:` city sessions, then `session.view` per session to enumerate rig tabs and their agent panes; reconstruct gc names via the sidecar | Miss = orphan reaping risk; the sidecar is authoritative for our own sessions. |
@@ -564,12 +564,13 @@ the city session and rig tab, start an agent pane, read output, stop, and
 detect liveness. The RPP dispatcher is deferred to Phase 4 (GCREX-5).
 *Gate: manual smoke test in a scratch city on a pinned Rex.*
 
-**Phase 2 — Input path. (Implemented.)** Nudge writes the text and sends the submit
-keystroke (confirmation is transport-level: the Enter keystroke reached the
-pane); SendKeys delivers arbitrary translated keys; Interrupt sends ctrl+c and
-reports `ErrSessionNotFound` for a dead pane. Busy gating (`ImmediateNudge`,
-type nothing while a turn runs) and agent/program-state confirmation were
-not done in GCREX-4 and remain deferred. *Gate: drive a real agent through
+**Phase 2 — Input path. (Implemented; gating and confirmation added by GCREX-16.)**
+Nudge now reads `program_status` before typing (refusing a working or blocked
+pane without typing), writes the text, sends the submit keystroke, and confirms
+a turn start within a bounded window (program_status, else a format fingerprint).
+`NudgeModeImmediate` (RPP: `GC_REX_NUDGE_IMMEDIATE=1`) bypasses the gate.
+SendKeys delivers arbitrary translated keys; Interrupt sends ctrl+c and
+reports `ErrSessionNotFound` for a dead pane. *Gate: drive a real agent through
 a turn and an interrupt.*
 
 **Phase 3 — Identity, meta, activity, attachment. (Implemented.)** The file

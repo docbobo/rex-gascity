@@ -377,7 +377,7 @@ func TestListClients(t *testing.T) {
 
 func TestBlockProgramStatus(t *testing.T) {
 	fake := newFakeRex(t)
-	fake.respond(t, "program_status", `{"records":[{"id":"r1","state":"working","app":"pi","updated_at":"2026-11-17T20:18:53.239854+01:00"}]}`)
+	fake.respond(t, "program_status", `{"records":[{"id":"r1","state":"working","app":"pi","kind":"permission","updated_at":"2026-11-17T20:18:53.239854+01:00"}]}`)
 	c := &cli.Client{Bin: fake.bin}
 
 	status, err := c.BlockProgramStatus(context.Background(), "session:a", "block:dog-1")
@@ -388,7 +388,7 @@ func TestBlockProgramStatus(t *testing.T) {
 		t.Fatalf("records = %d, want 1", len(status.Records))
 	}
 	rec := status.Records[0]
-	if rec.ID != "r1" || rec.State != "working" || rec.App != "pi" {
+	if rec.ID != "r1" || rec.State != "working" || rec.App != "pi" || rec.Kind != "permission" {
 		t.Errorf("record = %+v", rec)
 	}
 	if rec.UpdatedAt.IsZero() {

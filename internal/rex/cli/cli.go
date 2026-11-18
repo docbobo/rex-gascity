@@ -392,6 +392,7 @@ func (c *Client) BlockProgramStatus(ctx context.Context, sessionID rex.SessionID
 			ID        string `json:"id"`
 			State     string `json:"state"`
 			App       string `json:"app"`
+			Kind      string `json:"kind"`
 			UpdatedAt string `json:"updated_at"`
 		} `json:"records"`
 	}
@@ -400,7 +401,7 @@ func (c *Client) BlockProgramStatus(ctx context.Context, sessionID rex.SessionID
 	}
 	status := rex.ProgramStatus{Records: make([]rex.ProgramStatusRecord, 0, len(reply.Records))}
 	for _, r := range reply.Records {
-		rec := rex.ProgramStatusRecord{ID: r.ID, State: r.State, App: r.App}
+		rec := rex.ProgramStatusRecord{ID: r.ID, State: r.State, App: r.App, Kind: r.Kind}
 		if r.UpdatedAt != "" {
 			t, err := time.Parse(time.RFC3339, r.UpdatedAt)
 			if err != nil {

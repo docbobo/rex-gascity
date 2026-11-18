@@ -69,9 +69,13 @@ type ClientInfo struct {
 
 // ProgramStatusRecord is one program-reported status row (OSC 7501).
 type ProgramStatusRecord struct {
-	ID        string
-	State     string // idle|working|done|blocked|error
-	App       string
+	ID    string
+	State string // idle|working|done|blocked|error
+	App   string
+	// Kind refines a state, most importantly the interaction a blocked
+	// program waits on: permission, question or auth. Empty when the
+	// program reports none.
+	Kind      string
 	UpdatedAt time.Time
 }
 

@@ -480,3 +480,21 @@ func TestGetMetaUnsetKeyIsEmpty(t *testing.T) {
 		t.Errorf("stdout = %q, want empty", r.stdout)
 	}
 }
+
+func TestNudgeRejectsInvalidUTF8(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	before := len(fake.BlockCalls)
+
+	r := h.run("prompt \xff bytes", "nudge", dog)
+	assertFailure(t, r, exitFail)
+	if !strings.Contains(r.stderr, "UTF-8") {
+		t.Errorf("stderr = %q, want it to name UTF-8", r.stderr)
+	}
+	if len(fake.BlockCalls) != before {
+		t.Errorf("block calls = %v, want none after bad stdin", fake.BlockCalls[before:])
+	}
+	if len(fake.SentKeys) != 0 {
+		t.Errorf("send-keys calls = %d, want 0 after bad stdin", len(fake.SentKeys))
+	}
+}
