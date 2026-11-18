@@ -84,6 +84,12 @@ type Provider struct {
 
 	// nudgeConfig holds the nudge and startup-delivery tunables (see nudge.go).
 	nudgeConfig
+
+	// startBudget bounds the whole start op when the op context carries no
+	// earlier deadline; preStartHookTimeout bounds one pre_start hook, capped
+	// by whatever remains of startBudget (see start).
+	startBudget         time.Duration
+	preStartHookTimeout time.Duration
 }
 
 // Option configures a Provider.
@@ -165,6 +171,37 @@ func WithCityNamespaces(cities []string) Option {
 	}
 }
 
+// Defaults for the start-path budgets. gc's contract gives start a 120 s op
+// deadline (docs/REX-CONTRACT.md §op deadlines); herdr-core bounds one
+// pre_start hook to 30 s. The GC_EXEC_DEADLINE_MS env var, if gc ever sends
+// one, is not read: the pinned gc 1.5.1 baseline does not.
+const (
+	defaultStartBudget         = 120 * time.Second
+	defaultPreStartHookTimeout = 30 * time.Second
+)
+
+// WithStartBudget sets the whole-op budget start derives its per-hook timeout
+// from when the op context has no earlier deadline. A value <= 0 keeps the
+// default.
+func WithStartBudget(d time.Duration) Option {
+	return func(p *Provider) {
+		if d > 0 {
+			p.startBudget = d
+		}
+	}
+}
+
+// WithPreStartHookTimeout sets the per-hook pre_start timeout. A value <= 0
+// keeps the default. The hook timeout is further capped by the remaining start
+// budget, so a chain of hooks cannot outlive the op.
+func WithPreStartHookTimeout(d time.Duration) Option {
+	return func(p *Provider) {
+		if d > 0 {
+			p.preStartHookTimeout = d
+		}
+	}
+}
+
 // New builds a Provider for city, driving client. Without options all state is
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
@@ -176,6 +213,9 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		meta:        NewMemoryMetaStore(),
 		runner:      ExecRunner{},
 		nudgeConfig: defaultNudgeConfig(),
+
+		startBudget:         defaultStartBudget,
+		preStartHookTimeout: defaultPreStartHookTimeout,
 	}
 	p.claimProbe = p.probeLiveClaim
 	for _, opt := range opts {
@@ -200,12 +240,14 @@ func (p *Provider) Binding(name string) (Binding, bool) {
 // records the pane's binding. It is idempotent: a live pane is left alone, and
 // a pane whose agent has died is closed before a new one is launched.
 //
-// The state lock covers only the state mutations and the launch. The startup
-// nudge is delivered after Start releases the lock, so its bounded readiness
-// wait cannot stall every other Start or Stop in the city.
+// The per-name lock serializes every start and stop of this name; the
+// city-wide state lock is taken only around short store and session mutations,
+// never across pre_start or the blocking launch. The startup nudge is delivered
+// after the locks are released, so its bounded readiness wait cannot stall
+// other starts or stops.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	var launch startResult
-	err := p.withStateLock(ctx, func() error {
+	err := p.withNameLock(ctx, SessionName(name), func() error {
 		var startErr error
 		launch, startErr = p.start(ctx, name, cfg)
 		return startErr
@@ -218,13 +260,13 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 }
 
 // StartNew starts the agent like Start, but fails with ErrAlreadyRunning when
-// its pane is already live. The liveness check and the launch run under one
-// state lock, so of two concurrent StartNew calls for one name sharing a state
-// dir, exactly one launches and the other sees ErrAlreadyRunning. The startup
-// nudge is delivered after the lock is released, like Start.
+// its pane is already live. The per-name lock is held across the liveness check
+// and the launch, so of two concurrent StartNew calls for one name sharing a
+// state dir, exactly one launches and the other sees ErrAlreadyRunning. The
+// startup nudge is delivered after the lock is released, like Start.
 func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error {
 	var launch startResult
-	err := p.withStateLock(ctx, func() error {
+	err := p.withNameLock(ctx, SessionName(name), func() error {
 		running, err := p.IsRunning(ctx, name)
 		if err != nil {
 			return err
@@ -291,28 +333,49 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		p.binder.Forget(n)
 	}
 
-	sid, ok, err := p.binder.FindSession(ctx)
-	if err != nil {
-		return startResult{}, err
-	}
-	if !ok {
-		sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
+	// Find or create the city session under the short state lock: two starts of
+	// different names may run concurrently, and both would otherwise create the
+	// shared `gc:<city>` session.
+	var sid rex.SessionID
+	if err := p.withStateLock(ctx, func() error {
+		var ok bool
+		var err error
+		sid, ok, err = p.binder.FindSession(ctx)
 		if err != nil {
-			return startResult{}, err
+			return err
 		}
-	}
-
-	view, err := p.client.SessionView(ctx, sid)
-	if err != nil {
+		if !ok {
+			sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return startResult{}, err
 	}
 
-	// Run pre_start hooks before seeding identity or a provisional binding,
-	// so a failed hook leaves nothing behind.
+	// Run pre_start hooks before seeding identity or a provisional binding, so
+	// a failed hook leaves nothing behind. The state lock is not held here: a
+	// slow hook must not stall the rest of the city. Each hook is bounded by
+	// the per-hook timeout, capped by whatever remains of the start budget
+	// (the op context's deadline when it carries one, else startBudget).
 	if len(cfg.PreStart) > 0 {
 		merged := launch.MergeEnv(os.Environ(), cfg.Env)
+		budgetDeadline := time.Now().Add(p.startBudget)
+		if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
+			budgetDeadline = d
+		}
 		for i, cmd := range cfg.PreStart {
-			if err := runPreStart(ctx, cmd, cfg.WorkDir, merged); err != nil {
+			remaining := time.Until(budgetDeadline)
+			if remaining <= 0 {
+				return startResult{}, fmt.Errorf("pre_start[%d]: start budget %s exhausted before the hook ran", i, p.startBudget)
+			}
+			hookTimeout := p.preStartHookTimeout
+			if remaining < hookTimeout {
+				hookTimeout = remaining
+			}
+			if err := runPreStartWithTimeout(ctx, cmd, cfg.WorkDir, merged, hookTimeout); err != nil {
 				return startResult{}, fmt.Errorf("pre_start[%d]: %w", i, err)
 			}
 		}
@@ -334,15 +397,21 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		return startResult{}, err
 	}
 
-	// Seed the identity and a provisional binding before the launch call,
-	// which blocks while Rex dismisses startup dialogs. A reconciler tick in
-	// that window can then read the current GC_SESSION_ID/GC_INSTANCE_TOKEN
-	// instead of an empty identity and must not roll the pending create back.
+	// Seed the identity and a provisional binding under the short state lock,
+	// before the launch call (which blocks while Rex dismisses startup dialogs).
+	// A reconciler tick in that window can then read the current
+	// GC_SESSION_ID/GC_INSTANCE_TOKEN instead of an empty identity and must not
+	// roll the pending create back.
 	seeded = true
-	if err := p.seedStartIdentity(n, cfg.Env); err != nil {
+	if err := p.withStateLock(ctx, func() error {
+		if err := p.seedStartIdentity(n, cfg.Env); err != nil {
+			return err
+		}
+		p.recordProvisionalBinding(n, sid, "", cfg)
+		return nil
+	}); err != nil {
 		return startResult{}, err
 	}
-	p.recordProvisionalBinding(n, sid, "", cfg)
 
 	tab := hint.TabLabel
 	spec := rex.LaunchSpec{
@@ -350,26 +419,43 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		Cwd:     cfg.WorkDir,
 		Label:   n.PaneLabel(),
 	}
-	for _, w := range view.Windows {
-		if w.Label == tab {
+	// The blocking launch holds only the per-rig (tab) lock, so a slow NewWindow
+	// or NewSplit for one rig does not stall other rigs' starts or any stop. The
+	// lock makes the view read and the create/split decision atomic per tab, so
+	// two concurrent starts in one rig cannot both create the tab.
+	var launched startResult
+	if err := p.withTabLock(ctx, tab, func() error {
+		view, err := p.client.SessionView(ctx, sid)
+		if err != nil {
+			return err
+		}
+		for _, w := range view.Windows {
+			if w.Label != tab {
+				continue
+			}
 			anchor, direction, ok := nextSplit(w)
 			if !ok {
 				continue
 			}
 			block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
 			if err != nil {
-				return startResult{}, err
+				return err
 			}
 			p.record(ctx, n, sid, w.ID, block, "split", cfg)
-			return startResult{sessionID: sid, blockID: block}, nil
+			launched = startResult{sessionID: sid, blockID: block}
+			return nil
 		}
-	}
-	wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
-	if err != nil {
+		wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
+		if err != nil {
+			return err
+		}
+		p.record(ctx, n, sid, wid, block, "window", cfg)
+		launched = startResult{sessionID: sid, blockID: block}
+		return nil
+	}); err != nil {
 		return startResult{}, err
 	}
-	p.record(ctx, n, sid, wid, block, "window", cfg)
-	return startResult{sessionID: sid, blockID: block}, nil
+	return launched, nil
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the
@@ -439,8 +525,13 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 // Stop closes the agent's pane and leaves the city session and other rigs
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
+//
+// The per-name lock serializes a stop with a concurrent start of the same name;
+// the brief city-wide state lock guards the store mutations.
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	return p.withStateLock(ctx, func() error { return p.stop(ctx, name) })
+	return p.withNameLock(ctx, SessionName(name), func() error {
+		return p.withStateLock(ctx, func() error { return p.stop(ctx, name) })
+	})
 }
 
 func (p *Provider) stop(ctx context.Context, name string) error {
@@ -688,12 +779,32 @@ func runPreStart(ctx context.Context, command, workDir string, env []string) err
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// A cancelled or timed-out ctx means the command did not fail on its
+		// own; surface that so the caller can name the timeout or cancellation.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
 		if len(out) > 0 {
 			return fmt.Errorf("%s: %w\n%s", command, err, out)
 		}
 		return fmt.Errorf("%s: %w", command, err)
 	}
 	return nil
+}
+
+// runPreStartWithTimeout runs one pre_start hook under a per-hook timeout. A
+// hook that outlives timeout fails with a "timed out after" message; a hook
+// that fails on its own carries its combined output as before. The caller
+// derives timeout from the op budget, so the whole pre_start phase cannot
+// outlive the start op.
+func runPreStartWithTimeout(ctx context.Context, command, workDir string, env []string, timeout time.Duration) error {
+	hctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	err := runPreStart(hctx, command, workDir, env)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: timed out after %s", command, timeout)
+	}
+	return err
 }
 
 // preStartCwd returns workDir when it is an existing directory, else "/". A

@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -37,7 +39,16 @@ const (
 const handshake = `{"version":0,"capabilities":["report-attachment","report-activity"]}`
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, liveDeps()))
+	// gc cancels a start by sending SIGTERM to the adapter's process group and
+	// force-kills the group after 2 s (gc internal/runtime/exec/exec.go;
+	// execgrace). Catching the signal here cancels the op's context, so a start
+	// in flight aborts its Rex or pre_start call and the provider's rollback
+	// defer runs before gc's forced kill, instead of depending on gc's
+	// follow-up stop.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	code := runWithContext(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, liveDeps())
+	stop()
+	os.Exit(code)
 }
 
 // deps are the dispatcher's external dependencies, injected so tests can swap
@@ -106,9 +117,18 @@ var ops = map[string]opSpec{
 	"remove-meta":       {2, "remove-meta <name> <key>", opRemoveMeta},
 }
 
-// run dispatches one RPP op and returns the process exit code. Failures write
-// nothing to stdout; the op's output is buffered and flushed only on success.
+// run dispatches one RPP op with a background context and returns the process
+// exit code. It is the entry point for callers that do not carry a signal
+// context, such as tests.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
+	return runWithContext(context.Background(), args, stdin, stdout, stderr, d)
+}
+
+// runWithContext dispatches one RPP op and returns the process exit code.
+// Failures write nothing to stdout; the op's output is buffered and flushed
+// only on success. ctx is the op's parent: its cancellation (a SIGTERM caught
+// by main) aborts the in-flight provider call and lets the start rollback run.
+func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "gc-runtime-rex: no operation given")
 		return exitUnknown
@@ -149,7 +169,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
 	prov := provider.New(city, d.newClient(), provider.WithNamespace(ns))
 
 	var out bytes.Buffer
-	if err := spec.handle(context.Background(), prov, rest, stdin, &out); err != nil {
+	if err := spec.handle(ctx, prov, rest, stdin, &out); err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, err)
 		return exitFail
 	}

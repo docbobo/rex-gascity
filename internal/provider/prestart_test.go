@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
@@ -122,6 +123,90 @@ func TestPreStartEnv(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(data)); got != "hello-world" {
 		t.Errorf("env output = %q, want %q", got, "hello-world")
+	}
+}
+
+func TestPreStartHookTimesOut(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake, provider.WithPreStartHookTimeout(50*time.Millisecond))
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		PreStart: []string{"sleep 10"},
+	}
+	start := time.Now()
+	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
+	if err == nil {
+		t.Fatal("expected a pre_start timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "pre_start[0]") || !strings.Contains(err.Error(), "timed out after") {
+		t.Errorf("error = %q, want a pre_start[0] timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Start took %v with a 50ms hook timeout", elapsed)
+	}
+	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
+		t.Error("launch happened after a pre_start timeout")
+	}
+}
+
+func TestPreStartHookCappedByStartBudget(t *testing.T) {
+	// The per-hook timeout is 10s but the start budget is 50ms: the hook must
+	// be bounded by the budget, not the per-hook constant.
+	fake := faketest.New()
+	p := provider.New("acme", fake,
+		provider.WithStartBudget(50*time.Millisecond),
+		provider.WithPreStartHookTimeout(10*time.Second))
+
+	cfg := provider.Config{Argv: []string{"pi"}, PreStart: []string{"sleep 10"}}
+	start := time.Now()
+	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
+	if err == nil || !strings.Contains(err.Error(), "timed out after") {
+		t.Fatalf("Start = %v, want a pre_start timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Start took %v, want it capped by the 50ms start budget", elapsed)
+	}
+}
+
+func TestPreStartHookCappedByContextDeadline(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake,
+		provider.WithStartBudget(10*time.Second),
+		provider.WithPreStartHookTimeout(10*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	cfg := provider.Config{Argv: []string{"pi"}, PreStart: []string{"sleep 10"}}
+	start := time.Now()
+	err := p.Start(ctx, "pi-mc-wisp-abc", cfg)
+	if err == nil || !strings.Contains(err.Error(), "timed out after") {
+		t.Fatalf("Start = %v, want a pre_start timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Start took %v, want it capped by the 50ms context deadline", elapsed)
+	}
+}
+
+func TestPreStartHookWithinBudgetRuns(t *testing.T) {
+	dir := t.TempDir()
+	fake := faketest.New()
+	p := provider.New("acme", fake, provider.WithPreStartHookTimeout(5*time.Second))
+
+	out := filepath.Join(dir, "ran")
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  dir,
+		PreStart: []string{"echo ok > " + out},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("hook within budget did not run: %v", err)
+	}
+	if len(fake.CreatedWindows) == 0 {
+		t.Error("launch did not happen after a hook within budget")
 	}
 }
 
