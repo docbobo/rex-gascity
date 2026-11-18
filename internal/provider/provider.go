@@ -151,22 +151,7 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
 	n := SessionName(name)
-	// gc's identity is passed through unchanged. For an unaliased pool or
-	// demand seat gc already ships the concrete identity: GC_ALIAS is empty,
-	// and GC_AGENT/BEADS_ACTOR are the session bead id (RuntimeEnvWithSessionContext,
-	// internal/session/lifecycle.go:67-78, merged at cmd/gc/session_lifecycle_parallel.go:1261).
-	// Synthesizing a claimable GC_ALIAS from GC_TEMPLATE is wrong, and broke
-	// pools twice (GCREX-32). With GC_ALIAS = <bare template>, every seat ran
-	// the work query's assigned/in-progress tiers over the same identity
-	// (internal/config/workquery.go:459 v1.5.1: GC_SESSION_ID, GC_SESSION_NAME,
-	// GC_ALIAS), so a second seat adopted the first seat's in_progress bead at
-	// once (hookClaimExistingAssignment / certifyHookAdoption,
-	// cmd/gc/cmd_hook_claim.go:472-477). Then gc's claim writer
-	// hookClaimAssigneeIdentity (cmd/gc/cmd_hook.go:866) recorded claims under
-	// that shared alias, which no open session bead answers to, and
-	// releaseOrphanedPoolAssignments (cmd/gc/pool_session_name.go:211) reopened
-	// the work. launchCommand turns the empty GC_ALIAS into `env -u GC_ALIAS`,
-	// matching RPP and gc's tmux adapter.
+	cfg.Env = projectPoolRouting(cfg.Env)
 	seeded := false
 	defer func() {
 		if err == nil || !seeded {
@@ -331,6 +316,52 @@ func launchCommand(argv []string, env map[string]string) []string {
 		}
 	}
 	return append(out, argv...)
+}
+
+// projectPoolRouting makes an unaliased pool or demand seat's work query reach
+// its routed work without giving up the per-seat claim identity.
+//
+// gc 1.5.1 ships GC_ALIAS empty and GC_AGENT/BEADS_ACTOR as the session bead
+// id for an unaliased pool seat, and expects `gc hook --claim` to find work
+// routed to GC_TEMPLATE. It does not: hookSessionAgentForQuery
+// (cmd/gc/cmd_hook.go:818 at v1.5.1) falls back to BEADS_ACTOR/GC_AGENT (the
+// bead id), and hookWorkQueryStores (cmd/gc/hook_cross_store.go:107) then
+// cannot resolve the rig from that agent query, so the query never reads the
+// store the routed step lives in (gastownhall/gascity#5716).
+//
+// Routing the agent query back to the template fixes discovery. GC_ALIAS stays
+// empty, so gc's claim writer hookClaimAssigneeIdentity
+// (cmd/gc/cmd_hook.go:866) records the claim under GC_SESSION_ID, the concrete
+// session bead id: a live session answers to it (sessionBeadAssigneeIdentities,
+// cmd/gc/pool_session_name.go:29) and every pool slot has its own, so seats
+// single-flight. Setting GC_ALIAS to the template instead (the GCREX-18
+// deviation) made every slot claim under one shared string no session bead
+// answers to, so a second seat adopted the first seat's in_progress bead and
+// releaseOrphanedPoolAssignments (cmd/gc/pool_session_name.go:211) reopened it
+// (GCREX-32).
+//
+// It applies only when GC_ALIAS is empty, GC_TEMPLATE is set and differs from
+// GC_AGENT, and GC_SESSION_ID is set: only BEADS_ACTOR is set to GC_TEMPLATE.
+// A non-empty GC_ALIAS, GC_AGENT, GC_SESSION_ID, the tokens and the caller's
+// map are never changed. With no GC_SESSION_ID there is no durable claim
+// identity to protect, so the env is passed through unchanged.
+func projectPoolRouting(env map[string]string) map[string]string {
+	if env["GC_ALIAS"] != "" {
+		return env
+	}
+	tmpl := env["GC_TEMPLATE"]
+	if tmpl == "" || tmpl == env["GC_AGENT"] {
+		return env
+	}
+	if env["GC_SESSION_ID"] == "" || env["BEADS_ACTOR"] == tmpl {
+		return env
+	}
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["BEADS_ACTOR"] = tmpl
+	return out
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the

@@ -336,11 +336,11 @@ func TestAliasResolutionThroughFileStore(t *testing.T) {
 	}
 }
 
-// TestStartPassesUnaliasedPoolIdentityThrough is the GCREX-32 regression: a
-// pool seat must launch with gc's own identity (empty GC_ALIAS + the session
-// bead id in GC_AGENT) rather than a synthesized bare-template GC_ALIAS, which
-// gc would record as the claim assignee and then reopen as a dead assignee.
-func TestStartPassesUnaliasedPoolIdentityThrough(t *testing.T) {
+// TestStartRoutesUnaliasedPoolToTemplate is the GCREX-32 regression: a pool
+// seat must launch with GC_ALIAS empty (so gc records the claim under the
+// per-seat session bead id, not a shared template string) while routing its
+// work query as the pool template through BEADS_ACTOR.
+func TestStartRoutesUnaliasedPoolToTemplate(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()
 	p := provider.New("acme", fake)
@@ -351,7 +351,7 @@ func TestStartPassesUnaliasedPoolIdentityThrough(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	cmd := fake.CreatedWindows[0].Spec.Command
-	want := []string{"env", "-u", "GC_ALIAS", "GC_AGENT=mc-wisp-ybq1",
+	want := []string{"env", "-u", "GC_ALIAS", "BEADS_ACTOR=" + aliasRig + "/pi", "GC_AGENT=mc-wisp-ybq1",
 		"GC_INSTANCE_TOKEN=tok-1", "GC_RIG=" + aliasRig, "GC_SESSION_ID=mc-wisp-ybq1",
 		"GC_TEMPLATE=" + aliasRig + "/pi", "pi"}
 	if !slices.Equal(cmd, want) {

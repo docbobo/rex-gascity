@@ -222,34 +222,39 @@ incidental to the provider and are applied to the launched process unchanged
 (GCREX-10). Empty values in the start-config env are applied as unset
 (`env -u KEY`) at the launch boundary, matching RPP and gc's tmux adapter.
 
-The provider passes gc's identity through unchanged, matching
-runtime-herdr-core. For an unaliased pool or demand seat gc already ships a
-concrete identity in the start config: `GC_ALIAS` is empty, and `GC_AGENT` and
-`BEADS_ACTOR` are the session bead id (`RuntimeEnvWithSessionContext`,
-`internal/session/lifecycle.go:67-78` at gc v1.5.1, merged into the RPP start
-config at `cmd/gc/session_lifecycle_parallel.go:1261`). The empty `GC_ALIAS` is
-emitted as `env -u GC_ALIAS` at the launch boundary. The pane still answers to
-the template name: the template is recorded as a binding alias independently of
-`GC_ALIAS`.
+For an unaliased pool or demand seat the provider keeps `GC_ALIAS` empty and
+routes the seat's **work-query agent identity** back to `GC_TEMPLATE` by setting
+`BEADS_ACTOR` to the template. `GC_AGENT`, `GC_SESSION_ID`, the tokens and the
+caller's map are untouched, and the empty `GC_ALIAS` is emitted as
+`env -u GC_ALIAS` at the launch boundary. The pane still answers to the template
+name: the template is recorded as a binding alias independently of `GC_ALIAS`.
 
-The provider must **not** synthesize a `GC_ALIAS` from `GC_TEMPLATE` (the
-GCREX-18 deviation, removed in GCREX-32). It broke pools in two ways. First,
-the work query runs its assigned and in-progress tiers over `GC_SESSION_ID`,
-`GC_SESSION_NAME` and `GC_ALIAS` (`internal/config/workquery.go:459` at gc
-v1.5.1), so with `GC_ALIAS` set to the bare template every seat probed the same
-identity, and a second seat adopted the first seat's `in_progress` bead at once
-(`hookClaimExistingAssignment` / `certifyHookAdoption`,
-`cmd/gc/cmd_hook_claim.go:472-477`). Second, gc's claim writer
-`hookClaimAssigneeIdentity` (`cmd/gc/cmd_hook.go:866`) records a claim under
-`alias` first, so claims landed under one shared string that no open session
-bead answers to; then `releaseOrphanedPoolAssignments`
-(`cmd/gc/pool_session_name.go:211`) reopened the work: the pool respawns and a
-duplicate seat can close the shared step and drain the real worker mid-edit.
-A blank `GC_ALIAS` still discovers routed work:
-the pool-demand tier is gated on `GC_SESSION_ORIGIN=ephemeral`
-(`internal/config/workquery.go:873`, which gc sets for pool seats
-at `cmd/gc/template_resolve.go:307`) and probes the template target independently
-of `GC_ALIAS`.
+Two gc 1.5.1 behaviours make this the shape that works, and a live city run
+proved both (see GCREX-32 notes):
+
+- **A blank `GC_ALIAS` alone cannot discover the routed step.** gc's hook
+  resolves the work-query agent from `firstNonEmpty(GC_ALIAS, BEADS_ACTOR,
+  GC_AGENT, GC_SESSION_NAME)` (`hookSessionAgentForQuery`,
+  `cmd/gc/cmd_hook.go:818`), and `hookWorkQueryStores`
+  (`cmd/gc/hook_cross_store.go:107`) resolves the rig from that agent. gc ships
+  `GC_ALIAS` empty and `GC_AGENT`/`BEADS_ACTOR` as the session bead id, so the
+  query runs against an identity that resolves to no rig and never reads the
+  store the routed step lives in (gastownhall/gascity#5716). With `GC_ALIAS`
+  empty and `BEADS_ACTOR` set to the template the query reads the rig and city
+  stores and finds the step.
+- **`GC_ALIAS` must stay empty for the claim.** gc's claim writer
+  `hookClaimAssigneeIdentity` (`cmd/gc/cmd_hook.go:866`) records a claim under
+  `alias` first, so a synthesized `GC_ALIAS` makes every slot claim under one
+  shared string that no open session bead answers to. A second seat then adopts
+  the first's `in_progress` bead
+  (`hookClaimExistingAssignment`/`certifyHookAdoption`,
+  `cmd/gc/cmd_hook_claim.go:472-477`), and `releaseOrphanedPoolAssignments`
+  (`cmd/gc/pool_session_name.go:211`) reopens the claim, respawning the pool so
+  a duplicate seat can close the shared step and drain the real worker mid-edit
+  (the GCREX-18 deviation). With `GC_ALIAS` empty the claim is recorded under
+  `GC_SESSION_ID`, the concrete session bead id, which a live session answers to
+  (`sessionBeadAssigneeIdentities`, `cmd/gc/pool_session_name.go:29`) and which
+  every slot holds its own copy of, so seats single-flight.
 
 On `stop`, if the pane's work dir is a git work tree with modified tracked
 files, the provider writes `<state dir>/diagnostics/<name>.json` naming the

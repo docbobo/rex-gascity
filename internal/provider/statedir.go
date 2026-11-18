@@ -58,19 +58,43 @@ func safeName(s string) string {
 	return sb.String()
 }
 
-// CityFromEnv returns the city name for this process. The RPP invocation
-// carries no city, so the environment decides: GC_REX_CITY if set, else the
-// basename of GC_CITY_PATH, else GC_CITY, else "default". Set GC_REX_CITY to
-// isolate cities that share one Rex server.
+// CityFromEnv returns the primary city name for this process. The RPP
+// invocation carries no city, so the environment decides: GC_REX_CITY if set,
+// else the basename of GC_CITY_PATH, else GC_CITY, else "default". Set
+// GC_REX_CITY to isolate cities that share one Rex server.
 func CityFromEnv() string {
+	return CityCandidates()[0]
+}
+
+// CityCandidates returns the ordered, deduplicated city namespaces this
+// process should consider, most specific first. GC_REX_CITY is an explicit
+// pin: when set it is the only candidate, so two cities pinned to different
+// values never cross-resolve. Otherwise the candidates are the GC_CITY_PATH
+// basename, GC_CITY, and finally "default".
+//
+// RPP v0 carries no city, and the exec runtime provider passes the caller's
+// env through unchanged, so different gc callers on one city see different
+// candidates: the launchd controller sees none and resolves "default", while
+// session and nudge-poller processes carry GC_CITY_PATH and resolve the city
+// basename. Searching the whole candidate set keeps those callers agreeing on
+// one store.
+func CityCandidates() []string {
 	if v := os.Getenv("GC_REX_CITY"); v != "" {
-		return v
+		return []string{v}
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(v string) {
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
 	}
 	if v := os.Getenv("GC_CITY_PATH"); v != "" {
-		return filepath.Base(v)
+		add(filepath.Base(v))
 	}
-	if v := os.Getenv("GC_CITY"); v != "" {
-		return v
-	}
-	return "default"
+	add(os.Getenv("GC_CITY"))
+	add("default")
+	return out
 }
