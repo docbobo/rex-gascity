@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@rex-agent'
 created_date: '2026-11-18T05:51:00Z'
-updated_date: '2026-11-18T06:08:00Z'
+updated_date: '2026-11-18T06:14:00Z'
 labels:
   - provider
   - parity
@@ -74,6 +74,8 @@ Fixing the deviations — this task only analyzes and classifies them. Follow-up
 All 25 subtasks Done. docs/provider-herdr-parity.md: 1087 lines, 25 sections, 121 summary rows, 25 verdicts, 25 cross-reference blocks, 25 follow-up blocks. Unimplemented ops present and marked: exec, provision, observe, inventory, kill-object, server-stop, attach, watch-startup, copy-to. Consolidated sections added: 'Confirmed mistakes' (11 ranked, deduplicated), 'Gaps that are deliberate, not mistakes', 'Proposed follow-up work' (8 items, none implemented). Evidence per section cites cmd/gc-runtime-rex/main.go and internal/provider, against gastownhall/gascity-packs@0f07496 runtime-herdr-core.
 
 Verification pass (commit 5c8656d): all gc-behavior claims re-checked against gc tag v1.5.1 source (internal/runtime/exec, protocol.go, docs/reference/exec-session-provider.md). Verdict changes: attach -> mistake (gc calls it, exit 2 is a failure, 'gc session attach' breaks); is-running -> intentional (gc reads exit 1 and false alike as dead); is-attached unknown-client-kind -> mistake (fail-open on kill paths); send-keys BTab/partial-failure -> intentional (gc emits only Enter/Up/Down/Escape/C-u); start SIGTERM gap -> downgraded (gc runs stop after a failed start), start empty-env -> mistake (protocol says unset; use env -u). observe/inventory/kill-object/server-stop/copy-to confirmed never called by gc 1.5.1. Added 'Operational risks' section (Rex outage reads as all-dead; rex exit 3 mapped to ErrNotFound by our client; seam probe fan-out).
+
+Follow-up work filed from 'Proposed follow-up work' and the extension analysis: GCREX-20 attach exits 2 and fails gc session attach (mistake 1); GCREX-21 nudge write-to-Enter window and non-UTF-8 (mistake 2); GCREX-22 is-attached unknown client kind is fail-open (mistake 4); GCREX-23 peek/process-alive ErrNotFound inconsistency (mistakes 5, 6); GCREX-24 activity truthfulness for working/blocked plus input floor (mistake 3); GCREX-25 start robustness (mistakes 7, 8); GCREX-26 incarnation hygiene and empty meta keys (mistakes 9, 11); GCREX-27 list-running name guard (mistake 10); GCREX-16 remains the nudge busy-gating task. Extension and investigation tracks: GCREX-28 design and implement the herdr-only extensions; GCREX-29 find Rex-only extensions herdr cannot do; GCREX-30 investigate rex server run as an owned city-scoped server (revisits D3, feeds server-stop and watch-startup); GCREX-31 probe the Rex CLI facts still marked unverified. Each implementation task carries an acceptance criterion that keeps docs/provider-herdr-parity.md in sync.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
