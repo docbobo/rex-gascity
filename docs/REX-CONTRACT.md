@@ -499,9 +499,12 @@ Phase 0 also confirms the plan's decisions against the live surface:
   reported as a start failure, so gc never tears down a healthy pane over it.
   **Resolved (GCREX-15):** the `pre_start` hook runs before the pane launches.
   Each entry is executed in order via `/bin/sh -c`, with cwd set to the start
-  config's `work_dir` and the process environment merged with the start-config
-  `env` map. A non-zero exit aborts the launch and leaves no seeded identity
-  or binding behind. An empty or absent `pre_start` is a no-op. The remaining
+  config's `work_dir` when it already exists and `/` otherwise (mirroring
+  runtime-herdr-core's `_setup_cwd`, so a hook may create the work dir) and the
+  process environment merged with the start-config `env` map. A non-zero exit
+  aborts the launch and leaves no seeded identity or binding behind; after the
+  hooks a configured `work_dir` must exist or the start fails. An empty or
+  absent `pre_start` is a no-op. The remaining
   hooks (`session_setup`, `session_setup_script`, `session_live`, `copy_files`,
   `overlay_dir`, `pack_overlay_dirs`) are still unimplemented.
 - **Rig-tab growth (resolved, GCREX-6).** Always splitting the first pane

@@ -215,6 +215,15 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 			}
 		}
 	}
+	// A pre_start hook is the documented way to create the launch work dir
+	// (the gastown worktree recipe points work_dir at a worktree that
+	// pre_start creates). Mirror runtime-herdr-core: once the hooks have run,
+	// a configured work_dir must exist or the launch would run elsewhere.
+	if cfg.WorkDir != "" {
+		if info, statErr := os.Stat(cfg.WorkDir); statErr != nil || !info.IsDir() {
+			return fmt.Errorf("work_dir %q is not an existing directory after pre_start", cfg.WorkDir)
+		}
+	}
 
 	// Seed the identity and a provisional binding before the launch call,
 	// which blocks while Rex dismisses startup dialogs. A reconciler tick in
@@ -645,9 +654,12 @@ func mergeEnv(base []string, overlay map[string]string) []string {
 }
 
 // runPreStart runs one pre_start shell command. It honours ctx cancellation.
+// The command runs in workDir when that directory already exists and in "/"
+// otherwise, mirroring runtime-herdr-core's _setup_cwd, so a pre_start can
+// create the work dir before the launch.
 func runPreStart(ctx context.Context, command, workDir string, env []string) error {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	cmd.Dir = workDir
+	cmd.Dir = preStartCwd(workDir)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -657,4 +669,16 @@ func runPreStart(ctx context.Context, command, workDir string, env []string) err
 		return fmt.Errorf("%s: %w", command, err)
 	}
 	return nil
+}
+
+// preStartCwd returns workDir when it is an existing directory, else "/". A
+// work_dir that pre_start is meant to create does not exist yet, so it cannot
+// be the hook's cwd.
+func preStartCwd(workDir string) string {
+	if workDir != "" {
+		if info, err := os.Stat(workDir); err == nil && info.IsDir() {
+			return workDir
+		}
+	}
+	return "/"
 }

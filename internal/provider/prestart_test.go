@@ -240,3 +240,87 @@ func TestPreStartSecondCommandFails(t *testing.T) {
 		t.Error("binding exists after failed start")
 	}
 }
+
+// TestPreStartMayCreateWorkDir mirrors runtime-herdr-core's
+// test_a_pre_start_may_create_the_work_dir: the gastown worktree recipe points
+// work_dir at a worktree that pre_start creates, so a missing work_dir must
+// not stop the hook from running.
+func TestPreStartMayCreateWorkDir(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "worktree")
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  work,
+		PreStart: []string{"mkdir -p " + work + " && echo pre > " + filepath.Join(work, "pre.txt")},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(work, "pre.txt")); err != nil || strings.TrimSpace(string(data)) != "pre" {
+		t.Errorf("pre_start did not create the work dir: err=%v data=%q", err, string(data))
+	}
+	if len(fake.CreatedWindows) == 0 {
+		t.Fatal("NewWindow not called")
+	}
+	if got := fake.CreatedWindows[0].Spec.Cwd; got != work {
+		t.Errorf("launch cwd = %q, want %q", got, work)
+	}
+}
+
+// TestMissingWorkDirAfterPreStartFails mirrors herdr's contract: a configured
+// work_dir that no pre_start created fails the start before any pane.
+func TestMissingWorkDirAfterPreStartFails(t *testing.T) {
+	work := filepath.Join(t.TempDir(), "never")
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  work,
+		Env:      identityEnv(),
+		PreStart: []string{"true"},
+	}
+	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
+	if err == nil || !strings.Contains(err.Error(), "work_dir") {
+		t.Fatalf("Start = %v, want a work_dir error", err)
+	}
+	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
+		t.Error("a pane was launched with a missing work_dir")
+	}
+	if _, ok := p.Binding("pi-mc-wisp-abc"); ok {
+		t.Error("binding exists after a missing-work_dir failure")
+	}
+	if got, _ := p.GetMeta(context.Background(), "pi-mc-wisp-abc", "GC_SESSION_ID"); got != "" {
+		t.Errorf("identity seeded despite a missing work_dir: %q", got)
+	}
+}
+
+// TestPreStartCwdFallsBackWhenWorkDirMissing checks the cwd fallback: a
+// work_dir that does not exist yet cannot be the hook's cwd, so the hook runs
+// in "/" (herdr's _setup_cwd) and is still able to create the work dir.
+func TestPreStartCwdFallsBackWhenWorkDirMissing(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "worktree")
+	cwdFile := filepath.Join(root, "cwd.txt")
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  work,
+		PreStart: []string{"pwd > " + cwdFile + " && mkdir -p " + work},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	data, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("read cwd output: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "/" {
+		t.Errorf("pre_start cwd = %q, want %q", got, "/")
+	}
+}

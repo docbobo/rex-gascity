@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -138,7 +139,9 @@ func TestMissingNameIsFailure(t *testing.T) {
 
 func TestLifecycle(t *testing.T) {
 	h, fake := newHarness(t)
-	r := h.must(`{"work_dir":"/tmp/w","command":"claude --model 'opus 4'","ready_prompt_prefix":"> "}`, "start", dog)
+	workDir := t.TempDir()
+	cfg := fmt.Sprintf(`{"work_dir":%q,"command":"claude --model 'opus 4'","ready_prompt_prefix":"> "}`, workDir)
+	r := h.must(cfg, "start", dog)
 	if r.stdout != "" {
 		t.Errorf("start stdout = %q", r.stdout)
 	}
@@ -146,7 +149,7 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
 	}
 	spec := fake.CreatedWindows[0].Spec
-	if !slices.Equal(spec.Command, []string{"claude", "--model", "opus 4"}) || spec.Cwd != "/tmp/w" {
+	if !slices.Equal(spec.Command, []string{"claude", "--model", "opus 4"}) || spec.Cwd != workDir {
 		t.Errorf("launch spec = %+v", spec)
 	}
 	if got := h.must("", "is-running", dog).stdout; got != "true\n" {

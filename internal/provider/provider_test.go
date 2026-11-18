@@ -14,9 +14,10 @@ func TestStartCreatesCitySessionRigTabAndAgentPane(t *testing.T) {
 	fake := faketest.New()
 	p := provider.New("acme", fake)
 
+	workDir := t.TempDir()
 	err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{
 		Argv:    []string{"claude", "--flag"},
-		WorkDir: "/work/indigo",
+		WorkDir: workDir,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -38,8 +39,8 @@ func TestStartCreatesCitySessionRigTabAndAgentPane(t *testing.T) {
 	if !slices.Equal(w.Spec.Command, []string{"claude", "--flag"}) {
 		t.Errorf("pane command = %v, want [claude --flag]", w.Spec.Command)
 	}
-	if w.Spec.Cwd != "/work/indigo" {
-		t.Errorf("pane cwd = %q, want %q", w.Spec.Cwd, "/work/indigo")
+	if w.Spec.Cwd != workDir {
+		t.Errorf("pane cwd = %q, want %q", w.Spec.Cwd, workDir)
 	}
 }
 
@@ -96,7 +97,7 @@ func TestStartJoinsExistingRigTab(t *testing.T) {
 
 	err := p.Start(context.Background(), "Indigo--dog-2", provider.Config{
 		Argv:    []string{"claude"},
-		WorkDir: "/work/indigo",
+		WorkDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
