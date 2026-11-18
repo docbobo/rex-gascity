@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -44,12 +43,12 @@ func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, drainDiagTimeout)
 	defer cancel()
-	root, ok := gitOutput(ctx, b.WorkDir, "rev-parse", "--show-toplevel")
+	root, ok := p.gitOutput(ctx, b.WorkDir, "rev-parse", "--show-toplevel")
 	if !ok {
 		return
 	}
 	root = strings.TrimRight(root, "\r\n")
-	status, ok := gitOutput(ctx, b.WorkDir, "status", "--porcelain", "-z", "--untracked-files=no")
+	status, ok := p.gitOutput(ctx, b.WorkDir, "status", "--porcelain", "-z", "--untracked-files=no")
 	if !ok {
 		return
 	}
@@ -87,18 +86,12 @@ func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
 // GIT_OPTIONAL_LOCKS=0 (like --no-optional-locks) so `git status` never takes
 // .git/index.lock and cannot race a worker's `git add` or `git commit` in a
 // shared work tree.
-func gitOutput(ctx context.Context, dir string, args ...string) (string, bool) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
-	// A git child that outlives the kill must not hold stdout open past the
-	// deadline.
-	cmd.WaitDelay = 100 * time.Millisecond
-	out, err := cmd.Output()
+func (p *Provider) gitOutput(ctx context.Context, dir string, args ...string) (string, bool) {
+	out, err := p.runner.Run(ctx, dir, []string{"GIT_OPTIONAL_LOCKS=0"}, "git", args...)
 	if err != nil {
 		return "", false
 	}
-	return string(out), true
+	return out, true
 }
 
 // parsePorcelainZ returns the paths in `git status --porcelain -z` output.

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -37,55 +36,50 @@ func TestParsePorcelainZ(t *testing.T) {
 	}
 }
 
-// fakeGit puts a git shim first on PATH. It logs the GIT_OPTIONAL_LOCKS value
-// and arguments of every call, sleeps for delay, then answers rev-parse and
-// status. The returned func reads the log.
-func fakeGit(t *testing.T, delay string) func() []string {
-	t.Helper()
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "calls.log")
-	script := "#!/bin/sh\n" +
-		"echo \"locks=$GIT_OPTIONAL_LOCKS $*\" >> '" + logPath + "'\n" +
-		"sleep " + delay + "\n" +
-		"case \"$1\" in\n" +
-		"rev-parse) echo /tmp ;;\n" +
-		"status) printf ' M a.txt\\0' ;;\n" +
-		"esac\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return func() []string {
-		data, _ := os.ReadFile(logPath)
-		return strings.Split(strings.TrimSpace(string(data)), "\n")
-	}
+// fakeGit is a Runner that answers rev-parse and status like a work tree with
+// one modified file, after waiting delay (or until the call's context ends).
+func fakeGit(delay time.Duration) *FakeRunner {
+	return &FakeRunner{Handle: func(ctx context.Context, c RunCall) (string, error) {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		switch c.Args[0] {
+		case "rev-parse":
+			return "/tmp\n", nil
+		case "status":
+			return " M a.txt\x00", nil
+		}
+		return "", nil
+	}}
 }
 
-func drainDiagProvider(t *testing.T) (*Provider, string) {
+func drainDiagProvider(t *testing.T, git Runner) (*Provider, string) {
 	t.Helper()
 	state := t.TempDir()
-	return New("acme", faketest.New(), WithStateDir(state)), state
+	return New("acme", faketest.New(), WithStateDir(state), WithRunner(git)), state
 }
 
 // The drain diagnostic must not take git's optional locks (a worker may be
 // running `git add` in the same tree) and must ignore untracked files, which
 // would make an always-present untracked directory a false positive.
 func TestDrainDiagnosticGitCallsAreReadOnlyAndTrackedOnly(t *testing.T) {
-	calls := fakeGit(t, "0")
-	p, state := drainDiagProvider(t)
+	git := fakeGit(0)
+	p, state := drainDiagProvider(t, git)
 
 	p.writeDrainDiagnostic(context.Background(), Binding{Name: "Indigo--dog-1", WorkDir: t.TempDir()})
 
-	got := calls()
+	got := git.Calls()
 	if len(got) != 2 {
-		t.Fatalf("git calls = %q, want rev-parse and status", got)
+		t.Fatalf("git calls = %+v, want rev-parse and status", got)
 	}
 	for _, c := range got {
-		if !strings.HasPrefix(c, "locks=0 ") {
-			t.Errorf("git call %q ran without GIT_OPTIONAL_LOCKS=0", c)
+		if c.Name != "git" || !slices.Contains(c.Env, "GIT_OPTIONAL_LOCKS=0") {
+			t.Errorf("git call %+v ran without GIT_OPTIONAL_LOCKS=0", c)
 		}
 	}
-	if status := got[1]; !strings.Contains(status, "-z") || !strings.Contains(status, "--untracked-files=no") {
+	if status := strings.Join(got[1].Args, " "); !strings.Contains(status, "-z") || !strings.Contains(status, "--untracked-files=no") {
 		t.Errorf("status call = %q, want -z and --untracked-files=no", status)
 	}
 	if m, _ := filepath.Glob(filepath.Join(state, "diagnostics", "*")); len(m) != 1 {
@@ -99,8 +93,7 @@ func TestDrainDiagnosticSharesOneTimeoutAcrossGitCalls(t *testing.T) {
 	orig := drainDiagTimeout
 	drainDiagTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { drainDiagTimeout = orig })
-	fakeGit(t, "0.2")
-	p, state := drainDiagProvider(t)
+	p, state := drainDiagProvider(t, fakeGit(200*time.Millisecond))
 
 	start := time.Now()
 	p.writeDrainDiagnostic(context.Background(), Binding{Name: "Indigo--dog-1", WorkDir: t.TempDir()})

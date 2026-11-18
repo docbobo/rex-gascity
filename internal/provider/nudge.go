@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,6 +32,75 @@ const poolClaimNudgeSignature = "gc hook --claim --drain-ack"
 // must not hold up the nudge, and a failed probe is treated as "no claim" so
 // delivery falls back to the previous behavior.
 const claimProbeTimeout = 5 * time.Second
+
+// nudgeConfig holds the tunables and external seam of nudge and startup
+// delivery. Provider embeds it, so the fields read as p.nudgeConfirmWindow and
+// so on; nudge.go and nudge_delivery.go are its only users.
+type nudgeConfig struct {
+	// nudgeConfirmWindow bounds how long Nudge waits for a turn start before
+	// reporting the delivery unconfirmed. nudgePollInterval spaces the
+	// observations within that window.
+	nudgeConfirmWindow time.Duration
+	nudgePollInterval  time.Duration
+	nudgeSubmitBudget  time.Duration
+
+	// claimProbe reads back the work bead a session most recently claimed
+	// through `gc hook --claim`, and returns it only while the session still
+	// holds it (mirroring gc's claimedWorkStillHeldBy: a closed, released, or
+	// foreign-owned claim is not held). Nudge consults it before delivering
+	// gc's fallback pool-claim nudge so a seat that already holds a claim is
+	// not re-prompted mid-task, and a stale stamp does not suppress the nudge
+	// forever (GCREX-33).
+	claimProbe func(context.Context, Binding) (string, error)
+
+	// startupReadyWindow bounds how long Start waits for the pane program to
+	// report idle before delivering the startup nudge.
+	// startupSettleDelay is the shorter bound Start applies when the program
+	// reports no program_status at all, so an agent that never emits one is
+	// not held for the whole window.
+	startupReadyWindow time.Duration
+	startupSettleDelay time.Duration
+
+	// startupNudgeBackoffs is the ladder of delays between startup-nudge
+	// resends after a delivered-but-unconfirmed submit. An empty ladder
+	// disables resending.
+	startupNudgeBackoffs []time.Duration
+
+	// runner runs the external processes the provider shells out to (the gc
+	// claim probe and the drain diagnostic's git calls).
+	runner Runner
+}
+
+// defaultNudgeConfig returns the production nudge and startup-delivery config.
+func defaultNudgeConfig() nudgeConfig {
+	return nudgeConfig{
+		nudgeConfirmWindow:   defaultNudgeConfirmWindow,
+		nudgePollInterval:    defaultNudgePollInterval,
+		nudgeSubmitBudget:    defaultNudgeSubmitBudget,
+		startupReadyWindow:   defaultStartupReadyWindow,
+		startupSettleDelay:   defaultStartupSettleDelay,
+		startupNudgeBackoffs: defaultStartupNudgeBackoffs,
+		runner:               ExecRunner{},
+	}
+}
+
+// Defaults for the bounded nudge confirmation window.
+const (
+	defaultNudgeConfirmWindow = 3 * time.Second
+	defaultNudgePollInterval  = 100 * time.Millisecond
+)
+
+// WithNudgeConfirmation sets how long Nudge waits for a turn start and how
+// often it observes the pane while waiting. A window <= 0 takes one
+// observation and returns immediately.
+func WithNudgeConfirmation(window, interval time.Duration) Option {
+	return func(p *Provider) {
+		p.nudgeConfirmWindow = window
+		if interval > 0 {
+			p.nudgePollInterval = interval
+		}
+	}
+}
 
 // ErrNudgeClaimHeld reports that gc's fallback pool-claim nudge was not typed
 // because the target session already holds a live claim. Nothing was typed and
@@ -207,13 +275,8 @@ func (p *Provider) probeLiveClaim(ctx context.Context, b Binding) (string, error
 func (p *Provider) runGCProbe(ctx context.Context, bin string, b Binding, sessionID string, args ...string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, claimProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, bin, args...)
-	if b.WorkDir != "" {
-		cmd.Dir = b.WorkDir
-	}
-	cmd.Env = append(os.Environ(), "GC_SESSION_ID="+sessionID)
-	out, err := cmd.Output()
-	return strings.TrimSpace(string(out)), err
+	out, err := p.runner.Run(probeCtx, b.WorkDir, []string{"GC_SESSION_ID=" + sessionID}, bin, args...)
+	return strings.TrimSpace(out), err
 }
 
 // claimRecordHeld mirrors gc's claimedWorkStillHeldBy predicate (v1.5.1

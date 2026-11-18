@@ -52,22 +52,8 @@ func statusFunc(records ...rex.ProgramStatusRecord) func(rex.BlockID) rex.Progra
 func TestNudgePoolClaimGuardFollowsClaimLiveness(t *testing.T) {
 	const poolClaim = "Run gc hook --claim --drain-ack --json now; if it returns work, execute it immediately."
 	workDir := t.TempDir()
-	gcPath := filepath.Join(workDir, "gc")
-	script := `#!/bin/sh
-case "$1 $2" in
-  "hook current")
-    if [ -n "${FAKE_CLAIM:-}" ]; then printf '%s\n' "$FAKE_CLAIM"; exit 0; fi
-    exit 1 ;;
-  "bd list")
-    printf '%s' "${FAKE_BEAD_JSON:-[]}"
-    exit 0 ;;
-esac
-exit 1
-`
-	if err := os.WriteFile(gcPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gc: %v", err)
-	}
-	t.Setenv("GC_BIN", gcPath)
+	const gcBin = "/fake/bin/gc"
+	t.Setenv("GC_BIN", gcBin)
 
 	cases := []struct {
 		name     string
@@ -110,10 +96,22 @@ exit 1
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := faketest.New()
-			t.Setenv("FAKE_CLAIM", tc.claim)
-			t.Setenv("FAKE_BEAD_JSON", tc.beadJSON)
+			gc := &provider.FakeRunner{Handle: func(_ context.Context, c provider.RunCall) (string, error) {
+				switch strings.Join(c.Args[:2], " ") {
+				case "hook current":
+					if tc.claim != "" {
+						return tc.claim + "\n", nil
+					}
+					return "", errors.New("exit status 1")
+				case "bd list":
+					return tc.beadJSON, nil
+				}
+				return "", errors.New("exit status 1")
+			}}
 
-			p := provider.New("acme", fake, provider.WithNudgeConfirmation(20*time.Millisecond, time.Millisecond))
+			p := provider.New("acme", fake,
+				provider.WithNudgeConfirmation(20*time.Millisecond, time.Millisecond),
+				provider.WithRunner(gc))
 			if err := p.Start(context.Background(), activityName, provider.Config{
 				Argv:    []string{"claude"},
 				WorkDir: workDir,
@@ -123,6 +121,12 @@ exit 1
 			}
 
 			err := p.Nudge(context.Background(), activityName, poolClaim)
+			// Every probe runs gc from the seat's work dir, as the seat's session.
+			for _, c := range gc.Calls() {
+				if c.Name != gcBin || c.Dir != workDir || !slices.Contains(c.Env, "GC_SESSION_ID=mc-session-live") {
+					t.Errorf("gc probe = %+v, want %s in %s as session mc-session-live", c, gcBin, workDir)
+				}
+			}
 			got := ops(fake)
 			typed := slices.Contains(got, "write") || slices.Contains(got, "send-key")
 			if tc.held {
