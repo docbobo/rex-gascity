@@ -116,6 +116,33 @@ func TestNamespaceForCaller(t *testing.T) {
 	}
 }
 
+// A caller pinned by gc's GC_EXEC_CITY_PATH keeps exactly that pin and does
+// not discover sibling namespaces, and GC_EXEC_STATE_DIR is the base its state
+// dir resolves under even when GC_REX_STATE_DIR is also set.
+func TestNamespaceForCallerExecCityPathIsPin(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("GC_EXEC_STATE_DIR", base)
+	t.Setenv("GC_REX_STATE_DIR", t.TempDir())
+	t.Setenv("GC_EXEC_CITY_PATH", "/a/b/mycity")
+	t.Setenv("GC_REX_CITY", "")
+
+	// A sibling controller left a state dir under the exec base.
+	sibling, err := StateDir("pinned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustMkdir(t, sibling)
+
+	city, ns, err := NamespaceForCaller()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir, _ := StateDir("/a/b/mycity")
+	if city != "/a/b/mycity" || !slices.Equal(ns.Dirs(), []string{wantDir}) || !slices.Equal(ns.Labels(), []string{rexSessionLabel("/a/b/mycity")}) {
+		t.Errorf("exec-pinned: city=%q ns=%+v", city, ns)
+	}
+}
+
 // WithNamespace installs one resolved namespace (dirs and labels).
 func TestWithNamespaceSetsLockDirAndLabels(t *testing.T) {
 	t.Setenv("GC_REX_STATE_DIR", t.TempDir())

@@ -9,6 +9,7 @@ import (
 )
 
 func TestStateDirEnvOverride(t *testing.T) {
+	t.Setenv("GC_EXEC_STATE_DIR", "")
 	t.Setenv("GC_REX_STATE_DIR", "/tmp/gcrex")
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
 	got, err := StateDir("acme")
@@ -17,7 +18,41 @@ func TestStateDirEnvOverride(t *testing.T) {
 	}
 }
 
+// GC_EXEC_STATE_DIR is gc's per-op state root and outranks the provider's own
+// GC_REX_STATE_DIR; both are bases whose per-city subdirectory StateDir joins.
+func TestStateDirExecStateDirOverride(t *testing.T) {
+	t.Setenv("GC_EXEC_STATE_DIR", "/tmp/exec")
+	t.Setenv("GC_REX_STATE_DIR", "/tmp/gcrex")
+	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
+	got, err := StateDir("acme")
+	if err != nil || got != filepath.Join("/tmp/exec", "acme") {
+		t.Fatalf("StateDir = %q, %v", got, err)
+	}
+}
+
+// Without GC_EXEC_STATE_DIR the GC_REX_STATE_DIR fallback still wins over XDG.
+func TestStateDirExecFallsBackToRex(t *testing.T) {
+	t.Setenv("GC_EXEC_STATE_DIR", "")
+	t.Setenv("GC_REX_STATE_DIR", "/tmp/gcrex")
+	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
+	got, err := StateDir("acme")
+	if err != nil || got != filepath.Join("/tmp/gcrex", "acme") {
+		t.Fatalf("StateDir = %q, %v", got, err)
+	}
+}
+
+// GC_EXEC_STATE_DIR must be absolute, per gc's contract; a relative root is a
+// state-dir error rather than a root resolved against the test's cwd.
+func TestStateDirExecRelativeRejected(t *testing.T) {
+	t.Setenv("GC_EXEC_STATE_DIR", filepath.Join("relative", "state"))
+	t.Setenv("GC_REX_STATE_DIR", "/tmp/gcrex")
+	if _, err := StateDir("acme"); err == nil {
+		t.Fatal("StateDir with a relative GC_EXEC_STATE_DIR = nil error, want a state-dir error")
+	}
+}
+
 func TestStateDirXDGFallback(t *testing.T) {
+	t.Setenv("GC_EXEC_STATE_DIR", "")
 	t.Setenv("GC_REX_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
 	got, err := StateDir("acme")
@@ -27,6 +62,7 @@ func TestStateDirXDGFallback(t *testing.T) {
 }
 
 func TestStateDirHomeFallback(t *testing.T) {
+	t.Setenv("GC_EXEC_STATE_DIR", "")
 	t.Setenv("GC_REX_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "/home/x")

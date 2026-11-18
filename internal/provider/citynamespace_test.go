@@ -37,11 +37,31 @@ func TestCityFromEnvIsCallerIndependent(t *testing.T) {
 		{"", "/a/b/mycity", "c", "default"},
 		{"r", "/a/b/mycity", "c", "r"},
 	} {
+		t.Setenv("GC_EXEC_CITY_PATH", "")
 		t.Setenv("GC_REX_CITY", tc.rex)
 		t.Setenv("GC_CITY_PATH", tc.path)
 		t.Setenv("GC_CITY", tc.city)
 		if got := provider.CityFromEnv(); got != tc.want {
 			t.Errorf("rex=%q path=%q city=%q: CityFromEnv = %q, want %q", tc.rex, tc.path, tc.city, got, tc.want)
+		}
+	}
+}
+
+// gc's per-op city contract (GC_EXEC_CITY_PATH) selects the canonical city and
+// outranks the provider's own GC_REX_CITY pin, which stays as a fallback.
+func TestCityFromEnvPrefersExecCityPath(t *testing.T) {
+	for _, tc := range []struct {
+		exec, rex, want string
+	}{
+		{"/a/b/mycity", "pin", "/a/b/mycity"},
+		{"/a/b/mycity", "", "/a/b/mycity"},
+		{"", "pin", "pin"},
+		{"", "", "default"},
+	} {
+		t.Setenv("GC_EXEC_CITY_PATH", tc.exec)
+		t.Setenv("GC_REX_CITY", tc.rex)
+		if got := provider.CityFromEnv(); got != tc.want {
+			t.Errorf("exec=%q rex=%q: CityFromEnv = %q, want %q", tc.exec, tc.rex, got, tc.want)
 		}
 	}
 }
@@ -63,12 +83,29 @@ func TestCityCandidates(t *testing.T) {
 		{"", "/a/b/mycity", "mycity", []string{"default", "mycity"}},
 		{"r", "/a/b/mycity", "c", []string{"r"}},
 	} {
+		t.Setenv("GC_EXEC_CITY_PATH", "")
 		t.Setenv("GC_REX_CITY", tc.rex)
 		t.Setenv("GC_CITY_PATH", tc.path)
 		t.Setenv("GC_CITY", tc.city)
 		if got := provider.CityCandidates(); !slices.Equal(got, tc.want) {
 			t.Errorf("rex=%q path=%q city=%q: CityCandidates = %v, want %v", tc.rex, tc.path, tc.city, got, tc.want)
 		}
+	}
+}
+
+// A caller pinned by gc's GC_EXEC_CITY_PATH reads exactly that city, like the
+// GC_REX_CITY pin: the incidental GC_CITY_PATH/GC_CITY candidates are not read.
+func TestCityCandidatesExecCityPathIsPin(t *testing.T) {
+	t.Setenv("GC_EXEC_CITY_PATH", "/a/b/mycity")
+	t.Setenv("GC_REX_CITY", "")
+	t.Setenv("GC_CITY_PATH", "/a/b/mycity")
+	t.Setenv("GC_CITY", "mycity")
+	if got := provider.CityCandidates(); !slices.Equal(got, []string{"/a/b/mycity"}) {
+		t.Errorf("CityCandidates = %v, want [/a/b/mycity]", got)
+	}
+	t.Setenv("GC_EXEC_CITY_PATH", "")
+	if got := provider.CityCandidates(); !slices.Equal(got, []string{"default", "mycity"}) {
+		t.Errorf("without exec path: CityCandidates = %v, want [default mycity]", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,9 +10,18 @@ import (
 )
 
 // stateBase returns the directory whose entries are the per-city state dirs.
-// GC_REX_STATE_DIR overrides the base; otherwise it is
-// $XDG_STATE_HOME/rex-gascity, or ~/.local/state/rex-gascity.
+// GC_EXEC_STATE_DIR is gc's per-op state root and takes precedence; it must be
+// absolute, so a relative value is an error rather than a root resolved against
+// the caller's cwd. GC_REX_STATE_DIR is the provider's own override and
+// fallback. Without either, the base is $XDG_STATE_HOME/rex-gascity, or
+// ~/.local/state/rex-gascity.
 func stateBase() (string, error) {
+	if env := os.Getenv("GC_EXEC_STATE_DIR"); env != "" {
+		if !filepath.IsAbs(env) {
+			return "", fmt.Errorf("provider: GC_EXEC_STATE_DIR %q is not absolute", env)
+		}
+		return env, nil
+	}
 	if env := os.Getenv("GC_REX_STATE_DIR"); env != "" {
 		return env, nil
 	}
@@ -69,9 +79,20 @@ func safeName(s string) string {
 	return sb.String()
 }
 
-// CityFromEnv returns the canonical city namespace for this process.
-// GC_REX_CITY is an explicit per-city pin; without it the namespace is the
-// fixed "default".
+// cityPin returns the explicit city a caller is bound to, or "" when it is
+// unpinned. GC_EXEC_CITY_PATH is gc's per-op city contract and takes
+// precedence; GC_REX_CITY is the provider's own pin for callers that run the
+// script without gc, kept as the fallback.
+func cityPin() string {
+	if v := os.Getenv("GC_EXEC_CITY_PATH"); v != "" {
+		return v
+	}
+	return os.Getenv("GC_REX_CITY")
+}
+
+// CityFromEnv returns the canonical city namespace for this process. A pinned
+// caller (GC_EXEC_CITY_PATH, then GC_REX_CITY) keeps exactly its pin; without
+// one the namespace is the fixed "default".
 //
 // RPP v0 carries no city, and the exec runtime provider passes the caller's
 // env through unchanged, so different gc callers on one city see a different
@@ -81,10 +102,11 @@ func safeName(s string) string {
 // depending on the caller (GCREX-17): start wrote one namespace and the
 // nudge poller read another. GC_CITY_PATH/GC_CITY are incidental (the start
 // config carries them but the runtime contract does not), so they do not
-// select the canonical store. Set GC_REX_CITY to isolate cities that share
-// one Rex server.
+// select the canonical store. GC_EXEC_CITY_PATH is gc's own city key and does
+// select it; set GC_REX_CITY to isolate cities that share one Rex server when
+// running the script outside gc.
 func CityFromEnv() string {
-	if v := os.Getenv("GC_REX_CITY"); v != "" {
+	if v := cityPin(); v != "" {
 		return v
 	}
 	return "default"
@@ -92,7 +114,7 @@ func CityFromEnv() string {
 
 // SiblingCityNamespaces returns the city namespaces that have a state dir
 // beside the caller's, excluding the names in exclude. It lets an unpinned
-// lookup (no GC_REX_CITY) discover the pin a sibling controller wrote under:
+// lookup (no city pin) discover the pin a sibling controller wrote under:
 // the caller and the controller share one machine state base, and the city
 // name is recoverable from the directory name because safeName is injective.
 // Only a name that re-encodes to the directory name is trusted, so a stray or
@@ -188,13 +210,13 @@ func hexVal(c byte) (byte, bool) {
 }
 
 // CityCandidates returns the ordered, deduplicated namespaces a lookup should
-// read across, canonical first. GC_REX_CITY is a pin: when set it is the only
-// candidate, so two cities pinned to different values never cross-resolve.
-// Otherwise the canonical "default" comes first, followed by the incidental
-// basename(GC_CITY_PATH) and GC_CITY, where a record written by an earlier
-// version (or an older caller) may still live.
+// read across, canonical first. A pin (GC_EXEC_CITY_PATH, then GC_REX_CITY) is
+// the only candidate, so two cities pinned to different values never
+// cross-resolve. Otherwise the canonical "default" comes first, followed by the
+// incidental basename(GC_CITY_PATH) and GC_CITY, where a record written by an
+// earlier version (or an older caller) may still live.
 func CityCandidates() []string {
-	if v := os.Getenv("GC_REX_CITY"); v != "" {
+	if v := cityPin(); v != "" {
 		return []string{v}
 	}
 	var out []string
