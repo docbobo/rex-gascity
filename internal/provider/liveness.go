@@ -101,17 +101,12 @@ func processMatches(p rex.Process, names []string) bool {
 // inspects LastExit: a live probe showed Rex runs a launched command as the
 // default shell with argv0 set to the command, so process-name heuristics
 // misclassify live panes. last_exit is the v1 liveness truth. A pane Rex no
-// longer knows (its command exited and closed the block) is not running.
+// longer knows (its command exited and closed the block) is not running. It
+// delegates to the Binder's liveOnly so the provider and the resolver share one
+// liveness check.
 func (p *Provider) paneAlive(ctx context.Context, b Binding) (bool, error) {
-	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
-	if errors.Is(err, rex.ErrNotFound) {
-		// A command that exits closes its block, so a missing pane is dead.
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return info.LastExit == nil, nil
+	_, alive, err := p.binder.liveOnly(ctx, b)
+	return alive, err
 }
 
 // ProcessAlive reports whether one of names is the foreground process or an
