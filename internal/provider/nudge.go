@@ -493,7 +493,7 @@ type nudgeDiagnostic struct {
 // after an unconfirmed delivery. It is best effort and never changes the
 // nudge result.
 func (p *Provider) writeNudgeDiagnostic(b Binding, text string, report NudgeReport) {
-	if p.stateDir == "" {
+	if p.ns.CanonicalDir() == "" {
 		return
 	}
 	d := nudgeDiagnostic{
@@ -507,5 +507,5 @@ func (p *Provider) writeNudgeDiagnostic(b Binding, text string, report NudgeRepo
 		d.Aliases = append(d.Aliases, string(a))
 	}
 	name := unsafeNameChars.ReplaceAllString(string(b.Name), "_")
-	_ = writeJSON(filepath.Join(p.stateDir, "diagnostics", name+"-nudge-unconfirmed.json"), d)
+	_ = writeJSON(filepath.Join(p.ns.CanonicalDir(), "diagnostics", name+"-nudge-unconfirmed.json"), d)
 }

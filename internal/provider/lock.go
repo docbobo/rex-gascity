@@ -19,13 +19,13 @@ const (
 // so separate dispatcher processes do not mutate Rex state at once. Without a
 // state dir it just runs fn. A canceled ctx returns ctx.Err().
 func (p *Provider) withStateLock(ctx context.Context, fn func() error) error {
-	if p.stateDir == "" {
+	if p.ns.CanonicalDir() == "" {
 		return fn()
 	}
-	if err := os.MkdirAll(p.stateDir, 0o755); err != nil {
+	if err := os.MkdirAll(p.ns.CanonicalDir(), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(p.stateDir, "lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(filepath.Join(p.ns.CanonicalDir(), "lock"), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return err
 	}

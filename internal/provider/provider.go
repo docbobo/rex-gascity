@@ -70,14 +70,11 @@ type Provider struct {
 	activity ActivityStore
 	meta     MetaStore
 
-	// stateDir is the canonical root state dir; it holds the cross-process
-	// lock file. Empty means no cross-process locking.
-	stateDir string
-
-	// sessionLabels are the accepted Rex session labels, canonical first. New
-	// sessions use the first label; lookups and binding revalidation accept
-	// all of them so a legacy namespace still resolves.
-	sessionLabels []string
+	// ns is the city namespace: the state dirs (the canonical one holds the
+	// cross-process lock; none means no locking) and the accepted Rex session
+	// labels (new sessions use the canonical one; lookups and binding
+	// revalidation accept all so a legacy namespace still resolves).
+	ns Namespace
 
 	// nudgeConfig holds the nudge and startup-delivery tunables and the
 	// external process Runner (see nudge.go).
@@ -120,7 +117,7 @@ func WithStateDirs(dirs ...string) Option {
 			activities = append(activities, NewFileActivityStore(filepath.Join(dir, "activity")))
 			metas = append(metas, NewFileMetaStore(filepath.Join(dir, "meta")))
 		}
-		p.stateDir = dirs[0]
+		p.ns.dirs = slices.Clone(dirs)
 		p.bindings = newCompositeBindingStore(bindings...)
 		p.activity = newCompositeActivityStore(activities...)
 		p.meta = newCompositeMetaStore(metas...)
@@ -131,7 +128,18 @@ func WithStateDirs(dirs ...string) Option {
 // The default is gc:<city>. Callers pass the labels for every namespace they
 // read so a binding written under an older label still revalidates.
 func WithSessionLabels(labels ...string) Option {
-	return func(p *Provider) { p.sessionLabels = normalizeSessionLabels(labels) }
+	return func(p *Provider) { p.ns.labels = normalizeSessionLabels(labels) }
+}
+
+// WithNamespace configures the provider for ns: its state dirs back the
+// sidecar stores (see WithStateDirs) and its labels are the accepted session
+// labels (see WithSessionLabels). A namespace with no dirs leaves the stores
+// as they are.
+func WithNamespace(ns Namespace) Option {
+	return func(p *Provider) {
+		WithStateDirs(ns.dirs...)(p)
+		WithSessionLabels(ns.labels...)(p)
+	}
 }
 
 // WithCityNamespaces configures the provider for a city from its ordered
@@ -141,14 +149,14 @@ func WithSessionLabels(labels ...string) Option {
 // GC_CITY_PATH/GC_CITY the caller carries.
 func WithCityNamespaces(cities []string) Option {
 	return func(p *Provider) {
-		dirs, err := StateDirs(cities)
+		ns, err := NewNamespace(cities)
 		if err != nil {
 			// Without a resolvable state dir the provider stays in memory.
-			// run() resolves the same dirs and reports the error before any op.
+			// The dispatcher resolves the same namespace and reports the error
+			// before any op.
 			return
 		}
-		WithStateDirs(dirs...)(p)
-		WithSessionLabels(SessionLabels(cities)...)(p)
+		WithNamespace(ns)(p)
 	}
 }
 
@@ -167,7 +175,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	for _, opt := range opts {
 		opt(p)
 	}
-	labels := p.sessionLabels
+	labels := p.ns.labels
 	if len(labels) == 0 {
 		labels = []string{rexSessionLabel(city)}
 	}
