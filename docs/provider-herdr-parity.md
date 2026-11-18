@@ -17,6 +17,8 @@ differences are expected and are not defects by themselves:
 2. **Protocol surface.** We implement RPP v0 only. herdr-core also implements
    extensions that gc 1.5.1 does not declare (`observe.v1`-style reads,
    `carrier.ops`-style object ops, `city-scoped`, `server-lifecycle`).
+   Decisions for those extensions live in
+   [`herdr-extensions.md`](herdr-extensions.md) (GCREX-28.1).
 3. **Transport.** We drive a live Rex server over its socket (`rex` CLI/HTTP);
    herdr-core drives herdr. "Running", "attached", and "activity" therefore have
    different native meanings even when the op contract is identical.
