@@ -4,10 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -52,124 +49,145 @@ type MetaStore interface {
 	Clear(name SessionName) error
 }
 
+// memTable is the one in-memory table behind every memory store: a mutex
+// around a map. The stores only add their key and value types.
+type memTable[K comparable, V any] struct {
+	mu sync.RWMutex
+	m  map[K]V
+}
+
+func newMemTable[K comparable, V any]() *memTable[K, V] {
+	return &memTable[K, V]{m: make(map[K]V)}
+}
+
+func (t *memTable[K, V]) get(k K) (V, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	v, ok := t.m[k]
+	return v, ok
+}
+
+func (t *memTable[K, V]) put(k K, v V) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.m[k] = v
+}
+
+func (t *memTable[K, V]) remove(k K) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.m, k)
+}
+
+// removeWhere deletes every entry whose key matches.
+func (t *memTable[K, V]) removeWhere(match func(K) bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k := range t.m {
+		if match(k) {
+			delete(t.m, k)
+		}
+	}
+}
+
+// values returns every value in no particular order.
+func (t *memTable[K, V]) values() []V {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make([]V, 0, len(t.m))
+	for _, v := range t.m {
+		out = append(out, v)
+	}
+	return out
+}
+
 // memoryActivityStore is an in-memory ActivityStore.
 type memoryActivityStore struct {
-	mu sync.Mutex
-	m  map[SessionName]ActivityRecord
+	t *memTable[SessionName, ActivityRecord]
 }
 
 // NewMemoryActivityStore returns an empty in-memory ActivityStore.
 func NewMemoryActivityStore() ActivityStore {
-	return &memoryActivityStore{m: make(map[SessionName]ActivityRecord)}
+	return &memoryActivityStore{t: newMemTable[SessionName, ActivityRecord]()}
 }
 
-func (s *memoryActivityStore) Load(name SessionName) (ActivityRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.m[name]
-	return r, ok
-}
+func (s *memoryActivityStore) Load(name SessionName) (ActivityRecord, bool) { return s.t.get(name) }
 
-func (s *memoryActivityStore) Save(name SessionName, rec ActivityRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.m[name] = rec
-}
+func (s *memoryActivityStore) Save(name SessionName, rec ActivityRecord) { s.t.put(name, rec) }
 
 func (s *memoryActivityStore) Delete(name SessionName) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.m, name)
+	s.t.remove(name)
 	return nil
 }
 
-// activityRecord is the on-disk shape of an ActivityRecord.
+// activityRecord is the on-disk shape of an ActivityRecord. It has the same
+// fields, so Go converts between the two and a new field fails to compile
+// until the record has it too.
 type activityRecord struct {
 	Identity    string    `json:"identity"`
 	Fingerprint string    `json:"fingerprint"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	At          time.Time `json:"updated_at"`
 	InputAt     time.Time `json:"input_updated_at,omitempty"`
 }
 
 // fileActivityStore is a file-backed ActivityStore.
 type fileActivityStore struct {
-	mu  sync.Mutex
-	dir string
+	t *fileTable[SessionName, activityRecord]
 }
 
 // NewFileActivityStore returns an ActivityStore that keeps one JSON file per
 // name under dir.
-func NewFileActivityStore(dir string) ActivityStore { return &fileActivityStore{dir: dir} }
-
-func (s *fileActivityStore) path(name SessionName) string {
-	return filepath.Join(s.dir, nameKey(name)+".json")
+func NewFileActivityStore(dir string) ActivityStore {
+	return &fileActivityStore{t: newFileTable[SessionName, activityRecord](dir, flatPath(dir))}
 }
 
 func (s *fileActivityStore) Load(name SessionName) (ActivityRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var r activityRecord
-	ok, err := readJSON(s.path(name), &r)
+	r, ok, err := s.t.read(name)
 	if err != nil || !ok {
 		return ActivityRecord{}, false
 	}
-	return ActivityRecord{Identity: r.Identity, Fingerprint: r.Fingerprint, At: r.UpdatedAt, InputAt: r.InputAt}, true
+	return ActivityRecord(r), true
 }
 
 func (s *fileActivityStore) Save(name SessionName, rec ActivityRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_ = writeJSON(s.path(name), activityRecord{Identity: rec.Identity, Fingerprint: rec.Fingerprint, UpdatedAt: rec.At, InputAt: rec.InputAt})
+	_ = s.t.write(name, activityRecord(rec))
 }
 
-func (s *fileActivityStore) Delete(name SessionName) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := os.Remove(s.path(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
+func (s *fileActivityStore) Delete(name SessionName) error { return s.t.remove(name) }
+
+// metaKey addresses one key of one session in a meta store.
+type metaKey struct {
+	name SessionName
+	key  string
 }
 
 // memoryMetaStore is an in-memory MetaStore.
 type memoryMetaStore struct {
-	mu sync.Mutex
-	m  map[SessionName]map[string]string
+	t *memTable[metaKey, string]
 }
 
 // NewMemoryMetaStore returns an empty in-memory MetaStore.
 func NewMemoryMetaStore() MetaStore {
-	return &memoryMetaStore{m: make(map[SessionName]map[string]string)}
+	return &memoryMetaStore{t: newMemTable[metaKey, string]()}
 }
 
 func (s *memoryMetaStore) Get(name SessionName, key string) (string, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v, ok := s.m[name][key]
+	v, ok := s.t.get(metaKey{name, key})
 	return v, ok, nil
 }
 
 func (s *memoryMetaStore) Set(name SessionName, key, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.m[name] == nil {
-		s.m[name] = make(map[string]string)
-	}
-	s.m[name][key] = value
+	s.t.put(metaKey{name, key}, value)
 	return nil
 }
 
 func (s *memoryMetaStore) Delete(name SessionName, key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.m[name], key)
+	s.t.remove(metaKey{name, key})
 	return nil
 }
 
 func (s *memoryMetaStore) Clear(name SessionName) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.m, name)
+	s.t.removeWhere(func(k metaKey) bool { return k.name == name })
 	return nil
 }
 
@@ -185,27 +203,27 @@ type metaEntry struct {
 // fileMetaStore is a file-backed MetaStore. It keeps one file per key so that
 // separate processes setting different keys never overwrite each other.
 type fileMetaStore struct {
-	mu  sync.Mutex
-	dir string
+	t *fileTable[metaKey, metaEntry]
 }
 
 // NewFileMetaStore returns a MetaStore that keeps one JSON file per key under
 // dir/<name hash>/.
-func NewFileMetaStore(dir string) MetaStore { return &fileMetaStore{dir: dir} }
+func NewFileMetaStore(dir string) MetaStore {
+	return &fileMetaStore{t: newFileTable[metaKey, metaEntry](dir, func(k metaKey) string {
+		sum := sha256.Sum256([]byte(string(k.name) + "\x00" + k.key))
+		return filepath.Join(dir, nameKey(k.name), hex.EncodeToString(sum[:])+".json")
+	})}
+}
 
 func (s *fileMetaStore) path(name SessionName, key string) string {
-	sum := sha256.Sum256([]byte(string(name) + "\x00" + key))
-	return filepath.Join(s.dir, nameKey(name), hex.EncodeToString(sum[:])+".json")
+	return s.t.path(metaKey{name, key})
 }
 
 // Get reads the entry for key. A missing file, or an old-format entry with no
 // value_b64, is not set. An unreadable or corrupt file, or a value that is not
 // valid base64, is an error.
 func (s *fileMetaStore) Get(name SessionName, key string) (string, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var e metaEntry
-	ok, err := readJSON(s.path(name, key), &e)
+	e, ok, err := s.t.read(metaKey{name, key})
 	if err != nil {
 		return "", false, err
 	}
@@ -220,25 +238,16 @@ func (s *fileMetaStore) Get(name SessionName, key string) (string, bool, error) 
 }
 
 func (s *fileMetaStore) Set(name SessionName, key, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	enc := base64.StdEncoding.EncodeToString([]byte(value))
-	return writeJSON(s.path(name, key), metaEntry{Key: key, ValueB64: &enc})
+	return s.t.write(metaKey{name, key}, metaEntry{Key: key, ValueB64: &enc})
 }
 
 func (s *fileMetaStore) Delete(name SessionName, key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := os.Remove(s.path(name, key)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
+	return s.t.remove(metaKey{name, key})
 }
 
+// Clear removes every key for name. One directory per name holds every key
+// file, so removing it drops the whole sidecar. A missing directory is success.
 func (s *fileMetaStore) Clear(name SessionName) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// One directory per name holds every key file, so removing it drops the
-	// whole sidecar. RemoveAll treats a missing directory as success.
-	return os.RemoveAll(filepath.Join(s.dir, nameKey(name)))
+	return s.t.removeAll(filepath.Join(s.t.dir, nameKey(name)))
 }
