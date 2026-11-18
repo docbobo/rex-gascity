@@ -140,27 +140,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
 		return exitFail
 	}
 
-	// RPP v0 carries no city, so the same city can reach us with different
-	// incidental GC_CITY_PATH/GC_CITY values. Resolve one canonical namespace
-	// and read across the rest, so start and every lookup op agree on one store.
-	city := provider.CityFromEnv()
-	namespaces := provider.CityCandidates()
-	// An unpinned caller (the gc CLI fallback provider carries no city env)
-	// cannot be told which pin wrote the binding. Discover the sibling city
-	// namespaces a pinned controller wrote under, canonical first. A pinned
-	// caller keeps exactly its pin, so cities stay isolated from each other
-	// when the caller is pinned.
-	if os.Getenv("GC_REX_CITY") == "" {
-		namespaces = append(namespaces, provider.SiblingCityNamespaces(namespaces)...)
-	}
-	dirs, err := provider.StateDirs(namespaces)
+	// The city and its namespace are derived once: see NamespaceForCaller.
+	city, ns, err := provider.NamespaceForCaller()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
 		return exitFail
 	}
-	prov := provider.New(city, d.newClient(),
-		provider.WithStateDirs(dirs...),
-		provider.WithSessionLabels(provider.SessionLabels(namespaces)...))
+	prov := provider.New(city, d.newClient(), provider.WithNamespace(ns))
 
 	var out bytes.Buffer
 	if err := spec.handle(context.Background(), prov, rest, stdin, &out); err != nil {

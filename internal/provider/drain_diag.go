@@ -38,7 +38,7 @@ var unsafeNameChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // effort: every error is swallowed and both git calls share one time budget, so
 // it never fails or delays Stop.
 func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
-	if b.WorkDir == "" || p.stateDir == "" {
+	if b.WorkDir == "" || p.ns.CanonicalDir() == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, drainDiagTimeout)
@@ -79,7 +79,7 @@ func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
 		}
 	}
 	name := unsafeNameChars.ReplaceAllString(string(b.Name), "_")
-	_ = writeJSON(filepath.Join(p.stateDir, "diagnostics", name+".json"), d)
+	_ = writeJSON(filepath.Join(p.ns.CanonicalDir(), "diagnostics", name+".json"), d)
 }
 
 // gitOutput runs git in dir under ctx, returning its stdout. It sets
