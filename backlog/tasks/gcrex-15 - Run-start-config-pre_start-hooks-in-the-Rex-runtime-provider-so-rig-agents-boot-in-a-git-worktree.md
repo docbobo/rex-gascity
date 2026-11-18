@@ -3,11 +3,11 @@ id: GCREX-15
 title: >-
   Run start-config pre_start hooks in the Rex runtime provider so rig agents
   boot in a git worktree
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-11-17T23:03:00Z'
-updated_date: '2026-11-18T00:04:00Z'
+updated_date: '2026-11-18T00:22:00Z'
 labels: []
 dependencies:
   - GCREX-5
@@ -50,11 +50,11 @@ pre_start = ["{{.ConfigDir}}/assets/scripts/worktree-setup.sh {{.RigRoot}} {{.Wo
 <!-- AC:BEGIN -->
 - [x] #1 startConfig decodes the pre_start array and gc-runtime-rex start passes it to the provider with the launch context (work_dir + start-config env)
 - [x] #2 Each pre_start command runs, in order, before NewWindow/NewSplit; a non-zero exit fails the start and no pane is left behind
-- [ ] #3 With a per-agent work_dir + pre_start set to the gastown worktree-setup.sh, a fresh rig agent starts inside .gc/worktrees/<rig>/<agent> on the correct branch
+- [x] #3 With a per-agent work_dir + pre_start set to the gastown worktree-setup.sh, a fresh rig agent starts inside .gc/worktrees/<rig>/<agent> on the correct branch
 - [x] #4 The already-implemented work_dir is still honored, and a spec with no pre_start behaves exactly as today
 - [x] #5 Tests using the fake rex.Client cover: pre_start order, failure aborts launch, no pre_start is a no-op, and pre_start sees the start-config env
 - [x] #6 go test ./... and golangci-lint run ./... pass
-- [ ] #7 Live check on ~/my-city: configure a rig agent with the worktree recipe and confirm it starts in its worktree (gc doctor worktrees + session pwd)
+- [x] #7 Live check on ~/my-city: configure a rig agent with the worktree recipe and confirm it starts in its worktree (gc doctor worktrees + session pwd)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -69,4 +69,12 @@ pre_start = ["{{.ConfigDir}}/assets/scripts/worktree-setup.sh {{.RigRoot}} {{.Wo
 Implemented in worktree gcrex-15-prestart (DeepSeek v4 Pro), merged to main as 8f88781 (cherry-pick of 8b159c5). startConfig decodes ordered pre_start []string -> provider.Config.PreStart. Provider.start runs each entry via /bin/sh -c in order, cwd=WorkDir, env=os.Environ() merged with cfg.Env, strictly before identity seeding/provisional binding/launch; a non-zero exit aborts with 'pre_start[N]: ...' and leaves no pane, seed, or binding. Empty/nil is a no-op. Tests: internal/provider/prestart_test.go (8 tests: order, abort, no-op, empty slice, env passthrough, cwd, abort-with-identity-env, second-command-fails). go test ./... ok; golangci-lint run ./... 0 issues. Live check pending.
 
 Correction: after a GPG re-sign rewrite the merged main commit is 1d60311 (not 8f88781); same tree and content.
+
+Live check found and fixed a real defect: pre_start ran with cwd=work_dir, but the gastown recipe's work_dir is what pre_start creates, so it died with 'chdir ... no such file or directory'. Fixed in 1f0e16a to mirror runtime-herdr-core's lifecycle._setup_cwd: cwd=work_dir when it exists else '/', and a configured work_dir must exist after the hooks. Post-fix live probe: pre_start created a git worktree with 'git worktree add', ran before the pane (prestart-ts < start-ts), saw GC_SESSION_ID from the start-config env, and the pane started with cwd and git toplevel = the worktree; a missing work_dir without a creating hook fails the start with a clear error and leaves no pane. gc doctor worktrees checks pass (105 passed, 7 warnings, 1 pre-existing unrelated failure).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The start-config pre_start hooks now run in the Rex provider before the pane launches. startConfig decodes an ordered pre_start array and passes it with WorkDir and Env; each entry runs via /bin/sh -c in order before identity seeding and the launch, with cwd set to work_dir when it already exists and '/' otherwise (mirroring runtime-herdr-core's lifecycle._setup_cwd), and the process environment merged with the start-config env. A non-zero exit aborts the start and leaves no pane, seeded identity, or binding; after the hooks a configured work_dir must be an existing directory or the start fails (mirroring herdr). The already-implemented work_dir is honored; an absent pre_start is a no-op. A live check caught that the original implementation ran pre_start with cwd=work_dir, which made the gastown worktree recipe impossible because that recipe's work_dir is created by pre_start; fixed in 1f0e16a. Verified: commits 1d60311 and 1f0e16a; go test ./..., go test -race ./internal/provider, golangci-lint run ./... (0 issues), go vet clean; live probe: pre_start created a git worktree, ran before the pane, saw GC_SESSION_ID, and the pane started inside the worktree (cwd and git toplevel equal the worktree); a missing work_dir fails with a clear error and no pane; gc doctor worktrees checks pass. Risk: the post-hook work_dir requirement is stricter than before (a spec relying on Rex to create work_dir would now fail earlier), matching the herdr reference.
+<!-- SECTION:FINAL_SUMMARY:END -->
