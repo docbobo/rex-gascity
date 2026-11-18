@@ -165,6 +165,14 @@ type NudgeReport struct {
 	State     string
 	Kind      string
 	Source    NudgeSource
+
+	// Write is how long the text write took; Confirm is how long the
+	// post-submit confirmation poll took before it confirmed or its window
+	// elapsed. Both are zero when the stage did not run (a refused or failed
+	// delivery). Startup delivery records them per attempt in the timing
+	// diagnostic so a slow start can be attributed to a stage.
+	Write   time.Duration
+	Confirm time.Duration
 }
 
 // programStatusSnapshot is the newest program_status record of a pane.
@@ -353,9 +361,12 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	if err := ctx.Err(); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: before typing: %w", name, err)
 	}
+	writeStart := time.Now()
 	if err := p.client.BlockWrite(submitCtx, binding.SessionID, binding.BlockID, text); err != nil {
-		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: type text: %w", name, err)
+		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: time.Since(writeStart)},
+			fmt.Errorf("nudge %s: type text: %w", name, err)
 	}
+	writeDur := time.Since(writeStart)
 	// The text is in the pane now: stamp the input floor so the delivery is
 	// visible to idle detection before the program's output renders.
 	p.noteInput(binding)
@@ -367,12 +378,13 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	defer cancelEnter()
 	if err := p.client.SendKeys(enterCtx, binding.SessionID, binding.BlockID, submitKey); err != nil {
 		p.recordNudgeSubmitFailure(binding, err)
-		return NudgeReport{State: baseline.State, Kind: baseline.Kind},
+		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: writeDur},
 			fmt.Errorf("nudge %s: text was typed but submit key failed: %w", name, err)
 	}
 	_ = p.metaDelete(binding.Name, NudgeSubmitFailedMetaKey)
 
-	report := NudgeReport{Delivered: true}
+	confirmStart := time.Now()
+	report := NudgeReport{Delivered: true, Write: writeDur}
 	deadline := time.Now().Add(p.nudge.nudgeConfirmWindow)
 	first := true
 	for {
@@ -393,6 +405,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 		}
 		if confirmed {
 			report.Confirmed = true
+			report.Confirm = time.Since(confirmStart)
 			return report, nil
 		}
 		if !first && !time.Now().Before(deadline) {
@@ -413,12 +426,14 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 			timer.Stop()
 			// The text and submit already reached the pane. Report the
 			// delivery instead of an error that would duplicate it.
+			report.Confirm = time.Since(confirmStart)
 			p.writeNudgeDiagnostic(binding, text, report)
 			return report, nil
 		case <-timer.C:
 		}
 	}
 
+	report.Confirm = time.Since(confirmStart)
 	p.writeNudgeDiagnostic(binding, text, report)
 	return report, nil
 }

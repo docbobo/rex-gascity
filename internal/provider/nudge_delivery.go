@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -35,6 +36,18 @@ var defaultStartupNudgeBackoffs = []time.Duration{
 // cleared when a later startup delivery is confirmed. gc reads only the exit
 // code, so this marker is how an operator finds a stranded first prompt.
 const StartupDeliveryUnconfirmedMetaKey = "GC_STARTUP_DELIVERY_UNCONFIRMED"
+
+// Readiness outcomes recorded in the startup-timing diagnostic. "idle" and the
+// two bound outcomes are the distinction that matters: a start whose pane never
+// reports idle is capped by the readiness window (or the shorter settle delay),
+// so the bound, not the launch, is where its cost sits.
+const (
+	readinessIdle        = "idle"
+	readinessWindowBound = "window-bound"
+	readinessSettleBound = "settle-bound"
+	readinessCanceled    = "canceled"
+	readinessDisabled    = "disabled"
+)
 
 // WithStartupReadiness sets how long Start waits for the pane program to
 // report idle before delivering the startup nudge, and the shorter settle
@@ -76,8 +89,27 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		return
 	}
 	binding := Binding{Name: SessionName(name), SessionID: launch.sessionID, BlockID: launch.blockID}
-	p.waitForStartupReady(ctx, launch.sessionID, launch.blockID)
+	timing := startupTiming{
+		Session:  string(binding.Name),
+		At:       time.Now().UTC(),
+		LaunchMS: millis(launch.launchDur),
+	}
+	// The timing is written for every delivery, confirmed or not: the slow case
+	// this exists to attribute is usually a successful start whose readiness
+	// wait consumed most of the time, so recording only failures would miss it.
+	start := time.Now()
+	defer func() {
+		timing.TotalMS = millis(time.Since(start)) + timing.LaunchMS
+		p.writeStartupTimingDiagnostic(binding, timing)
+	}()
+	outcome, readiness := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID)
+	timing.ReadinessOutcome = outcome
+	timing.ReadinessMS = millis(readiness)
+
 	report, err := p.nudgeReportBinding(ctx, binding, text, NudgeModeImmediate)
+	timing.WriteMS = millis(report.Write)
+	timing.ConfirmMS = millis(report.Confirm)
+	timing.Confirmed = err == nil && report.Confirmed
 	if err == nil && report.Confirmed {
 		p.clearStartupDeliveryUnconfirmed(ctx, name)
 		return
@@ -87,6 +119,7 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		return
 	}
 
+	attempt := 1
 	for _, backoff := range p.nudge.startupNudgeBackoffs {
 		if ctx.Err() != nil {
 			break
@@ -101,10 +134,16 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
 			return
 		}
+		attempt++
+		rt := retryTiming{Attempt: attempt, BackoffMS: millis(backoff)}
 		// Clear the still-drafted line before re-typing, mirroring gc's
 		// clear+paste+submit resend cycle.
 		_ = p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, startupClearKey)
 		report, err = p.nudgeReportBinding(ctx, binding, text, NudgeModeImmediate)
+		rt.WriteMS = millis(report.Write)
+		rt.ConfirmMS = millis(report.Confirm)
+		rt.Confirmed = err == nil && report.Confirmed
+		timing.Attempts = append(timing.Attempts, rt)
 		if err == nil && report.Confirmed {
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
 			return
@@ -114,6 +153,60 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		}
 	}
 	p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
+}
+
+// startupTiming is the per-stage startup-nudge timing left in
+// <stateDir>/diagnostics/<name>-startup-timing.json. gc records only the total
+// start_resolved duration; this separates the pane launch, the readiness wait,
+// the first nudge write and submit confirmation, and each resend, so a slow
+// start can be attributed without a debugger (GCREX-58). Durations are
+// milliseconds; readiness_outcome says whether the wait ended on idle or on
+// its bound, which decides whether the bound is a lever at all.
+type startupTiming struct {
+	Session          string        `json:"session"`
+	Aliases          []string      `json:"aliases,omitempty"`
+	At               time.Time     `json:"at"`
+	LaunchMS         int64         `json:"launch_ms"`
+	ReadinessMS      int64         `json:"readiness_ms"`
+	ReadinessOutcome string        `json:"readiness_outcome"`
+	WriteMS          int64         `json:"write_ms"`
+	ConfirmMS        int64         `json:"confirm_ms"`
+	Confirmed        bool          `json:"confirmed"`
+	Attempts         []retryTiming `json:"attempts,omitempty"`
+	TotalMS          int64         `json:"total_ms"`
+}
+
+// retryTiming is one resend of a delivered-but-unconfirmed startup nudge. The
+// primary attempt is the top-level write_ms/confirm_ms; Attempt starts at 2.
+type retryTiming struct {
+	Attempt   int   `json:"attempt"`
+	BackoffMS int64 `json:"backoff_ms"`
+	WriteMS   int64 `json:"write_ms"`
+	ConfirmMS int64 `json:"confirm_ms"`
+	Confirmed bool  `json:"confirmed"`
+}
+
+// millis renders a stage duration as whole milliseconds, clamped at zero so a
+// clock oddity cannot write a negative duration.
+func millis(d time.Duration) int64 {
+	if d < 0 {
+		return 0
+	}
+	return d.Milliseconds()
+}
+
+// writeStartupTimingDiagnostic leaves the per-stage startup timing in
+// <stateDir>/diagnostics/<name>-startup-timing.json. It is best effort and
+// never changes the start result; an empty state dir writes nothing.
+func (p *Provider) writeStartupTimingDiagnostic(b Binding, t startupTiming) {
+	if p.ns.CanonicalDir() == "" {
+		return
+	}
+	for _, a := range b.Aliases {
+		t.Aliases = append(t.Aliases, string(a))
+	}
+	name := unsafeNameChars.ReplaceAllString(string(b.Name), "_")
+	_ = writeJSON(filepath.Join(p.ns.CanonicalDir(), "diagnostics", name+"-startup-timing.json"), t)
 }
 
 // startupClearKey clears the pane's draft input line before a startup-nudge
@@ -168,10 +261,14 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 // missing readiness signal falls through to delivery. When the program
 // reports no program_status at all, only the shorter settle delay is spent,
 // so an agent that never emits status is not held for the whole window.
-func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) {
+//
+// It returns how the wait ended (idle, a window or settle bound, canceled, or
+// disabled) and how long it took, so the caller can record whether the bound
+// was the cost (GCREX-58).
+func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, time.Duration) {
 	window := p.nudge.startupReadyWindow
 	if window <= 0 {
-		return
+		return readinessDisabled, 0
 	}
 	poll := p.nudge.nudgePollInterval
 	if poll <= 0 {
@@ -185,7 +282,7 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		if err == nil && snap.Present {
 			sawRecord = true
 			if snap.State == "idle" {
-				return
+				return readinessIdle, time.Since(start)
 			}
 		}
 		elapsed := time.Since(start)
@@ -196,7 +293,10 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 			bound = settle
 		}
 		if elapsed >= bound {
-			return
+			if sawRecord {
+				return readinessWindowBound, elapsed
+			}
+			return readinessSettleBound, elapsed
 		}
 		wait := poll
 		if remaining := bound - elapsed; wait > remaining {
@@ -206,7 +306,7 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return
+			return readinessCanceled, time.Since(start)
 		case <-timer.C:
 		}
 	}

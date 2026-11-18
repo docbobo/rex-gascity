@@ -2,7 +2,10 @@ package provider_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -669,4 +672,102 @@ func TestStartupNudgeResendsUnconfirmedSubmit(t *testing.T) {
 	if got, err := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey); err != nil || got != "" {
 		t.Errorf("confirmed resend left marker %q (err %v)", got, err)
 	}
+}
+
+// TestStartupTimingDiagnosticRecordsBoundReadiness covers the number the task
+// exists to produce: a startup whose pane program never reports idle must
+// record how long the readiness wait took and that it ended on its bound, not
+// on idle, so a slow start can be attributed without a debugger.
+func TestStartupTimingDiagnosticRecordsBoundReadiness(t *testing.T) {
+	const name = "Indigo--dog-1"
+	stateDir := t.TempDir()
+	fake := faketest.New()
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{
+			State:     "working",
+			UpdatedAt: time.Now(),
+		}}}
+	}
+	p := startupProvider(fake,
+		provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)),
+		provider.WithStartupReadiness(80*time.Millisecond, 10*time.Millisecond),
+	)
+
+	if err := p.Start(context.Background(), name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got := readStartupTiming(t, stateDir, name)
+	if got["readiness_outcome"] != "window-bound" {
+		t.Errorf("readiness_outcome = %v, want window-bound", got["readiness_outcome"])
+	}
+	if ms, _ := got["readiness_ms"].(float64); ms < 60 {
+		t.Errorf("readiness_ms = %v, want >= 60 for a record present but never idle", got["readiness_ms"])
+	}
+	for _, key := range []string{"launch_ms", "readiness_ms", "write_ms", "confirm_ms", "total_ms"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("startup timing missing %q: %v", key, got)
+		}
+	}
+}
+
+// TestStartupTimingRecordsEachRetryAttempt covers AC1's "each retry attempt":
+// when the submit is not confirmed and the nudge is resent, every attempt's
+// backoff, write and confirmation duration must be recorded, not just the
+// first.
+func TestStartupTimingRecordsEachRetryAttempt(t *testing.T) {
+	const name = "Indigo--dog-1"
+	stateDir := t.TempDir()
+	fake := faketest.New()
+	p := startupProvider(fake,
+		provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)),
+		provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond, time.Millisecond}),
+	)
+
+	if err := p.Start(context.Background(), name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got := readStartupTiming(t, stateDir, name)
+	attempts, ok := got["attempts"].([]any)
+	if !ok {
+		t.Fatalf("startup timing attempts missing: %v", got)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2 (one per backoff): %v", len(attempts), got)
+	}
+	for i, raw := range attempts {
+		a, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("attempt %d is not an object: %v", i, raw)
+		}
+		for _, key := range []string{"backoff_ms", "write_ms", "confirm_ms"} {
+			if _, ok := a[key]; !ok {
+				t.Errorf("attempt %d missing %q: %v", i, key, a)
+			}
+		}
+	}
+}
+
+// readStartupTiming reads and decodes the startup-timing diagnostic. It fails
+// the test when the file is absent, so a regression that stops writing the
+// timing on a best-effort path is caught rather than silently skipped.
+func readStartupTiming(t *testing.T, stateDir, name string) map[string]any {
+	t.Helper()
+	path := filepath.Join(stateDir, "diagnostics", name+"-startup-timing.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read startup timing diagnostic: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode startup timing diagnostic: %v (%s)", err, raw)
+	}
+	return got
 }

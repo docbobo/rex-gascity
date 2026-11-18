@@ -266,6 +266,10 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 type startResult struct {
 	sessionID rex.SessionID
 	blockID   rex.BlockID
+	// launchDur is how long the pane launch (NewSplit/NewWindow) took. It is a
+	// stage in the startup-timing diagnostic (GCREX-58); zero on the idempotent
+	// already-alive path, which delivers no nudge.
+	launchDur time.Duration
 }
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
@@ -404,6 +408,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// lock makes the view read and the create/split decision atomic per tab, so
 	// two concurrent starts in one rig cannot both create the tab.
 	var launched startResult
+	launchStart := time.Now()
 	if err := p.withTabLock(ctx, tab, func() error {
 		view, err := p.client.SessionView(ctx, sid)
 		if err != nil {
@@ -435,6 +440,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	}); err != nil {
 		return startResult{}, err
 	}
+	launched.launchDur = time.Since(launchStart)
 	return launched, nil
 }
 
