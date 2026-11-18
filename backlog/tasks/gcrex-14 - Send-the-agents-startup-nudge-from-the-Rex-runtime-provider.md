@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-11-17T23:03:00Z'
-updated_date: '2026-11-17T23:53:00Z'
+updated_date: '2026-11-18T00:04:00Z'
 labels: []
 dependencies:
   - GCREX-5
@@ -38,11 +38,11 @@ This is documented as open: docs/rex-provider.md "Startup `nudge` is not sent" a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 startConfig decodes the start-config nudge field, and gc-runtime-rex start passes it through to the provider
-- [ ] #2 On a successful launch the provider delivers the startup nudge (text + submit) exactly once; on a failed or already-running start the nudge is not delivered
+- [x] #1 startConfig decodes the start-config nudge field, and gc-runtime-rex start passes it through to the provider
+- [x] #2 On a successful launch the provider delivers the startup nudge (text + submit) exactly once; on a failed or already-running start the nudge is not delivered
 - [ ] #3 A fresh rex-gascity/pi (and my-project/pi) pool spawn begins work in single-digit seconds, not ~100 s; the reconciler nudge_stalled_pool_claims backstop is no longer the first thing that wakes it
-- [ ] #4 Tests using the fake rex.Client cover: nudge delivered after launch, not delivered on ErrAlreadyRunning / launch failure, and empty nudge is a no-op
-- [ ] #5 go test ./... and golangci-lint run ./... pass
+- [x] #4 Tests using the fake rex.Client cover: nudge delivered after launch, not delivered on ErrAlreadyRunning / launch failure, and empty nudge is a no-op
+- [x] #5 go test ./... and golangci-lint run ./... pass
 - [ ] #6 Live check on ~/my-city: spawn a rex pool seat and confirm the first user message timestamp is within a few seconds of the Pi session start (compare .pi-agent/sessions/*.jsonl vs events.jsonl)
 <!-- AC:END -->
 
@@ -51,3 +51,11 @@ This is documented as open: docs/rex-provider.md "Startup `nudge` is not sent" a
 <!-- SECTION:PLAN:BEGIN -->
 1. Add nudge to startConfig and provider.Config; pass through opStart. 2. Deliver the nudge (text + enter) exactly once after a successful launch only, via the recorded binding; skip on launch failure, already-running/already-alive, and empty nudge. 3. Fake-rex tests for delivered/not-delivered/no-op. 4. Update docs/rex-provider.md. 5. go test ./... + golangci-lint run ./...; parent merges and runs the live check.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in worktree gcrex-14-nudge (DeepSeek v4 Pro), merged to main as 86ca99a (cherry-pick of 5e0256e; conflicts with GCREX-15 in Config/startConfig/start and the two docs resolved by hand, signatures re-verified). startConfig decodes nudge -> provider.Config.Nudge. Provider.start registers a deferred nudge after the provisional binding; on return it delivers BlockWrite(text)+SendKeys(enter) via the just-recorded sid/launchedBlock only when a pane launched (launchedBlock != ''), cfg.Nudge != '', and err == nil. Not delivered on launch failure, the already-alive idempotent path, or ErrAlreadyRunning; empty is a no-op. A launchOK flag keeps the identity/binding cleanup from firing when the launch succeeded but the nudge failed (pane left intact, error surfaced). Tests in internal/provider/identity_test.go (5 cases). go test -count=1 ./... ok; golangci-lint run ./... 0 issues; go vet clean. Live check pending.
+
+Follow-up hardening on main (commit cd0fe48) after an independent cross-family review: startup nudge delivery is now best effort (a BlockWrite/SendKeys transport failure no longer fails Start or clears the seeded identity/binding; the launched pane is preserved). The launchOK cleanup guard was dropped as unnecessary. faketest.BlockCall now records the written Text, TestStartupNudgeDeliveredAfterLaunch asserts the exact nudge text, TestStartupNudgeDeliveryFailureKeepsPane covers write/send-key failure, and TestPreStartInheritsBaseEnv verifies pre_start inherits os.Environ(). Independent review (claude-sonnet-4.6) found no blocking defects and 'all acceptance criteria satisfied'. Verification on merged main: go test -count=1 ./... ok, go test -race ./internal/provider ok, golangci-lint run ./... 0 issues, go vet clean.
+<!-- SECTION:NOTES:END -->

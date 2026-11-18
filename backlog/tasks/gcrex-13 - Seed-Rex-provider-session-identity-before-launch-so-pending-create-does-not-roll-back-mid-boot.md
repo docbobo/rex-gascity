@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-11-17T22:48:00Z'
-updated_date: '2026-11-17T23:56:00Z'
+updated_date: '2026-11-18T00:04:00Z'
 labels: []
 dependencies: []
 references:
@@ -46,15 +46,13 @@ Fix direction: on Rex `Start`, before launching the pane, seed the identity meta
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
-
 <!-- AC:BEGIN -->
-
-- [ ] #1 A doc records the herdr comparison: how runtime-herdr-core seeds identity meta and a provisional pane binding before the blocking launch, and why (seedMetaFromEnv / bindPlacement ordering in internal/runtime/herdr/provider.go), citing the specific files
-- [ ] #2 Rex Start seeds the identity keys gc's runningSessionMatchesPendingCreateInfo reads (GC_SESSION_ID, GC_INSTANCE_TOKEN, and GC_RUNTIME_EPOCH) into the meta store under the session name before the blocking launch, and persists a provisional binding, so a reconciler tick inside the launch window matches instead of rolling back
+- [x] #1 A doc records the herdr comparison: how runtime-herdr-core seeds identity meta and a provisional pane binding before the blocking launch, and why (seedMetaFromEnv / bindPlacement ordering in internal/runtime/herdr/provider.go), citing the specific files
+- [x] #2 Rex Start seeds the identity keys gc's runningSessionMatchesPendingCreateInfo reads (GC_SESSION_ID, GC_INSTANCE_TOKEN, and GC_RUNTIME_EPOCH) into the meta store under the session name before the blocking launch, and persists a provisional binding, so a reconciler tick inside the launch window matches instead of rolling back
 - [ ] #3 A fresh rex pool spawn (rex-gascity/pi and my-project/pi) produces no 'live runtime belongs to another session' / stale_async_start while the launch is in flight; the create/respawn churn stops
-- [ ] #4 Teardown invariant preserved: Stop and every pending-create rollback path clear the seeded identity so a stale GC_SESSION_ID/GC_INSTANCE_TOKEN cannot outlive its life
-- [ ] #5 Tests using the fake rex.Client cover: a probe between start and launch-return matches (no rollback), a stale prior-life identity is cleared on Stop, and the empty-identity case no longer misreads as another session
-- [ ] #6 go test ./... and golangci-lint run ./... pass
+- [x] #4 Teardown invariant preserved: Stop and every pending-create rollback path clear the seeded identity so a stale GC_SESSION_ID/GC_INSTANCE_TOKEN cannot outlive its life
+- [x] #5 Tests using the fake rex.Client cover: a probe between start and launch-return matches (no rollback), a stale prior-life identity is cleared on Stop, and the empty-identity case no longer misreads as another session
+- [x] #6 go test ./... and golangci-lint run ./... pass
 - [ ] #7 Live check on ~/my-city after the fix: spawn a rex-gascity/pi pool seat and a my-project/pi wisp; gc session list shows one seat per unit of work with no repeated start/rollback churn and no orphaned panes
 <!-- AC:END -->
 

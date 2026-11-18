@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-11-17T23:03:00Z'
-updated_date: '2026-11-17T23:53:00Z'
+updated_date: '2026-11-18T00:04:00Z'
 labels: []
 dependencies:
   - GCREX-5
@@ -48,12 +48,12 @@ pre_start = ["{{.ConfigDir}}/assets/scripts/worktree-setup.sh {{.RigRoot}} {{.Wo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 startConfig decodes the pre_start array and gc-runtime-rex start passes it to the provider with the launch context (work_dir + start-config env)
-- [ ] #2 Each pre_start command runs, in order, before NewWindow/NewSplit; a non-zero exit fails the start and no pane is left behind
+- [x] #1 startConfig decodes the pre_start array and gc-runtime-rex start passes it to the provider with the launch context (work_dir + start-config env)
+- [x] #2 Each pre_start command runs, in order, before NewWindow/NewSplit; a non-zero exit fails the start and no pane is left behind
 - [ ] #3 With a per-agent work_dir + pre_start set to the gastown worktree-setup.sh, a fresh rig agent starts inside .gc/worktrees/<rig>/<agent> on the correct branch
-- [ ] #4 The already-implemented work_dir is still honored, and a spec with no pre_start behaves exactly as today
-- [ ] #5 Tests using the fake rex.Client cover: pre_start order, failure aborts launch, no pre_start is a no-op, and pre_start sees the start-config env
-- [ ] #6 go test ./... and golangci-lint run ./... pass
+- [x] #4 The already-implemented work_dir is still honored, and a spec with no pre_start behaves exactly as today
+- [x] #5 Tests using the fake rex.Client cover: pre_start order, failure aborts launch, no pre_start is a no-op, and pre_start sees the start-config env
+- [x] #6 go test ./... and golangci-lint run ./... pass
 - [ ] #7 Live check on ~/my-city: configure a rig agent with the worktree recipe and confirm it starts in its worktree (gc doctor worktrees + session pwd)
 <!-- AC:END -->
 
@@ -62,3 +62,11 @@ pre_start = ["{{.ConfigDir}}/assets/scripts/worktree-setup.sh {{.RigRoot}} {{.Wo
 <!-- SECTION:PLAN:BEGIN -->
 1. Decode ordered pre_start []string in startConfig; add PreStart to provider.Config; pass through opStart. 2. Run each command in order before NewWindow/NewSplit, in work_dir, with the start-config env; non-zero exit fails the start with no pane. 3. Fake-rex + temp-dir tests for order, abort-on-failure, no-op, env visibility. 4. Update docs/rex-provider.md. 5. go test ./... + golangci-lint run ./...; parent merges and runs the live check.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in worktree gcrex-15-prestart (DeepSeek v4 Pro), merged to main as 8f88781 (cherry-pick of 8b159c5). startConfig decodes ordered pre_start []string -> provider.Config.PreStart. Provider.start runs each entry via /bin/sh -c in order, cwd=WorkDir, env=os.Environ() merged with cfg.Env, strictly before identity seeding/provisional binding/launch; a non-zero exit aborts with 'pre_start[N]: ...' and leaves no pane, seed, or binding. Empty/nil is a no-op. Tests: internal/provider/prestart_test.go (8 tests: order, abort, no-op, empty slice, env passthrough, cwd, abort-with-identity-env, second-command-fails). go test ./... ok; golangci-lint run ./... 0 issues. Live check pending.
+
+Correction: after a GPG re-sign rewrite the merged main commit is 1d60311 (not 8f88781); same tree and content.
+<!-- SECTION:NOTES:END -->
