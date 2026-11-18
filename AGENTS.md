@@ -23,6 +23,37 @@ Do not edit Backlog task, draft, document, decision, or milestone markdown files
 </CRITICAL_INSTRUCTION>
 <!-- BACKLOG.MD GUIDELINES END -->
 
+## Verifying claims
+
+Every claim about the Rex provider, RPP v0, or gc behavior is checked against
+two sources before it lands in code, docs, task notes, or a review:
+
+- `docs/provider-herdr-parity.md` — the method-by-method parity record for our
+  provider. First source for anything it covers.
+- gc source at `/Volumes/Sources/gascity` (`gastownhall/gascity`) — the
+  authority on gc behavior. Read the pinned baseline the parity doc names, tag
+  `v1.5.1`; the working tree may be ahead of it. Relevant paths:
+  `internal/runtime/exec/`, `internal/runtime/protocol.go`,
+  `docs/reference/exec-session-provider.md`.
+
+- Cite file and line (gc) or section and verdict (parity doc) for each claim.
+- When the two disagree, report the conflict instead of picking one.
+- Label a claim `unverified` when neither source settles it; do not round it up
+  to fact.
+- Change a parity verdict only after re-running the check against both sources.
+
+## Test-driven development
+
+Work test-first. For a bug, write the test that reproduces the bug before the
+fix and watch it go red; the fix makes it green. For a feature, one test at the
+chosen seam, then enough code to pass it, then the next slice — not all tests
+up front.
+
+Every bug fix and behavior change lands with the test that proves it. Proof
+means a named test that fails without the change and passes with it; cite that
+test in the task notes, commit, or PR. `make test` must pass before the work is
+called done.
+
 ## Git hooks
 
 Commit hooks are versioned in `.githooks/`. Enable them once per clone:
