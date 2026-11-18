@@ -125,6 +125,32 @@ func TestPreStartEnv(t *testing.T) {
 	}
 }
 
+func TestPreStartInheritsBaseEnv(t *testing.T) {
+	dir := t.TempDir()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	outFile := filepath.Join(dir, "home.txt")
+	cfg := provider.Config{
+		Argv:    []string{"pi"},
+		WorkDir: dir,
+		PreStart: []string{
+			// $HOME comes from os.Environ(), not cfg.Env.
+			"printf '%s' \"$HOME\" > " + outFile,
+		},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read base env output: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(data)), os.Getenv("HOME"); got != want {
+		t.Errorf("pre_start HOME = %q, want %q (base env not inherited)", got, want)
+	}
+}
+
 func TestPreStartCwd(t *testing.T) {
 	dir := t.TempDir()
 	fake := faketest.New()

@@ -215,6 +215,11 @@ func TestStartupNudgeDeliveredAfterLaunch(t *testing.T) {
 	if !hasWrite {
 		t.Errorf("BlockCalls missing write for startup nudge: %v", calls)
 	}
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" && c.Text != "hello agent" {
+			t.Errorf("nudge write text = %q, want %q", c.Text, "hello agent")
+		}
+	}
 	if !hasSubmit {
 		t.Errorf("BlockCalls missing send-key for startup nudge: %v", calls)
 	}
@@ -327,5 +332,43 @@ func TestStartupNudgeEmptyIsNoOp(t *testing.T) {
 		if c.Op == "write" || c.Op == "send-key" {
 			t.Errorf("empty nudge delivered: op=%s", c.Op)
 		}
+	}
+}
+
+// TestStartupNudgeDeliveryFailureKeepsPane covers the best-effort contract: a
+// transport failure while delivering the startup nudge must not fail the start
+// or clear the launched pane's binding and seeded identity.
+func TestStartupNudgeDeliveryFailureKeepsPane(t *testing.T) {
+	const name = "pi-mc-wisp-abc"
+	ctx := context.Background()
+	for _, tc := range []struct {
+		label string
+		set   func(*faketest.Fake)
+	}{
+		{"write", func(f *faketest.Fake) { f.WriteErr = errors.New("write failed") }},
+		{"send-key", func(f *faketest.Fake) { f.SendKeysErr = errors.New("send failed") }},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			fake := faketest.New()
+			tc.set(fake)
+			p := provider.New("acme", fake)
+			err := p.Start(ctx, name, provider.Config{
+				Argv:  []string{"pi"},
+				Env:   identityEnv(),
+				Nudge: "hi",
+			})
+			if err != nil {
+				t.Fatalf("Start = %v, want nil (startup nudge is best effort)", err)
+			}
+			if _, ok := p.Binding(name); !ok {
+				t.Error("binding missing after best-effort nudge failure")
+			}
+			if len(fake.CreatedWindows) == 0 {
+				t.Error("pane not launched")
+			}
+			if got, _ := p.GetMeta(ctx, name, "GC_SESSION_ID"); got != "mc-wisp-abc" {
+				t.Errorf("seeded identity cleared after best-effort nudge failure: %q", got)
+			}
+		})
 	}
 }

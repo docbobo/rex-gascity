@@ -54,7 +54,8 @@ type Config struct {
 	PreStart []string
 	// Nudge is the text delivered to the pane after a successful launch,
 	// typed in and submitted with Enter so the agent gets its first prompt
-	// immediately. An empty string is a no-op.
+	// immediately. Delivery is best effort: a transport failure does not fail
+	// the start. An empty string is a no-op.
 	Nudge string
 }
 
@@ -151,9 +152,8 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
 	n := SessionName(name)
 	seeded := false
-	launchOK := false
 	defer func() {
-		if err == nil || !seeded || launchOK {
+		if err == nil || !seeded {
 			return
 		}
 		// A failed launch or a canceled start must not leave a seeded identity
@@ -235,13 +235,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 		if err != nil || cfg.Nudge == "" || launchedBlock == "" {
 			return
 		}
-		if dErr := p.client.BlockWrite(ctx, sid, launchedBlock, cfg.Nudge); dErr != nil {
-			err = fmt.Errorf("startup nudge %s: type text: %w", name, dErr)
-			return
-		}
-		if dErr := p.client.SendKeys(ctx, sid, launchedBlock, submitKey); dErr != nil {
-			err = fmt.Errorf("startup nudge %s: submit key: %w", name, dErr)
-			return
+		// Best effort, like the nudge op: the pane launched, so a delivery
+		// failure must not fail the start and let gc tear down a healthy
+		// pane. gc's queued-nudge backstop covers an undelivered first
+		// prompt.
+		if wErr := p.client.BlockWrite(ctx, sid, launchedBlock, cfg.Nudge); wErr == nil {
+			_ = p.client.SendKeys(ctx, sid, launchedBlock, submitKey)
 		}
 	}()
 
@@ -263,7 +262,6 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 			}
 			p.record(ctx, n, sid, w.ID, block, "split", cfg)
 			launchedBlock = block
-			launchOK = true
 			return nil
 		}
 	}
@@ -273,7 +271,6 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 	}
 	p.record(ctx, n, sid, wid, block, "window", cfg)
 	launchedBlock = block
-	launchOK = true
 	return nil
 }
 

@@ -495,7 +495,8 @@ Phase 0 also confirms the plan's decisions against the live surface:
   directly — no `livePane` re-resolve — so there is no readiness race. The
   nudge is not delivered on a failed launch, an already-running session
   (Start's idempotent path or StartNew's ErrAlreadyRunning), or when the
-  nudge text is empty.
+  nudge text is empty. Delivery is best effort: a transport failure is not
+  reported as a start failure, so gc never tears down a healthy pane over it.
   **Resolved (GCREX-15):** the `pre_start` hook runs before the pane launches.
   Each entry is executed in order via `/bin/sh -c`, with cwd set to the start
   config's `work_dir` and the process environment merged with the start-config

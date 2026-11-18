@@ -101,6 +101,8 @@ type BlockCall struct {
 	SessionID rex.SessionID
 	BlockID   rex.BlockID
 	Op        string
+	// Text is the written text for Op "write"; empty for other ops.
+	Text string
 }
 
 func New() *Fake { return &Fake{} }
@@ -219,10 +221,10 @@ func (f *Fake) BlockFormat(_ context.Context, sid rex.SessionID, block rex.Block
 	return f.Formats[block], nil
 }
 
-func (f *Fake) BlockWrite(_ context.Context, sid rex.SessionID, block rex.BlockID, _ string) error {
+func (f *Fake) BlockWrite(_ context.Context, sid rex.SessionID, block rex.BlockID, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record(sid, block, "write")
+	f.BlockCalls = append(f.BlockCalls, BlockCall{SessionID: sid, BlockID: block, Op: "write", Text: text})
 	return f.WriteErr
 }
 
