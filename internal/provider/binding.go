@@ -43,6 +43,10 @@ type Binding struct {
 	// gc's reconciler does not mistake a live dispatcher for a dead seat. Empty
 	// on legacy records (fall back to the provider's own GC_BIN).
 	GCBin string
+	// WorkDir is the directory the agent was launched in. Stop uses it to
+	// leave a diagnostic when a drained worker held uncommitted edits. Empty
+	// on legacy records.
+	WorkDir string
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the

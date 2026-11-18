@@ -151,7 +151,17 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
 	n := SessionName(name)
-	cfg.Env = normalizeStartEnv(cfg.Env)
+	// gc's identity is passed through unchanged. For an unaliased pool or
+	// demand seat gc already ships the concrete identity: GC_ALIAS is empty,
+	// and GC_AGENT/BEADS_ACTOR are the session bead id (RuntimeEnvWithSessionContext,
+	// internal/session/lifecycle.go:67-78, merged at cmd/gc/session_lifecycle_parallel.go:1261).
+	// Synthesizing a claimable GC_ALIAS from GC_TEMPLATE is wrong: gc's claim
+	// writer hookClaimAssigneeIdentity (cmd/gc/cmd_hook.go:866 v1.5.1) records
+	// the claim under alias first, so a bare-template alias makes every pool
+	// slot claim under one shared string no open session bead answers to, and
+	// releaseOrphanedPoolAssignments (cmd/gc/pool_session_name.go:211) reopens
+	// the work (GCREX-32). launchCommand turns the empty GC_ALIAS into
+	// `env -u GC_ALIAS`, matching RPP and gc's tmux adapter.
 	seeded := false
 	defer func() {
 		if err == nil || !seeded {
@@ -318,36 +328,6 @@ func launchCommand(argv []string, env map[string]string) []string {
 	return append(out, argv...)
 }
 
-// normalizeStartEnv returns the start-config env with a claimable GC_ALIAS.
-//
-// runtime-herdr-core passes gc's identity through and does not synthesize
-// one. This fallback is a contained deviation for the broken pool/demand-seat
-// case: gc ships GC_ALIAS empty and GC_AGENT as the session id, so
-// `gc hook --claim` finds no work routed to that id. See
-// https://github.com/gastownhall/gascity/issues/5716 for the upstream gc
-// issue. It applies only when GC_ALIAS is empty or absent and GC_TEMPLATE is
-// set and differs from GC_AGENT; a non-empty GC_ALIAS is never overwritten,
-// and GC_SESSION_ID and GC_INSTANCE_TOKEN are never touched. The caller's map
-// is not mutated.
-func normalizeStartEnv(env map[string]string) map[string]string {
-	if env["GC_ALIAS"] != "" {
-		return env
-	}
-	tmpl := env["GC_TEMPLATE"]
-	if tmpl == "" || tmpl == env["GC_AGENT"] {
-		return env
-	}
-	if !strings.Contains(tmpl, "/") && env["GC_RIG"] != "" {
-		tmpl = env["GC_RIG"] + "/" + tmpl
-	}
-	out := make(map[string]string, len(env)+1)
-	for k, v := range env {
-		out[k] = v
-	}
-	out["GC_ALIAS"] = tmpl
-	return out
-}
-
 // nextSplit picks where to add a pane to a rig's tab: the block with the
 // largest area, split along its longer axis, so panes stay balanced. Ties go
 // to the lowest BlockID. When no block carries a usable rect it falls back to
@@ -413,6 +393,7 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		CreatedAt:    time.Now(),
 		ReadyPrompt:  ready,
 		GCBin:        gcBinBasename(cfg.Env),
+		WorkDir:      cfg.WorkDir,
 	})
 }
 
@@ -437,6 +418,7 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return err
 	}
+	p.writeDrainDiagnostic(ctx, binding)
 	if err := p.clearStartIdentity(binding.Name); err != nil {
 		return err
 	}

@@ -86,6 +86,8 @@ type bindingRecord struct {
 	// GCBin was added after the first records; omitted when empty so old
 	// records stay compatible.
 	GCBin string `json:"gc_bin,omitempty"`
+	// WorkDir was added after the first records; omitted when empty.
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
 // FileStore is a BindingStore that keeps one JSON file per binding under a
@@ -135,6 +137,7 @@ func (r bindingRecord) binding() Binding {
 		CreatedAt:    r.CreatedAt,
 		ReadyPrompt:  r.ReadyPrompt,
 		GCBin:        r.GCBin,
+		WorkDir:      r.WorkDir,
 	}
 }
 
@@ -177,6 +180,7 @@ func (s *FileStore) Save(b Binding) {
 		CreatedAt:    b.CreatedAt,
 		ReadyPrompt:  b.ReadyPrompt,
 		GCBin:        b.GCBin,
+		WorkDir:      b.WorkDir,
 	})
 }
 

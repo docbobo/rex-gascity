@@ -222,13 +222,35 @@ incidental to the provider and are applied to the launched process unchanged
 (GCREX-10). Empty values in the start-config env are applied as unset
 (`env -u KEY`) at the launch boundary, matching RPP and gc's tmux adapter.
 
-When `GC_ALIAS` is empty or absent and `GC_TEMPLATE` is set and differs from
-`GC_AGENT`, the provider derives a claimable alias from `GC_TEMPLATE` (prefixed
-with `GC_RIG` when the template is unqualified). This is a contained deviation
-from runtime-herdr-core, which passes gc's identity through: it is scoped to
-gc's empty-alias pool/demand seat and leaves `GC_SESSION_ID` and
-`GC_INSTANCE_TOKEN` untouched. See
-https://github.com/gastownhall/gascity/issues/5716 for the upstream gc issue.
+The provider passes gc's identity through unchanged, matching
+runtime-herdr-core. For an unaliased pool or demand seat gc already ships a
+concrete identity in the start config: `GC_ALIAS` is empty, and `GC_AGENT` and
+`BEADS_ACTOR` are the session bead id (`RuntimeEnvWithSessionContext`,
+`internal/session/lifecycle.go:67-78` at gc v1.5.1, merged into the RPP start
+config at `cmd/gc/session_lifecycle_parallel.go:1261`). The empty `GC_ALIAS` is
+emitted as `env -u GC_ALIAS` at the launch boundary. The pane still answers to
+the template name: the template is recorded as a binding alias independently of
+`GC_ALIAS`.
+
+The provider must **not** synthesize a `GC_ALIAS` from `GC_TEMPLATE` (the
+GCREX-18 deviation, removed in GCREX-32). gc's claim writer
+`hookClaimAssigneeIdentity` (`cmd/gc/cmd_hook.go:866`) records a claim under
+`alias` first, so a bare-template alias makes every pool slot claim under one
+shared string that no open session bead answers to; then
+`releaseOrphanedPoolAssignments` (`cmd/gc/pool_session_name.go:211`) reopens the
+work: the pool respawns and a duplicate seat can close the shared step and
+drain the real worker mid-edit. A blank `GC_ALIAS` still discovers routed work:
+the pool-demand tier is gated on `GC_SESSION_ORIGIN=ephemeral`
+(`internal/config/workquery.go:873`, which gc sets for pool seats
+at `cmd/gc/template_resolve.go:307`) and probes the template target independently
+of `GC_ALIAS`.
+
+On `stop`, if the pane's work dir is a git work tree with uncommitted changes,
+the provider writes `<state dir>/diagnostics/<name>.json` naming the worker, its
+aliases, its `GC_SESSION_ID`, the changed files and the file edited last. This
+leaves a trace when gc drains a worker that still held edits. It is best effort:
+the git calls are bounded to 3 s, every error is swallowed, and a clean tree, a
+non-git dir, or an unset state dir writes nothing and never affects `stop`.
 The full inventory (meaning, when set, durable vs incidental) and the observed
 RPP session-name forms are in `docs/REX-CONTRACT.md` §13.
 

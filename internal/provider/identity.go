@@ -73,5 +73,6 @@ func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wi
 		Aliases:      aliasesFor(n, cfg.Env),
 		CreatedAt:    time.Now(),
 		GCBin:        gcBinBasename(cfg.Env),
+		WorkDir:      cfg.WorkDir,
 	})
 }
