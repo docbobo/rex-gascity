@@ -91,22 +91,6 @@ func TestReadyPromptRecorded(t *testing.T) {
 	}
 }
 
-func TestCityFromEnv(t *testing.T) {
-	for _, tc := range []struct{ rex, path, city, want string }{
-		{"", "", "", "default"},
-		{"", "", "c", "c"},
-		{"", "/a/b/mycity", "c", "mycity"},
-		{"r", "/a/b/mycity", "c", "r"},
-	} {
-		t.Setenv("GC_REX_CITY", tc.rex)
-		t.Setenv("GC_CITY_PATH", tc.path)
-		t.Setenv("GC_CITY", tc.city)
-		if got := provider.CityFromEnv(); got != tc.want {
-			t.Errorf("%+v: got %q", tc, got)
-		}
-	}
-}
-
 func TestFileMetaStoreTwoInstancesDifferentKeys(t *testing.T) {
 	dir := t.TempDir()
 	a, b := provider.NewFileMetaStore(dir), provider.NewFileMetaStore(dir)

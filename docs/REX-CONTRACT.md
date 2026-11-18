@@ -469,15 +469,18 @@ Phase 0 also confirms the plan's decisions against the live surface:
   optional skips). The handshake declares version 0, `report-attachment` and
   `report-activity`, and no `locality` field; `proc.exec`/`proc.provision` are
   not declared because `exec`/`provision` stay unimplemented (exit 2).
-- **No city in an RPP invocation (open, GCREX-5; pilot-confirmed GCREX-6).** RPP carries only the op and
-  session name, and the controller exports no per-city `GC_CITY*` under launchd,
-  so the dispatcher resolves the `gc:<city>` namespace from `GC_REX_CITY` (then
-  the `GC_CITY_PATH` basename, then `GC_CITY`, else `default`). Cities sharing a
-  supervisor without `GC_REX_CITY` share one Rex session and state directory;
-  Phase 5 must pin the namespace or move to a supervisor-level env change.
-  The pilot confirmed it: under the launchd supervisor the worker landed in
-  `gc:default`. Follow-up (still open): pin `GC_REX_CITY` at the supervisor
-  level or add a supervisor-level env mechanism.
+- **No city in an RPP invocation (resolved, GCREX-17; pilot GCREX-6).** RPP
+  carries only the op and session name, and the exec runtime provider passes the
+  caller's environment through unchanged, so `GC_REX_CITY`, `GC_CITY_PATH` and
+  `GC_CITY` differ between the controller, session processes and nudge pollers.
+  The canonical namespace is now caller-independent: `GC_REX_CITY` when set,
+  else `default`. `basename(GC_CITY_PATH)` and `GC_CITY` are additional
+  read-only namespaces, searched after the canonical one, so a binding written
+  by an older build still resolves; deletes cover every namespace. Writes and
+  the state lock stay in the canonical directory. Setting `GC_REX_CITY` pins
+  the read set to exactly that namespace, so two pinned cities sharing a
+  supervisor never cross-resolve. Cities that share a supervisor without
+  pinning still share `gc:default`; pinning remains the way to isolate them.
 - **Remaining start-config hooks are not applied (open, GCREX-5).** The
   dispatcher ignores the start config's `session_setup`,
   `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and

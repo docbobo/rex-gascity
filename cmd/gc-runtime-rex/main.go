@@ -126,13 +126,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
 		return exitFail
 	}
 
+	// RPP v0 carries no city, so the same city can reach us with different
+	// incidental GC_CITY_PATH/GC_CITY values. Resolve one canonical namespace
+	// and read across the rest, so start and every lookup op agree on one store.
 	city := provider.CityFromEnv()
-	dir, err := provider.StateDir(city)
+	namespaces := provider.CityCandidates()
+	dirs, err := provider.StateDirs(namespaces)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
 		return exitFail
 	}
-	prov := provider.New(city, d.newClient(), provider.WithStateDir(dir))
+	prov := provider.New(city, d.newClient(),
+		provider.WithStateDirs(dirs...),
+		provider.WithSessionLabels(provider.SessionLabels(namespaces)...))
 
 	var out bytes.Buffer
 	if err := spec.handle(context.Background(), prov, rest, stdin, &out); err != nil {

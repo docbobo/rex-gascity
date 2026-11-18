@@ -69,9 +69,14 @@ type Provider struct {
 	activity ActivityStore
 	meta     MetaStore
 
-	// stateDir is the root state dir set by WithStateDir; it holds the
-	// cross-process lock file. Empty means no cross-process locking.
+	// stateDir is the canonical root state dir; it holds the cross-process
+	// lock file. Empty means no cross-process locking.
 	stateDir string
+
+	// sessionLabels are the accepted Rex session labels, canonical first. New
+	// sessions use the first label; lookups and binding revalidation accept
+	// all of them so a legacy namespace still resolves.
+	sessionLabels []string
 }
 
 // Option configures a Provider.
@@ -89,11 +94,56 @@ func WithMetaStore(s MetaStore) Option { return func(p *Provider) { p.meta = s }
 // WithStateDir keeps bindings, activity and metadata on disk under
 // dir/bindings, dir/activity and dir/meta.
 func WithStateDir(dir string) Option {
+	return WithStateDirs(dir)
+}
+
+// WithStateDirs keeps the sidecar stores in several city-namespace state dirs.
+// The first is canonical: writes go there and its lock guards mutations.
+// Reads fall back through the rest in order, and deletes cover every dir, so a
+// legacy record under an incidental namespace still resolves and is cleaned
+// up.
+func WithStateDirs(dirs ...string) Option {
 	return func(p *Provider) {
-		p.stateDir = dir
-		p.bindings = NewFileStore(filepath.Join(dir, "bindings"))
-		p.activity = NewFileActivityStore(filepath.Join(dir, "activity"))
-		p.meta = NewFileMetaStore(filepath.Join(dir, "meta"))
+		if len(dirs) == 0 {
+			return
+		}
+		bindings := make([]BindingStore, 0, len(dirs))
+		activities := make([]ActivityStore, 0, len(dirs))
+		metas := make([]MetaStore, 0, len(dirs))
+		for _, dir := range dirs {
+			bindings = append(bindings, NewFileStore(filepath.Join(dir, "bindings")))
+			activities = append(activities, NewFileActivityStore(filepath.Join(dir, "activity")))
+			metas = append(metas, NewFileMetaStore(filepath.Join(dir, "meta")))
+		}
+		p.stateDir = dirs[0]
+		p.bindings = newCompositeBindingStore(bindings...)
+		p.activity = newCompositeActivityStore(activities...)
+		p.meta = newCompositeMetaStore(metas...)
+	}
+}
+
+// WithSessionLabels sets the accepted Rex session labels, canonical first.
+// The default is gc:<city>. Callers pass the labels for every namespace they
+// read so a binding written under an older label still revalidates.
+func WithSessionLabels(labels ...string) Option {
+	return func(p *Provider) { p.sessionLabels = normalizeSessionLabels(labels) }
+}
+
+// WithCityNamespaces configures the provider for a city from its ordered
+// namespace candidates (canonical first), resolving each one's state dir and
+// Rex session label. It is the constructor the RPP dispatcher uses to keep
+// start and every lookup op on the same store regardless of which incidental
+// GC_CITY_PATH/GC_CITY the caller carries.
+func WithCityNamespaces(cities []string) Option {
+	return func(p *Provider) {
+		dirs, err := StateDirs(cities)
+		if err != nil {
+			// Without a resolvable state dir the provider stays in memory.
+			// run() resolves the same dirs and reports the error before any op.
+			return
+		}
+		WithStateDirs(dirs...)(p)
+		WithSessionLabels(SessionLabels(cities)...)(p)
 	}
 }
 
@@ -110,7 +160,11 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	for _, opt := range opts {
 		opt(p)
 	}
-	p.binder = NewBinder(client, p.bindings, rexSessionLabel(city))
+	labels := p.sessionLabels
+	if len(labels) == 0 {
+		labels = []string{rexSessionLabel(city)}
+	}
+	p.binder = NewBinderWithLabels(client, p.bindings, labels)
 	return p
 }
 
@@ -195,7 +249,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 		return err
 	}
 	if !ok {
-		sid, err = p.client.CreateSession(ctx, rexSessionLabel(p.city))
+		sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
 		if err != nil {
 			return err
 		}

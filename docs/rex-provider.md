@@ -195,21 +195,39 @@ Base directory precedence:
 
 Within that base directory, each city uses `<base>/<encoded-city>/` (percent-encoded so distinct city names always map to distinct directories, including on case-insensitive filesystems such as macOS APFS: only `a-z`, `0-9` and `-` stay literal, and every other byte, including uppercase letters, becomes `%XX`), containing `bindings/`, `activity/`, `meta/`, and an `flock` file `lock`.
 
+The dispatcher resolves one canonical namespace and, when needed, reads a small
+ordered set of legacy namespaces:
+
+- **Canonical:** `$GC_REX_CITY` when set, else `"default"`. New sessions, new
+  bindings, metadata writes and the state lock use this namespace.
+- **Read set:** the canonical namespace first, then `basename($GC_CITY_PATH)`
+  and `$GC_CITY` when they differ. Reads fall back through the set in order;
+  deletes cover every directory. A record written by an older build (or by a
+  caller that carried `GC_CITY_PATH`) therefore still resolves.
+- **Pinned:** when `$GC_REX_CITY` is set the read set is exactly that one
+  namespace, so cities pinned to different values never cross-resolve.
+
 ### City Namespace Resolution
 
-RPP v0 passes no city identifier on argv or stdin, so `gc-runtime-rex` resolves `<city>` from the environment in order:
+RPP v0 passes no city identifier on argv or stdin, and the exec runtime provider
+passes the caller's environment through unchanged. The controller, session
+processes and the nudge poller therefore see different incidental `GC_CITY*`
+values for the same city. To keep the provider from disagreeing with itself,
+the canonical namespace is caller-independent:
 
-1. `$GC_REX_CITY`
-2. `basename($GC_CITY_PATH)`
-3. `$GC_CITY`
-4. `"default"`
+1. `$GC_REX_CITY` when set (an explicit pin)
+2. `"default"` otherwise
+
+`basename($GC_CITY_PATH)` and `$GC_CITY` do **not** select the canonical store;
+they are only additional read namespaces for records written by earlier
+versions.
 
 ### Environment Knobs
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `GC_REX_BIN` | `rex` (resolved via `PATH`) | Path or name of the `rex` CLI binary used by the provider |
-| `GC_REX_CITY` | `basename($GC_CITY_PATH)`, `$GC_CITY`, else `"default"` | Overrides the city namespace used for the `gc:<city>` Rex session label and sidecar state subdirectory |
+| `GC_REX_CITY` | `"default"` | Pins the canonical city namespace for the `gc:<city>` Rex session label and sidecar state subdirectory; also removes all fallback read namespaces |
 | `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Overrides the base directory for per-city sidecar state |
 
 ### Start-config `GC_*` environment
@@ -303,7 +321,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 
 ## Known v1 Limits
 
-- **No city in RPP v0 invocations**: An RPP call carries only the operation and agent session name. Without `GC_REX_CITY`, cities fall back to `GC_CITY_PATH` / `GC_CITY` and then `"default"`. Because the `gc` controller does not pass `GC_CITY` or `GC_CITY_PATH` when running under `launchd`, cities without `GC_REX_CITY` share one `gc:default` Rex session and state directory. Set `GC_REX_CITY` explicitly when isolating cities on the same Rex server.
+- **No city in RPP v0 invocations (GCREX-17)**: An RPP call carries only the operation and agent session name, and the caller's `GC_CITY*` values are incidental. The canonical namespace is `GC_REX_CITY` when set, else `"default"`; `basename(GC_CITY_PATH)` and `GC_CITY` are read-only fallbacks for legacy records. Start, `is-running`, `get-last-activity`, `peek`, `list-running`, `stop`, `get-meta` and `set-meta` therefore agree on one store regardless of which caller invokes them. Cities on one Rex server still share the `gc:default` session unless each is pinned with `GC_REX_CITY`; pinning also prevents cross-city fallback reads.
 - **Launched command exit closes its pane**: The provider sets no keep_open, so an agent command that exits closes its Rex block, and closing the last block removes the tab. `is-running` reports such a vanished pane as not running, not as an error.
 - **Start config `env` map is applied via the `env` argv wrapper**: Rex terminal launch options have no per-pane environment map, so the provider prefixes the launch command with `env K=V ...` (sorted keys). A bare shell (no command) cannot be seeded and still inherits the Rex server's environment.
 - **Setup hooks except `pre_start` are not run**: `session_setup`, `session_setup_script`, and `session_live` from start config are ignored.

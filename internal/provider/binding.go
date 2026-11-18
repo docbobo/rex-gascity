@@ -182,15 +182,52 @@ func (s *MemoryStore) Delete(name SessionName) {
 // Binder resolves gc session names to Rex addresses, using a store as a
 // cache and the Rex session view as the source of truth.
 type Binder struct {
-	client       rex.Client
-	store        BindingStore
-	sessionLabel string
+	client rex.Client
+	store  BindingStore
+	// sessionLabels are the accepted labels, canonical first. A new session
+	// and a fresh record use the first; a legacy record under another
+	// candidate label still revalidates.
+	sessionLabels []string
 }
 
 // NewBinder builds a Binder that looks for the Rex session labelled
 // sessionLabel and caches bindings in store.
 func NewBinder(client rex.Client, store BindingStore, sessionLabel string) *Binder {
-	return &Binder{client: client, store: store, sessionLabel: sessionLabel}
+	return NewBinderWithLabels(client, store, []string{sessionLabel})
+}
+
+// NewBinderWithLabels builds a Binder that accepts any of labels (canonical
+// first, duplicates and empty entries dropped) and caches bindings in store.
+func NewBinderWithLabels(client rex.Client, store BindingStore, labels []string) *Binder {
+	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels)}
+}
+
+// normalizeSessionLabels trims, dedupes and drops empty labels, preserving
+// order. It never returns an empty slice for a non-empty input.
+func normalizeSessionLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	seen := map[string]bool{}
+	for _, label := range labels {
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		out = append(out, label)
+	}
+	return out
+}
+
+// canonicalLabel is the label new sessions and records use.
+func (b *Binder) canonicalLabel() string {
+	if len(b.sessionLabels) == 0 {
+		return ""
+	}
+	return b.sessionLabels[0]
+}
+
+// acceptsLabel reports whether label belongs to this city's namespace set.
+func (b *Binder) acceptsLabel(label string) bool {
+	return slices.Contains(b.sessionLabels, label)
 }
 
 // FindSession returns the city's Rex session. The bool is false when it does
@@ -200,9 +237,14 @@ func (b *Binder) FindSession(ctx context.Context) (rex.SessionID, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	for _, s := range sessions {
-		if s.Label == b.sessionLabel {
-			return s.ID, true, nil
+	// Prefer the canonical label, then every other accepted namespace, so a
+	// legacy session remains reachable without letting the candidate order
+	// depend on the server's listing order.
+	for _, label := range b.sessionLabels {
+		for _, s := range sessions {
+			if s.Label == label {
+				return s.ID, true, nil
+			}
 		}
 	}
 	return "", false, nil
@@ -245,7 +287,7 @@ func matchesName(bd Binding, name SessionName) bool {
 // can drop it; any other view error is returned as is and leaves the binding
 // alone.
 func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, error) {
-	if bd.Name == "" || bd.SessionLabel != b.sessionLabel {
+	if bd.Name == "" || !b.acceptsLabel(bd.SessionLabel) {
 		// Written for no name or another city: do not trust it.
 		return Binding{}, false, nil
 	}
@@ -366,7 +408,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 				bd := Binding{
 					Name:         name,
 					SessionID:    sid,
-					SessionLabel: b.sessionLabel,
+					SessionLabel: view.Label,
 					WindowID:     w.ID,
 					BlockID:      blk.ID,
 					TabLabel:     tab,

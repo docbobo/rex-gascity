@@ -58,26 +58,33 @@ func safeName(s string) string {
 	return sb.String()
 }
 
-// CityFromEnv returns the primary city name for this process. The RPP
-// invocation carries no city, so the environment decides: GC_REX_CITY if set,
-// else the basename of GC_CITY_PATH, else GC_CITY, else "default". Set
-// GC_REX_CITY to isolate cities that share one Rex server.
-func CityFromEnv() string {
-	return CityCandidates()[0]
-}
-
-// CityCandidates returns the ordered, deduplicated city namespaces this
-// process should consider, most specific first. GC_REX_CITY is an explicit
-// pin: when set it is the only candidate, so two cities pinned to different
-// values never cross-resolve. Otherwise the candidates are the GC_CITY_PATH
-// basename, GC_CITY, and finally "default".
+// CityFromEnv returns the canonical city namespace for this process.
+// GC_REX_CITY is an explicit per-city pin; without it the namespace is the
+// fixed "default".
 //
 // RPP v0 carries no city, and the exec runtime provider passes the caller's
-// env through unchanged, so different gc callers on one city see different
-// candidates: the launchd controller sees none and resolves "default", while
-// session and nudge-poller processes carry GC_CITY_PATH and resolve the city
-// basename. Searching the whole candidate set keeps those callers agreeing on
-// one store.
+// env through unchanged, so different gc callers on one city see a different
+// environment: the launchd controller carries no GC_CITY*, while session and
+// nudge-poller processes carry GC_CITY_PATH. Resolving the store from
+// GC_CITY_PATH/GC_CITY therefore made the provider disagree with itself
+// depending on the caller (GCREX-17): start wrote one namespace and the
+// nudge poller read another. GC_CITY_PATH/GC_CITY are incidental (the start
+// config carries them but the runtime contract does not), so they do not
+// select the canonical store. Set GC_REX_CITY to isolate cities that share
+// one Rex server.
+func CityFromEnv() string {
+	if v := os.Getenv("GC_REX_CITY"); v != "" {
+		return v
+	}
+	return "default"
+}
+
+// CityCandidates returns the ordered, deduplicated namespaces a lookup should
+// read across, canonical first. GC_REX_CITY is a pin: when set it is the only
+// candidate, so two cities pinned to different values never cross-resolve.
+// Otherwise the canonical "default" comes first, followed by the incidental
+// basename(GC_CITY_PATH) and GC_CITY, where a record written by an earlier
+// version (or an older caller) may still live.
 func CityCandidates() []string {
 	if v := os.Getenv("GC_REX_CITY"); v != "" {
 		return []string{v}
@@ -91,10 +98,41 @@ func CityCandidates() []string {
 		seen[v] = true
 		out = append(out, v)
 	}
+	add("default")
 	if v := os.Getenv("GC_CITY_PATH"); v != "" {
 		add(filepath.Base(v))
 	}
 	add(os.Getenv("GC_CITY"))
-	add("default")
+	return out
+}
+
+// StateDirs resolves each city namespace to its per-city state directory, in
+// the order given (canonical first). It fails if any directory cannot be
+// resolved, so a caller never silently drops a namespace.
+func StateDirs(cities []string) ([]string, error) {
+	dirs := make([]string, 0, len(cities))
+	for _, city := range cities {
+		dir, err := StateDir(city)
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, nil
+}
+
+// SessionLabels returns the Rex session labels for cities, in order and
+// deduplicated. The first is the canonical label used for a new session.
+func SessionLabels(cities []string) []string {
+	out := make([]string, 0, len(cities))
+	seen := map[string]bool{}
+	for _, city := range cities {
+		label := rexSessionLabel(city)
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		out = append(out, label)
+	}
 	return out
 }
