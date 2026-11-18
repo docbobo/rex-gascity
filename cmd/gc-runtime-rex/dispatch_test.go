@@ -136,6 +136,22 @@ func TestMissingNameIsFailure(t *testing.T) {
 	}
 }
 
+// TestMetaOpsRejectEmptyKey pins herdr-core's rule: set-meta/get-meta/
+// remove-meta reject an empty key with exit 1 and a stderr message, instead of
+// silently operating on a key named "".
+func TestMetaOpsRejectEmptyKey(t *testing.T) {
+	h, _ := newHarness(t)
+	for _, op := range []string{"set-meta", "get-meta", "remove-meta"} {
+		t.Run(op, func(t *testing.T) {
+			r := h.run("value", op, dog, "")
+			assertFailure(t, r, exitFail)
+			if !strings.Contains(r.stderr, "key") {
+				t.Errorf("stderr = %q, want a key diagnostic", r.stderr)
+			}
+		})
+	}
+}
+
 func TestLifecycle(t *testing.T) {
 	h, fake := newHarness(t)
 	workDir := t.TempDir()

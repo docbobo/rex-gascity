@@ -77,12 +77,11 @@ type bindingRecord struct {
 	// They are omitted when empty so old and new records stay compatible: a
 	// record without them decodes with empty values and callers fall back to
 	// the name-derived labels.
-	TabLabel    string    `json:"tab_label,omitempty"`
-	PaneLabel   string    `json:"pane_label,omitempty"`
-	Aliases     []string  `json:"aliases,omitempty"`
-	LaunchMode  string    `json:"launch_mode"`
-	CreatedAt   time.Time `json:"created_at"`
-	ReadyPrompt string    `json:"ready_prompt"`
+	TabLabel   string    `json:"tab_label,omitempty"`
+	PaneLabel  string    `json:"pane_label,omitempty"`
+	Aliases    []string  `json:"aliases,omitempty"`
+	LaunchMode string    `json:"launch_mode"`
+	CreatedAt  time.Time `json:"created_at"`
 	// GCBin was added after the first records; omitted when empty so old
 	// records stay compatible.
 	GCBin string `json:"gc_bin,omitempty"`
@@ -135,7 +134,6 @@ func (r bindingRecord) binding() Binding {
 		Aliases:      aliases,
 		LaunchMode:   r.LaunchMode,
 		CreatedAt:    r.CreatedAt,
-		ReadyPrompt:  r.ReadyPrompt,
 		GCBin:        r.GCBin,
 		WorkDir:      r.WorkDir,
 	}
@@ -178,7 +176,6 @@ func (s *FileStore) Save(b Binding) {
 		Aliases:      aliases,
 		LaunchMode:   b.LaunchMode,
 		CreatedAt:    b.CreatedAt,
-		ReadyPrompt:  b.ReadyPrompt,
 		GCBin:        b.GCBin,
 		WorkDir:      b.WorkDir,
 	})

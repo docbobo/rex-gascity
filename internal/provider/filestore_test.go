@@ -13,12 +13,11 @@ func fullBinding(name SessionName) Binding {
 	return Binding{
 		Name: name, SessionID: "session:acme", SessionLabel: "gc:acme",
 		WindowID: "window:Indigo", BlockID: "block:dog-1",
-		TabLabel:    "Indigo",
-		PaneLabel:   "dog-1",
-		Aliases:     []SessionName{"Indigo--dog", "Indigo--dog-1"},
-		LaunchMode:  "resume",
-		CreatedAt:   time.Date(2026, 11, 17, 19, 0, 0, 0, time.UTC),
-		ReadyPrompt: "ready ▶ ",
+		TabLabel:   "Indigo",
+		PaneLabel:  "dog-1",
+		Aliases:    []SessionName{"Indigo--dog", "Indigo--dog-1"},
+		LaunchMode: "resume",
+		CreatedAt:  time.Date(2026, 11, 17, 19, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -124,7 +123,7 @@ func TestFileStoreRecordFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"gc_name", "rex_session_id", "rex_session_label", "window_id",
-		"block_id", "tab_label", "pane_label", "aliases", "launch_mode", "created_at", "ready_prompt"} {
+		"block_id", "tab_label", "pane_label", "aliases", "launch_mode", "created_at"} {
 		if !strings.Contains(string(data), `"`+f+`"`) {
 			t.Errorf("record missing field %q: %s", f, data)
 		}

@@ -33,6 +33,9 @@ type ActivityStore interface {
 	Load(name SessionName) (ActivityRecord, bool)
 	// Save stores rec, replacing any earlier record for name.
 	Save(name SessionName, rec ActivityRecord)
+	// Delete removes any record for name, so a retired incarnation leaves no
+	// activity stamp behind for the next one.
+	Delete(name SessionName) error
 }
 
 // MetaStore is a per-session key/value store. Values are kept byte-for-byte.
@@ -44,6 +47,9 @@ type MetaStore interface {
 	Set(name SessionName, key, value string) error
 	// Delete removes key only.
 	Delete(name SessionName, key string) error
+	// Clear removes every key for name, so a retired incarnation leaves no
+	// user or provider key behind for the next one.
+	Clear(name SessionName) error
 }
 
 // memoryActivityStore is an in-memory ActivityStore.
@@ -68,6 +74,13 @@ func (s *memoryActivityStore) Save(name SessionName, rec ActivityRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.m[name] = rec
+}
+
+func (s *memoryActivityStore) Delete(name SessionName) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, name)
+	return nil
 }
 
 // activityRecord is the on-disk shape of an ActivityRecord.
@@ -109,6 +122,15 @@ func (s *fileActivityStore) Save(name SessionName, rec ActivityRecord) {
 	_ = writeJSON(s.path(name), activityRecord{Identity: rec.Identity, Fingerprint: rec.Fingerprint, UpdatedAt: rec.At, InputAt: rec.InputAt})
 }
 
+func (s *fileActivityStore) Delete(name SessionName) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(s.path(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // memoryMetaStore is an in-memory MetaStore.
 type memoryMetaStore struct {
 	mu sync.Mutex
@@ -141,6 +163,13 @@ func (s *memoryMetaStore) Delete(name SessionName, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m[name], key)
+	return nil
+}
+
+func (s *memoryMetaStore) Clear(name SessionName) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, name)
 	return nil
 }
 
@@ -204,4 +233,12 @@ func (s *fileMetaStore) Delete(name SessionName, key string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *fileMetaStore) Clear(name SessionName) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// One directory per name holds every key file, so removing it drops the
+	// whole sidecar. RemoveAll treats a missing directory as success.
+	return os.RemoveAll(filepath.Join(s.dir, nameKey(name)))
 }

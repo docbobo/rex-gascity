@@ -251,7 +251,6 @@ func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
 	stale.BlockID = "block:old"
 	stale.WorkDir = "/work/dog-1"
 	stale.GCBin = ".gc-wrapped"
-	stale.ReadyPrompt = "> "
 	stale.LaunchMode = "split"
 	stale.CreatedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	store.Save(stale)
@@ -260,7 +259,7 @@ func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
 	if err != nil || !ok || got.BlockID != "block:dog-1" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
-	if got.WorkDir != stale.WorkDir || got.GCBin != stale.GCBin || got.ReadyPrompt != stale.ReadyPrompt ||
+	if got.WorkDir != stale.WorkDir || got.GCBin != stale.GCBin ||
 		got.LaunchMode != stale.LaunchMode || !got.CreatedAt.Equal(stale.CreatedAt) {
 		t.Errorf("rebuilt binding lost hint fields: %+v", got)
 	}

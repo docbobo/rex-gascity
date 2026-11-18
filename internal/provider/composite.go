@@ -84,6 +84,18 @@ func (s *compositeActivityStore) Save(name SessionName, rec ActivityRecord) {
 	}
 }
 
+// Delete covers every namespace so a retired incarnation's activity cannot be
+// resurrected from a legacy directory.
+func (s *compositeActivityStore) Delete(name SessionName) error {
+	var errs []error
+	for _, store := range s.stores {
+		if err := store.Delete(name); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // compositeMetaStore reads the first namespace that has the key, writes to the
 // canonical namespace, and deletes from every namespace.
 type compositeMetaStore struct {
@@ -118,6 +130,18 @@ func (s *compositeMetaStore) Delete(name SessionName, key string) error {
 	var errs []error
 	for _, store := range s.stores {
 		if err := store.Delete(name, key); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Clear covers every namespace so no key of a retired incarnation survives in
+// a legacy directory.
+func (s *compositeMetaStore) Clear(name SessionName) error {
+	var errs []error
+	for _, store := range s.stores {
+		if err := store.Clear(name); err != nil {
 			errs = append(errs, err)
 		}
 	}

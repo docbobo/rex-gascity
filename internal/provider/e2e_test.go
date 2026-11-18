@@ -423,7 +423,6 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 		"block_id":          "block:bogus",
 		"launch_mode":       real.LaunchMode,
 		"created_at":        time.Now().UTC().Format(time.RFC3339),
-		"ready_prompt":      real.ReadyPrompt,
 	})
 	if err != nil {
 		t.Fatalf("marshal stale binding: %v", err)

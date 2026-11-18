@@ -34,8 +34,6 @@ type Binding struct {
 	LaunchMode string
 	// CreatedAt is when the pane was started; zero when unknown.
 	CreatedAt time.Time
-	// ReadyPrompt is the prompt text the agent shows when ready for input.
-	ReadyPrompt string
 	// GCBin is the basename of the GC_BIN binary the agent was launched with,
 	// when the start config carried one. gc's configured process_names hint for
 	// the control dispatcher is "gc", but a wrapped gc runs as e.g.
@@ -416,11 +414,10 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 					Aliases:      hint.Aliases,
 					// Launch details the labels do not carry: dropping them
 					// would silently disable the Stop-time drain diagnostic.
-					LaunchMode:  hint.LaunchMode,
-					CreatedAt:   hint.CreatedAt,
-					ReadyPrompt: hint.ReadyPrompt,
-					GCBin:       hint.GCBin,
-					WorkDir:     hint.WorkDir,
+					LaunchMode: hint.LaunchMode,
+					CreatedAt:  hint.CreatedAt,
+					GCBin:      hint.GCBin,
+					WorkDir:    hint.WorkDir,
 				}
 				b.store.Save(bd)
 				return bd, true, nil

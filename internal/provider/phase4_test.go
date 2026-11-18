@@ -83,24 +83,6 @@ func TestClearScrollback(t *testing.T) {
 	}
 }
 
-func TestReadyPromptRecorded(t *testing.T) {
-	ctx := context.Background()
-	p := provider.New("acme", faketest.New())
-	if err := p.Start(ctx, "A--one", provider.Config{Argv: []string{"x"}, ReadyPromptPrefix: "> "}); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := p.Binding("A--one"); b.ReadyPrompt != "> " {
-		t.Errorf("config: ReadyPrompt = %q", b.ReadyPrompt)
-	}
-	_ = p.SetMeta(ctx, "A--two", "GC_READY_PROMPT_PREFIX", "❯ ")
-	if err := p.Start(ctx, "A--two", provider.Config{Argv: []string{"x"}}); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := p.Binding("A--two"); b.ReadyPrompt != "❯ " {
-		t.Errorf("meta: ReadyPrompt = %q", b.ReadyPrompt)
-	}
-}
-
 func TestFileMetaStoreTwoInstancesDifferentKeys(t *testing.T) {
 	dir := t.TempDir()
 	a, b := provider.NewFileMetaStore(dir), provider.NewFileMetaStore(dir)

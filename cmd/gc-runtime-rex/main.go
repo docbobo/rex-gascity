@@ -53,12 +53,11 @@ func liveDeps() deps {
 
 // startConfig is the start op's stdin JSON. Other fields gc sends are ignored.
 type startConfig struct {
-	WorkDir           string            `json:"work_dir"`
-	Command           string            `json:"command"`
-	ReadyPromptPrefix string            `json:"ready_prompt_prefix"`
-	Env               map[string]string `json:"env"`
-	PreStart          []string          `json:"pre_start"`
-	Nudge             string            `json:"nudge"`
+	WorkDir  string            `json:"work_dir"`
+	Command  string            `json:"command"`
+	Env      map[string]string `json:"env"`
+	PreStart []string          `json:"pre_start"`
+	Nudge    string            `json:"nudge"`
 }
 
 // opSpec describes a known op: how many positional args it requires after the
@@ -76,6 +75,14 @@ var unimplemented = map[string]bool{
 	"exec":          true,
 	"provision":     true,
 	"watch-startup": true,
+}
+
+// keyedOps take a <key> argument that must not be empty. herdr-core rejects an
+// empty metadata key with exit 1; matching it keeps the meta ops conformant.
+var keyedOps = map[string]bool{
+	"set-meta":    true,
+	"get-meta":    true,
+	"remove-meta": true,
 }
 
 var ops = map[string]opSpec{
@@ -124,6 +131,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
 	}
 	if len(rest) < spec.required || (spec.required > 0 && rest[0] == "") {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: missing argument; usage: gc-runtime-rex %s\n", op, spec.usage)
+		return exitFail
+	}
+	if keyedOps[op] && rest[1] == "" {
+		fmt.Fprintf(stderr, "gc-runtime-rex: %s: metadata key must not be empty\n", op)
 		return exitFail
 	}
 
@@ -179,12 +190,11 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		}
 	}
 	err = p.StartNew(ctx, name, provider.Config{
-		Argv:              commandArgv(cfg.Command),
-		WorkDir:           cfg.WorkDir,
-		ReadyPromptPrefix: cfg.ReadyPromptPrefix,
-		Env:               cfg.Env,
-		PreStart:          cfg.PreStart,
-		Nudge:             cfg.Nudge,
+		Argv:     commandArgv(cfg.Command),
+		WorkDir:  cfg.WorkDir,
+		Env:      cfg.Env,
+		PreStart: cfg.PreStart,
+		Nudge:    cfg.Nudge,
 	})
 	if errors.Is(err, provider.ErrAlreadyRunning) {
 		// gc's exec proxy recognizes "already running" as a start collision.

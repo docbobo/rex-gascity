@@ -29,8 +29,6 @@ var ErrAlreadyRunning = errors.New("provider: already running")
 
 // submitKey submits typed input; interruptKey is the soft interrupt keystroke.
 // Rex has no signal API, so both are keys.
-const readyPromptMetaKey = "GC_READY_PROMPT_PREFIX"
-
 const (
 	submitKey    = "enter"
 	interruptKey = "ctrl+c"
@@ -40,9 +38,6 @@ const (
 type Config struct {
 	Argv    []string
 	WorkDir string
-	// ReadyPromptPrefix is the prompt text the agent shows when ready. When
-	// empty, Start falls back to the GC_READY_PROMPT_PREFIX meta key.
-	ReadyPromptPrefix string
 	// Env is the per-session environment gc ships in the start config. Rex
 	// launch options carry no env, so Start applies it by prefixing the launch
 	// argv with `env K=V ...` (see launchCommand).
@@ -720,11 +715,6 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 	if block == "" {
 		return
 	}
-	ready := cfg.ReadyPromptPrefix
-	if ready == "" {
-		// Best effort: a meta read failure must not fail Start.
-		ready, _, _ = p.meta.Get(n, readyPromptMetaKey)
-	}
 	p.binder.Record(Binding{
 		Name:         n,
 		SessionID:    sid,
@@ -736,7 +726,6 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		Aliases:      aliasesFor(n, cfg.Env),
 		LaunchMode:   mode,
 		CreatedAt:    time.Now(),
-		ReadyPrompt:  ready,
 		GCBin:        gcBinBasename(cfg.Env),
 		WorkDir:      cfg.WorkDir,
 	})
@@ -764,20 +753,44 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if hadStored {
 			p.writeDrainDiagnostic(ctx, stored)
 		}
-		// Even with no pane, a seed left by a failed or rolled-back start must
-		// not outlive its life.
-		return p.clearStartIdentity(n)
+		// Even with no pane, nothing the incarnation left must outlive its
+		// life: clear the whole meta sidecar and the activity record, not just
+		// the identity seed a failed or rolled-back start may have written.
+		return p.clearIncarnations(n, stored.Name)
 	}
 	// Sample the work tree before the pane closes, while the worker is alive.
 	p.writeDrainDiagnostic(ctx, binding)
 	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return err
 	}
-	if err := p.clearStartIdentity(binding.Name); err != nil {
+	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
 	}
 	p.binder.Forget(binding.Name)
 	return nil
+}
+
+// clearIncarnations removes the whole metadata sidecar and the activity record
+// for each name (deduplicated). Stop calls it with the caller's name and the
+// resolved primary name, so every key and activity stamp of a retired
+// incarnation is gone before the next start of the same name reads them. This
+// matches herdr-core's per-incarnation forget (parity doc ### stop row 4).
+func (p *Provider) clearIncarnations(names ...SessionName) error {
+	seen := map[SessionName]bool{}
+	var errs []error
+	for _, n := range names {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		if err := p.meta.Clear(n); err != nil {
+			errs = append(errs, err)
+		}
+		if err := p.activity.Delete(n); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // IsRunning reports whether the agent's program is still running. It is
