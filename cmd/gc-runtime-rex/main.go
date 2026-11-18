@@ -74,13 +74,13 @@ type opSpec struct {
 var unimplemented = map[string]bool{
 	"exec":          true,
 	"provision":     true,
-	"attach":        true,
 	"watch-startup": true,
 }
 
 var ops = map[string]opSpec{
 	"start":             {1, "start <name>", opStart},
 	"stop":              {1, "stop <name>", opStop},
+	"attach":            {1, "attach <name>", opAttach},
 	"is-running":        {1, "is-running <name>", opIsRunning},
 	"interrupt":         {1, "interrupt <name>", opInterrupt},
 	"nudge":             {1, "nudge <name>", opNudge},
@@ -194,6 +194,22 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 
 func opStop(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.Stop(ctx, args[0])
+}
+
+// opAttach answers gc's attach call with a hint instead of a pty passthrough.
+// gc runs attach through runWithTTY, which does not apply the exit-2-is-success
+// rule, so a Rex-backed session cannot answer exit 2. Rex has no in-terminal
+// attach and the provider declares no tty.attach, so the op always exits 0 and
+// points the user at the Rex app. It never contacts Rex, so an unknown session
+// or an unreachable server cannot turn into a failed `gc session attach`.
+func opAttach(_ context.Context, _ *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+	_, err := io.WriteString(out, attachHint(args[0]))
+	return err
+}
+
+// attachHint is the one-line guidance attach prints for session name.
+func attachHint(name string) string {
+	return fmt.Sprintf("Rex has no in-terminal attach; open the Rex app and select the session %q to attach\n", name)
 }
 
 func opIsRunning(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {

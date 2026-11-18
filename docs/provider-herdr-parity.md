@@ -47,8 +47,8 @@ client `internal/runtime/exec/`, the capability constants in
 `docs/reference/exec-session-provider.md`. Where earlier drafts of this
 document said a gc behavior was unverified, the verified text now cites
 `exec/exec.go` line numbers. Corrections that changed a verdict: `attach` is
-called by gc and exit 2 there is a *failure*, and an empty `env` value must be
-*unset*, not set to empty.
+called by gc and exit 2 there is a *failure* (resolved in GCREX-20 by answering
+exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 
 ## Coverage
 
@@ -70,7 +70,7 @@ called by gc and exit 2 there is a *failure*, and an empty `env` value must be
 | `interrupt` | implemented | 5 | intentional |
 | `clear-scrollback` | implemented | 6 | intentional |
 | `watch-startup` | not implemented | 4 | not-implemented |
-| `attach` | not implemented | 4 | mistake |
+| `attach` | implemented | 4 | intentional |
 | `set-meta` | implemented | 5 | intentional (with a mistake inside) |
 | `get-meta` | implemented | 3 | intentional |
 | `remove-meta` | implemented | 5 | intentional (with a mistake inside) |
@@ -184,10 +184,10 @@ called by gc and exit 2 there is a *failure*, and an empty `env` value must be
 | `watch-startup` | stdout format | none (exits 2) | one `{"content":...}` NDJSON line per screen change, 250 ms poll | not-implemented | Would need a Rex block-format poll loop; no streaming helper exists. |
 | `watch-startup` | deadline and cancellation | not applicable | `start` class, ends 1 s early with exit 0, SIGTERM gives exit 1 | not-implemented | gc kills `watch-startup` outright; SIGTERM handling is optional. |
 | `watch-startup` | startup/readiness detection | none; `ReadyPrompt` stored, never read | none in the op either; prompt matching stays in gc | intentional | Neither side uses the ready prompt inside `watch-startup`. |
-| `attach` | op presence | exit 2, not implemented | execs `hc attach` with tty passthrough and attach flock | mistake | gc calls attach; exit 2 fails `gc session attach`. |
+| `attach` | op presence | exit 0 with a one-line hint to open the Rex app; never contacts Rex | execs `hc attach` with tty passthrough and attach flock | intentional | gc calls attach; a hint satisfies the call without a pty passthrough, and exit 0 keeps `gc session attach` from failing. |
 | `attach` | capability gating | does not declare `tty.attach` | op exists, `tty.attach` not declared either | intentional | Reserved and unread; gc calls attach without checking it. |
 | `attach` | attach lock / viewer signal | `is-attached` derives viewers from `list_clients` and the active window | `attach` holds a flock that `is-attached` reads | intentional | Rex reports clients server-side; no lock needed. |
-| `attach` | deadline | op never runs, so no deadline applies | `start` class: 120 s default, pre-exec only | intentional | Spec and gc agree: no deadline; the class bounds setup only. |
+| `attach` | deadline | hint handler retires immediately; no deadline applies (spec: `attach` has none) | `start` class: 120 s default, pre-exec only | intentional | Spec and gc agree: no deadline; the class bounds setup only. |
 | `set-meta` | unknown session | Succeeds; Rex never contacted | Exit 1 `no session` | intentional | meta may precede the pane; Start reads it |
 | `set-meta` | lifetime across stop | Only identity keys cleared on Stop | All meta deleted with incarnation | mistake | stale suspended or drain keys can leak into next start |
 | `set-meta` | locking | In-process mutex, per-key files | Cross-process per-name flock | intentional | per-key files avoid read-modify-write |
@@ -213,23 +213,23 @@ The deviations marked `mistake` across all sections, deduplicated and ranked by
 what they can do to a running city: user-visible failures first, then wrong
 answers about liveness, then lost or corrupted input, then state that leaks
 across incarnations, then hygiene. Every entry has been checked against gc
-1.5.1 source; the two verdicts that flipped on that check are `attach` (from
-conformant omission to mistake) and `is-running` (from mistake to intentional,
-because gc reads a failure and `false` alike as dead).
+1.5.1 source. Two verdicts flipped on that check: `is-running` (from mistake to
+intentional, because gc reads a failure and `false` alike as dead) and `attach`
+(from conformant omission to mistake). GCREX-20 has since resolved `attach` by
+answering exit 0 with a hint, so it is no longer listed here.
 
 | # | Where | Mistake | Consequence in gc 1.5.1 | Sections |
 |---|---|---|---|---|
-| 1 | `attach` | The op is not implemented and exits 2 | gc calls `attach` from `gc session attach` and `gc session new` and does not run it through the exit-2 mapping: the user sees `gc session attach: exit status 2` and exit 1 instead of a working attach (`exec/exec.go:196-201`, `cmd/gc/cmd_session.go:399`, `:508`, `:1554`) | §attach |
-| 2 | `nudge` | Text and Enter are two calls with no internal deadline, and non-UTF-8 stdin is silently rewritten to U+FFFD by `json.Marshal` | gc retries a failed nudge from the queue (15 s, 5 attempts) or the idle backstop (3), re-typing the whole text, so an exit 1 after the write duplicates the prompt; bad bytes corrupt it silently | §nudge rows 5, 8, 9; §start row 15 |
-| 3 | `get-last-activity` | No "working or blocked means now" rule, and no pack-input floor | gc idle-stops or sleeps a session whose stamp is older than the timeout, and the same value gates drain-escalation kills, progress-stall recycle and the claim backstop, so a silent but busy agent is treated as idle | §get-last-activity rows 2, 3 |
-| 4 | `is-attached` | An unclassifiable client kind becomes `ErrAttachmentUnknown`/exit 1 | gc reads any error as "not attached", which is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill proceed against a watched pane | §is-attached row 3 |
-| 5 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
-| 6 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
-| 7 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
-| 8 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
-| 9 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
-| 10 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
-| 11 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
+| 1 | `nudge` | Text and Enter are two calls with no internal deadline, and non-UTF-8 stdin is silently rewritten to U+FFFD by `json.Marshal` | gc retries a failed nudge from the queue (15 s, 5 attempts) or the idle backstop (3), re-typing the whole text, so an exit 1 after the write duplicates the prompt; bad bytes corrupt it silently | §nudge rows 5, 8, 9; §start row 15 |
+| 2 | `get-last-activity` | No "working or blocked means now" rule, and no pack-input floor | gc idle-stops or sleeps a session whose stamp is older than the timeout, and the same value gates drain-escalation kills, progress-stall recycle and the claim backstop, so a silent but busy agent is treated as idle | §get-last-activity rows 2, 3 |
+| 3 | `is-attached` | An unclassifiable client kind becomes `ErrAttachmentUnknown`/exit 1 | gc reads any error as "not attached", which is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill proceed against a watched pane | §is-attached row 3 |
+| 4 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
+| 5 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
+| 6 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
+| 7 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
+| 8 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
+| 9 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
+| 10 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
 
 Two earlier candidates were withdrawn after the gc check: the missing SIGTERM
 handler in `start` (gc runs `stop <name>` after every failed or cancelled start,
@@ -243,8 +243,9 @@ Recorded so they are not re-litigated. Verified against gc 1.5.1, `observe`,
 `inventory`, `kill-object`, `server-stop` and `copy-to` are never sent, so those
 omissions are inert; `exec` and `provision` are never attempted without the
 matching capability declared, so their absence is inert too; `watch-startup`
-exiting 2 is handled by gc falling back to `peek` polling every 500 ms, and
-`attach` is the one exit-2 omission that is user-visible (mistake 1).
+exiting 2 is handled by gc falling back to `peek` polling every 500 ms. `attach`
+was the one user-visible exit-2 omission; GCREX-20 now answers it with exit 0
+and a hint, so no omission is user-visible.
 `nudge` busy-gating and submit confirmation are open work under GCREX-16, and
 the start-config gaps (hooks, file staging, post-launch liveness check, warning
 channel) are recorded in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
@@ -269,30 +270,26 @@ channel) are recorded in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
 Not implemented in this task. Each item closes a set of the sections above; the
 numbering of the mistake table is what they refer to.
 
-1. **Make `attach` succeed.** Answer `attach` with exit 0 and a hint ("open Rex
-   and select the rig tab") or focus the Rex pane, then fix
-   `docs/REX-CONTRACT.md` §9, which wrongly generalises "exit 2 is success" to
-   `attach`. Closes 1.
-2. **Input path hardening.** Bound the write→Enter window with a context
+1. **Input path hardening.** Bound the write→Enter window with a context
    deadline shorter than gc's 30 s; reject non-UTF-8 stdin before any write;
-   keep `BTab`/`PPage`/`NPage` as optional hardening. Closes 2.
-3. **Liveness answers.** Catch `ErrNotFound` in `PeekLines`; map `ErrNotFound`
+   keep `BTab`/`PPage`/`NPage` as optional hardening. Closes 1.
+2. **Liveness answers.** Catch `ErrNotFound` in `PeekLines`; map `ErrNotFound`
    from `BlockProcess` to `false` in `ProcessAlive`; answer `true` from
    `is-attached` when a client kind cannot be classified; decide on
-   interpreter-script matching after a live probe. Closes 4, 5, 6.
-4. **Start robustness.** Emit `env -u KEY` for empty values; add a per-hook
+   interpreter-script matching after a live probe. Closes 3, 4, 5.
+3. **Start robustness.** Emit `env -u KEY` for empty values; add a per-hook
    timeout; move `pre_start` out of the city-wide lock; add a SIGTERM handler
-   so rollback runs before gc's forced kill. Closes 7, 8.
-5. **Incarnation hygiene.** Clear all meta for the name (and the activity
+   so rollback runs before gc's forced kill. Closes 6, 7.
+4. **Incarnation hygiene.** Clear all meta for the name (and the activity
    entry) on stop and on the no-binding path; reject empty meta keys; decide
-   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 9, 11.
-6. **Activity truthfulness.** Return now for `working`/`blocked`; record pack
-   input time in `nudge`/`send-keys` and use it as a floor. Closes 3.
-7. **List output guard.** Skip names that are empty, padded or contain control
-   characters. Closes 10.
-8. **GCREX-16** (existing): `program_status` busy gating and submit
+   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 8, 10.
+5. **Activity truthfulness.** Return now for `working`/`blocked`; record pack
+   input time in `nudge`/`send-keys` and use it as a floor. Closes 2.
+6. **List output guard.** Skip names that are empty, padded or contain control
+   characters. Closes 9.
+7. **GCREX-16** (existing): `program_status` busy gating and submit
    confirmation for `nudge`.
-9. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
+8. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
    transport failure (see "Operational risks"); probe `block.method clear` and
    `format` coverage; probe a `node agent.js` pane's `argv0` for the
    interpreter-script decision.
@@ -856,9 +853,9 @@ GCREX-3 — `peek` is the likely fallback path.
 
 ### attach
 
-**Status** — not implemented
+**Status** — implemented
 
-**Our implementation.** `attach` is in the `unimplemented` map (`cmd/gc-runtime-rex/main.go:74-79`); `run` prints `operation "attach" not implemented` to stderr and returns `exitUnknown` (2) before any argument check or Rex call (`main.go:115-122`). The handshake declares only `report-attachment` and `report-activity`, not `tty.attach` (`main.go:35`; `docs/rex-provider.md:123`, `:268`). `internal/provider/attach.go` is misnamed for this purpose: it holds only `IsAttached` and `watchesAgent` (`attach.go:22-73`), the read-only viewer probe behind the `is-attached` op (`main.go:93`, `:287`), and `attach_internal_test.go` only tests `watchesAgent` (`attach_internal_test.go:9`). There is no attach path in the provider that is not an op: nothing opens a pty, execs a Rex client or focuses a pane. The plan only sketches a future `Attach` as `session.focus_block` + `session.focus_window` in the user's Rex app, "rather than stealing a tty" (`docs/plans/native-rex-provider.md:391`).
+**Our implementation.** `attach` is registered in the `ops` table (`cmd/gc-runtime-rex/main.go:83`) with arity 1 and handled by `opAttach` (`main.go:205-213`), which writes `attachHint(name)` to stdout and exits 0. The hint is one line: `Rex has no in-terminal attach; open the Rex app and select the session "<name>" to attach`. The handler takes no provider action and makes no Rex call, so an unknown session or an unreachable server cannot fail it; the only failure is a stdout write error (exit 1). The handshake still declares only `report-attachment` and `report-activity`, not `tty.attach` (`main.go:35`; `docs/rex-provider.md:123`, `:125`, `:334`). `internal/provider/attach.go` continues to hold only `IsAttached` and `watchesAgent` (`attach.go:22-73`), the read-only viewer probe behind `is-attached` (`main.go:322`); the hint lives in the dispatcher because there is no Rex primitive it needs. `cmd/gc-runtime-rex/dispatch_test.go:302-326` covers a live pane, an unknown session and an unreachable Rex client, each exit 0 with the hint on stdout and empty stderr. The plan sketched a future `Attach` as `session.focus_block` + `session.focus_window` (`docs/plans/native-rex-provider.md:391`); the hint is the contract-permitted alternative and adds no client method.
 
 **herdr-core.** `ops_table.py:88` registers `attach` with `deadline="start"`. In herdr's table that class is 120 s (`rpp/ops.py:23-27`), or `GC_EXEC_DEADLINE_MS` if gc sends it (`rpp/ops.py:127`), not "none". The deadline only bounds the pre-exec work, because `op_attach` ends in `os.execve` (`attach.py:128`), which replaces the Python process. The handler resolves the live record (`attach.py:105-108`) and the `hc` binary (`:110-113`). It checks that the city's core answers `hello()` so `hc` will not start a core with the wrong environment (`:118-121`). It builds the core's allowlist env plus `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` (`:122-123`, `:38`). It takes a shared `flock` on the incarnation's attach lock, inheritable across the exec (`:124-127`), then execs `hc attach <terminal-address>` (`:128`). Stdin, stdout and the tty therefore pass straight to `hc`. Raw mode, SIGWINCH resize, the detach key, exit codes on detach vs error, and client cleanup are not in this pack: they belong to `hc attach`, which is outside the clone (unverified; would need the `hc` source). Pre-exec failures are `OpError` and become exit 1 (`rpp/perop.py:147-148`). Cleanup is the kernel closing the lock fd when `hc` exits, which releases the lock that `is-attached` tests (`attach.py:42-56`, `:88`). The pack does not declare `tty.attach` either (`rpp/wire.py:36-39`).
 
@@ -866,12 +863,12 @@ GCREX-3 — `peek` is the likely fallback path.
 
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
-| 1 | op presence | exit 2 "not implemented" | execs `hc attach` with tty passthrough | mistake | gc 1.5.1 calls `attach` and treats exit 2 as failure: `gc session attach`/`new` print `exit status 2` and exit 1, so a Rex-backed session cannot be attached |
+| 1 | op presence | exit 0, one-line hint to open the Rex app; no Rex call | execs `hc attach` with tty passthrough | intentional | gc 1.5.1 calls `attach` and treats exit 2 as failure; the hint removes the exit-2 failure without a pty passthrough, and `tty.attach` stays undeclared |
 | 2 | capability gating | does not declare `tty.attach` | op exists but does not declare `tty.attach` either | intentional | the capability is reserved in gc 1.5.1 and has no consumer; gc calls `attach` without checking it, so both packs omit it harmlessly |
 | 3 | attach lock / viewer signal | `is-attached` derives viewers from `session.list_clients` + active window (`attach.go:22-52`) | `attach` holds a flock that `is-attached` reads (`attach.py:88,124-127`) | intentional | Rex reports clients server-side; no lock needed |
-| 4 | deadline | op never runs, so no deadline matters | `start` class: 120 s default, pre-exec only | intentional | confirmed: the spec says no deadline for `attach`, and gc's `runWithTTY` uses no context (`exec/exec.go:195-202`); herdr's class only bounds setup before `execve` |
+| 4 | deadline | hint handler retires immediately; no deadline applies (spec: `attach` has none) | `start` class: 120 s default, pre-exec only | intentional | confirmed: the spec says no deadline for `attach`, and gc's `runWithTTY` uses no context (`exec/exec.go:195-202`); herdr's class only bounds setup before `execve` |
 
-**Verdict.** `mistake`. `attach` is the one op in this document where "absent = exit 2" is not conformant in practice. gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` after an `is-running` check and a possible `start` (`runtime/seam_adapter.go:139-149`, `exec/seams.go:170-172`), and it runs it through `runWithTTY`, which never goes through the exit-2 mapping: the raw `*exec.ExitError` becomes `gc session attach: exit status 2` with exit 1 (`exec/exec.go:195-202`, `cmd/gc/cmd_session.go:399`, `:508`, `:1554`). There is no deadline and no `tty.attach` gate. A user-visible command therefore fails instead of degrading. `docs/REX-CONTRACT.md` §9 should record `attach` (and `exec`) as the exceptions to "exit 2 is success".
+**Verdict.** `intentional`. `attach` was the one op where "absent = exit 2" was not conformant in practice: gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` after an `is-running` check and a possible `start` (`runtime/seam_adapter.go:139-149`, `exec/seams.go:170-172`), and it runs it through `runWithTTY`, which never goes through the exit-2 mapping, so the raw `*exec.ExitError` became `gc session attach: exit status 2` with exit 1 (`exec/exec.go:195-202`, `cmd/gc/cmd_session.go:399`, `:508`, `:1554`). GCREX-20 answers `attach` with exit 0 and a hint instead, which removes the user-visible failure. There is no deadline and no `tty.attach` gate, and the handler neither opens a pty nor focuses a pane; herdr's real passthrough is the richer behavior, but the hint keeps `gc session attach` working without declaring `tty.attach`. `docs/REX-CONTRACT.md` §9 now records `attach` (and `exec`) as the exceptions to "exit 2 is success".
 
 **Cross-references.**
 GCREX-4 — identity/metadata/activity/attachment; `attach.go` lives here as `IsAttached`
@@ -881,9 +878,8 @@ GCREX-5 — RPP v0 delivery; handshake and unimplemented-op list
 `docs/plans/native-rex-provider.md:391,415` — future `Attach` via focus; do not declare `tty.attach`
 
 **Follow-ups.**
-- Exit 0 from `attach` with a hint ("open Rex and select the rig tab") or focus the Rex pane, so `gc session attach` succeeds instead of printing `exit status 2` (mistake).
 - If a real attach is wanted, spike `rex attach`/pty passthrough, then declare `tty.attach` only after `gc runtime conformance` accepts it (gap).
-- Correct `docs/REX-CONTRACT.md` §9: `attach` and `exec` do not follow the exit-2-is-success rule (gap).
+- Keep `docs/REX-CONTRACT.md` §9 and `docs/rex-provider.md` aligned with the hint behavior if the op changes (gap).
 
 
 ### set-meta

@@ -110,7 +110,6 @@ func TestUnknownAndUnimplementedOps(t *testing.T) {
 		{"nosuchop", dog},
 		{"exec", dog},
 		{"provision", dog},
-		{"attach", dog},
 		{"watch-startup", dog},
 		{},
 	} {
@@ -285,6 +284,46 @@ func TestIsAttached(t *testing.T) {
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "martian"}}
 	assertFailure(t, h.run("", "is-attached", dog), exitFail)
+}
+
+// downRex fails the read calls attach might use, modeling an unreachable Rex
+// server. attach must not surface that as a failure: it answers the hint
+// without consulting Rex at all.
+type downRex struct{ *faketest.Fake }
+
+func (downRex) SessionView(context.Context, rex.SessionID) (rex.SessionView, error) {
+	return rex.SessionView{}, errors.New("rex: connection refused")
+}
+
+func (downRex) ListClients(context.Context, rex.SessionID) ([]rex.ClientInfo, error) {
+	return nil, errors.New("rex: connection refused")
+}
+
+func TestAttachSucceedsWithHint(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		client func() rex.Client
+		start  bool
+	}{
+		{"live pane", func() rex.Client { return faketest.New() }, true},
+		{"unknown session", func() rex.Client { return faketest.New() }, false},
+		{"rex unreachable", func() rex.Client { return downRex{faketest.New()} }, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _ := newHarness(t)
+			if c.start {
+				h.must(`{"command":"sleep 300"}`, "start", dog)
+			}
+			h.client = c.client()
+			r := h.must("", "attach", dog)
+			if !strings.Contains(r.stdout, dog) {
+				t.Errorf("attach stdout = %q, want the hint naming %q", r.stdout, dog)
+			}
+			if r.stderr != "" {
+				t.Errorf("attach stderr = %q, want empty", r.stderr)
+			}
+		})
+	}
 }
 
 func TestInputOpsOnMissingSessionSucceed(t *testing.T) {

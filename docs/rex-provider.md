@@ -122,7 +122,7 @@ just your interactive shell's.
 - **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`).
 - **Capabilities not declared**: `proc.exec`, `proc.provision`, `proc.stream`, `tty.attach` (and no locality capability).
 
-Implemented RPP operations: `protocol`, `start`, `stop`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
+Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
 
 ## Identity Mapping
 
@@ -329,7 +329,8 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **File staging is not done**: `copy_files`, `overlay_dir`, and `pack_overlay_dirs` from start config are ignored; nothing is copied into the agent's work dir.
 - **`pre_start` runs before the pane launches** (GCREX-15): each entry is executed in order with `/bin/sh -c`, cwd set to the start config's `work_dir` when that directory already exists and to `/` otherwise (mirroring runtime-herdr-core's `_setup_cwd`, so a hook can create the work dir), and the process environment merged with the start-config `env` map. A non-zero exit aborts the launch and leaves no seeded identity or binding behind. After the hooks, a configured `work_dir` must be an existing directory or the start fails. An empty or absent `pre_start` is a no-op.
 - **`list-running` only sees known panes**: It is derived from the sidecar bindings plus a liveness check, not from a scan of Rex. A live pane with no cached binding (for example after the state dir was removed) is not listed. It emits each live primary binding whose name matches the prefix, plus each matching rig-qualified alias when the prefix is non-empty; the empty prefix lists primary names only.
-- **Unimplemented operations exit 2**: `exec`, `provision`, `attach`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
+- **Unimplemented operations exit 2**: `exec`, `provision`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
+- **`attach` is a hint, not a pty passthrough (GCREX-20)**: gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` through `runWithTTY`, which does not apply the exit-2-is-success rule, so a Rex-backed session cannot answer exit 2 without failing the command. The provider registers `attach` and always exits 0, printing a one-line hint to open the Rex app and select the session. It reads no Rex state, so an unknown session and an unreachable server succeed too. No `tty.attach` capability is declared: this is a hint path, not an interactive connection.
 - **No busy-gated nudge (OSC 7501 is emitted by the agent)**: OSC 7501 agent status frames are emitted by the pane program, not the provider — Pi implements the protocol and gc-managed Pi panes report `idle`/`working`/… under Rex, so `program_status` is normally populated. The provider does not yet consume it: nudge busy-gating and submit confirmation are deferred, so `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
 - **Teardown leaves the server and session shell intact**: Stopping agents closes only city-owned blocks (`rex block close`); it never stops the shared Rex server and never calls `session.destroy`.
 

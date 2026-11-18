@@ -197,7 +197,7 @@ Exit codes — the spec has exactly three:
 |---|---|
 | `0` | success |
 | `1` | failure; stderr carries the message |
-| `2` | unknown operation, treated as **success** (forward compatibility). From `start` and `provision` it is a failure — those two may never be unknown. |
+| `2` | unknown operation, treated as **success** (forward compatibility) by gc's `run` helper. Not universal: `start` and `provision` treat it as a failure (those two may never be unknown), `attach` runs through `runWithTTY` and so surfaces exit 2 as a failure, and `exec` reads it as "unsupported" before falling back to the driving ops. A provider must therefore never answer `attach` with exit 2. |
 
 Operations — the spec's 17 rows:
 
