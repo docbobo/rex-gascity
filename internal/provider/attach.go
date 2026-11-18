@@ -2,23 +2,19 @@ package provider
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"slices"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
-// ErrAttachmentUnknown is returned by IsAttached when Rex answered but no
-// client's kind identifies a human app client, so answering false would be
-// dishonest.
-var ErrAttachmentUnknown = errors.New("provider: attachment cannot be determined")
-
 // IsAttached reports whether a human is watching the agent's pane: an app
 // client exists and the agent's rig tab is the active window containing the
 // pane. A missing
-// pane is not attached. A Rex transport error is returned as is, and a client
-// of an unknown kind yields ErrAttachmentUnknown.
+// pane is not attached. A Rex transport error is returned as is — gc reads any
+// is-attached error as "not attached" (fail-open), so the caller must not
+// mistake that error for a safe "nobody is watching" answer. A client of a
+// kind we cannot classify answers true, because that fail-open reading must
+// not close a pane a human may be watching.
 func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
 	if err != nil {
@@ -38,7 +34,12 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 			hasApp = true
 		case "cli", "peer":
 		default:
-			return false, fmt.Errorf("attached %s: client kind %q: %w", name, c.Kind, ErrAttachmentUnknown)
+			// We cannot classify this client, so we cannot tell whether a
+			// human is watching. gc reads any is-attached error as "not
+			// attached" (fail-open) and then lets config-drift restart,
+			// progress-stall recycle and the drain-ack escalation kill
+			// proceed, so answer true instead.
+			return true, nil
 		}
 	}
 	if !hasApp {

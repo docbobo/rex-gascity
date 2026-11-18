@@ -62,7 +62,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `is-running` | implemented | 5 | intentional |
 | `process-alive` | implemented | 7 | intentional (with a mistake inside) |
 | `list-running` | implemented | 6 | intentional (with a mistake inside) |
-| `is-attached` | implemented | 6 | mistake |
+| `is-attached` | implemented | 6 | intentional |
 | `get-last-activity` | implemented | 5 | intentional |
 | `peek` | implemented | 7 | intentional (with a mistake inside) |
 | `nudge` | implemented | 11 | intentional |
@@ -134,7 +134,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `list-running` | scope source | Local binding store, probed per binding | City-label terminal list from core | intentional | City→session mapping; bindings record ownership |
 | `is-attached` | attachment source | Rex ListClients plus SessionView active window | process snapshot plus attach-lock file | intentional | Rex has a server-side client registry |
 | `is-attached` | meaning of attached | app client and rig tab active | hc attach process or lock on terminal | intentional | Rex tab tiles agents; coarser granularity |
-| `is-attached` | unknown client kind | error exit 1 | n/a | mistake | gc reads exit 1 as not attached; fail-open on kill paths. |
+| `is-attached` | unknown client kind | answers true, exit 0 | n/a | intentional | GCREX-22: an unclassifiable kind means we cannot tell, and gc reads any is-attached error as not attached (fail-open), so the provider answers true. |
 | `is-attached` | deadline | 30 s default | probe 4 s | intentional | gc 1.5.1 baseline is 30 s |
 | `is-attached` | unreachable backend | transport error exit 1 | proc/lock error exit 1 | intentional | same shape, different backend |
 | `is-attached` | stop-safety use | stop does not consult it | stop skips kill if attached/unknown | intentional | gc gates attachment in the reconciler, never before stop. |
@@ -216,20 +216,21 @@ across incarnations, then hygiene. Every entry has been checked against gc
 1.5.1 source. Two verdicts flipped on that check: `is-running` (from mistake to
 intentional, because gc reads a failure and `false` alike as dead) and `attach`
 (from conformant omission to mistake). GCREX-20 has since resolved `attach` by
-answering exit 0 with a hint, so it is no longer listed here. GCREX-24 has
-since resolved `get-last-activity` (return now for `working`/`blocked`, plus
-the pack-input floor from nudge/send-keys), so it is no longer listed either.
+answering exit 0 with a hint, so it is no longer listed here. GCREX-22 has
+since resolved `is-attached` by answering true for an unclassifiable client
+kind. GCREX-24 has since resolved `get-last-activity` (return now for
+`working`/`blocked`, plus the pack-input floor from nudge/send-keys), so it is
+no longer listed either.
 
 | # | Where | Mistake | Consequence in gc 1.5.1 | Sections |
 |---|---|---|---|---|
-| 1 | `is-attached` | An unclassifiable client kind becomes `ErrAttachmentUnknown`/exit 1 | gc reads any error as "not attached", which is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill proceed against a watched pane | §is-attached row 3 |
-| 2 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
-| 3 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
-| 4 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
-| 5 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
-| 6 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
-| 7 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
-| 8 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
+| 1 | `process-alive` | `ErrNotFound` from `BlockProcess` is returned as an error instead of `false`; no interpreter-script matching, so `node agent.js` does not match `agent` | gc reads the error as dead, which is the intended answer, so this is an op-correctness fix rather than a gc-behavior fix; the interpreter gap can still make a scripted agent read dead | §process-alive rows 2, 3 |
+| 2 | `peek` | A pane that vanishes between resolve and `BlockFormat` fails with exit 1, while an already-missing pane returns empty with exit 0 | gc sees a failed peek and skips its zombie forensics or surfaces an error; no state changes, so severity is low | §peek row 2 |
+| 3 | `start` | `K=""` in the launch env sets an empty value where the protocol says "unset" (gc's tmux adapter uses `env -u`) | Benign for `GC_ALIAS` (gc reads it with `os.Getenv`), a contract deviation for `GC_CONTROLLER_TOKEN`, `BEADS_*`, `CLAUDECODE`, `CODEX_*` | §start row 9 |
+| 4 | `start` | `pre_start` has no timeout, and one city-wide lock is held across hooks and launch | A hanging hook runs until gc's cancel and stalls every other start/stop of the city | §start rows 11, 12 |
+| 5 | `stop`, `set-meta` | Stop clears only the identity keys; user and provider keys (`suspended`, `GC_DRAIN_ACK`, `GC_READY_PROMPT_PREFIX`) and last-activity survive the incarnation | A restarted agent of the same name can inherit stale flags and a stale activity stamp | §stop row 4; §set-meta row 2 |
+| 6 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
+| 7 | meta ops | `set-meta`/`get-meta`/`remove-meta` accept an empty key where herdr-core rejects it | gc never sends an empty key, so this is hygiene only | §remove-meta row 1; §get-meta row 1 |
 
 Two earlier candidates were withdrawn after the gc check: the missing SIGTERM
 handler in `start` (gc runs `stop <name>` after every failed or cancelled start,
@@ -272,17 +273,16 @@ Not implemented in this task. Each item closes a set of the sections above; the
 numbering of the mistake table is what they refer to.
 
 1. **Liveness answers.** Catch `ErrNotFound` in `PeekLines`; map `ErrNotFound`
-   from `BlockProcess` to `false` in `ProcessAlive`; answer `true` from
-   `is-attached` when a client kind cannot be classified; decide on
-   interpreter-script matching after a live probe. Closes 1, 2, 3.
+   from `BlockProcess` to `false` in `ProcessAlive`; decide on
+   interpreter-script matching after a live probe. Closes 1, 2.
 2. **Start robustness.** Emit `env -u KEY` for empty values; add a per-hook
    timeout; move `pre_start` out of the city-wide lock; add a SIGTERM handler
-   so rollback runs before gc's forced kill. Closes 4, 5.
+   so rollback runs before gc's forced kill. Closes 3, 4.
 3. **Incarnation hygiene.** Clear all meta for the name (and the activity
    entry) on stop and on the no-binding path; reject empty meta keys; decide
-   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 6, 8.
+   whether `Binding.ReadyPrompt` stays, since nothing reads it. Closes 5, 7.
 4. **List output guard.** Skip names that are empty, padded or contain control
-   characters. Closes 7.
+   characters. Closes 6.
 5. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
    transport failure (see "Operational risks"); probe `block.method clear` and
    `format` coverage; probe a `node agent.js` pane's `argv0` for the
@@ -571,7 +571,7 @@ GCREX-4 — identity/metadata; binding store
 
 **Status** — implemented
 
-**Our implementation.** `is-attached` is in the op table with arity 1 (`cmd/gc-runtime-rex/main.go:93`), handled by `opIsAttached` (`main.go:286-293`), which prints a bool and exits 0, or returns the error (exit 1). `Provider.IsAttached` (`internal/provider/attach.go:22-52`) resolves the binding via `Binder.Resolve` (revalidates the cached sidecar binding against Rex, `binding.go:270-295`). It then calls `ListClients` on the session. Kinds `cli` and `peer` are ignored, `app` counts, and any other kind returns `ErrAttachmentUnknown` (exit 1) (`attach.go:34-43`). If an app client exists, it calls `SessionView` and answers true only when the rig tab is the server-side active window and still holds the agent's block (`attach.go:63-73`). So "attached" means "a human app client exists and is looking at this tab", not a per-block viewer. The handshake declares `report-attachment` (and `report-activity`) (`main.go:35`). A missing binding gives `false`; a Rex transport error propagates as exit 1; there is no answer cache beyond the binding store. Deadline is the 30 s default; no per-op override found in `main.go` (unverified beyond a grep for Timeout/Deadline).
+**Our implementation.** `is-attached` is in the op table with arity 1 (`cmd/gc-runtime-rex/main.go:93`), handled by `opIsAttached` (`main.go:286-293`), which prints a bool and exits 0, or returns the error (exit 1). `Provider.IsAttached` (`internal/provider/attach.go:18-53`) resolves the binding via `Binder.Resolve` (revalidates the cached sidecar binding against Rex, `binding.go:270-295`). It then calls `ListClients` on the session. Kinds `cli` and `peer` are ignored, `app` counts, and any other kind answers true immediately, because an unclassifiable client may be a viewer and gc reads any is-attached error as not attached (`attach.go:36-43`). If an app client exists, it calls `SessionView` and answers true only when the rig tab is the server-side active window and still holds the agent's block (`attach.go:64-73`). So "attached" means "a human app client exists and is looking at this tab", not a per-block viewer. The handshake declares `report-attachment` (and `report-activity`) (`main.go:35`). A missing binding gives `false`; a Rex transport error propagates as exit 1; there is no answer cache beyond the binding store. Deadline is the 30 s default; no per-op override found in `main.go` (unverified beyond a grep for Timeout/Deadline).
 
 **herdr-core.** `op_is_attached` (`herdrcore/reads.py:324-334`) returns `false` with no record, otherwise snapshots local processes (`viewer_targets`, `attach.py:68-83`: same-uid `hc attach` argv whose environ matches this city's socket/session) and ORs that with a held `flock` on a per-object attach lock file (`attach.py:86-90`, `lock_held` `attach.py:42-54`). It never asks the server for a client list; evidence is process table plus lock file. A `ProcError`/`LockFileError` becomes `OpError` (exit 1) (`reads.py:333-334`). Op is registered with the `probe` deadline, 4 s (`ops_table.py:77`, `rpp/ops.py:26-30`), a gc v2 observe-time probe timeout, and not the 30 s baseline. The same `attached()` is reused by stop to avoid killing watched sessions, treating "cannot tell" as attached (`lifecycle.py:574-582`).
 
@@ -581,12 +581,12 @@ GCREX-4 — identity/metadata; binding store
 |---|---|---|---|---|---|
 | 1 | attachment source | Rex server client list (`ListClients`) plus `SessionView` | local process snapshot plus attach-lock file | intentional | Rex has a server-side client registry; herdr has none. |
 | 2 | meaning of "attached" | app client present and rig tab is the active window | an `hc attach` process or lock targets this terminal | intentional | Rex tab tiles several agents; no per-pane viewer exists. Granularity is coarser. |
-| 3 | unknown client kind | error `ErrAttachmentUnknown`, exit 1 | n/a (no client kinds) | mistake | gc reads exit 1 as `false`, i.e. not attached (`exec/exec.go:690-692`). That is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill then go ahead (`session_reconciler.go:2844`, `:2974`, `:3375`, `:6122`; `drain_ack_escalation.go:296`). When the client kind cannot be classified, answer `true`. |
+| 3 | unknown client kind | answers true, exit 0 (`attach.go:36-43`) | n/a (no client kinds) | intentional | GCREX-22 closed this mistake. gc reads any is-attached error as `false`, i.e. not attached (`exec/exec.go:690-692`), which is fail-open: config-drift restart, progress-stall recycle and the drain-ack escalation kill would then go ahead (`session_reconciler.go:2844`, `:2974`, `:3375`, `:6122`; `drain_ack_escalation.go:296`). Answering true when the kind is unclassifiable keeps those paths closed. |
 | 4 | deadline | 30 s default | `probe` 4 s | intentional | gc 1.5.1 baseline is 30 s for is-attached; 4 s is a v2 observe-probe value. |
 | 5 | unreachable backend | Rex transport error returned, exit 1 | proc/lock read error to exit 1; no server involved | intentional | Matches; ours depends on the Rex server, herdr's on `/proc`/ps. Note the same fail-open reading: any error is "not attached" to gc. |
 | 6 | stop-safety use | `IsAttached` not consulted by stop (`provider.go:380-405`) | `stop` skips kill when attached or cannot tell (`lifecycle.py:574-582`) | intentional | Verified: gc never calls `is-attached` before the `stop` op (`exec/exec.go:581-584`; `city_runtime.go:4199-4235`). Its attachment gates sit in the reconciler and escalation paths, before gc decides to stop (`session_reconciler.go:6122`, `:6304`; `drain_ack_escalation.go:296`). herdr's stop-side protection is an extra safeguard, not a gc requirement. |
 
-**Verdict.** intentional. The attachment source differs because Rex has a real client registry, and `report-attachment` is declared with a meaningful answer. Verified in gc 1.5.1: `is-attached` is only invoked when `report-attachment` is declared (`exec/exec.go:684-691`), the op's output must be exactly `true`, and any error becomes `false`. Only the unverified stop-safety use (row 6) is a possible gap.
+**Verdict.** intentional. The attachment source differs because Rex has a real client registry, and `report-attachment` is declared with a meaningful answer. An unclassifiable client kind now answers true (GCREX-22), so gc's fail-open reading cannot close a watched pane; the Rex-unreachable case still exits 1 and gc still reads that as not attached, which is the only honest answer when the server is down. Verified in gc 1.5.1: `is-attached` is only invoked when `report-attachment` is declared (`exec/exec.go:684-691`), the op's output must be exactly `true`, and any error becomes `false`. Only the unverified stop-safety use (row 6) is a possible gap.
 
 **Cross-references.**
 GCREX-4 — identity/metadata/activity/attachment phase; defines `IsAttached` and `report-attachment`
@@ -595,7 +595,6 @@ docs/REX-CONTRACT.md §9 — `is-attached` row, `report-attachment` capability
 
 **Follow-ups.**
 - Optional hardening: have `Stop` warn or refuse when `IsAttached` is true; a plain `gc stop` or city shutdown is not gated by gc and would kill an attached Rex pane (gap).
-- Answer `true` instead of `ErrAttachmentUnknown`/exit 1 when the client kind is unknown, so gc's destructive paths stay closed (mistake).
 - Confirm no per-op deadline override exists in `main.go` and that 30 s is enforced (gap).
 
 
@@ -854,7 +853,7 @@ GCREX-3 — `peek` is the likely fallback path.
 |---|---|---|---|---|---|
 | 1 | op presence | exit 0, one-line hint to open the Rex app; no Rex call | execs `hc attach` with tty passthrough | intentional | gc 1.5.1 calls `attach` and treats exit 2 as failure; the hint removes the exit-2 failure without a pty passthrough, and `tty.attach` stays undeclared |
 | 2 | capability gating | does not declare `tty.attach` | op exists but does not declare `tty.attach` either | intentional | the capability is reserved in gc 1.5.1 and has no consumer; gc calls `attach` without checking it, so both packs omit it harmlessly |
-| 3 | attach lock / viewer signal | `is-attached` derives viewers from `session.list_clients` + active window (`attach.go:22-52`) | `attach` holds a flock that `is-attached` reads (`attach.py:88,124-127`) | intentional | Rex reports clients server-side; no lock needed |
+| 3 | attach lock / viewer signal | `is-attached` derives viewers from `session.list_clients` + active window (`attach.go:18-53`) | `attach` holds a flock that `is-attached` reads (`attach.py:88,124-127`) | intentional | Rex reports clients server-side; no lock needed |
 | 4 | deadline | hint handler retires immediately; no deadline applies (spec: `attach` has none) | `start` class: 120 s default, pre-exec only | intentional | confirmed: the spec says no deadline for `attach`, and gc's `runWithTTY` uses no context (`exec/exec.go:195-202`); herdr's class only bounds setup before `execve` |
 
 **Verdict.** `intentional`. `attach` was the one op where "absent = exit 2" was not conformant in practice: gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` after an `is-running` check and a possible `start` (`runtime/seam_adapter.go:139-149`, `exec/seams.go:170-172`), and it runs it through `runWithTTY`, which never goes through the exit-2 mapping, so the raw `*exec.ExitError` became `gc session attach: exit status 2` with exit 1 (`exec/exec.go:195-202`, `cmd/gc/cmd_session.go:399`, `:508`, `:1554`). GCREX-20 answers `attach` with exit 0 and a hint instead, which removes the user-visible failure. There is no deadline and no `tty.attach` gate, and the handler neither opens a pty nor focuses a pane; herdr's real passthrough is the richer behavior, but the hint keeps `gc session attach` working without declaring `tty.attach`. `docs/REX-CONTRACT.md` §9 now records `attach` (and `exec`) as the exceptions to "exit 2 is success".

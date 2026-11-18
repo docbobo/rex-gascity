@@ -283,7 +283,9 @@ func TestIsAttached(t *testing.T) {
 		t.Errorf("is-attached with app client = %q", got)
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "martian"}}
-	assertFailure(t, h.run("", "is-attached", dog), exitFail)
+	if got := h.must("", "is-attached", dog).stdout; got != "true\n" {
+		t.Errorf("is-attached with unclassifiable client kind = %q, want true", got)
+	}
 }
 
 // downRex fails the read calls attach might use, modeling an unreachable Rex

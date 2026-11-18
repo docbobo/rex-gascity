@@ -67,12 +67,19 @@ func TestIsAttachedBlockGoneFromActiveTab(t *testing.T) {
 	attachWant(t, p, false)
 }
 
+func TestIsAttachedPeerOnly(t *testing.T) {
+	attachWant(t, attachStarted(t, "window:Indigo", "block:dog-1", rex.ClientInfo{ID: "p1", Kind: "peer", Name: "peer"}), false)
+}
+
 func TestIsAttachedUnknownKind(t *testing.T) {
 	for _, kind := range []string{"", "mystery"} {
 		p := attachStarted(t, "window:Indigo", "block:dog-1", attachApp, rex.ClientInfo{ID: "x", Kind: kind})
-		_, err := p.IsAttached(context.Background(), attachName)
-		if !errors.Is(err, provider.ErrAttachmentUnknown) {
-			t.Errorf("kind %q: err = %v, want ErrAttachmentUnknown", kind, err)
+		got, err := p.IsAttached(context.Background(), attachName)
+		if err != nil {
+			t.Errorf("kind %q: IsAttached error = %v, want nil", kind, err)
+		}
+		if !got {
+			t.Errorf("kind %q: IsAttached = false, want true (answer true when the kind is unclassifiable)", kind)
 		}
 	}
 }

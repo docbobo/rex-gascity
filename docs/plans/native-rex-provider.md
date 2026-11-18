@@ -387,7 +387,7 @@ docs/REX-CONTRACT.md §9, which has no `CopyTo` or `RunLive` rows and adds
 | `Stop` | `block.close {block_id}` (idempotent; a pane already gone is `rex.ErrNotFound` and counts as success); leave the city session and other rigs alone | Never stop the server, and never destroy the shared city session out from under other rigs. Rex removes a tab when its last block closes (live-verified), so teardown is block-only and needs no window call. |
 | `Interrupt` | `block.event` ctrl+c (or `rex send-key ctrl+c`) | Keystroke, not a signal — same as herdr. Hard kill = `block.close`. |
 | `IsRunning` | sidecar binding + `block call process`; `last_exit` only | Running means the pane exists and `last_exit` is unset. `IsRunning` and the input ops do not inspect foreground/process names; only `ProcessAlive(names)` does. |
-| `IsAttached` | `session.list_clients` on the city session (an app client must exist), then `session.view` | Attached only when the agent's rig tab is the session's active window and still contains the agent's pane. Tiled panes in the active tab are visible. An app client is listed on every session, so app presence alone is not attachment. `Start` launches with `focus=false` so a background rig does not steal focus. Unknown client kinds yield `ErrAttachmentUnknown`. |
+| `IsAttached` | `session.list_clients` on the city session (an app client must exist), then `session.view` | Attached only when the agent's rig tab is the session's active window and still contains the agent's pane. Tiled panes in the active tab are visible. An app client is listed on every session, so app presence alone is not attachment. `Start` launches with `focus=false` so a background rig does not steal focus. Unknown client kinds answer true (GCREX-22). |
 | `Attach` | `session.focus_block` + `session.focus_window` (the rig tab), via `rex api call` / client action | Focus in the user's Rex app rather than stealing a tty. |
 | `ProcessAlive` | `block call process`; strict tree matching of `foreground`/`ancestors` names/`argv0`/`path` against `processNames` | Empty `processNames` ⇒ true. Only this op inspects process names. |
 | `Nudge` | read `program_status` → refuse `working`/`blocked` (typed errors, nothing typed) → `block call write {"data": "<text>"}` then submit (Enter via `block.event` / `send-key enter`) → poll for an idle→working transition or a newer `updated_at`, else a format-fingerprint change | Busy gating and submit confirmation were deferred from GCREX-4 and are implemented in GCREX-16 (`NudgeModeImmediate` / `GC_REX_NUDGE_IMMEDIATE` overrides the gate). An unconfirmed delivery is a report, not an error, so gc does not retype it. |
@@ -477,9 +477,10 @@ Details:
   app presence alone is not attachment. The agent counts as attached only
   when its rig tab is the session's active window and still contains the
   agent's pane (tiled panes in the active tab are visible). `Start` launches
-  with `focus=false`, so a background rig does not steal focus. Exit non-zero
-  (`ErrAttachmentUnknown`) when attachment cannot be determined (this
-  governs whether a session is held awake).
+  with `focus=false`, so a background rig does not steal focus. Answer true
+  when the client kind cannot be classified, since gc reads any is-attached
+  error as not attached (GCREX-22; this governs whether a session is held
+  awake).
 - **Liveness honesty:** when the Rex server is unreachable, report
   `ErrRuntimeUnavailable` — never "no sessions exist". Destructive reconciler
   paths defer on it.
