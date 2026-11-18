@@ -111,7 +111,15 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 	if err != nil {
 		return NudgeReport{}, err
 	}
+	return p.nudgeReportBinding(ctx, binding, text, mode)
+}
 
+// nudgeReportBinding is NudgeReport against an already-resolved pane. Startup
+// delivery uses it so the nudge goes to the pane it launched, not to whatever
+// a name lookup resolves to after a concurrent stop and start of the same
+// name.
+func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text string, mode NudgeMode) (NudgeReport, error) {
+	name := string(binding.Name)
 	baseline, _ := p.programStatusSnapshot(ctx, binding)
 	if mode == NudgeModeWait {
 		switch baseline.State {

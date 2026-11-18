@@ -95,10 +95,13 @@ type Fake struct {
 	// block.
 	ProgramStatuses map[rex.BlockID]rex.ProgramStatus
 
-	// ProgramStatusFunc, when non-nil, supersedes ProgramStatuses. It is called
-	// with the fake's lock held, so it must not call Fake methods; tests use it
-	// to model a program that reacts to typed input between calls.
+	// ProgramStatusFunc and WriteFunc, when non-nil, supersede the plain
+	// maps for those methods. They are called with the fake's lock held, so
+	// they must not call Fake methods; tests use them to model a program
+	// that reacts to typed input between calls (ProgramStatusFunc) or to
+	// observe the order of writes (WriteFunc).
 	ProgramStatusFunc func(rex.BlockID) rex.ProgramStatus
+	WriteFunc         func(sid rex.SessionID, block rex.BlockID, text string)
 
 	// ListClientsErr and ProgramStatusErr, when set, are returned by those
 	// methods.
@@ -238,6 +241,9 @@ func (f *Fake) BlockWrite(_ context.Context, sid rex.SessionID, block rex.BlockI
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.BlockCalls = append(f.BlockCalls, BlockCall{SessionID: sid, BlockID: block, Op: "write", Text: text})
+	if f.WriteFunc != nil {
+		f.WriteFunc(sid, block, text)
+	}
 	return f.WriteErr
 }
 

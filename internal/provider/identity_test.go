@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,11 +184,24 @@ func TestStartFailureClearsSeededIdentityAndProvisionalBinding(t *testing.T) {
 	}
 }
 
+// startupProvider builds a provider for the startup-nudge tests: a short
+// readiness wait, a short confirmation window and no resend ladder, so a test
+// only pays for the behavior it exercises. Tests that need resends pass
+// provider.WithStartupNudgeRetries themselves.
+func startupProvider(fake rex.Client, opts ...provider.Option) *provider.Provider {
+	base := []provider.Option{
+		provider.WithStartupReadiness(2*time.Second, 20*time.Millisecond),
+		provider.WithNudgeConfirmation(20*time.Millisecond, 2*time.Millisecond),
+		provider.WithStartupNudgeRetries(nil),
+	}
+	return provider.New("acme", fake, append(base, opts...)...)
+}
+
 func TestStartupNudgeDeliveredAfterLaunch(t *testing.T) {
 	const name = "Indigo--dog-1"
 	ctx := context.Background()
 	fake := faketest.New()
-	p := provider.New("acme", fake)
+	p := startupProvider(fake)
 
 	if err := p.Start(ctx, name, provider.Config{
 		Argv:  []string{"claude"},
@@ -229,6 +243,176 @@ func TestStartupNudgeDeliveredAfterLaunch(t *testing.T) {
 	last := fake.SentKeys[len(fake.SentKeys)-1]
 	if len(last.Keys) != 1 || last.Keys[0] != "enter" {
 		t.Errorf("submit keys = %v, want [enter]", last.Keys)
+	}
+}
+
+// TestStartupNudgeWaitsForIdleBeforeDelivering covers a pane whose program
+// reports program_status only after the first poll: Start must not type the
+// nudge until the program reports idle.
+//
+// The assertion is on the observed status sequence, not just that some
+// program_status call preceded the write: NudgeReport's own baseline poll is
+// a program_status call, so "a poll happened" passes even without the wait.
+func TestStartupNudgeWaitsForIdleBeforeDelivering(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	var states []string
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		state := ""
+		if len(states) >= 1 {
+			state = "idle"
+		}
+		states = append(states, state)
+		if state == "" {
+			// Still booting: no program_status record yet.
+			return rex.ProgramStatus{}
+		}
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{
+			State:     state,
+			UpdatedAt: time.Now(),
+		}}}
+	}
+	p := startupProvider(fake)
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	writeAt := -1
+	for i, c := range fake.BlockCalls {
+		if c.Op == "write" && c.Text == "hello agent" {
+			writeAt = i
+			break
+		}
+	}
+	if writeAt < 0 {
+		t.Fatalf("startup nudge not written after idle: %+v", fake.BlockCalls)
+	}
+	preWritePolls := 0
+	for _, c := range fake.BlockCalls[:writeAt] {
+		if c.Op == "program_status" {
+			preWritePolls++
+		}
+	}
+	if preWritePolls == 0 {
+		t.Fatalf("nudge written before readiness was checked: %+v", fake.BlockCalls)
+	}
+	sawIdle := false
+	for _, s := range states[:preWritePolls] {
+		if s == "idle" {
+			sawIdle = true
+		}
+	}
+	if !sawIdle {
+		t.Fatalf("nudge written before the program reported idle: pre-write states=%v calls=%+v", states[:preWritePolls], fake.BlockCalls)
+	}
+	if len(fake.SentKeys) == 0 || fake.SentKeys[len(fake.SentKeys)-1].Keys[0] != "enter" {
+		t.Errorf("idle nudge not submitted: %+v", fake.SentKeys)
+	}
+}
+
+// TestStartupNudgeDeliveredAfterNonIdleWindow covers a pane program that
+// reports a record but never `idle`: only the shorter settle path is for no
+// record at all, so the nudge waits the full readiness window and is still
+// delivered best-effort when it elapses.
+func TestStartupNudgeDeliveredAfterNonIdleWindow(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{State: "working"}}}
+	}
+	p := startupProvider(fake, provider.WithStartupReadiness(60*time.Millisecond, 10*time.Millisecond))
+
+	start := time.Now()
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Errorf("Start returned in %v; want the full window for a present non-idle record", elapsed)
+	}
+	wrote := false
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" && c.Text == "hello agent" {
+			wrote = true
+		}
+	}
+	if !wrote {
+		t.Errorf("nudge not delivered after the non-idle window: %+v", fake.BlockCalls)
+	}
+}
+
+// TestStartupNudgeDeliveredAfterReadinessTimeout covers a pane program that
+// never reports program_status: the settle delay bounds the wait, then the
+// nudge is still delivered best-effort and Start succeeds.
+func TestStartupNudgeDeliveredAfterReadinessTimeout(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := startupProvider(fake)
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"claude"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	sawStatusPoll := false
+	for _, c := range fake.BlockCalls {
+		if c.Op == "program_status" {
+			sawStatusPoll = true
+		}
+	}
+	if !sawStatusPoll {
+		t.Error("Start did not probe program_status before delivering the nudge")
+	}
+	wrote := false
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" && c.Text == "hello agent" {
+			wrote = true
+		}
+	}
+	if !wrote {
+		t.Errorf("nudge not delivered after the readiness timeout: %+v", fake.BlockCalls)
+	}
+	if len(fake.SentKeys) == 0 {
+		t.Error("nudge not submitted after the readiness timeout")
+	}
+}
+
+// TestStartupNudgeReadinessHonoursContext covers a program stuck in a
+// non-idle state: the readiness wait must return when the start context is
+// canceled instead of blocking for the whole window.
+func TestStartupNudgeReadinessHonoursContext(t *testing.T) {
+	const name = "Indigo--dog-1"
+	fake := faketest.New()
+	fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{
+		"block:dog-1": {Records: []rex.ProgramStatusRecord{{
+			State:     "working",
+			UpdatedAt: time.Now(),
+		}}},
+	}
+	p := startupProvider(fake, provider.WithStartupReadiness(10*time.Second, time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Start took %v with a 10s readiness window and a canceled context", elapsed)
 	}
 }
 
@@ -286,7 +470,7 @@ func TestStartupNudgeNotDeliveredOnErrAlreadyRunning(t *testing.T) {
 	const name = "Indigo--dog-1"
 	ctx := context.Background()
 	fake := faketest.New()
-	p := provider.New("acme", fake)
+	p := startupProvider(fake)
 
 	// First StartNew succeeds.
 	if err := p.StartNew(ctx, name, provider.Config{
@@ -351,7 +535,7 @@ func TestStartupNudgeDeliveryFailureKeepsPane(t *testing.T) {
 		t.Run(tc.label, func(t *testing.T) {
 			fake := faketest.New()
 			tc.set(fake)
-			p := provider.New("acme", fake)
+			p := startupProvider(fake)
 			err := p.Start(ctx, name, provider.Config{
 				Argv:  []string{"pi"},
 				Env:   identityEnv(),
@@ -370,5 +554,119 @@ func TestStartupNudgeDeliveryFailureKeepsPane(t *testing.T) {
 				t.Errorf("seeded identity cleared after best-effort nudge failure: %q", got)
 			}
 		})
+	}
+}
+
+// TestStartupNudgeUnconfirmedRecordsMarker covers a startup nudge whose text
+// and Enter reach the pane but whose turn start is not observed. The delivery
+// must still succeed best-effort and leave GC_STARTUP_DELIVERY_UNCONFIRMED on
+// the pane so an operator can find the stranded prompt.
+func TestStartupNudgeUnconfirmedRecordsMarker(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := startupProvider(fake)
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got, err := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got == "" {
+		t.Error("unconfirmed startup delivery did not record GC_STARTUP_DELIVERY_UNCONFIRMED")
+	}
+	if !strings.Contains(got, "not confirmed") {
+		t.Errorf("marker = %q, want an unconfirmed-delivery detail", got)
+	}
+}
+
+// TestStartupNudgeConfirmedClearsMarker covers a startup nudge that the pane
+// confirms by starting a turn. A marker left by an earlier unconfirmed delivery
+// must be cleared, so a later read does not report a strand that is gone.
+func TestStartupNudgeConfirmedClearsMarker(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	var calls int
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		calls++
+		if calls >= 3 {
+			return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{
+				State:     "working",
+				UpdatedAt: time.Now(),
+			}}}
+		}
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{
+			State:     "idle",
+			UpdatedAt: time.Now(),
+		}}}
+	}
+	p := startupProvider(fake, provider.WithNudgeConfirmation(200*time.Millisecond, 2*time.Millisecond))
+	if err := p.SetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey, "old strand"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got, err := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got != "" {
+		t.Errorf("confirmed startup delivery left marker %q", got)
+	}
+}
+
+// TestStartupNudgeResendsUnconfirmedSubmit covers the bug the task was opened
+// for: readiness can be visible while the TUI still drops the Enter, so a
+// delivered but unconfirmed startup nudge is cleared and re-sent down the
+// bounded ladder. The second attempt is confirmed and the marker is cleared.
+func TestStartupNudgeResendsUnconfirmedSubmit(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	var writes int
+	fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) { writes++ }
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		state := "idle"
+		if writes >= 2 {
+			state = "working"
+		}
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{State: state}}}
+	}
+	p := startupProvider(fake, provider.WithStartupNudgeRetries([]time.Duration{5 * time.Millisecond}))
+
+	if err := p.Start(ctx, name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if writes < 2 {
+		t.Fatalf("startup nudge not resent: %d write(s), calls=%+v", writes, fake.BlockCalls)
+	}
+	sawClear := false
+	for _, k := range fake.SentKeys {
+		if len(k.Keys) == 1 && k.Keys[0] == "ctrl+u" {
+			sawClear = true
+		}
+	}
+	if !sawClear {
+		t.Errorf("resend did not clear the drafted line: %+v", fake.SentKeys)
+	}
+	if got, err := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey); err != nil || got != "" {
+		t.Errorf("confirmed resend left marker %q (err %v)", got, err)
 	}
 }

@@ -84,6 +84,19 @@ type Provider struct {
 	nudgeConfirmWindow time.Duration
 	nudgePollInterval  time.Duration
 	nudgeSubmitBudget  time.Duration
+
+	// startupReadyWindow bounds how long Start waits for the pane program to
+	// report idle before delivering the startup nudge.
+	// startupSettleDelay is the shorter bound Start applies when the program
+	// reports no program_status at all, so an agent that never emits one is
+	// not held for the whole window.
+	startupReadyWindow time.Duration
+	startupSettleDelay time.Duration
+
+	// startupNudgeBackoffs is the ladder of delays between startup-nudge
+	// resends after a delivered-but-unconfirmed submit. An empty ladder
+	// disables resending.
+	startupNudgeBackoffs []time.Duration
 }
 
 // Defaults for the bounded nudge confirmation window.
@@ -91,6 +104,31 @@ const (
 	defaultNudgeConfirmWindow = 3 * time.Second
 	defaultNudgePollInterval  = 100 * time.Millisecond
 )
+
+// Defaults for the bounded startup readiness wait. The window mirrors gc's
+// own defaultReadyProbeTimeout (tmux adapter); the shorter settle delay covers
+// a pane program that reports no program_status at all.
+const (
+	defaultStartupReadyWindow = 15 * time.Second
+	defaultStartupSettleDelay = 3 * time.Second
+)
+
+// defaultStartupNudgeBackoffs mirrors gc's startupNudgeRetryBackoffs: a submit
+// injected right after readiness is observed can still miss the TUI's input
+// line, and the whole write+submit cycle is re-run after each delay (gc
+// internal/runtime/tmux/adapter.go:1528 at v1.5.1).
+var defaultStartupNudgeBackoffs = []time.Duration{
+	2 * time.Second,
+	4 * time.Second,
+	6 * time.Second,
+	8 * time.Second,
+}
+
+// StartupDeliveryUnconfirmedMetaKey records that a startup nudge was typed but
+// its submit was not confirmed within the bounded confirmation window. It is
+// cleared when a later startup delivery is confirmed. gc reads only the exit
+// code, so this marker is how an operator finds a stranded first prompt.
+const StartupDeliveryUnconfirmedMetaKey = "GC_STARTUP_DELIVERY_UNCONFIRMED"
 
 // Option configures a Provider.
 type Option func(*Provider)
@@ -113,6 +151,30 @@ func WithNudgeConfirmation(window, interval time.Duration) Option {
 		if interval > 0 {
 			p.nudgePollInterval = interval
 		}
+	}
+}
+
+// WithStartupReadiness sets how long Start waits for the pane program to
+// report idle before delivering the startup nudge, and the shorter settle
+// delay it waits when the program reports no status at all. A non-positive
+// value keeps the default.
+func WithStartupReadiness(window, settle time.Duration) Option {
+	return func(p *Provider) {
+		if window > 0 {
+			p.startupReadyWindow = window
+		}
+		if settle > 0 {
+			p.startupSettleDelay = settle
+		}
+	}
+}
+
+// WithStartupNudgeRetries sets the delays between startup-nudge resends after
+// a delivered-but-unconfirmed submit. An empty ladder disables resending; nil
+// keeps the default. It exists so tests can shrink the ladder.
+func WithStartupNudgeRetries(backoffs []time.Duration) Option {
+	return func(p *Provider) {
+		p.startupNudgeBackoffs = backoffs
 	}
 }
 
@@ -176,14 +238,17 @@ func WithCityNamespaces(cities []string) Option {
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
 	p := &Provider{
-		city:               city,
-		client:             client,
-		bindings:           NewMemoryStore(),
-		activity:           NewMemoryActivityStore(),
-		meta:               NewMemoryMetaStore(),
-		nudgeConfirmWindow: defaultNudgeConfirmWindow,
-		nudgePollInterval:  defaultNudgePollInterval,
-		nudgeSubmitBudget:  defaultNudgeSubmitBudget,
+		city:                 city,
+		client:               client,
+		bindings:             NewMemoryStore(),
+		activity:             NewMemoryActivityStore(),
+		meta:                 NewMemoryMetaStore(),
+		nudgeConfirmWindow:   defaultNudgeConfirmWindow,
+		nudgePollInterval:    defaultNudgePollInterval,
+		nudgeSubmitBudget:    defaultNudgeSubmitBudget,
+		startupReadyWindow:   defaultStartupReadyWindow,
+		startupSettleDelay:   defaultStartupSettleDelay,
+		startupNudgeBackoffs: defaultStartupNudgeBackoffs,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -210,16 +275,32 @@ func (p *Provider) Binding(name string) (Binding, bool) {
 // Start creates the city session, the rig's tab, and the agent's pane, and
 // records the pane's binding. It is idempotent: a live pane is left alone, and
 // a pane whose agent has died is closed before a new one is launched.
+//
+// The state lock covers only the state mutations and the launch. The startup
+// nudge is delivered after Start releases the lock, so its bounded readiness
+// wait cannot stall every other Start or Stop in the city.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
-	return p.withStateLock(ctx, func() error { return p.start(ctx, name, cfg) })
+	var launch startResult
+	err := p.withStateLock(ctx, func() error {
+		var startErr error
+		launch, startErr = p.start(ctx, name, cfg)
+		return startErr
+	})
+	if err != nil {
+		return err
+	}
+	p.deliverStartupNudge(ctx, name, launch, cfg.Nudge)
+	return nil
 }
 
 // StartNew starts the agent like Start, but fails with ErrAlreadyRunning when
 // its pane is already live. The liveness check and the launch run under one
 // state lock, so of two concurrent StartNew calls for one name sharing a state
-// dir, exactly one launches and the other sees ErrAlreadyRunning.
+// dir, exactly one launches and the other sees ErrAlreadyRunning. The startup
+// nudge is delivered after the lock is released, like Start.
 func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error {
-	return p.withStateLock(ctx, func() error {
+	var launch startResult
+	err := p.withStateLock(ctx, func() error {
 		running, err := p.IsRunning(ctx, name)
 		if err != nil {
 			return err
@@ -227,11 +308,25 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 		if running {
 			return fmt.Errorf("%w: %s", ErrAlreadyRunning, name)
 		}
-		return p.start(ctx, name, cfg)
+		var startErr error
+		launch, startErr = p.start(ctx, name, cfg)
+		return startErr
 	})
+	if err != nil {
+		return err
+	}
+	p.deliverStartupNudge(ctx, name, launch, cfg.Nudge)
+	return nil
 }
 
-func (p *Provider) start(ctx context.Context, name string, cfg Config) (err error) {
+// startResult identifies the pane a start launched. A zero result means the
+// call was idempotent and found the pane already alive.
+type startResult struct {
+	sessionID rex.SessionID
+	blockID   rex.BlockID
+}
+
+func (p *Provider) start(ctx context.Context, name string, cfg Config) (launch startResult, err error) {
 	n := SessionName(name)
 	cfg.Env = projectPoolRouting(cfg.Env)
 	seeded := false
@@ -256,36 +351,36 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 
 	old, found, err := p.binder.ResolveHint(ctx, n, hint)
 	if err != nil {
-		return err
+		return startResult{}, err
 	}
 	if found {
 		alive, err := p.paneAlive(ctx, old)
 		if err != nil {
-			return err
+			return startResult{}, err
 		}
 		if alive {
-			return nil
+			return startResult{}, nil
 		}
 		if err := p.client.CloseBlock(ctx, old.SessionID, old.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-			return err
+			return startResult{}, err
 		}
 		p.binder.Forget(n)
 	}
 
 	sid, ok, err := p.binder.FindSession(ctx)
 	if err != nil {
-		return err
+		return startResult{}, err
 	}
 	if !ok {
 		sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
 		if err != nil {
-			return err
+			return startResult{}, err
 		}
 	}
 
 	view, err := p.client.SessionView(ctx, sid)
 	if err != nil {
-		return err
+		return startResult{}, err
 	}
 
 	// Run pre_start hooks before seeding identity or a provisional binding,
@@ -294,7 +389,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 		merged := mergeEnv(os.Environ(), cfg.Env)
 		for i, cmd := range cfg.PreStart {
 			if err := runPreStart(ctx, cmd, cfg.WorkDir, merged); err != nil {
-				return fmt.Errorf("pre_start[%d]: %w", i, err)
+				return startResult{}, fmt.Errorf("pre_start[%d]: %w", i, err)
 			}
 		}
 	}
@@ -304,7 +399,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 	// a configured work_dir must exist or the launch would run elsewhere.
 	if cfg.WorkDir != "" {
 		if info, statErr := os.Stat(cfg.WorkDir); statErr != nil || !info.IsDir() {
-			return fmt.Errorf("work_dir %q is not an existing directory after pre_start", cfg.WorkDir)
+			return startResult{}, fmt.Errorf("work_dir %q is not an existing directory after pre_start", cfg.WorkDir)
 		}
 	}
 
@@ -314,27 +409,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 	// instead of an empty identity and must not roll the pending create back.
 	seeded = true
 	if err := p.seedStartIdentity(n, cfg.Env); err != nil {
-		return err
+		return startResult{}, err
 	}
 	p.recordProvisionalBinding(n, sid, "", cfg)
-
-	// Deliver the startup nudge after a successful launch, using the
-	// just-recorded binding's SessionID/BlockID rather than a fresh
-	// livePane re-resolve, so the nudge does not race the pane
-	// program's readiness.
-	var launchedBlock rex.BlockID
-	defer func() {
-		if err != nil || cfg.Nudge == "" || launchedBlock == "" {
-			return
-		}
-		// Best effort, like the nudge op: the pane launched, so a delivery
-		// failure must not fail the start and let gc tear down a healthy
-		// pane. gc's queued-nudge backstop covers an undelivered first
-		// prompt.
-		if wErr := p.client.BlockWrite(ctx, sid, launchedBlock, cfg.Nudge); wErr == nil {
-			_ = p.client.SendKeys(ctx, sid, launchedBlock, submitKey)
-		}
-	}()
 
 	tab := hint.TabLabel
 	spec := rex.LaunchSpec{
@@ -350,20 +427,170 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (err erro
 			}
 			block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
 			if err != nil {
-				return err
+				return startResult{}, err
 			}
 			p.record(ctx, n, sid, w.ID, block, "split", cfg)
-			launchedBlock = block
-			return nil
+			return startResult{sessionID: sid, blockID: block}, nil
 		}
 	}
 	wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
 	if err != nil {
-		return err
+		return startResult{}, err
 	}
 	p.record(ctx, n, sid, wid, block, "window", cfg)
-	launchedBlock = block
-	return nil
+	return startResult{sessionID: sid, blockID: block}, nil
+}
+
+// deliverStartupNudge waits for the launched pane to become ready, then types
+// and submits the startup nudge. It is best effort: no error from the wait or
+// the delivery is returned to Start. It targets the pane Start just launched,
+// resolved from launch rather than re-looked-up by name, so a concurrent stop
+// and start of the same name cannot receive a stale nudge. A delivery whose
+// submit is not confirmed is resent down a bounded ladder, because readiness
+// detection and the TUI accepting input are not the same moment; each resend
+// clears the draft line first so the text is not duplicated. When every
+// attempt is unconfirmed, StartupDeliveryUnconfirmedMetaKey marks the pane;
+// a confirmed delivery clears it. A zero launch result means Start found the
+// pane already alive and must not deliver a second nudge.
+func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch startResult, text string) {
+	if text == "" || launch.blockID == "" {
+		return
+	}
+	binding := Binding{Name: SessionName(name), SessionID: launch.sessionID, BlockID: launch.blockID}
+	p.waitForStartupReady(ctx, launch.sessionID, launch.blockID)
+	report, err := p.nudgeReportBinding(ctx, binding, text, NudgeModeImmediate)
+	if err == nil && report.Confirmed {
+		p.clearStartupDeliveryUnconfirmed(ctx, name)
+		return
+	}
+	if err != nil {
+		p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
+		return
+	}
+
+	for _, backoff := range p.startupNudgeBackoffs {
+		if ctx.Err() != nil {
+			break
+		}
+		if !p.sleepStartupBackoff(ctx, backoff) {
+			break
+		}
+		// The turn may have started late: gc checks for a busy pane after
+		// the backoff and before resending, so a nudge that landed a
+		// moment after the confirmation window is not typed twice.
+		if snap, snapErr := p.programStatusSnapshot(ctx, binding); snapErr == nil && (snap.State == "working" || snap.State == "blocked") {
+			p.clearStartupDeliveryUnconfirmed(ctx, name)
+			return
+		}
+		// Clear the still-drafted line before re-typing, mirroring gc's
+		// clear+paste+submit resend cycle.
+		_ = p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, startupClearKey)
+		report, err = p.nudgeReportBinding(ctx, binding, text, NudgeModeImmediate)
+		if err == nil && report.Confirmed {
+			p.clearStartupDeliveryUnconfirmed(ctx, name)
+			return
+		}
+		if err != nil {
+			break
+		}
+	}
+	p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
+}
+
+// startupClearKey clears the pane's draft input line before a startup-nudge
+// resend. gc's send cycle starts with C-u for the same reason (its tmux
+// adapter's sendKeys); Rex key syntax spells it ctrl+u.
+const startupClearKey = "ctrl+u"
+
+// clearStartupDeliveryUnconfirmed removes the stranded-startup marker after a
+// confirmed delivery. Best effort: a metadata failure must not fail a start
+// that already succeeded.
+func (p *Provider) clearStartupDeliveryUnconfirmed(ctx context.Context, name string) {
+	_ = p.RemoveMeta(ctx, name, StartupDeliveryUnconfirmedMetaKey)
+}
+
+// sleepStartupBackoff waits out one resend delay. It reports false when the
+// start context is done first, so a canceled start does not sleep through the
+// ladder only to record the same unconfirmed delivery later.
+func (p *Provider) sleepStartupBackoff(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// recordStartupDeliveryUnconfirmed leaves a durable marker on the pane after a
+// startup nudge could not be confirmed. The marker is best effort; a metadata
+// write failure must not turn a live start into a failure.
+func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding Binding, report NudgeReport, err error) {
+	detail := "delivered but not confirmed"
+	if err != nil {
+		detail = "delivery failed: " + err.Error()
+	} else if report.State != "" {
+		detail = "delivered but not confirmed (state=" + report.State + ")"
+		if report.Kind != "" {
+			detail += ", kind=" + report.Kind
+		}
+		detail += ")"
+	}
+	_ = p.SetMeta(ctx, string(binding.Name), StartupDeliveryUnconfirmedMetaKey, detail)
+}
+
+// waitForStartupReady blocks until the pane program reports an idle
+// program_status record, the bounded window elapses, or the start context is
+// done. It never returns an error: the startup nudge is best effort, so a
+// missing readiness signal falls through to delivery. When the program
+// reports no program_status at all, only the shorter settle delay is spent,
+// so an agent that never emits status is not held for the whole window.
+func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) {
+	window := p.startupReadyWindow
+	if window <= 0 {
+		return
+	}
+	poll := p.nudgePollInterval
+	if poll <= 0 {
+		poll = defaultNudgePollInterval
+	}
+	settle := p.startupSettleDelay
+	start := time.Now()
+	sawRecord := false
+	for {
+		snap, err := p.programStatusSnapshot(ctx, Binding{SessionID: sid, BlockID: block})
+		if err == nil && snap.Present {
+			sawRecord = true
+			if snap.State == "idle" {
+				return
+			}
+		}
+		elapsed := time.Since(start)
+		// The full window applies once the program has reported a status;
+		// before that the shorter settle delay bounds the wait.
+		bound := window
+		if !sawRecord {
+			bound = settle
+		}
+		if elapsed >= bound {
+			return
+		}
+		wait := poll
+		if remaining := bound - elapsed; wait > remaining {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 // launchCommand returns argv with the environment applied at the command
