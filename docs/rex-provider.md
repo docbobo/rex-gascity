@@ -253,8 +253,22 @@ ordered set of legacy namespaces:
   and `$GC_CITY` when they differ. Reads fall back through the set in order;
   deletes cover every directory. A record written by an older build (or by a
   caller that carried `GC_CITY_PATH`) therefore still resolves.
+- **Unpinned discovery (GCREX-35):** when `$GC_REX_CITY` is unset, the read set
+  also includes the sibling city state directories under the same base. Each
+  directory name is decoded (the inverse of the percent encoding) and only a
+  name that re-encodes to the same directory is trusted; duplicates of an
+  existing candidate are skipped and the rest are sorted after the env-derived
+  entries. This is what lets the gc CLI fallback provider — invoked with no
+  `GC_REX_CITY`, `GC_CITY_PATH` or `GC_CITY` at all — resolve a binding the
+  pinned controller wrote. Discovery only widens reads: a live pane still has
+  to revalidate against its `gc:<city>` Rex session, so a dead city's record is
+  never reported as running. The relaxation is that an unpinned caller cannot
+  name a city, so if two live cities hold the same session name, the name
+  resolves in read-set order (canonical `default`, then env fallbacks, then
+  sorted siblings). Pin a caller with `GC_REX_CITY` to keep it isolated.
 - **Pinned:** when `$GC_REX_CITY` is set the read set is exactly that one
-  namespace, so cities pinned to different values never cross-resolve.
+  namespace, so cities pinned to different values never cross-resolve and
+  pinned callers never read sibling directories.
 
 ### City Namespace Resolution
 
@@ -270,6 +284,15 @@ the canonical namespace is caller-independent:
 `basename($GC_CITY_PATH)` and `$GC_CITY` do **not** select the canonical store;
 they are only additional read namespaces for records written by earlier
 versions.
+
+An unpinned caller additionally discovers the city pins that share its state
+base: sibling directories are decoded back to city names and appended to the
+read set (GCREX-35). Without this, a `GC_REX_CITY`-pinned controller writes its
+bindings under e.g. `my-city/`, while a shell with no city env resolves only
+`default/` and every lookup answers "not running" for a live pane. The fix is
+provider-side because gc's CLI fallback provider invocation carries no city
+environment at all; the provider has to find the pin, and revalidation keeps
+the widened read honest.
 
 ### Environment Knobs
 
@@ -370,7 +393,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 
 ## Known v1 Limits
 
-- **No city in RPP v0 invocations (GCREX-17)**: An RPP call carries only the operation and agent session name, and the caller's `GC_CITY*` values are incidental. The canonical namespace is `GC_REX_CITY` when set, else `"default"`; `basename(GC_CITY_PATH)` and `GC_CITY` are read-only fallbacks for legacy records. Start, `is-running`, `get-last-activity`, `peek`, `list-running`, `stop`, `get-meta` and `set-meta` therefore agree on one store regardless of which caller invokes them. Cities on one Rex server still share the `gc:default` session unless each is pinned with `GC_REX_CITY`; pinning also prevents cross-city fallback reads.
+- **No city in RPP v0 invocations (GCREX-17, extended by GCREX-35)**: An RPP call carries only the operation and agent session name, and the caller's `GC_CITY*` values are incidental. The canonical namespace is `GC_REX_CITY` when set, else `"default"`; `basename(GC_CITY_PATH)` and `GC_CITY` are read-only fallbacks for legacy records. An unpinned caller also discovers the sibling city state directories under its base, so a binding written under a `GC_REX_CITY` pin still resolves when the caller carries no city env at all (GCREX-35). Start, `is-running`, `get-last-activity`, `peek`, `list-running`, `stop`, `get-meta` and `set-meta` therefore agree on one store regardless of which caller invokes them. Cities on one Rex server still share the `gc:default` session unless each is pinned with `GC_REX_CITY`; pinning also prevents cross-city fallback reads, and the discovered sibling set is ordered so a duplicate name resolves deterministically.
 - **Launched command exit closes its pane**: The provider sets no keep_open, so an agent command that exits closes its Rex block, and closing the last block removes the tab. `is-running` reports such a vanished pane as not running, not as an error.
 - **Start config `env` map is applied via the `env` argv wrapper**: Rex terminal launch options have no per-pane environment map, so the provider prefixes the launch command with `env K=V ...` (sorted keys). A bare shell (no command) cannot be seeded and still inherits the Rex server's environment.
 - **Setup hooks except `pre_start` are not run**: `session_setup`, `session_setup_script`, and `session_live` from start config are ignored.

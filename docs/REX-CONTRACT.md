@@ -497,6 +497,14 @@ Phase 0 also confirms the plan's decisions against the live surface:
   the read set to exactly that namespace, so two pinned cities sharing a
   supervisor never cross-resolve. Cities that share a supervisor without
   pinning still share `gc:default`; pinning remains the way to isolate them.
+  **Extended (GCREX-35):** an unpinned caller also discovers the sibling city
+  state directories under its state base (decoded back to city names and
+  trusted only when they re-encode to the same directory), because gc's CLI
+  fallback provider is invoked with no `GC_REX_CITY`/`GC_CITY_PATH`/`GC_CITY`
+  at all. Reads widen, writes and the lock stay canonical, and revalidation
+  against the live `gc:<city>` session keeps a dead city's record from
+  answering as running. With no pin an identical name in two live cities
+  resolves in read-set order; a pinned caller never reads siblings.
 - **Remaining start-config hooks are not applied (open, GCREX-5).** The
   dispatcher ignores the start config's `session_setup`,
   `session_setup_script`, `session_live`, `copy_files` and `overlay_dir`.

@@ -144,6 +144,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
 	// and read across the rest, so start and every lookup op agree on one store.
 	city := provider.CityFromEnv()
 	namespaces := provider.CityCandidates()
+	// An unpinned caller (the gc CLI fallback provider carries no city env)
+	// cannot be told which pin wrote the binding. Discover the sibling city
+	// namespaces a pinned controller wrote under, canonical first. A pinned
+	// caller keeps exactly its pin, so cities stay isolated from each other
+	// when the caller is pinned.
+	if os.Getenv("GC_REX_CITY") == "" {
+		namespaces = append(namespaces, provider.SiblingCityNamespaces(namespaces)...)
+	}
 	dirs, err := provider.StateDirs(namespaces)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)

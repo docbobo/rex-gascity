@@ -219,3 +219,220 @@ func TestNudgeDeliversAcrossCandidateNamespaces(t *testing.T) {
 		t.Errorf("nudge not delivered: wrote=%v submitted=%v calls=%+v keys=%+v", wrote, submitted, fake.BlockCalls, fake.SentKeys)
 	}
 }
+
+// savePinnedBinding writes a binding and one meta key under city's state dir,
+// the way a pinned controller's start op does.
+func savePinnedBinding(t *testing.T, city string, b provider.Binding, metaKey, metaValue string) {
+	t.Helper()
+	dir, err := provider.StateDir(city)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.NewFileStore(filepath.Join(dir, "bindings")).Save(b)
+	if metaKey != "" {
+		if err := provider.NewFileMetaStore(filepath.Join(dir, "meta")).Set(b.Name, metaKey, metaValue); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// An unpinned caller (no GC_REX_CITY/GC_CITY_PATH/GC_CITY) must discover the
+// pin a sibling controller wrote under. This is the GCREX-35 incident: the
+// binding lives in the pinned city's state dir and the Rex server has a live
+// gc:<city> session, but the caller's env names no city, so CityCandidates
+// alone only sees "default" and every lookup answers "not running".
+func TestUnpinnedLookupDiscoversPinnedCity(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	t.Setenv("GC_REX_STATE_DIR", base)
+	t.Setenv("GC_REX_CITY", "")
+	t.Setenv("GC_CITY_PATH", "")
+	t.Setenv("GC_CITY", "")
+
+	const name = "Indigo--dog-1"
+	savePinnedBinding(t, "my-city", provider.Binding{
+		Name:         name,
+		SessionID:    "session:gc:my-city",
+		SessionLabel: "gc:my-city",
+		WindowID:     "window:Indigo",
+		BlockID:      "block:dog-1",
+		TabLabel:     "Indigo",
+		PaneLabel:    "dog-1",
+	}, "GC_SESSION_ID", "pinned-1")
+
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:my-city", Label: "gc:my-city"}}
+	fake.View = rex.SessionView{Windows: []rex.Window{{
+		ID:     "window:Indigo",
+		Label:  "Indigo",
+		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}},
+	}}}
+	fake.Formats = map[rex.BlockID]string{"block:dog-1": "pinned output\n"}
+
+	cities := provider.CityCandidates()
+	cities = append(cities, provider.SiblingCityNamespaces(cities)...)
+	if !slices.Equal(cities, []string{"default", "my-city"}) {
+		t.Fatalf("candidates = %v, want [default my-city]", cities)
+	}
+	p := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(cities))
+
+	running, err := p.IsRunning(ctx, name)
+	if err != nil || !running {
+		t.Fatalf("IsRunning = %v, %v; want true, nil", running, err)
+	}
+	if got, err := p.Peek(ctx, name); err != nil || got != "pinned output\n" {
+		t.Errorf("Peek = %q, %v; want the pinned pane output", got, err)
+	}
+	if got, err := p.GetMeta(ctx, name, "GC_SESSION_ID"); err != nil || got != "pinned-1" {
+		t.Errorf("GetMeta = %q, %v; want pinned-1", got, err)
+	}
+	if names, err := p.ListRunning(ctx, "Indigo--"); err != nil || !slices.Equal(names, []string{name}) {
+		t.Errorf("ListRunning = %v, %v; want [%s]", names, err, name)
+	}
+
+	// AC #5: a genuinely absent session still answers empty, not an error.
+	if got, err := p.Peek(ctx, "Indigo--absent"); err != nil || got != "" {
+		t.Errorf("Peek(absent) = %q, %v; want empty, nil", got, err)
+	}
+
+	// set-meta resolves the pinned name; writes stay in the canonical store.
+	if err := p.SetMeta(ctx, name, "suspended", "true"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+	canonicalDir, err := provider.StateDir("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := provider.NewFileMetaStore(filepath.Join(canonicalDir, "meta")).Get(name, "suspended"); err != nil || !ok || got != "true" {
+		t.Errorf("SetMeta wrote to the canonical store: %q, %v, %v", got, ok, err)
+	}
+}
+
+// perSessionViews overrides SessionView so one fake Rex server can serve two
+// cities with different panes; faketest exposes only one shared View.
+type perSessionViews struct {
+	*faketest.Fake
+	views map[rex.SessionID]rex.SessionView
+}
+
+func (f *perSessionViews) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionView, error) {
+	if view, ok := f.views[sid]; ok {
+		return view, nil
+	}
+	return f.Fake.SessionView(context.Background(), sid)
+}
+
+// Two live pinned cities must not cross-resolve when the caller is unpinned:
+// a name that only city alpha holds resolves alpha's pane, and city beta's
+// session stays separate. (Unpinned duplicate names are documented below.)
+func TestUnpinnedLookupKeepsDistinctCitiesApart(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	t.Setenv("GC_REX_STATE_DIR", base)
+	t.Setenv("GC_REX_CITY", "")
+	t.Setenv("GC_CITY_PATH", "")
+	t.Setenv("GC_CITY", "")
+
+	const nameA, nameB = "RigA--agent-a", "RigB--agent-b"
+	savePinnedBinding(t, "alpha", provider.Binding{
+		Name:         nameA,
+		SessionID:    "session:gc:alpha",
+		SessionLabel: "gc:alpha",
+		WindowID:     "window:RigA",
+		BlockID:      "block:agent-a",
+		TabLabel:     "RigA",
+		PaneLabel:    "agent-a",
+	}, "", "")
+	savePinnedBinding(t, "beta", provider.Binding{
+		Name:         nameB,
+		SessionID:    "session:gc:beta",
+		SessionLabel: "gc:beta",
+		WindowID:     "window:RigB",
+		BlockID:      "block:agent-b",
+		TabLabel:     "RigB",
+		PaneLabel:    "agent-b",
+	}, "", "")
+
+	fake := &perSessionViews{
+		Fake: faketest.New(),
+		views: map[rex.SessionID]rex.SessionView{
+			"session:gc:alpha": {Label: "gc:alpha", Windows: []rex.Window{{
+				ID: "window:RigA", Label: "RigA", Blocks: []rex.Block{{ID: "block:agent-a", Label: "agent-a"}},
+			}}},
+			"session:gc:beta": {Label: "gc:beta", Windows: []rex.Window{{
+				ID: "window:RigB", Label: "RigB", Blocks: []rex.Block{{ID: "block:agent-b", Label: "agent-b"}},
+			}}},
+		},
+	}
+	fake.Sessions = []rex.Session{
+		{ID: "session:gc:alpha", Label: "gc:alpha"},
+		{ID: "session:gc:beta", Label: "gc:beta"},
+	}
+
+	cities := provider.CityCandidates()
+	cities = append(cities, provider.SiblingCityNamespaces(cities)...)
+	if !slices.Equal(cities, []string{"default", "alpha", "beta"}) {
+		t.Fatalf("candidates = %v, want [default alpha beta]", cities)
+	}
+	p := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(cities))
+
+	for _, name := range []string{nameA, nameB} {
+		running, err := p.IsRunning(ctx, name)
+		if err != nil || !running {
+			t.Errorf("IsRunning(%s) = %v, %v; want true, nil", name, running, err)
+		}
+	}
+	bdA, ok := p.Binding(nameA)
+	if !ok || bdA.SessionID != "session:gc:alpha" {
+		t.Errorf("Binding(%s) = %+v, %v; want alpha's session", nameA, bdA, ok)
+	}
+	bdB, ok := p.Binding(nameB)
+	if !ok || bdB.SessionID != "session:gc:beta" {
+		t.Errorf("Binding(%s) = %+v, %v; want beta's session", nameB, bdB, ok)
+	}
+}
+
+// Unpinned callers have no city, so a name stored in more than one live city
+// resolves in candidate order: canonical "default" first, then the sorted
+// sibling namespaces. This is the documented relaxation of AC #4; pinned
+// callers never read siblings.
+func TestUnpinnedLookupDuplicateNamePrecedence(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("GC_REX_STATE_DIR", base)
+	t.Setenv("GC_REX_CITY", "")
+	t.Setenv("GC_CITY_PATH", "")
+	t.Setenv("GC_CITY", "")
+
+	const name = "Indigo--dog-1"
+	for _, city := range []string{"alpha", "beta"} {
+		savePinnedBinding(t, city, provider.Binding{
+			Name:         name,
+			SessionID:    rex.SessionID("session:gc:" + city),
+			SessionLabel: "gc:" + city,
+			WindowID:     "window:Indigo",
+			BlockID:      "block:dog-1",
+			TabLabel:     "Indigo",
+			PaneLabel:    "dog-1",
+		}, "", "")
+	}
+	fake := &perSessionViews{
+		Fake: faketest.New(),
+		views: map[rex.SessionID]rex.SessionView{
+			"session:gc:alpha": {Label: "gc:alpha", Windows: []rex.Window{{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}}}},
+			"session:gc:beta":  {Label: "gc:beta", Windows: []rex.Window{{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}}}},
+		},
+	}
+	fake.Sessions = []rex.Session{
+		{ID: "session:gc:alpha", Label: "gc:alpha"},
+		{ID: "session:gc:beta", Label: "gc:beta"},
+	}
+
+	cities := provider.CityCandidates()
+	cities = append(cities, provider.SiblingCityNamespaces(cities)...)
+	p := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(cities))
+
+	bd, ok := p.Binding(name)
+	if !ok || bd.SessionID != "session:gc:alpha" {
+		t.Errorf("duplicate name resolved %+v, %v; want the first sibling (alpha)", bd, ok)
+	}
+}

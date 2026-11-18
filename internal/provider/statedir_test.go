@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,6 +88,59 @@ func TestStateDirNamesDoNotCollide(t *testing.T) {
 				t.Errorf("StateDir(%q) equals StateDir(%q)", city, other)
 			}
 		}
+	}
+}
+
+func TestDecodeSafeNameRoundTrips(t *testing.T) {
+	for _, city := range []string{"my-city", "Acme", "a/b", "a_b", ".hidden", "Grüße", "%25"} {
+		enc := safeName(city)
+		got, ok := decodeSafeName(enc)
+		if !ok || got != city {
+			t.Errorf("decodeSafeName(safeName(%q)) = %q, %v", city, got, ok)
+		}
+	}
+	// Names safeName would never emit are rejected, so a stray directory is
+	// never trusted as a namespace.
+	for _, bad := range []string{"", "a/b", "Acme", "a_b", "a%2", "a%ZZ", "a%2f", "."} {
+		if got, ok := decodeSafeName(bad); ok {
+			t.Errorf("decodeSafeName(%q) = %q, want rejection", bad, got)
+		}
+	}
+}
+
+func TestSiblingCityNamespaces(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("GC_REX_STATE_DIR", base)
+	t.Setenv("XDG_STATE_HOME", "")
+	for _, city := range []string{"my-city", "other", "Acme"} {
+		dir, err := StateDir(city)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A directory name safeName would not produce is skipped.
+	if err := os.MkdirAll(filepath.Join(base, "Bad_Name"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "not-a-dir"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := SiblingCityNamespaces([]string{"default", "other"})
+	// Sorted, excludes a candidate and ignores the malformed entry.
+	want := []string{"Acme", "my-city"}
+	if !slices.Equal(got, want) {
+		t.Errorf("SiblingCityNamespaces = %v, want %v", got, want)
+	}
+}
+
+func TestSiblingCityNamespacesEmptyBase(t *testing.T) {
+	t.Setenv("GC_REX_STATE_DIR", filepath.Join(t.TempDir(), "missing"))
+	if got := SiblingCityNamespaces(nil); got != nil {
+		t.Errorf("SiblingCityNamespaces on a missing base = %v, want nil", got)
 	}
 }
 

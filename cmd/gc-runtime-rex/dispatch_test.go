@@ -524,3 +524,43 @@ func TestNudgeRejectsInvalidUTF8(t *testing.T) {
 		t.Errorf("send-keys calls = %d, want 0 after bad stdin", len(fake.SentKeys))
 	}
 }
+
+// GCREX-35: the gc CLI fallback provider is invoked with no city env at all,
+// while the session was started under a GC_REX_CITY pin. Every lookup op must
+// discover the pin's state dir from the sibling namespaces and answer for the
+// live pane; a genuinely absent session still answers empty/false with exit 0.
+func TestLookupResolvesPinnedBindingFromUnpinnedCaller(t *testing.T) {
+	h, fake := newHarness(t) // the harness starts pinned to testcity
+	h.must(`{"command":"sleep 300","env":{"GC_SESSION_ID":"sess-test"}}`, "start", dog)
+	fake.Formats = map[rex.BlockID]string{"block:dog-1": "pinned output\n"}
+
+	// Become the unpinned gc caller: clear every city env the provider reads.
+	t.Setenv("GC_REX_CITY", "")
+	t.Setenv("GC_CITY_PATH", "")
+	t.Setenv("GC_CITY", "")
+
+	if got := strings.TrimSpace(h.must("", "is-running", dog).stdout); got != "true" {
+		t.Fatalf("is-running = %q, want true", got)
+	}
+	if got := h.must("", "peek", dog).stdout; got != "pinned output\n" {
+		t.Errorf("peek = %q, want the pinned pane output", got)
+	}
+	if got := strings.TrimSpace(h.must("", "list-running", "Indigo--").stdout); got != dog {
+		t.Errorf("list-running = %q, want %s", got, dog)
+	}
+	if got := h.must("", "get-meta", dog, "GC_SESSION_ID").stdout; got != "sess-test" {
+		t.Errorf("get-meta GC_SESSION_ID = %q, want sess-test (pinned meta store not discovered)", got)
+	}
+	h.must("true", "set-meta", dog, "suspended")
+	if got := h.must("", "get-meta", dog, "suspended").stdout; got != "true" {
+		t.Errorf("set-meta/get-meta round trip = %q, want true", got)
+	}
+
+	// AC #5: a genuinely absent session is still empty output / false, exit 0.
+	if r := h.must("", "peek", "Indigo--absent"); r.stdout != "" {
+		t.Errorf("peek(absent) = %q, want empty", r.stdout)
+	}
+	if got := strings.TrimSpace(h.must("", "is-running", "Indigo--absent").stdout); got != "false" {
+		t.Errorf("is-running(absent) = %q, want false", got)
+	}
+}
