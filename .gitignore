@@ -11,3 +11,4 @@ bin/
 # Gas City
 .beads/*
 !.beads/identity.toml
+/.pi

@@ -41,6 +41,109 @@ func statusFunc(records ...rex.ProgramStatusRecord) func(rex.BlockID) rex.Progra
 	}
 }
 
+// TestNudgePoolClaimGuardFollowsClaimLiveness proves the provider's delivery
+// guard follows gc's live-claim predicate, not just the stamp. gc's
+// stalled-claim backstop can re-arm the fallback pool-claim nudge from a stale
+// snapshot; while the target session still holds the stamped bead the provider
+// refuses to type it, and nothing is typed so a retry cannot clobber the
+// in-flight task. Once the stamped bead is closed, released, or owned by
+// another session the claim is not held and the nudge is delivered, so a stale
+// stamp cannot suppress it forever (GCREX-33 AC #4).
+func TestNudgePoolClaimGuardFollowsClaimLiveness(t *testing.T) {
+	const poolClaim = "Run gc hook --claim --drain-ack --json now; if it returns work, execute it immediately."
+	workDir := t.TempDir()
+	gcPath := filepath.Join(workDir, "gc")
+	script := `#!/bin/sh
+case "$1 $2" in
+  "hook current")
+    if [ -n "${FAKE_CLAIM:-}" ]; then printf '%s\n' "$FAKE_CLAIM"; exit 0; fi
+    exit 1 ;;
+  "bd list")
+    printf '%s' "${FAKE_BEAD_JSON:-[]}"
+    exit 0 ;;
+esac
+exit 1
+`
+	if err := os.WriteFile(gcPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gc: %v", err)
+	}
+	t.Setenv("GC_BIN", gcPath)
+
+	cases := []struct {
+		name     string
+		claim    string
+		beadJSON string
+		held     bool
+	}{
+		{
+			name:     "live claim is refused",
+			claim:    "mc-claim-live",
+			beadJSON: `[{"status":"in_progress","assignee":"seat-a","metadata":{"gc.session_id":"mc-session-live"}}]`,
+			held:     true,
+		},
+		{
+			name:     "closed claim is delivered",
+			claim:    "mc-claim-live",
+			beadJSON: `[{"status":"closed","assignee":"seat-a","metadata":{"gc.session_id":"mc-session-live"}}]`,
+		},
+		{
+			name:     "released claim is delivered",
+			claim:    "mc-claim-live",
+			beadJSON: `[{"status":"open","assignee":"","metadata":{}}]`,
+		},
+		{
+			name:     "foreign claim is delivered",
+			claim:    "mc-claim-live",
+			beadJSON: `[{"status":"in_progress","assignee":"seat-b","metadata":{"gc.session_id":"mc-other-session"}}]`,
+		},
+		{
+			name:     "missing claim bead is delivered",
+			claim:    "mc-claim-live",
+			beadJSON: `[]`,
+		},
+		{
+			name:     "no claim stamp is delivered",
+			claim:    "",
+			beadJSON: `[]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := faketest.New()
+			t.Setenv("FAKE_CLAIM", tc.claim)
+			t.Setenv("FAKE_BEAD_JSON", tc.beadJSON)
+
+			p := provider.New("acme", fake, provider.WithNudgeConfirmation(20*time.Millisecond, time.Millisecond))
+			if err := p.Start(context.Background(), activityName, provider.Config{
+				Argv:    []string{"claude"},
+				WorkDir: workDir,
+				Env:     map[string]string{"GC_SESSION_ID": "mc-session-live"},
+			}); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+
+			err := p.Nudge(context.Background(), activityName, poolClaim)
+			got := ops(fake)
+			typed := slices.Contains(got, "write") || slices.Contains(got, "send-key")
+			if tc.held {
+				if !errors.Is(err, provider.ErrNudgeClaimHeld) {
+					t.Fatalf("Nudge error = %v, want ErrNudgeClaimHeld", err)
+				}
+				if typed {
+					t.Errorf("block ops = %v, want no input while a claim is held", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Nudge error = %v, want delivery", err)
+			}
+			if !typed {
+				t.Errorf("block ops = %v, want the nudge typed", got)
+			}
+		})
+	}
+}
+
 func TestNudgeRecordsInputFloor(t *testing.T) {
 	fake := faketest.New()
 	store := provider.NewMemoryActivityStore()

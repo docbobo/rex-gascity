@@ -499,8 +499,8 @@ Phase 0 also confirms the plan's decisions against the live surface:
   pinning still share `gc:default`; pinning remains the way to isolate them.
 - **Remaining start-config hooks are not applied (open, GCREX-5).** The
   dispatcher ignores the start config's `session_setup`,
-  `session_setup_script`, `session_live`, `copy_files`, `overlay_dir` and
-  `pack_overlay_dirs`. Rex launch options carry no `env` option of their own.
+  `session_setup_script`, `session_live`, `copy_files` and `overlay_dir`.
+  Rex launch options carry no `env` option of their own.
   Phase 5 must close the remaining hooks before a real fleet runs.
   **Resolved (GCREX-10):** the `env` map is applied. The dispatcher decodes
   `env` from the start config and wraps the launch argv with `env K=V ...`
@@ -523,9 +523,14 @@ Phase 0 also confirms the plan's decisions against the live surface:
   process environment merged with the start-config `env` map. A non-zero exit
   aborts the launch and leaves no seeded identity or binding behind; after the
   hooks a configured `work_dir` must exist or the start fails. An empty or
-  absent `pre_start` is a no-op. The remaining
-  hooks (`session_setup`, `session_setup_script`, `session_live`, `copy_files`,
-  `overlay_dir`, `pack_overlay_dirs`) are still unimplemented.
+  absent `pre_start` is a no-op.
+  **Resolved (GCREX-33):** after `pre_start` and the `work_dir` check, the
+  provider stages each `pack_overlay_dirs` entry's `per-provider/<GC_PROVIDER>/`
+  subtree into the work dir, later entries winning. This is what lets a pack's
+  per-provider Pi hook override replace a managed hook the controller's
+  preserve predicate would keep. The remaining hooks (`session_setup`,
+  `session_setup_script`, `session_live`, `copy_files`, `overlay_dir`) are
+  still unimplemented.
 - **Rig-tab growth (resolved, GCREX-6).** Always splitting the first pane
   halved it each time (14 splits: 1/2 ... 1/16384). The provider now splits
   the largest-area pane along its longer axis, side `after`, 50%, reading

@@ -52,6 +52,11 @@ type Config struct {
 	// immediately. Delivery is best effort: a transport failure does not fail
 	// the start. An empty string is a no-op.
 	Nudge string
+	// PackOverlayDirs lists pack overlay directories. The provider stages each
+	// directory's per-provider/<GC_PROVIDER> subtree into WorkDir after pre_start,
+	// so a pack's per-provider override reaches a workdir that already holds a
+	// managed file gc's preserve predicate would keep. Later directories win.
+	PackOverlayDirs []string
 }
 
 // Provider drives Rex for one gc city.
@@ -79,6 +84,15 @@ type Provider struct {
 	nudgeConfirmWindow time.Duration
 	nudgePollInterval  time.Duration
 	nudgeSubmitBudget  time.Duration
+
+	// claimProbe reads back the work bead a session most recently claimed
+	// through `gc hook --claim`, and returns it only while the session still
+	// holds it (mirroring gc's claimedWorkStillHeldBy: a closed, released, or
+	// foreign-owned claim is not held). Nudge consults it before delivering
+	// gc's fallback pool-claim nudge so a seat that already holds a claim is
+	// not re-prompted mid-task, and a stale stamp does not suppress the nudge
+	// forever (GCREX-33).
+	claimProbe func(context.Context, Binding) (string, error)
 
 	// startupReadyWindow bounds how long Start waits for the pane program to
 	// report idle before delivering the startup nudge.
@@ -245,6 +259,9 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		startupSettleDelay:   defaultStartupSettleDelay,
 		startupNudgeBackoffs: defaultStartupNudgeBackoffs,
 	}
+	if p.claimProbe == nil {
+		p.claimProbe = p.probeLiveClaim
+	}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -396,6 +413,13 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (launch s
 		if info, statErr := os.Stat(cfg.WorkDir); statErr != nil || !info.IsDir() {
 			return startResult{}, fmt.Errorf("work_dir %q is not an existing directory after pre_start", cfg.WorkDir)
 		}
+	}
+	// gc's managed-file preserve predicate can keep an existing current hook,
+	// so the controller may never write the rex pack's per-provider override.
+	// Write the per-provider subtree here after pre_start so the override lands
+	// even when the workdir already holds the managed v9 hook.
+	if err := stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, cfg.Env["GC_PROVIDER"]); err != nil {
+		return startResult{}, err
 	}
 
 	// Seed the identity and a provisional binding before the launch call,
@@ -716,18 +740,19 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		return
 	}
 	p.binder.Record(Binding{
-		Name:         n,
-		SessionID:    sid,
-		SessionLabel: rexSessionLabel(p.city),
-		WindowID:     wid,
-		BlockID:      block,
-		TabLabel:     tabLabelFor(n, cfg.Env),
-		PaneLabel:    n.PaneLabel(),
-		Aliases:      aliasesFor(n, cfg.Env),
-		LaunchMode:   mode,
-		CreatedAt:    time.Now(),
-		GCBin:        gcBinBasename(cfg.Env),
-		WorkDir:      cfg.WorkDir,
+		Name:           n,
+		SessionID:      sid,
+		SessionLabel:   rexSessionLabel(p.city),
+		WindowID:       wid,
+		BlockID:        block,
+		TabLabel:       tabLabelFor(n, cfg.Env),
+		PaneLabel:      n.PaneLabel(),
+		Aliases:        aliasesFor(n, cfg.Env),
+		LaunchMode:     mode,
+		CreatedAt:      time.Now(),
+		GCBin:          gcBinBasename(cfg.Env),
+		WorkDir:        cfg.WorkDir,
+		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
 	})
 }
 

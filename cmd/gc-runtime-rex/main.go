@@ -53,11 +53,12 @@ func liveDeps() deps {
 
 // startConfig is the start op's stdin JSON. Other fields gc sends are ignored.
 type startConfig struct {
-	WorkDir  string            `json:"work_dir"`
-	Command  string            `json:"command"`
-	Env      map[string]string `json:"env"`
-	PreStart []string          `json:"pre_start"`
-	Nudge    string            `json:"nudge"`
+	WorkDir         string            `json:"work_dir"`
+	Command         string            `json:"command"`
+	Env             map[string]string `json:"env"`
+	PreStart        []string          `json:"pre_start"`
+	Nudge           string            `json:"nudge"`
+	PackOverlayDirs []string          `json:"pack_overlay_dirs"`
 }
 
 // opSpec describes a known op: how many positional args it requires after the
@@ -190,11 +191,12 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		}
 	}
 	err = p.StartNew(ctx, name, provider.Config{
-		Argv:     commandArgv(cfg.Command),
-		WorkDir:  cfg.WorkDir,
-		Env:      cfg.Env,
-		PreStart: cfg.PreStart,
-		Nudge:    cfg.Nudge,
+		Argv:            commandArgv(cfg.Command),
+		WorkDir:         cfg.WorkDir,
+		Env:             cfg.Env,
+		PreStart:        cfg.PreStart,
+		Nudge:           cfg.Nudge,
+		PackOverlayDirs: cfg.PackOverlayDirs,
 	})
 	if errors.Is(err, provider.ErrAlreadyRunning) {
 		// gc's exec proxy recognizes "already running" as a start collision.

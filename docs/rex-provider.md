@@ -44,6 +44,55 @@ protocol = 0
 
 `command = "gc-runtime-rex"` has no path separator, so `gc` resolves it via `PATH` at run time and the pack carries no platform-specific binary.
 
+### Pi hook overlay (claim guard)
+
+The core pack installs `gc`'s managed Pi hook at
+`.pi/extensions/gc-hooks.js`; the rex pack overrides it with
+`pack/overlay/per-provider/pi/.pi/extensions/gc-hooks.js`. `gc` stages
+`overlay/per-provider/<provider>/` trees into the session work directory and a
+later pack's copy wins on a fresh workdir (gc `internal/runtime/staging.go`
+`StageProviderOverlayDir`; `cmd/gc/build_desired_state_overlay_preserve_test.go`
+`TestPrepareTemplateResolution_LaterOverlayLayerOverridesManagedHook`). That
+path alone does not replace an existing current managed hook: the controller's
+`hooks.PreserveManagedFile` predicate keeps it (gc 1.5.1
+`internal/hooks/preserve.go`; the sibling test
+`TestPrepareTemplateResolution_PreservesCurrentManagedHook`). The predicate
+reads the marker of the file already on the destination, not the desired
+overlay's marker, so gc's staging never selects the rex copy over a current
+managed one. The provider therefore stages the start config's
+`pack_overlay_dirs` per-provider subtree itself, after `pre_start`, so the rex
+override replaces a managed v9 hook even in a shared checkout. The override
+carries `GC_PI_HOOK_VERSION = 100`, well above gc 1.5.1's 9 and gc HEAD's 10;
+once staged, that marker is what makes the preserve predicate keep the override
+on later ticks. The provider's writer does not compare versions, so if a future
+gc ships a managed hook above 100, re-bump the marker.
+
+The behavioral difference this override adds is a claim guard in
+`before_agent_start`. `gc`'s
+stalled-claim backstop re-queues the fallback pool-claim nudge (`Run gc hook
+--claim --drain-ack --json now; …`) for a pool slot whose routed trigger bead
+still reads open (gc `cmd/gc/idle_nudge.go`, `defaultPoolClaimNudge`; 90 s grace,
+`docs/reference/config.md`). The managed hook drains and injects every queued
+nudge unconditionally, so a seat that already held a claim received that text
+mid-task, ran the hook again with `--drain-ack`, handed the claim back and
+abandoned the task (GCREX-33; my-city events 2026-11-18 06:47–06:53, seat
+`mc-wisp-gwble`). The overlay reads the stamped claim with `gc hook current
+--id-only` unconditionally; `$GC_BEAD_ID` belongs to the controller's dispatch
+environment, not the session shell. A non-empty stamp alone is not liveness:
+gc does not clear `current_claim_bead_id` when the claimed work bead closes
+(gc 1.5.1 `internal/session/store.go` `CurrentClaimBeadID`), so the overlay
+re-reads the stamped bead through `gc bd list --id <claim> --all --json` and
+mirrors gc's `claimedWorkStillHeldBy` predicate (gc 1.5.1
+`cmd/gc/session_ownership.go`): a closed, released (open and unassigned), or
+foreign-owned (`gc.session_id` names another session) claim is not held. While
+the claim reads held the overlay leaves the nudge queue undrained: nothing is
+injected mid-claim and nothing is acked or lost, and the next turn after the
+claim stops being held drains and delivers what was queued. This defers the
+whole queue, not only the pool-claim prompt. The provider's `Nudge` refusal
+uses the same liveness predicate (`internal/provider/nudge.go`
+`probeLiveClaim`), so the fallback pool-claim text is delivered once the claim
+is no longer held instead of being suppressed indefinitely.
+
 Include the pack in your city's `city.toml` (paths in `includes` resolve relative to `city.toml`):
 
 ```toml
@@ -326,7 +375,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **Start config `env` map is applied via the `env` argv wrapper**: Rex terminal launch options have no per-pane environment map, so the provider prefixes the launch command with `env K=V ...` (sorted keys). A bare shell (no command) cannot be seeded and still inherits the Rex server's environment.
 - **Setup hooks except `pre_start` are not run**: `session_setup`, `session_setup_script`, and `session_live` from start config are ignored.
 - **Startup `nudge` is delivered after a bounded readiness wait (GCREX-14, GCREX-34):** The `nudge` field in the `start` JSON payload is typed into the freshly launched pane and submitted with Enter, so the agent receives its initial prompt. Before typing, the provider polls the pane's `program_status` and delivers as soon as the newest record reports `idle`; the full window is 15 s (matching gc's `defaultReadyProbeTimeout`), while a program that has reported no status at all is given a shorter 3 s settle delay so a non-status agent is not held for the whole window. The wait honours the start context. After the Enter, the provider observes the pane for a bounded confirmation window; a delivered but unconfirmed nudge leaves `GC_STARTUP_DELIVERY_UNCONFIRMED` in the pane's metadata (and a diagnostic file), and a confirmed delivery clears that key. A delivered but unconfirmed submit is resent down a bounded backoff ladder (2/4/6/8 s, mirroring gc's `startupNudgeRetryBackoffs`): each resend first clears the drafted line (`ctrl+u`) and re-types the nudge, and if the pane has since gone `working` or `blocked` the earlier submit is treated as landed and no resend happens. Readiness detection and the TUI accepting input are not the same moment, so this rescues the lost-Enter case the readiness wait alone does not. Delivery is still not withheld on a startup dialog, and `ready_prompt_prefix` is still not used to gate the nudge. The nudge is not delivered on a failed launch, an already-running session (Start's idempotent path or StartNew's ErrAlreadyRunning), or when the nudge text is empty. The wait and delivery never fail the start: on a timeout or a canceled context the nudge is still delivered best-effort when the context permits, and a transport failure is not reported as a start failure, so a healthy pane is never torn down over it; gc's queued-nudge backstop covers an undelivered first prompt.
-- **File staging is not done**: `copy_files`, `overlay_dir`, and `pack_overlay_dirs` from start config are ignored; nothing is copied into the agent's work dir.
+- **Pack overlay staging is done; other file staging is not**: the provider stages each `pack_overlay_dirs` entry's `per-provider/<GC_PROVIDER>/` subtree into the work dir after `pre_start`, so a pack's per-provider hook override replaces an existing managed file. `copy_files` and `overlay_dir` are still ignored.
 - **`pre_start` runs before the pane launches** (GCREX-15): each entry is executed in order with `/bin/sh -c`, cwd set to the start config's `work_dir` when that directory already exists and to `/` otherwise (mirroring runtime-herdr-core's `_setup_cwd`, so a hook can create the work dir), and the process environment merged with the start-config `env` map. A non-zero exit aborts the launch and leaves no seeded identity or binding behind. After the hooks, a configured `work_dir` must be an existing directory or the start fails. An empty or absent `pre_start` is a no-op.
 - **`list-running` only sees known panes**: It is derived from the sidecar bindings plus a liveness check, not from a scan of Rex. A live pane with no cached binding (for example after the state dir was removed) is not listed. It emits each live primary binding whose name matches the prefix, plus each matching rig-qualified alias when the prefix is non-empty; the empty prefix lists primary names only.
 - **Unimplemented operations exit 2**: `exec`, `provision`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.

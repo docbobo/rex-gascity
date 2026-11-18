@@ -64,15 +64,16 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 // final record replaces it after the launch returns.
 func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, cfg Config) {
 	p.binder.Record(Binding{
-		Name:         n,
-		SessionID:    sid,
-		SessionLabel: rexSessionLabel(p.city),
-		WindowID:     wid,
-		TabLabel:     tabLabelFor(n, cfg.Env),
-		PaneLabel:    n.PaneLabel(),
-		Aliases:      aliasesFor(n, cfg.Env),
-		CreatedAt:    time.Now(),
-		GCBin:        gcBinBasename(cfg.Env),
-		WorkDir:      cfg.WorkDir,
+		Name:           n,
+		SessionID:      sid,
+		SessionLabel:   rexSessionLabel(p.city),
+		WindowID:       wid,
+		TabLabel:       tabLabelFor(n, cfg.Env),
+		PaneLabel:      n.PaneLabel(),
+		Aliases:        aliasesFor(n, cfg.Env),
+		CreatedAt:      time.Now(),
+		GCBin:          gcBinBasename(cfg.Env),
+		WorkDir:        cfg.WorkDir,
+		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
 	})
 }

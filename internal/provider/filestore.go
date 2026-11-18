@@ -87,6 +87,8 @@ type bindingRecord struct {
 	GCBin string `json:"gc_bin,omitempty"`
 	// WorkDir was added after the first records; omitted when empty.
 	WorkDir string `json:"work_dir,omitempty"`
+	// ClaimSessionID was added after the first records; omitted when empty.
+	ClaimSessionID string `json:"claim_session_id,omitempty"`
 }
 
 // FileStore is a BindingStore that keeps one JSON file per binding under a
@@ -124,18 +126,19 @@ func (r bindingRecord) binding() Binding {
 		aliases = append(aliases, SessionName(a))
 	}
 	return Binding{
-		Name:         SessionName(r.GCName),
-		SessionID:    rex.SessionID(r.SessionID),
-		SessionLabel: r.SessionLabel,
-		WindowID:     rex.WindowID(r.WindowID),
-		BlockID:      rex.BlockID(r.BlockID),
-		TabLabel:     r.TabLabel,
-		PaneLabel:    r.PaneLabel,
-		Aliases:      aliases,
-		LaunchMode:   r.LaunchMode,
-		CreatedAt:    r.CreatedAt,
-		GCBin:        r.GCBin,
-		WorkDir:      r.WorkDir,
+		Name:           SessionName(r.GCName),
+		SessionID:      rex.SessionID(r.SessionID),
+		SessionLabel:   r.SessionLabel,
+		WindowID:       rex.WindowID(r.WindowID),
+		BlockID:        rex.BlockID(r.BlockID),
+		TabLabel:       r.TabLabel,
+		PaneLabel:      r.PaneLabel,
+		Aliases:        aliases,
+		LaunchMode:     r.LaunchMode,
+		CreatedAt:      r.CreatedAt,
+		GCBin:          r.GCBin,
+		WorkDir:        r.WorkDir,
+		ClaimSessionID: r.ClaimSessionID,
 	}
 }
 
@@ -166,18 +169,19 @@ func (s *FileStore) Save(b Binding) {
 		aliases = append(aliases, string(a))
 	}
 	_ = writeJSON(s.path(b.Name), bindingRecord{
-		GCName:       string(b.Name),
-		SessionID:    string(b.SessionID),
-		SessionLabel: b.SessionLabel,
-		WindowID:     string(b.WindowID),
-		BlockID:      string(b.BlockID),
-		TabLabel:     b.TabLabel,
-		PaneLabel:    b.PaneLabel,
-		Aliases:      aliases,
-		LaunchMode:   b.LaunchMode,
-		CreatedAt:    b.CreatedAt,
-		GCBin:        b.GCBin,
-		WorkDir:      b.WorkDir,
+		GCName:         string(b.Name),
+		SessionID:      string(b.SessionID),
+		SessionLabel:   b.SessionLabel,
+		WindowID:       string(b.WindowID),
+		BlockID:        string(b.BlockID),
+		TabLabel:       b.TabLabel,
+		PaneLabel:      b.PaneLabel,
+		Aliases:        aliases,
+		LaunchMode:     b.LaunchMode,
+		CreatedAt:      b.CreatedAt,
+		GCBin:          b.GCBin,
+		ClaimSessionID: b.ClaimSessionID,
+		WorkDir:        b.WorkDir,
 	})
 }
 

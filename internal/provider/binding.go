@@ -45,6 +45,13 @@ type Binding struct {
 	// leave a diagnostic when a drained worker held uncommitted edits. Empty
 	// on legacy records.
 	WorkDir string
+	// ClaimSessionID is the gc session bead id (the start config's
+	// GC_SESSION_ID) the agent was launched under. The provider reads the
+	// session's live claim back through `gc hook current --id-only` with this
+	// id before it delivers gc's fallback pool-claim nudge, so a seat that
+	// already holds a claim is not re-prompted mid-task (GCREX-33). Empty on
+	// legacy records, where the guard cannot resolve the claim and delivers.
+	ClaimSessionID string
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the
