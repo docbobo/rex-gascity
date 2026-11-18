@@ -18,9 +18,6 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
-// terminalFlavor is the Rex flavor that runs a shell or a chosen command.
-const terminalFlavor = "com.superlogical.terminal.shell"
-
 // Client drives the Rex server through the rex CLI. Bin defaults to "rex".
 type Client struct {
 	Bin string
@@ -143,7 +140,7 @@ func (c *Client) NewWindow(ctx context.Context, sessionID rex.SessionID, label s
 		"session_id":   string(sessionID),
 		"window_label": label,
 		"focus":        spec.Focus,
-		"layout":       blockLayout(spec),
+		"layout":       spec.Layout,
 	}
 	if err := c.call(ctx, "session.new_window", args, &reply); err != nil {
 		return "", "", err
@@ -165,7 +162,7 @@ func (c *Client) NewSplit(ctx context.Context, sessionID rex.SessionID, anchor r
 		"anchor_id":  string(anchor),
 		"direction":  direction,
 		"side":       side,
-		"layout":     blockLayout(spec),
+		"layout":     spec.Layout,
 		"focus":      spec.Focus,
 	}
 	if err := c.call(ctx, "session.new_split", args, &reply); err != nil {
@@ -431,44 +428,4 @@ func (c *Client) blockMethod(ctx context.Context, sessionID rex.SessionID, block
 		call["args"] = args
 	}
 	return c.call(ctx, "block.method", call, out)
-}
-
-// layoutNode is one node of a Rex layout: a block or a split.
-type layoutNode struct {
-	Block *layoutBlock `json:"block,omitempty"`
-}
-
-// layoutBlock is a block node: a flavor plus its options and label.
-type layoutBlock struct {
-	Flavor  string         `json:"flavor"`
-	Options map[string]any `json:"options,omitempty"`
-	Label   string         `json:"label,omitempty"`
-}
-
-// blockLayout builds a single-pane layout from a launch spec.
-func blockLayout(spec rex.LaunchSpec) layoutNode {
-	opts := map[string]any{}
-	if len(spec.Command) > 0 {
-		opts["command"] = spec.Command
-	}
-	if spec.Shell != "" {
-		opts["shell"] = spec.Shell
-	}
-	if spec.Cwd != "" {
-		opts["cwd"] = spec.Cwd
-	}
-	if spec.Login != nil {
-		opts["login"] = *spec.Login
-	}
-	if spec.Interactive {
-		opts["interactive"] = true
-	}
-	node := layoutBlock{Flavor: terminalFlavor}
-	if len(opts) > 0 {
-		node.Options = opts
-	}
-	if spec.Label != "" {
-		node.Label = spec.Label
-	}
-	return layoutNode{Block: &node}
 }

@@ -66,7 +66,7 @@ func (p *Provider) writeDrainDiagnostic(ctx context.Context, b Binding) {
 	for _, a := range b.Aliases {
 		d.Aliases = append(d.Aliases, string(a))
 	}
-	if sid, _, err := p.meta.Get(b.Name, "GC_SESSION_ID"); err == nil {
+	if sid, _, err := p.metaGet(b.Name, "GC_SESSION_ID"); err == nil {
 		d.SessionID = sid
 	}
 	for _, f := range changed {

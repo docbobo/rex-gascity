@@ -298,7 +298,7 @@ func TestNudgeWithoutProgramStatusFallsBackToFormatPoll(t *testing.T) {
 func TestNudgeUnconfirmedWritesDiagnostic(t *testing.T) {
 	fake := faketest.New()
 	stateDir := t.TempDir()
-	p := nudgeStarted(t, fake, provider.WithStateDir(stateDir))
+	p := nudgeStarted(t, fake, provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
 
 	report, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
 	if err != nil {

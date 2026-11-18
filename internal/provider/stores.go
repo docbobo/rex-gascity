@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -24,28 +25,31 @@ type ActivityRecord struct {
 	InputAt time.Time
 }
 
-// ActivityStore persists activity fingerprints per session name.
-type ActivityStore interface {
-	// Load returns the record for name, if any.
-	Load(name SessionName) (ActivityRecord, bool)
-	// Save stores rec, replacing any earlier record for name.
-	Save(name SessionName, rec ActivityRecord)
-	// Delete removes any record for name, so a retired incarnation leaves no
-	// activity stamp behind for the next one.
-	Delete(name SessionName) error
+// Store is the one persistence seam behind every sidecar record: bindings,
+// activity fingerprints and metadata. K addresses one value and V is the
+// value. The memory, file and composite adapters all implement this single
+// interface, so the provider holds one store shape instead of one interface
+// per record kind.
+type Store[K comparable, V any] interface {
+	// Read returns the value for k and whether it is set. A value that is not
+	// set is (zero, false, nil); a store that cannot be read returns an error.
+	Read(k K) (V, bool, error)
+	// Write stores v under k, replacing any earlier value.
+	Write(k K, v V) error
+	// Drop removes any value under k. Missing values are not an error.
+	Drop(k K) error
 }
 
-// MetaStore is a per-session key/value store. Values are kept byte-for-byte.
-type MetaStore interface {
-	// Get returns the value for key and whether it is set. A key that is not
-	// set is ("", false, nil); a store that cannot be read returns an error.
-	Get(name SessionName, key string) (string, bool, error)
-	// Set stores value under key.
-	Set(name SessionName, key, value string) error
-	// Delete removes key only.
-	Delete(name SessionName, key string) error
-	// Clear removes every key for name, so a retired incarnation leaves no
-	// user or provider key behind for the next one.
+// Lister is the optional enumeration capability of a store. Only the binding
+// store implements it.
+type Lister[V any] interface {
+	// List returns every value, sorted by the store's own key order.
+	List() []V
+}
+
+// clearer is the optional per-session sweep of the metadata store: it removes
+// every key of one session in one call.
+type clearer interface {
 	Clear(name SessionName) error
 }
 
@@ -101,23 +105,59 @@ func (t *memTable[K, V]) values() []V {
 	return out
 }
 
-// memoryActivityStore is an in-memory ActivityStore.
-type memoryActivityStore struct {
-	t *memTable[SessionName, ActivityRecord]
+// memStore is the one in-memory adapter behind every memory store.
+type memStore[K comparable, V any] struct {
+	t *memTable[K, V]
 }
 
-// NewMemoryActivityStore returns an empty in-memory ActivityStore.
-func NewMemoryActivityStore() ActivityStore {
-	return &memoryActivityStore{t: newMemTable[SessionName, ActivityRecord]()}
+func newMemStore[K comparable, V any]() *memStore[K, V] {
+	return &memStore[K, V]{t: newMemTable[K, V]()}
 }
 
-func (s *memoryActivityStore) Load(name SessionName) (ActivityRecord, bool) { return s.t.get(name) }
+func (s *memStore[K, V]) Read(k K) (V, bool, error) {
+	v, ok := s.t.get(k)
+	return v, ok, nil
+}
 
-func (s *memoryActivityStore) Save(name SessionName, rec ActivityRecord) { s.t.put(name, rec) }
-
-func (s *memoryActivityStore) Delete(name SessionName) error {
-	s.t.remove(name)
+func (s *memStore[K, V]) Write(k K, v V) error {
+	s.t.put(k, v)
 	return nil
+}
+
+func (s *memStore[K, V]) Drop(k K) error {
+	s.t.remove(k)
+	return nil
+}
+
+// MemoryStore is an in-memory Store for bindings. It is safe for concurrent
+// use.
+type MemoryStore struct {
+	*memStore[SessionName, Binding]
+}
+
+// NewMemoryStore returns an empty in-memory binding store.
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{newMemStore[SessionName, Binding]()}
+}
+
+// Load returns the binding for name, if any. It is the historical binding API
+// kept for callers that do not need the generic seam.
+func (s *MemoryStore) Load(name SessionName) (Binding, bool) {
+	b, ok, _ := s.Read(name)
+	return b, ok
+}
+
+// Save stores b, replacing any binding with the same name.
+func (s *MemoryStore) Save(b Binding) { _ = s.Write(b.Name, b) }
+
+// Delete removes the binding for name.
+func (s *MemoryStore) Delete(name SessionName) { _ = s.Drop(name) }
+
+// List returns every binding, sorted by Name.
+func (s *MemoryStore) List() []Binding {
+	out := s.t.values()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // activityRecord is the on-disk shape of an ActivityRecord. It has the same
@@ -130,30 +170,58 @@ type activityRecord struct {
 	InputAt     time.Time `json:"input_updated_at,omitempty"`
 }
 
-// fileActivityStore is a file-backed ActivityStore.
+// memoryActivityStore is an in-memory activity store.
+type memoryActivityStore struct {
+	*memStore[SessionName, ActivityRecord]
+}
+
+// NewMemoryActivityStore returns an empty in-memory activity store.
+func NewMemoryActivityStore() *memoryActivityStore {
+	return &memoryActivityStore{newMemStore[SessionName, ActivityRecord]()}
+}
+
+// Load returns the record for name, if any.
+func (s *memoryActivityStore) Load(name SessionName) (ActivityRecord, bool) {
+	rec, ok, _ := s.Read(name)
+	return rec, ok
+}
+
+// Save stores rec, replacing any earlier record for name.
+func (s *memoryActivityStore) Save(name SessionName, rec ActivityRecord) {
+	_ = s.Write(name, rec)
+}
+
+// Delete removes any record for name.
+func (s *memoryActivityStore) Delete(name SessionName) error { return s.Drop(name) }
+
+// fileActivityStore is a file-backed activity store.
 type fileActivityStore struct {
-	t *fileTable[SessionName, activityRecord]
+	*fileStore[SessionName, ActivityRecord, activityRecord]
 }
 
-// NewFileActivityStore returns an ActivityStore that keeps one JSON file per
+// NewFileActivityStore returns an activity store that keeps one JSON file per
 // name under dir.
-func NewFileActivityStore(dir string) ActivityStore {
-	return &fileActivityStore{t: newFileTable[SessionName, activityRecord](dir, flatPath(dir))}
+func NewFileActivityStore(dir string) *fileActivityStore {
+	return &fileActivityStore{newFileStore[SessionName, ActivityRecord, activityRecord](dir, flatPath(dir),
+		func(_ SessionName, rec ActivityRecord) activityRecord { return activityRecord(rec) },
+		func(r activityRecord) (ActivityRecord, error) { return ActivityRecord(r), nil },
+		nil,
+	)}
 }
 
+// Load returns the record for name, if any.
 func (s *fileActivityStore) Load(name SessionName) (ActivityRecord, bool) {
-	r, ok, err := s.t.read(name)
-	if err != nil || !ok {
-		return ActivityRecord{}, false
-	}
-	return ActivityRecord(r), true
+	rec, ok, _ := s.Read(name)
+	return rec, ok
 }
 
+// Save stores rec, replacing any earlier record for name.
 func (s *fileActivityStore) Save(name SessionName, rec ActivityRecord) {
-	_ = s.t.write(name, activityRecord(rec))
+	_ = s.Write(name, rec)
 }
 
-func (s *fileActivityStore) Delete(name SessionName) error { return s.t.remove(name) }
+// Delete removes any record for name.
+func (s *fileActivityStore) Delete(name SessionName) error { return s.Drop(name) }
 
 // metaKey addresses one key of one session in a meta store.
 type metaKey struct {
@@ -161,31 +229,32 @@ type metaKey struct {
 	key  string
 }
 
-// memoryMetaStore is an in-memory MetaStore.
+// memoryMetaStore is an in-memory metadata store.
 type memoryMetaStore struct {
-	t *memTable[metaKey, string]
+	*memStore[metaKey, string]
 }
 
-// NewMemoryMetaStore returns an empty in-memory MetaStore.
-func NewMemoryMetaStore() MetaStore {
-	return &memoryMetaStore{t: newMemTable[metaKey, string]()}
+// NewMemoryMetaStore returns an empty in-memory metadata store.
+func NewMemoryMetaStore() *memoryMetaStore {
+	return &memoryMetaStore{newMemStore[metaKey, string]()}
 }
 
+// Get returns the value for key and whether it is set.
 func (s *memoryMetaStore) Get(name SessionName, key string) (string, bool, error) {
-	v, ok := s.t.get(metaKey{name, key})
-	return v, ok, nil
+	return s.Read(metaKey{name, key})
 }
 
+// Set stores value under key.
 func (s *memoryMetaStore) Set(name SessionName, key, value string) error {
-	s.t.put(metaKey{name, key}, value)
-	return nil
+	return s.Write(metaKey{name, key}, value)
 }
 
+// Delete removes key only.
 func (s *memoryMetaStore) Delete(name SessionName, key string) error {
-	s.t.remove(metaKey{name, key})
-	return nil
+	return s.Drop(metaKey{name, key})
 }
 
+// Clear removes every key for name.
 func (s *memoryMetaStore) Clear(name SessionName) error {
 	s.t.removeWhere(func(k metaKey) bool { return k.name == name })
 	return nil
@@ -200,19 +269,38 @@ type metaEntry struct {
 	ValueB64 *string `json:"value_b64"`
 }
 
-// fileMetaStore is a file-backed MetaStore. It keeps one file per key so that
-// separate processes setting different keys never overwrite each other.
+// fileMetaStore is a file-backed metadata store. It keeps one file per key so
+// that separate processes setting different keys never overwrite each other.
 type fileMetaStore struct {
-	t *fileTable[metaKey, metaEntry]
+	*fileStore[metaKey, string, metaEntry]
 }
 
-// NewFileMetaStore returns a MetaStore that keeps one JSON file per key under
-// dir/<name hash>/.
-func NewFileMetaStore(dir string) MetaStore {
-	return &fileMetaStore{t: newFileTable[metaKey, metaEntry](dir, func(k metaKey) string {
-		sum := sha256.Sum256([]byte(string(k.name) + "\x00" + k.key))
-		return filepath.Join(dir, nameKey(k.name), hex.EncodeToString(sum[:])+".json")
-	})}
+// NewFileMetaStore returns a metadata store that keeps one JSON file per key
+// under dir/<name hash>/.
+func NewFileMetaStore(dir string) *fileMetaStore {
+	return &fileMetaStore{newFileStore[metaKey, string, metaEntry](dir,
+		func(k metaKey) string {
+			sum := sha256.Sum256([]byte(string(k.name) + "\x00" + k.key))
+			return filepath.Join(dir, nameKey(k.name), hex.EncodeToString(sum[:])+".json")
+		},
+		func(k metaKey, value string) metaEntry {
+			enc := base64.StdEncoding.EncodeToString([]byte(value))
+			return metaEntry{Key: k.key, ValueB64: &enc}
+		},
+		decodeMetaEntry,
+		func(e metaEntry) bool { return e.ValueB64 != nil },
+	)}
+}
+
+func decodeMetaEntry(e metaEntry) (string, error) {
+	if e.ValueB64 == nil {
+		return "", nil
+	}
+	v, err := base64.StdEncoding.DecodeString(*e.ValueB64)
+	if err != nil {
+		return "", fmt.Errorf("meta %s: decode value: %w", e.Key, err)
+	}
+	return string(v), nil
 }
 
 func (s *fileMetaStore) path(name SessionName, key string) string {
@@ -223,27 +311,17 @@ func (s *fileMetaStore) path(name SessionName, key string) string {
 // value_b64, is not set. An unreadable or corrupt file, or a value that is not
 // valid base64, is an error.
 func (s *fileMetaStore) Get(name SessionName, key string) (string, bool, error) {
-	e, ok, err := s.t.read(metaKey{name, key})
-	if err != nil {
-		return "", false, err
-	}
-	if !ok || e.ValueB64 == nil {
-		return "", false, nil
-	}
-	v, err := base64.StdEncoding.DecodeString(*e.ValueB64)
-	if err != nil {
-		return "", false, fmt.Errorf("meta %s: decode value: %w", key, err)
-	}
-	return string(v), true, nil
+	return s.Read(metaKey{name, key})
 }
 
+// Set stores value under key.
 func (s *fileMetaStore) Set(name SessionName, key, value string) error {
-	enc := base64.StdEncoding.EncodeToString([]byte(value))
-	return s.t.write(metaKey{name, key}, metaEntry{Key: key, ValueB64: &enc})
+	return s.Write(metaKey{name, key}, value)
 }
 
+// Delete removes key only.
 func (s *fileMetaStore) Delete(name SessionName, key string) error {
-	return s.t.remove(metaKey{name, key})
+	return s.Drop(metaKey{name, key})
 }
 
 // Clear removes every key for name. One directory per name holds every key

@@ -41,7 +41,7 @@ func TestSlowLaunchDoesNotHoldStateLock(t *testing.T) {
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	p := provider.New("acme", fake, provider.WithStateDir(dir))
+	p := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 
 	startDone := make(chan error, 1)
 	go func() {
@@ -76,7 +76,7 @@ func TestSlowLaunchDoesNotHoldStateLock(t *testing.T) {
 func TestSlowPreStartDoesNotHoldStateLock(t *testing.T) {
 	dir := t.TempDir()
 	fake := faketest.New()
-	p := provider.New("acme", fake, provider.WithStateDir(dir))
+	p := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 
 	hookStarted := filepath.Join(dir, "hook-started")
 	hookRelease := filepath.Join(dir, "hook-release")

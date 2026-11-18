@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docbobo/rex-gascity/internal/launch"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/cli"
 )
@@ -72,11 +73,11 @@ func TestNewWindow(t *testing.T) {
 	fake.respond(t, "session.new_window", `{"window_id":"window:Indigo","block_ids":["block:dog-1"],"revision":1}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	win, block, err := c.NewWindow(context.Background(), "session:a", "Indigo", rex.LaunchSpec{
-		Command: []string{"claude", "--flag"},
-		Cwd:     "/work/indigo",
+	win, block, err := c.NewWindow(context.Background(), "session:a", "Indigo", launch.NewPlan(launch.Config{
+		Argv:    []string{"claude", "--flag"},
+		WorkDir: "/work/indigo",
 		Label:   "dog-1",
-	})
+	}).Spec)
 	if err != nil {
 		t.Fatalf("NewWindow: %v", err)
 	}
@@ -129,10 +130,10 @@ func TestNewSplit(t *testing.T) {
 	fake.respond(t, "session.new_split", `{"block_ids":["block:dog-2"],"revision":2}`)
 	c := &cli.Client{Bin: fake.bin}
 
-	block, err := c.NewSplit(context.Background(), "session:a", "block:dog-1", "horizontal", "after", rex.LaunchSpec{
-		Command: []string{"claude"},
-		Label:   "dog-2",
-	})
+	block, err := c.NewSplit(context.Background(), "session:a", "block:dog-1", "horizontal", "after", launch.NewPlan(launch.Config{
+		Argv:  []string{"claude"},
+		Label: "dog-2",
+	}).Spec)
 	if err != nil {
 		t.Fatalf("NewSplit: %v", err)
 	}

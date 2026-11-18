@@ -22,6 +22,19 @@ type (
 	BlockID   string
 )
 
+// Layout is the Rex wire layout of a new pane: a tree whose leaf is a block.
+// A single-pane launch carries one block node.
+type Layout struct {
+	Block *LayoutBlock `json:"block,omitempty"`
+}
+
+// LayoutBlock is a block node: a flavor plus its options and label.
+type LayoutBlock struct {
+	Flavor  string         `json:"flavor"`
+	Options map[string]any `json:"options,omitempty"`
+	Label   string         `json:"label,omitempty"`
+}
+
 // Session is one Rex session (D1: one per gc city).
 type Session struct {
 	ID    SessionID
@@ -39,6 +52,9 @@ type LaunchSpec struct {
 	// Focus makes the new tab active. Provider launches leave it false so
 	// starting an agent does not steal the user's view.
 	Focus bool
+	// Layout is the prepared Rex block layout for this launch. internal/launch
+	// builds it; the transport only serializes it.
+	Layout Layout
 }
 
 // Block is a Rex pane.

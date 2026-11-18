@@ -1,13 +1,61 @@
 // Package launch owns the translation from a gc start config to a Rex launch:
 // splitting the command string into an argv, applying the environment at the
-// command boundary, merging environments, and projecting pool routing. The
-// Rex wire shape (block layout) stays in internal/rex/cli.
+// command boundary, merging environments, projecting pool routing, and
+// building the Rex block layout. Plan is the one launch translation; the Rex
+// transport only serializes what it builds.
 package launch
 
 import (
 	"sort"
 	"strings"
+
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
+
+// terminalFlavor is the Rex flavor that runs a shell or a chosen command.
+const terminalFlavor = "com.superlogical.terminal.shell"
+
+// Config is the launch-relevant part of a gc start config.
+type Config struct {
+	// Argv is the parsed command argv; empty starts the pane's default shell.
+	Argv []string
+	// Env is the per-session environment gc ships in the start config.
+	Env map[string]string
+	// WorkDir is the pane's working directory; empty leaves it to Rex.
+	WorkDir string
+	// Label is the pane label (the gc agent name).
+	Label string
+}
+
+// Plan is the result of one launch translation: the Rex launch spec, including
+// its block layout, and the pool-routing-projected environment the rest of the
+// start path must use.
+type Plan struct {
+	Spec rex.LaunchSpec
+	Env  map[string]string
+}
+
+// NewPlan is the one entry point that turns a start config into a Rex launch
+// plan. It projects pool routing first, so the env it returns is the env every
+// later step (identity seed, pre_start, the command) sees.
+func NewPlan(cfg Config) Plan {
+	env := projectPoolRouting(cfg.Env)
+	return Plan{
+		Spec: rex.LaunchSpec{
+			Command: command(cfg.Argv, env),
+			Cwd:     cfg.WorkDir,
+			Label:   cfg.Label,
+			Layout:  blockLayout(cfg.Argv, env, cfg.WorkDir, cfg.Label),
+		},
+		Env: env,
+	}
+}
+
+// MergedEnv merges the plan's projected env over base, so a pre_start hook
+// runs with the same environment the launch will carry.
+func (p Plan) MergedEnv(base []string) []string {
+	return mergeEnv(base, p.Env)
+}
 
 // CommandArgv turns the start config's command string into an argv. A plain
 // command is split with shell quoting rules; anything a plain split cannot
@@ -18,20 +66,20 @@ func CommandArgv(command string) []string {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	argv, ok := Split(command)
+	argv, ok := split(command)
 	if !ok || len(argv) == 0 || strings.Contains(argv[0], "=") {
 		return []string{"/bin/sh", "-lc", command}
 	}
 	return argv
 }
 
-// Split splits s into words using POSIX shell quoting: single quotes
+// split splits s into words using POSIX shell quoting: single quotes
 // are literal, double quotes allow backslash escapes of $ ` " \ and newline,
 // and an unquoted backslash escapes the next byte. It reports false when s
 // does not parse (unterminated quote, trailing backslash) or needs a shell
 // (an unquoted operator, glob or comment, or an expansion outside single
 // quotes).
-func Split(s string) ([]string, bool) {
+func split(s string) ([]string, bool) {
 	var (
 		words  []string
 		cur    strings.Builder
@@ -97,13 +145,13 @@ func Split(s string) ([]string, bool) {
 	return words, true
 }
 
-// Command returns argv with the environment applied at the command
-// boundary, since Rex terminal launch options have no per-pane env. With no
-// env, or no command, argv is returned unchanged: a bare shell cannot be
-// seeded (a documented limitation), and an empty argv must stay empty so the
-// pane starts its default shell. Keys are sorted for deterministic output,
-// and the caller's slice is never mutated.
-func Command(argv []string, env map[string]string) []string {
+// command returns argv with the environment applied at the command boundary,
+// since Rex terminal launch options have no per-pane env. With no env, or no
+// command, argv is returned unchanged: a bare shell cannot be seeded (a
+// documented limitation), and an empty argv must stay empty so the pane starts
+// its default shell. Keys are sorted for deterministic output, and the
+// caller's slice is never mutated.
+func command(argv []string, env map[string]string) []string {
 	if len(argv) == 0 || len(env) == 0 {
 		return argv
 	}
@@ -131,7 +179,7 @@ func Command(argv []string, env map[string]string) []string {
 	return append(out, argv...)
 }
 
-// ProjectPoolRouting makes an unaliased pool or demand seat's work query reach
+// projectPoolRouting makes an unaliased pool or demand seat's work query reach
 // its routed work without giving up the per-seat claim identity.
 //
 // gc 1.5.1 ships GC_ALIAS empty and GC_AGENT/BEADS_ACTOR as the session bead
@@ -158,7 +206,7 @@ func Command(argv []string, env map[string]string) []string {
 // A non-empty GC_ALIAS, GC_AGENT, GC_SESSION_ID, the tokens and the caller's
 // map are never changed. With no GC_SESSION_ID there is no durable claim
 // identity to protect, so the env is passed through unchanged.
-func ProjectPoolRouting(env map[string]string) map[string]string {
+func projectPoolRouting(env map[string]string) map[string]string {
 	if env["GC_ALIAS"] != "" {
 		return env
 	}
@@ -177,9 +225,9 @@ func ProjectPoolRouting(env map[string]string) map[string]string {
 	return out
 }
 
-// MergeEnv merges the base environment slice with an overlay map, returning a
+// mergeEnv merges the base environment slice with an overlay map, returning a
 // new sorted slice. Overlay entries replace base entries with the same key.
-func MergeEnv(base []string, overlay map[string]string) []string {
+func mergeEnv(base []string, overlay map[string]string) []string {
 	m := make(map[string]string, len(base)+len(overlay))
 	for _, kv := range base {
 		if idx := strings.IndexByte(kv, '='); idx >= 0 {
@@ -195,4 +243,25 @@ func MergeEnv(base []string, overlay map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// blockLayout builds a single-pane Rex layout from the launch inputs. It is
+// the one place the Rex wire shape is constructed, so the transport never
+// translates a launch.
+func blockLayout(argv []string, env map[string]string, workDir, label string) rex.Layout {
+	opts := map[string]any{}
+	if cmd := command(argv, env); len(cmd) > 0 {
+		opts["command"] = cmd
+	}
+	if workDir != "" {
+		opts["cwd"] = workDir
+	}
+	node := rex.LayoutBlock{Flavor: terminalFlavor}
+	if len(opts) > 0 {
+		node.Options = opts
+	}
+	if label != "" {
+		node.Label = label
+	}
+	return rex.Layout{Block: &node}
 }

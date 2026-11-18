@@ -32,7 +32,7 @@ var startIdentityMetaKeys = []string{
 func (p *Provider) clearStartIdentity(n SessionName) error {
 	var errs []error
 	for _, key := range startIdentityMetaKeys {
-		if err := p.meta.Delete(n, key); err != nil {
+		if err := p.metaDelete(n, key); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -49,7 +49,7 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 	}
 	for _, key := range startIdentityMetaKeys {
 		if v := env[key]; v != "" {
-			if err := p.meta.Set(n, key, v); err != nil {
+			if err := p.metaSet(n, key, v); err != nil {
 				return err
 			}
 		}

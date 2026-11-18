@@ -66,9 +66,9 @@ type Provider struct {
 	client rex.Client
 	binder *Binder
 
-	bindings BindingStore
-	activity ActivityStore
-	meta     MetaStore
+	bindings Store[SessionName, Binding]
+	activity Store[SessionName, ActivityRecord]
+	meta     Store[metaKey, string]
 
 	// ns is the city namespace: the state dirs (the canonical one holds the
 	// cross-process lock; none means no locking) and the accepted Rex session
@@ -82,8 +82,10 @@ type Provider struct {
 	// nudgeConfig.
 	runner Runner
 
-	// nudgeConfig holds the nudge and startup-delivery tunables (see nudge.go).
-	nudgeConfig
+	// nudge holds the nudge and startup-delivery tunables (see nudge.go).
+	// It is a named field, not embedded, so the tunables are not promoted
+	// onto Provider.
+	nudge nudgeConfig
 
 	// startBudget bounds the whole start op when the op context carries no
 	// earlier deadline; preStartHookTimeout bounds one pre_start hook, capped
@@ -96,78 +98,51 @@ type Provider struct {
 type Option func(*Provider)
 
 // WithBindingStore sets the binding store.
-func WithBindingStore(s BindingStore) Option { return func(p *Provider) { p.bindings = s } }
+func WithBindingStore(s Store[SessionName, Binding]) Option {
+	return func(p *Provider) { p.bindings = s }
+}
 
 // WithActivityStore sets the activity store.
-func WithActivityStore(s ActivityStore) Option { return func(p *Provider) { p.activity = s } }
+func WithActivityStore(s Store[SessionName, ActivityRecord]) Option {
+	return func(p *Provider) { p.activity = s }
+}
 
 // WithMetaStore sets the metadata store.
-func WithMetaStore(s MetaStore) Option { return func(p *Provider) { p.meta = s } }
-
-// WithStateDir keeps bindings, activity and metadata on disk under
-// dir/bindings, dir/activity and dir/meta.
-func WithStateDir(dir string) Option {
-	return WithStateDirs(dir)
-}
-
-// WithStateDirs keeps the sidecar stores in several city-namespace state dirs.
-// The first is canonical: writes go there and its lock guards mutations.
-// Reads fall back through the rest in order, and deletes cover every dir, so a
-// legacy record under an incidental namespace still resolves and is cleaned
-// up.
-func WithStateDirs(dirs ...string) Option {
-	return func(p *Provider) {
-		if len(dirs) == 0 {
-			return
-		}
-		bindings := make([]BindingStore, 0, len(dirs))
-		activities := make([]ActivityStore, 0, len(dirs))
-		metas := make([]MetaStore, 0, len(dirs))
-		for _, dir := range dirs {
-			bindings = append(bindings, NewFileStore(filepath.Join(dir, "bindings")))
-			activities = append(activities, NewFileActivityStore(filepath.Join(dir, "activity")))
-			metas = append(metas, NewFileMetaStore(filepath.Join(dir, "meta")))
-		}
-		p.ns.dirs = slices.Clone(dirs)
-		p.bindings = newCompositeBindingStore(bindings...)
-		p.activity = newCompositeActivityStore(activities...)
-		p.meta = newCompositeMetaStore(metas...)
-	}
-}
-
-// WithSessionLabels sets the accepted Rex session labels, canonical first.
-// The default is gc:<city>. Callers pass the labels for every namespace they
-// read so a binding written under an older label still revalidates.
-func WithSessionLabels(labels ...string) Option {
-	return func(p *Provider) { p.ns.labels = normalizeSessionLabels(labels) }
-}
+func WithMetaStore(s Store[metaKey, string]) Option { return func(p *Provider) { p.meta = s } }
 
 // WithNamespace configures the provider for ns: its state dirs back the
-// sidecar stores (see WithStateDirs) and its labels are the accepted session
-// labels (see WithSessionLabels). A namespace with no dirs leaves the stores
-// as they are.
+// sidecar stores and its labels are the accepted Rex session labels. It is the
+// one namespace option; a namespace with no dirs leaves the stores in memory.
+// Callers that build a namespace from city names use NewNamespace, which
+// reports a state-dir error instead of dropping a namespace silently.
 func WithNamespace(ns Namespace) Option {
 	return func(p *Provider) {
-		WithStateDirs(ns.dirs...)(p)
-		WithSessionLabels(ns.labels...)(p)
+		applyNamespace(ns)(p)
 	}
 }
 
-// WithCityNamespaces configures the provider for a city from its ordered
-// namespace candidates (canonical first), resolving each one's state dir and
-// Rex session label. It is the constructor the RPP dispatcher uses to keep
-// start and every lookup op on the same store regardless of which incidental
-// GC_CITY_PATH/GC_CITY the caller carries.
-func WithCityNamespaces(cities []string) Option {
+// applyNamespace installs ns's state dirs and labels on p. It is the single
+// place that builds the file-backed composite stores, so every namespace
+// option goes through it.
+func applyNamespace(ns Namespace) Option {
 	return func(p *Provider) {
-		ns, err := NewNamespace(cities)
-		if err != nil {
-			// Without a resolvable state dir the provider stays in memory.
-			// The dispatcher resolves the same namespace and reports the error
-			// before any op.
-			return
+		if len(ns.dirs) > 0 {
+			bindings := make([]Store[SessionName, Binding], 0, len(ns.dirs))
+			activities := make([]Store[SessionName, ActivityRecord], 0, len(ns.dirs))
+			metas := make([]Store[metaKey, string], 0, len(ns.dirs))
+			for _, dir := range ns.dirs {
+				bindings = append(bindings, NewFileStore(filepath.Join(dir, "bindings")))
+				activities = append(activities, NewFileActivityStore(filepath.Join(dir, "activity")))
+				metas = append(metas, NewFileMetaStore(filepath.Join(dir, "meta")))
+			}
+			p.ns.dirs = slices.Clone(ns.dirs)
+			p.bindings = newCompositeBindingStore(bindings...)
+			p.activity = newCompositeActivityStore(activities...)
+			p.meta = newCompositeMetaStore(metas...)
 		}
-		WithNamespace(ns)(p)
+		if len(ns.labels) > 0 {
+			p.ns.labels = normalizeSessionLabels(ns.labels)
+		}
 	}
 }
 
@@ -206,18 +181,18 @@ func WithPreStartHookTimeout(d time.Duration) Option {
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
 	p := &Provider{
-		city:        city,
-		client:      client,
-		bindings:    NewMemoryStore(),
-		activity:    NewMemoryActivityStore(),
-		meta:        NewMemoryMetaStore(),
-		runner:      ExecRunner{},
-		nudgeConfig: defaultNudgeConfig(),
+		city:     city,
+		client:   client,
+		bindings: NewMemoryStore(),
+		activity: NewMemoryActivityStore(),
+		meta:     NewMemoryMetaStore(),
+		runner:   ExecRunner{},
+		nudge:    defaultNudgeConfig(),
 
 		startBudget:         defaultStartBudget,
 		preStartHookTimeout: defaultPreStartHookTimeout,
 	}
-	p.claimProbe = p.probeLiveClaim
+	p.nudge.claimProbe = p.probeLiveClaim
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -233,7 +208,8 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 // or one of its aliases) without contacting Rex. It is the dispatcher-facing
 // lookup; Resolve-based ops re-validate it against Rex.
 func (p *Provider) Binding(name string) (Binding, bool) {
-	return p.binder.Cached(SessionName(name))
+	bd, ok, _ := p.binder.Resolve(context.Background(), ResolveRequest{Name: SessionName(name)})
+	return bd, ok
 }
 
 // Start creates the city session, the rig's tab, and the agent's pane, and
@@ -294,7 +270,15 @@ type startResult struct {
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
 	n := SessionName(name)
-	cfg.Env = launch.ProjectPoolRouting(cfg.Env)
+	// Build the one launch plan up front: it projects pool routing for every
+	// later step and owns the Rex block layout.
+	plan := launch.NewPlan(launch.Config{
+		Argv:    cfg.Argv,
+		Env:     cfg.Env,
+		WorkDir: cfg.WorkDir,
+		Label:   n.PaneLabel(),
+	})
+	cfg.Env = plan.Env
 	seeded := false
 	defer func() {
 		if err == nil || !seeded {
@@ -315,7 +299,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		Aliases:   aliasesFor(n, cfg.Env),
 	}
 
-	old, found, err := p.binder.ResolveHint(ctx, n, hint)
+	old, found, err := p.binder.Resolve(ctx, ResolveRequest{Name: n, Hint: hint, Mode: ResolveFresh})
 	if err != nil {
 		return startResult{}, err
 	}
@@ -361,7 +345,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// the per-hook timeout, capped by whatever remains of the start budget
 	// (the op context's deadline when it carries one, else startBudget).
 	if len(cfg.PreStart) > 0 {
-		merged := launch.MergeEnv(os.Environ(), cfg.Env)
+		merged := plan.MergedEnv(os.Environ())
 		budgetDeadline := time.Now().Add(p.startBudget)
 		if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
 			budgetDeadline = d
@@ -414,11 +398,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	}
 
 	tab := hint.TabLabel
-	spec := rex.LaunchSpec{
-		Command: launch.Command(cfg.Argv, cfg.Env),
-		Cwd:     cfg.WorkDir,
-		Label:   n.PaneLabel(),
-	}
+	spec := plan.Spec
 	// The blocking launch holds only the per-rig (tab) lock, so a slow NewWindow
 	// or NewSplit for one rig does not stall other rigs' starts or any stop. The
 	// lock makes the view read and the create/split decision atomic per tab, so
@@ -538,8 +518,8 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	n := SessionName(name)
 	// Load the stored binding before Resolve: Resolve drops a stale record when
 	// its pane is gone, and a drained worker's process has often exited already.
-	stored, hadStored := p.bindings.Load(n)
-	binding, ok, err := p.binder.Resolve(ctx, n)
+	stored, hadStored := p.bindingRead(n)
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: n, Mode: ResolveFresh})
 	if err != nil {
 		return err
 	}
@@ -579,10 +559,10 @@ func (p *Provider) clearIncarnations(names ...SessionName) error {
 			continue
 		}
 		seen[n] = true
-		if err := p.meta.Clear(n); err != nil {
+		if err := p.metaClear(n); err != nil {
 			errs = append(errs, err)
 		}
-		if err := p.activity.Delete(n); err != nil {
+		if err := p.activity.Drop(n); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -593,7 +573,7 @@ func (p *Provider) clearIncarnations(names ...SessionName) error {
 // alias-aware: a rig-qualified name is running while any instance bound to it
 // is alive. An agent with no pane is not running.
 func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
-	_, ok, err := p.binder.Live(ctx, SessionName(name))
+	_, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveLive})
 	return ok, err
 }
 
@@ -606,7 +586,7 @@ func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
 // PeekLines returns the last lines lines of the agent's rendered output, or
 // all of it when lines <= 0. An agent with no pane has no output.
 func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (string, error) {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil || !ok {
 		return "", err
 	}
@@ -639,7 +619,7 @@ func lastLines(s string, n int) string {
 // ClearScrollback clears the agent's pane scrollback. It is best effort: an
 // agent with no pane, or a pane that vanished, is not an error.
 func (p *Provider) ClearScrollback(ctx context.Context, name string) error {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil || !ok {
 		return err
 	}
@@ -652,7 +632,7 @@ func (p *Provider) ClearScrollback(ctx context.Context, name string) error {
 // ListRunning returns the sorted names of known sessions with the given
 // prefix (all when empty) whose pane is still alive.
 func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, error) {
-	lister, ok := p.bindings.(BindingLister)
+	lister, ok := p.bindings.(Lister[Binding])
 	if !ok {
 		return nil, errors.New("provider: binding store cannot list")
 	}
@@ -752,7 +732,7 @@ func (p *Provider) Interrupt(ctx context.Context, name string) error {
 // pane, or one whose program has exited, yields ErrSessionNotFound: input
 // would reach no agent. A transport or observation error is returned as is.
 func (p *Provider) livePane(ctx context.Context, name string) (Binding, error) {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil {
 		return Binding{}, err
 	}

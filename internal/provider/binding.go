@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -121,54 +120,11 @@ func aliasesFor(name SessionName, env map[string]string) []SessionName {
 	return out
 }
 
-// BindingStore persists bindings. MemoryStore is the default; FileStore keeps
-// them on disk across restarts.
-type BindingStore interface {
-	// Load returns the binding for name, if any.
-	Load(name SessionName) (Binding, bool)
-	// Save stores b, replacing any binding with the same name.
-	Save(b Binding)
-	// Delete removes the binding for name.
-	Delete(name SessionName)
-}
-
-// BindingLister is implemented by stores that can enumerate their bindings.
-type BindingLister interface {
-	// List returns all bindings, sorted by Name.
-	List() []Binding
-}
-
-// MemoryStore is a BindingStore held in memory. It is safe for concurrent use.
-type MemoryStore struct {
-	t *memTable[SessionName, Binding]
-}
-
-// NewMemoryStore returns an empty MemoryStore.
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{t: newMemTable[SessionName, Binding]()}
-}
-
-// Load implements BindingStore.
-func (s *MemoryStore) Load(name SessionName) (Binding, bool) { return s.t.get(name) }
-
-// Save implements BindingStore.
-func (s *MemoryStore) Save(b Binding) { s.t.put(b.Name, b) }
-
-// List implements BindingLister.
-func (s *MemoryStore) List() []Binding {
-	out := s.t.values()
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
-}
-
-// Delete implements BindingStore.
-func (s *MemoryStore) Delete(name SessionName) { s.t.remove(name) }
-
 // Binder resolves gc session names to Rex addresses, using a store as a
 // cache and the Rex session view as the source of truth.
 type Binder struct {
 	client rex.Client
-	store  BindingStore
+	store  Store[SessionName, Binding]
 	// sessionLabels are the accepted labels, canonical first. A new session
 	// and a fresh record use the first; a legacy record under another
 	// candidate label still revalidates.
@@ -177,13 +133,13 @@ type Binder struct {
 
 // NewBinder builds a Binder that looks for the Rex session labelled
 // sessionLabel and caches bindings in store.
-func NewBinder(client rex.Client, store BindingStore, sessionLabel string) *Binder {
+func NewBinder(client rex.Client, store Store[SessionName, Binding], sessionLabel string) *Binder {
 	return NewBinderWithLabels(client, store, []string{sessionLabel})
 }
 
 // NewBinderWithLabels builds a Binder that accepts any of labels (canonical
 // first, duplicates and empty entries dropped) and caches bindings in store.
-func NewBinderWithLabels(client rex.Client, store BindingStore, labels []string) *Binder {
+func NewBinderWithLabels(client rex.Client, store Store[SessionName, Binding], labels []string) *Binder {
 	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels)}
 }
 
@@ -241,11 +197,11 @@ func (b *Binder) FindSession(ctx context.Context) (rex.SessionID, bool, error) {
 func (b *Binder) lookup(name SessionName) []Binding {
 	var out []Binding
 	seen := map[SessionName]bool{}
-	if bd, ok := b.store.Load(name); ok {
+	if bd, ok, _ := b.store.Read(name); ok {
 		out = append(out, bd)
 		seen[bd.Name] = true
 	}
-	lister, ok := b.store.(BindingLister)
+	lister, ok := b.store.(Lister[Binding])
 	if !ok {
 		return out
 	}
@@ -261,29 +217,60 @@ func (b *Binder) lookup(name SessionName) []Binding {
 	return out
 }
 
-// Cached returns the stored binding that answers to name: the primary binding
-// stored under name, or else a primary binding that lists name as an alias. It
-// never contacts Rex and does not check that the pane still exists; callers
-// that need a verified address use Resolve or Live.
-func (b *Binder) Cached(name SessionName) (Binding, bool) {
-	cands := b.lookup(name)
-	if len(cands) == 0 {
-		return Binding{}, false
-	}
-	return cands[0], true
+// ResolveMode selects how much a resolution does.
+type ResolveMode int
+
+const (
+	// ResolveCached returns the stored binding only; it never contacts Rex and
+	// does not check that the pane still exists.
+	ResolveCached ResolveMode = iota
+	// ResolveLive checks stored candidates against the live pane, rediscovering
+	// a recreated pane under the labels its record had. With nothing cached it
+	// scans by label first.
+	ResolveLive
+	// ResolveFresh revalidates and drops stale records, then scans by the
+	// requested name (or the recorded labels when they are known).
+	ResolveFresh
+)
+
+// ResolveRequest is one resolution request.
+type ResolveRequest struct {
+	Name SessionName
+	// Hint carries the env-derived tab and pane labels a lost sidecar record
+	// used, so the fresh scan can rediscover a live pane started under a short
+	// pool name with no rig.
+	Hint Binding
+	// Mode selects the resolution behavior. The zero value is ResolveCached.
+	Mode ResolveMode
 }
 
-// Live returns the first binding that answers to name whose pane is alive. Each
-// stored candidate is checked against the session view; a stale address is
-// re-scanned under the labels the record had, so a recreated pane still counts,
-// and a record whose pane cannot be found is deleted. With nothing cached it
-// falls back to the label scan Resolve performs. A name with no live pane is
-// reported as false with a nil error; a view or process error is returned as is.
-func (b *Binder) Live(ctx context.Context, name SessionName) (Binding, bool, error) {
+// Resolve is the one resolution entry point. It replaces the previous
+// Cached/Live/ResolveHint surfaces: ResolveCached, ResolveLive and
+// ResolveFresh reproduce their behavior.
+func (b *Binder) Resolve(ctx context.Context, req ResolveRequest) (Binding, bool, error) {
+	switch req.Mode {
+	case ResolveLive:
+		return b.resolveLive(ctx, req.Name)
+	case ResolveFresh:
+		return b.resolveFresh(ctx, req.Name, req.Hint)
+	default:
+		cands := b.lookup(req.Name)
+		if len(cands) == 0 {
+			return Binding{}, false, nil
+		}
+		return cands[0], true, nil
+	}
+}
+
+// resolveLive returns the first stored binding that answers to name whose pane
+// is alive. Each candidate is checked against the session view; a stale
+// address is re-scanned under the labels the record had (or the requested name
+// when nothing is cached), and a record whose pane cannot be found is deleted.
+func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bool, error) {
 	cands := b.lookup(name)
 	if len(cands) == 0 {
-		// Nothing cached: fall back to the label scan Resolve performs.
-		bd, ok, err := b.Resolve(ctx, name)
+		// Nothing cached: fall back to the label scan a fresh resolve performs.
+		bd, ok, err := b.resolveFresh(ctx, name, Binding{})
 		if err != nil || !ok {
 			return Binding{}, false, err
 		}
@@ -305,7 +292,7 @@ func (b *Binder) Live(ctx context.Context, name SessionName) (Binding, bool, err
 			}
 		}
 		if !ok {
-			b.store.Delete(bd.Name)
+			_ = b.store.Drop(bd.Name)
 			continue
 		}
 		if got, ok, err = b.liveOnly(ctx, got); err != nil || ok {
@@ -361,29 +348,21 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 	}
 }
 
-// Resolve returns the binding for name, resolving aliases to their primary
-// binding. A stored binding is checked against the requested name, the
+// resolveFresh returns the binding for name, resolving aliases to their
+// primary binding. A stored binding is checked against the requested name, the
 // configured session label and the session view; if any check fails, or Rex
-// reports the session as not found, it is deleted and the session is scanned
-// by its stored (or name-derived) labels. Any other view error is returned as
-// is and leaves the stored binding alone.
-// A name with no pane is reported as false with a nil error.
-func (b *Binder) Resolve(ctx context.Context, name SessionName) (Binding, bool, error) {
-	return b.ResolveHint(ctx, name, Binding{})
-}
-
-// ResolveHint is Resolve with an optional hint carrying the env-derived tab and
-// pane labels a lost sidecar record used. gc 1.5.1 starts pool/wisp instances
-// under a name with no rig, so without the hint a lost record cannot be
-// rediscovered from the name alone and a live pane looks dead.
-func (b *Binder) ResolveHint(ctx context.Context, name SessionName, envHint Binding) (Binding, bool, error) {
+// reports the session as not found, it is deleted and the session is scanned by
+// its stored (or name-derived) labels. Any other view error is returned as is
+// and leaves the stored binding alone. A name with no pane is reported as false
+// with a nil error.
+func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding) (Binding, bool, error) {
 	var stale []Binding
 	var hint Binding
 	for _, bd := range b.lookup(name) {
 		if !matchesName(bd, name) {
 			// The record stored under this key answers to a different name:
 			// drop the key, never the record's own name.
-			b.store.Delete(name)
+			_ = b.store.Drop(name)
 			continue
 		}
 		got, ok, err := b.revalidate(ctx, bd)
@@ -399,7 +378,7 @@ func (b *Binder) ResolveHint(ctx context.Context, name SessionName, envHint Bind
 		}
 	}
 	for _, bd := range stale {
-		b.store.Delete(bd.Name)
+		_ = b.store.Drop(bd.Name)
 	}
 	// Re-scan under the labels the caller knows (a lost record) or the stale
 	// record used, so a pane recreated with the same env-derived labels is
@@ -476,7 +455,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 					GCBin:      hint.GCBin,
 					WorkDir:    hint.WorkDir,
 				}
-				b.store.Save(bd)
+				_ = b.store.Write(bd.Name, bd)
 				return bd, true, nil
 			}
 		}
@@ -485,17 +464,17 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 }
 
 // Record stores binding, replacing any earlier one for the same name.
-func (b *Binder) Record(binding Binding) { b.store.Save(binding) }
+func (b *Binder) Record(binding Binding) { _ = b.store.Write(binding.Name, binding) }
 
 // Forget drops the stored binding that answers to name, clearing the whole
 // primary record including its aliases. An alias drops the primary it names.
 func (b *Binder) Forget(name SessionName) {
-	if bd, ok := b.store.Load(name); ok {
-		b.store.Delete(bd.Name)
-		b.store.Delete(name)
+	if bd, ok, _ := b.store.Read(name); ok {
+		_ = b.store.Drop(bd.Name)
+		_ = b.store.Drop(name)
 		return
 	}
 	if cands := b.lookup(name); len(cands) > 0 {
-		b.store.Delete(cands[0].Name)
+		_ = b.store.Drop(cands[0].Name)
 	}
 }

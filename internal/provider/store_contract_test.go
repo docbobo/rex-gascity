@@ -9,136 +9,146 @@ import (
 	"time"
 )
 
-// bindingAdapters returns a fresh BindingStore (and its lister) per adapter.
-func bindingAdapters(t *testing.T) map[string]func() BindingStore {
-	return map[string]func() BindingStore{
-		"memory": func() BindingStore { return NewMemoryStore() },
-		"file":   func() BindingStore { return NewFileStore(t.TempDir()) },
+// bindingAdapters returns a fresh Store (and its lister) per adapter.
+func bindingAdapters(t *testing.T) map[string]func() Store[SessionName, Binding] {
+	return map[string]func() Store[SessionName, Binding]{
+		"memory": func() Store[SessionName, Binding] { return NewMemoryStore() },
+		"file":   func() Store[SessionName, Binding] { return NewFileStore(t.TempDir()) },
 	}
 }
 
-func activityAdapters(t *testing.T) map[string]func() ActivityStore {
-	return map[string]func() ActivityStore{
-		"memory": NewMemoryActivityStore,
-		"file":   func() ActivityStore { return NewFileActivityStore(t.TempDir()) },
+func activityAdapters(t *testing.T) map[string]func() Store[SessionName, ActivityRecord] {
+	return map[string]func() Store[SessionName, ActivityRecord]{
+		"memory": func() Store[SessionName, ActivityRecord] { return NewMemoryActivityStore() },
+		"file": func() Store[SessionName, ActivityRecord] {
+			return NewFileActivityStore(t.TempDir())
+		},
 	}
 }
 
-func metaAdapters(t *testing.T) map[string]func() MetaStore {
-	return map[string]func() MetaStore{
-		"memory": NewMemoryMetaStore,
-		"file":   func() MetaStore { return NewFileMetaStore(t.TempDir()) },
+func metaAdapters(t *testing.T) map[string]func() Store[metaKey, string] {
+	return map[string]func() Store[metaKey, string]{
+		"memory": func() Store[metaKey, string] { return NewMemoryMetaStore() },
+		"file":   func() Store[metaKey, string] { return NewFileMetaStore(t.TempDir()) },
 	}
 }
 
-// TestBindingStoreContract runs the BindingStore and BindingLister contract
-// against the memory and file adapters.
+// TestBindingStoreContract runs the Store and Lister contract against the
+// memory and file adapters.
 func TestBindingStoreContract(t *testing.T) {
 	for kind, mk := range bindingAdapters(t) {
 		t.Run(kind, func(t *testing.T) {
 			s := mk()
-			if _, ok := s.Load("a"); ok {
-				t.Fatal("Load before Save found a binding")
+			if _, ok, _ := s.Read("a"); ok {
+				t.Fatal("Read before Write found a binding")
 			}
 			a, b := fullBinding("a"), fullBinding("b")
-			s.Save(b)
-			s.Save(a)
-			if got, ok := s.Load("a"); !ok || !reflect.DeepEqual(got, a) {
-				t.Fatalf("Load a = %+v, %v; want %+v", got, ok, a)
+			if err := s.Write(b.Name, b); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Write(a.Name, a); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok, _ := s.Read("a"); !ok || !reflect.DeepEqual(got, a) {
+				t.Fatalf("Read a = %+v, %v; want %+v", got, ok, a)
 			}
 			a2 := a
 			a2.BlockID = "block:replaced"
-			s.Save(a2)
-			if got, _ := s.Load("a"); got.BlockID != "block:replaced" {
-				t.Errorf("Save did not replace: %+v", got)
+			_ = s.Write(a2.Name, a2)
+			if got, _, _ := s.Read("a"); got.BlockID != "block:replaced" {
+				t.Errorf("Write did not replace: %+v", got)
 			}
-			lister, ok := s.(BindingLister)
+			lister, ok := s.(Lister[Binding])
 			if !ok {
-				t.Fatal("store is not a BindingLister")
+				t.Fatal("store is not a Lister[Binding]")
 			}
 			list := lister.List()
 			if len(list) != 2 || list[0].Name != "a" || list[1].Name != "b" {
 				t.Errorf("List = %+v; want a, b sorted", list)
 			}
-			s.Delete("a")
-			s.Delete("missing")
-			if _, ok := s.Load("a"); ok {
-				t.Error("Delete left the binding")
+			_ = s.Drop("a")
+			_ = s.Drop("missing")
+			if _, ok, _ := s.Read("a"); ok {
+				t.Error("Drop left the binding")
 			}
 			if got := lister.List(); len(got) != 1 || got[0].Name != "b" {
-				t.Errorf("List after Delete = %+v", got)
+				t.Errorf("List after Drop = %+v", got)
 			}
 		})
 	}
 }
 
-// TestActivityStoreContract runs the ActivityStore contract against both adapters.
+// TestActivityStoreContract runs the Store contract against both adapters.
 func TestActivityStoreContract(t *testing.T) {
 	rec := ActivityRecord{Identity: "block:1", Fingerprint: "fp", At: time.Unix(1, 0).UTC(), InputAt: time.Unix(2, 0).UTC()}
 	for kind, mk := range activityAdapters(t) {
 		t.Run(kind, func(t *testing.T) {
 			s := mk()
-			if _, ok := s.Load("a"); ok {
-				t.Fatal("Load before Save found a record")
+			if _, ok, _ := s.Read("a"); ok {
+				t.Fatal("Read before Write found a record")
 			}
-			s.Save("a", rec)
-			if got, ok := s.Load("a"); !ok || !reflect.DeepEqual(got, rec) {
-				t.Fatalf("Load = %+v, %v; want %+v", got, ok, rec)
+			_ = s.Write("a", rec)
+			if got, ok, _ := s.Read("a"); !ok || !reflect.DeepEqual(got, rec) {
+				t.Fatalf("Read = %+v, %v; want %+v", got, ok, rec)
 			}
-			s.Save("a", ActivityRecord{Fingerprint: "newer"})
-			if got, _ := s.Load("a"); got.Fingerprint != "newer" || got.Identity != "" {
-				t.Errorf("Save did not replace: %+v", got)
+			_ = s.Write("a", ActivityRecord{Fingerprint: "newer"})
+			if got, _, _ := s.Read("a"); got.Fingerprint != "newer" || got.Identity != "" {
+				t.Errorf("Write did not replace: %+v", got)
 			}
-			s.Save("b", rec)
-			if err := s.Delete("a"); err != nil {
-				t.Fatalf("Delete: %v", err)
+			_ = s.Write("b", rec)
+			if err := s.Drop("a"); err != nil {
+				t.Fatalf("Drop: %v", err)
 			}
-			if err := s.Delete("a"); err != nil {
-				t.Errorf("Delete of a missing record: %v", err)
+			if err := s.Drop("a"); err != nil {
+				t.Errorf("Drop of a missing record: %v", err)
 			}
-			if _, ok := s.Load("a"); ok {
-				t.Error("Delete left the record")
+			if _, ok, _ := s.Read("a"); ok {
+				t.Error("Drop left the record")
 			}
-			if _, ok := s.Load("b"); !ok {
-				t.Error("Delete removed another name's record")
+			if _, ok, _ := s.Read("b"); !ok {
+				t.Error("Drop removed another name's record")
 			}
 		})
 	}
 }
 
-// TestMetaStoreContract runs the MetaStore contract (including Clear) against
-// both adapters.
+// TestMetaStoreContract runs the Store contract (including Clear) against both
+// adapters.
 func TestMetaStoreContract(t *testing.T) {
 	for kind, mk := range metaAdapters(t) {
 		t.Run(kind, func(t *testing.T) {
 			s := mk()
 			for _, kv := range [][3]string{{"a", "k1", "v1"}, {"a", "k2", "v2"}, {"b", "k1", "b1"}} {
-				if err := s.Set(SessionName(kv[0]), kv[1], kv[2]); err != nil {
-					t.Fatalf("Set: %v", err)
+				if err := s.Write(metaKey{SessionName(kv[0]), kv[1]}, kv[2]); err != nil {
+					t.Fatalf("Write: %v", err)
 				}
 			}
-			if v, ok, err := s.Get("a", "k1"); !ok || err != nil || v != "v1" {
-				t.Fatalf("Get = %q, %v, %v", v, ok, err)
+			if v, ok, err := s.Read(metaKey{"a", "k1"}); !ok || err != nil || v != "v1" {
+				t.Fatalf("Read = %q, %v, %v", v, ok, err)
 			}
-			if err := s.Delete("a", "k1"); err != nil {
-				t.Fatalf("Delete: %v", err)
+			if err := s.Drop(metaKey{"a", "k1"}); err != nil {
+				t.Fatalf("Drop: %v", err)
 			}
-			if _, ok, _ := s.Get("a", "k1"); ok {
-				t.Error("Delete left the key")
+			if _, ok, _ := s.Read(metaKey{"a", "k1"}); ok {
+				t.Error("Drop left the key")
 			}
-			if v, ok, _ := s.Get("a", "k2"); !ok || v != "v2" {
-				t.Error("Delete removed another key")
+			if v, ok, _ := s.Read(metaKey{"a", "k2"}); !ok || v != "v2" {
+				t.Error("Drop removed another key")
 			}
-			if err := s.Clear("a"); err != nil {
+			clearer, ok := s.(clearer)
+			if !ok {
+				t.Fatal("metadata store does not implement clearer")
+			}
+			if err := clearer.Clear("a"); err != nil {
 				t.Fatalf("Clear: %v", err)
 			}
-			if err := s.Clear("a"); err != nil {
+			if err := clearer.Clear("a"); err != nil {
 				t.Errorf("Clear of an empty name: %v", err)
 			}
-			if _, ok, _ := s.Get("a", "k2"); ok {
+			if _, ok, _ := s.Read(metaKey{"a", "k2"}); ok {
 				t.Error("Clear left a key")
 			}
-			if v, ok, _ := s.Get("b", "k1"); !ok || v != "b1" {
+			if v, ok, _ := s.Read(metaKey{"b", "k1"}); !ok || v != "b1" {
 				t.Error("Clear removed another name's key")
 			}
 		})
@@ -199,19 +209,22 @@ func TestFileStoreOnDiskBytes(t *testing.T) {
 // composites join the errors of every namespace.
 type failingActivity struct{ err error }
 
-func (failingActivity) Load(SessionName) (ActivityRecord, bool) { return ActivityRecord{}, false }
-func (failingActivity) Save(SessionName, ActivityRecord)        {}
-func (f failingActivity) Delete(SessionName) error              { return f.err }
+func (f failingActivity) Read(SessionName) (ActivityRecord, bool, error) {
+	return ActivityRecord{}, false, f.err
+}
+func (f failingActivity) Write(SessionName, ActivityRecord) error { return f.err }
+func (f failingActivity) Drop(SessionName) error                  { return f.err }
 
 type failingMeta struct{ err error }
 
-func (f failingMeta) Get(SessionName, string) (string, bool, error) { return "", false, f.err }
-func (f failingMeta) Set(SessionName, string, string) error         { return f.err }
-func (f failingMeta) Delete(SessionName, string) error              { return f.err }
-func (f failingMeta) Clear(SessionName) error                       { return f.err }
+func (f failingMeta) Read(metaKey) (string, bool, error) { return "", false, f.err }
+func (f failingMeta) Write(metaKey, string) error        { return f.err }
+func (f failingMeta) Drop(metaKey) error                 { return f.err }
+
+func (f failingMeta) Clear(SessionName) error { return f.err }
 
 // TestCompositeBindingStoreContract: first store wins on reads, writes go to
-// the canonical store only, deletes cover every store, and List is the union
+// the canonical store only, drops cover every store, and List is the union
 // with the canonical copy kept, sorted by name.
 func TestCompositeBindingStoreContract(t *testing.T) {
 	canon, legacy := NewMemoryStore(), NewMemoryStore()
@@ -219,27 +232,27 @@ func TestCompositeBindingStoreContract(t *testing.T) {
 
 	fromLegacy := fullBinding("only-legacy")
 	legacy.Save(fromLegacy)
-	if got, ok := c.Load("only-legacy"); !ok || !reflect.DeepEqual(got, fromLegacy) {
-		t.Fatalf("fallback Load = %+v, %v", got, ok)
+	if got, ok, _ := c.Read("only-legacy"); !ok || !reflect.DeepEqual(got, fromLegacy) {
+		t.Fatalf("fallback Read = %+v, %v", got, ok)
 	}
 
 	oldCopy, newCopy := fullBinding("both"), fullBinding("both")
 	oldCopy.BlockID, newCopy.BlockID = "block:legacy", "block:canonical"
 	legacy.Save(oldCopy)
 	canon.Save(newCopy)
-	if got, _ := c.Load("both"); got.BlockID != "block:canonical" {
-		t.Errorf("Load = %s; canonical store must win", got.BlockID)
+	if got, _, _ := c.Read("both"); got.BlockID != "block:canonical" {
+		t.Errorf("Read = %s; canonical store must win", got.BlockID)
 	}
 
-	c.Save(fullBinding("fresh"))
+	_ = c.Write("fresh", fullBinding("fresh"))
 	if _, ok := canon.Load("fresh"); !ok {
-		t.Error("Save did not reach the canonical store")
+		t.Error("Write did not reach the canonical store")
 	}
 	if _, ok := legacy.Load("fresh"); ok {
-		t.Error("Save reached the legacy store")
+		t.Error("Write reached the legacy store")
 	}
 
-	list := c.(BindingLister).List()
+	list := c.List()
 	var names []SessionName
 	for _, b := range list {
 		names = append(names, b.Name)
@@ -251,68 +264,68 @@ func TestCompositeBindingStoreContract(t *testing.T) {
 		t.Errorf("List kept %s for a duplicated name; want the canonical copy", list[0].BlockID)
 	}
 
-	c.Delete("both")
+	_ = c.Drop("both")
 	if _, ok := canon.Load("both"); ok {
-		t.Error("Delete left the canonical copy")
+		t.Error("Drop left the canonical copy")
 	}
 	if _, ok := legacy.Load("both"); ok {
-		t.Error("Delete left the legacy copy")
+		t.Error("Drop left the legacy copy")
 	}
 
-	if _, ok := newCompositeBindingStore().Load("x"); ok {
+	if _, ok, _ := newCompositeBindingStore().Read("x"); ok {
 		t.Error("empty composite found a binding")
 	}
-	newCompositeBindingStore().Save(fullBinding("x")) // must not panic
-	if got := newCompositeBindingStore().(BindingLister).List(); got == nil || len(got) != 0 {
+	_ = newCompositeBindingStore().Write("x", fullBinding("x")) // must not panic
+	if got := newCompositeBindingStore().List(); got == nil || len(got) != 0 {
 		t.Errorf("empty List = %#v; want empty non-nil", got)
 	}
 	// A store that cannot list is skipped.
-	if got := newCompositeBindingStore(bindingOnly{}, canon).(BindingLister).List(); len(got) != 1 {
+	if got := newCompositeBindingStore(bindingOnly{}, canon).List(); len(got) != 1 {
 		t.Errorf("List with a non-lister = %d entries; want 1", len(got))
 	}
 }
 
 type bindingOnly struct{}
 
-func (bindingOnly) Load(SessionName) (Binding, bool) { return Binding{}, false }
-func (bindingOnly) Save(Binding)                     {}
-func (bindingOnly) Delete(SessionName)               {}
+func (bindingOnly) Read(SessionName) (Binding, bool, error) { return Binding{}, false, nil }
+func (bindingOnly) Write(SessionName, Binding) error        { return nil }
+func (bindingOnly) Drop(SessionName) error                  { return nil }
 
 func TestCompositeActivityStoreContract(t *testing.T) {
 	canon, legacy := NewMemoryActivityStore(), NewMemoryActivityStore()
 	c := newCompositeActivityStore(canon, legacy)
 
 	legacy.Save("a", ActivityRecord{Fingerprint: "legacy"})
-	if got, ok := c.Load("a"); !ok || got.Fingerprint != "legacy" {
-		t.Fatalf("fallback Load = %+v, %v", got, ok)
+	if got, ok, _ := c.Read("a"); !ok || got.Fingerprint != "legacy" {
+		t.Fatalf("fallback Read = %+v, %v", got, ok)
 	}
 	canon.Save("a", ActivityRecord{Fingerprint: "canon"})
-	if got, _ := c.Load("a"); got.Fingerprint != "canon" {
-		t.Errorf("Load = %q; canonical must win", got.Fingerprint)
+	if got, _, _ := c.Read("a"); got.Fingerprint != "canon" {
+		t.Errorf("Read = %q; canonical must win", got.Fingerprint)
 	}
-	c.Save("b", ActivityRecord{Fingerprint: "b"})
+	_ = c.Write("b", ActivityRecord{Fingerprint: "b"})
 	if _, ok := canon.Load("b"); !ok {
-		t.Error("Save did not reach the canonical store")
+		t.Error("Write did not reach the canonical store")
 	}
 	if _, ok := legacy.Load("b"); ok {
-		t.Error("Save reached the legacy store")
+		t.Error("Write reached the legacy store")
 	}
-	if err := c.Delete("a"); err != nil {
+	if err := c.Drop("a"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := canon.Load("a"); ok {
-		t.Error("Delete left the canonical record")
+		t.Error("Drop left the canonical record")
 	}
 	if _, ok := legacy.Load("a"); ok {
-		t.Error("Delete left the legacy record")
+		t.Error("Drop left the legacy record")
 	}
 
 	e1, e2 := errors.New("e1"), errors.New("e2")
-	err := newCompositeActivityStore(failingActivity{e1}, canon, failingActivity{e2}).Delete("x")
+	err := newCompositeActivityStore(failingActivity{e1}, canon, failingActivity{e2}).Drop("x")
 	if !errors.Is(err, e1) || !errors.Is(err, e2) {
-		t.Errorf("Delete error = %v; want both errors joined", err)
+		t.Errorf("Drop error = %v; want both errors joined", err)
 	}
-	newCompositeActivityStore().Save("x", ActivityRecord{}) // must not panic
+	_ = newCompositeActivityStore().Write("x", ActivityRecord{}) // must not panic
 }
 
 func TestCompositeMetaStoreContract(t *testing.T) {
@@ -320,38 +333,38 @@ func TestCompositeMetaStoreContract(t *testing.T) {
 	c := newCompositeMetaStore(canon, legacy)
 
 	_ = legacy.Set("a", "k", "legacy")
-	if v, ok, err := c.Get("a", "k"); !ok || err != nil || v != "legacy" {
-		t.Fatalf("fallback Get = %q, %v, %v", v, ok, err)
+	if v, ok, err := c.Read(metaKey{"a", "k"}); !ok || err != nil || v != "legacy" {
+		t.Fatalf("fallback Read = %q, %v, %v", v, ok, err)
 	}
 	_ = canon.Set("a", "k", "canon")
-	if v, _, _ := c.Get("a", "k"); v != "canon" {
-		t.Errorf("Get = %q; canonical must win", v)
+	if v, _, _ := c.Read(metaKey{"a", "k"}); v != "canon" {
+		t.Errorf("Read = %q; canonical must win", v)
 	}
-	if _, ok, err := c.Get("a", "missing"); ok || err != nil {
-		t.Errorf("missing Get = %v, %v", ok, err)
+	if _, ok, err := c.Read(metaKey{"a", "missing"}); ok || err != nil {
+		t.Errorf("missing Read = %v, %v", ok, err)
 	}
-	if err := c.Set("a", "new", "v"); err != nil {
+	if err := c.Write(metaKey{"a", "new"}, "v"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := canon.Get("a", "new"); !ok {
-		t.Error("Set did not reach the canonical store")
+		t.Error("Write did not reach the canonical store")
 	}
 	if _, ok, _ := legacy.Get("a", "new"); ok {
-		t.Error("Set reached the legacy store")
+		t.Error("Write reached the legacy store")
 	}
-	if err := c.Delete("a", "k"); err != nil {
+	if err := c.Drop(metaKey{"a", "k"}); err != nil {
 		t.Fatal(err)
 	}
-	for name, s := range map[string]MetaStore{"canonical": canon, "legacy": legacy} {
+	for name, s := range map[string]*memoryMetaStore{"canonical": canon, "legacy": legacy} {
 		if _, ok, _ := s.Get("a", "k"); ok {
-			t.Errorf("Delete left the key in the %s store", name)
+			t.Errorf("Drop left the key in the %s store", name)
 		}
 	}
 	_ = legacy.Set("a", "old", "v")
 	if err := c.Clear("a"); err != nil {
 		t.Fatal(err)
 	}
-	for name, s := range map[string]MetaStore{"canonical": canon, "legacy": legacy} {
+	for name, s := range map[string]*memoryMetaStore{"canonical": canon, "legacy": legacy} {
 		if _, ok, _ := s.Get("a", "new"); ok {
 			t.Errorf("Clear left a key in the %s store", name)
 		}
@@ -361,9 +374,9 @@ func TestCompositeMetaStoreContract(t *testing.T) {
 	}
 
 	e1, e2 := errors.New("e1"), errors.New("e2")
-	for op, fn := range map[string]func(MetaStore) error{
-		"Delete": func(s MetaStore) error { return s.Delete("x", "k") },
-		"Clear":  func(s MetaStore) error { return s.Clear("x") },
+	for op, fn := range map[string]func(Store[metaKey, string]) error{
+		"Drop":  func(s Store[metaKey, string]) error { return s.Drop(metaKey{"x", "k"}) },
+		"Clear": func(s Store[metaKey, string]) error { return s.(clearer).Clear("x") },
 	} {
 		err := fn(newCompositeMetaStore(failingMeta{e1}, canon, failingMeta{e2}))
 		if !errors.Is(err, e1) || !errors.Is(err, e2) {
@@ -371,10 +384,10 @@ func TestCompositeMetaStoreContract(t *testing.T) {
 		}
 	}
 	// A read error stops the fallback and is returned.
-	if _, ok, err := newCompositeMetaStore(failingMeta{e1}, canon).Get("a", "new"); ok || !errors.Is(err, e1) {
-		t.Errorf("Get = %v, %v; want the first store's error", ok, err)
+	if _, ok, err := newCompositeMetaStore(failingMeta{e1}, canon).Read(metaKey{"a", "new"}); ok || !errors.Is(err, e1) {
+		t.Errorf("Read = %v, %v; want the first store's error", ok, err)
 	}
-	if err := newCompositeMetaStore().Set("x", "k", "v"); err != nil {
-		t.Errorf("empty Set = %v; want nil", err)
+	if err := newCompositeMetaStore().Write(metaKey{"x", "k"}, "v"); err != nil {
+		t.Errorf("empty Write = %v; want nil", err)
 	}
 }

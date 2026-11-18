@@ -86,7 +86,7 @@ func TestGetLastActivitySurvivesNewProviderOverSameStateDir(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 	fake := faketest.New()
-	p1 := provider.New("acme", fake, provider.WithStateDir(dir))
+	p1 := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	if err := p1.Start(ctx, activityName, provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestGetLastActivitySurvivesNewProviderOverSameStateDir(t *testing.T) {
 		t.Fatalf("first: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	p2 := provider.New("acme", fake, provider.WithStateDir(dir))
+	p2 := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	second, err := p2.GetLastActivity(ctx, activityName)
 	if err != nil {
 		t.Fatalf("second: %v", err)

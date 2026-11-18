@@ -55,7 +55,7 @@ func drainStartedWith(t *testing.T, client rex.Client, workDir, stateDir string)
 	t.Helper()
 	var opts []provider.Option
 	if stateDir != "" {
-		opts = append(opts, provider.WithStateDir(stateDir))
+		opts = append(opts, provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
 	}
 	p := provider.New("acme", client, opts...)
 	err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{
@@ -178,7 +178,7 @@ func TestBindingWorkDirRoundTripsThroughFileStore(t *testing.T) {
 	repo := gitRepo(t)
 	state := t.TempDir()
 	drainStarted(t, repo, state)
-	reader := provider.New("acme", faketest.New(), provider.WithStateDir(state))
+	reader := provider.New("acme", faketest.New(), provider.WithNamespace(provider.NewNamespaceForDirs(state)))
 	b, ok := reader.Binding("Indigo--dog-1")
 	if !ok || b.WorkDir != repo {
 		t.Errorf("reloaded WorkDir = %q (ok=%v), want %q", b.WorkDir, ok, repo)

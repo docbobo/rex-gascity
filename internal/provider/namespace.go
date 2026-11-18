@@ -33,6 +33,14 @@ func NewNamespace(cities []string) (Namespace, error) {
 	return Namespace{dirs: dirs, labels: SessionLabels(cities)}, nil
 }
 
+// NewNamespaceForDirs builds a Namespace from already-resolved state dirs. It
+// is for callers that resolved the dirs themselves (the dispatcher and tests);
+// labels stay empty, so the provider falls back to the city label. Use
+// NewNamespace when starting from city names so a resolution error is reported.
+func NewNamespaceForDirs(dirs ...string) Namespace {
+	return Namespace{dirs: append([]string(nil), dirs...)}
+}
+
 // NamespaceForCaller resolves the city and namespace for this process from
 // its environment. RPP v0 carries no city, so the same city can reach us with
 // different incidental GC_CITY_PATH/GC_CITY values: it resolves one canonical

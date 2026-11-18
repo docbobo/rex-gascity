@@ -50,8 +50,8 @@ func TestRemoveMetaRemovesOnlyNamedKey(t *testing.T) {
 func TestMetaSharedAcrossProvidersOnOneStateDir(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	p1 := provider.New("acme", faketest.New(), provider.WithStateDir(dir))
-	p2 := provider.New("acme", faketest.New(), provider.WithStateDir(dir))
+	p1 := provider.New("acme", faketest.New(), provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
+	p2 := provider.New("acme", faketest.New(), provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	if err := p1.SetMeta(ctx, "a", "k", "❯ x"); err != nil {
 		t.Fatalf("SetMeta: %v", err)
 	}

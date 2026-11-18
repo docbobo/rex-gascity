@@ -113,7 +113,7 @@ func (p *Provider) paneAlive(ctx context.Context, b Binding) (bool, error) {
 // ancestor in the agent's pane. It backs the RPP process-alive op; empty names
 // means alive. An agent with no pane is not alive.
 func (p *Provider) ProcessAlive(ctx context.Context, name string, names []string) (bool, error) {
-	b, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	b, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil || !ok {
 		return false, err
 	}

@@ -58,7 +58,7 @@ func fakeGit(delay time.Duration) *FakeRunner {
 func drainDiagProvider(t *testing.T, git Runner) (*Provider, string) {
 	t.Helper()
 	state := t.TempDir()
-	return New("acme", faketest.New(), WithStateDir(state), WithRunner(git)), state
+	return New("acme", faketest.New(), WithNamespace(NewNamespaceForDirs(state)), WithRunner(git)), state
 }
 
 // The drain diagnostic must not take git's optional locks (a worker may be

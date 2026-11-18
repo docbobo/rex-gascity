@@ -116,7 +116,7 @@ func TestNamespaceForCaller(t *testing.T) {
 	}
 }
 
-// WithNamespace is WithStateDirs plus WithSessionLabels over one value.
+// WithNamespace installs one resolved namespace (dirs and labels).
 func TestWithNamespaceSetsLockDirAndLabels(t *testing.T) {
 	t.Setenv("GC_REX_STATE_DIR", t.TempDir())
 	ns, err := NewNamespace([]string{"default", "old"})

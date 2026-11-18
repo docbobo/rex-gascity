@@ -16,7 +16,7 @@ import (
 // kind we cannot classify answers true, because that fail-open reading must
 // not close a pane a human may be watching.
 func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil {
 		return false, err
 	}

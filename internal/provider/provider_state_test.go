@@ -15,7 +15,7 @@ func TestBindingSurvivesNewProvider(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	first := provider.New("acme", faketest.New(), provider.WithStateDir(dir))
+	first := provider.New("acme", faketest.New(), provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	if err := first.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestBindingSurvivesNewProvider(t *testing.T) {
 	}
 
 	fake2 := faketest.New() // knows no sessions or views
-	second := provider.New("acme", fake2, provider.WithStateDir(dir))
+	second := provider.New("acme", fake2, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	got, ok := second.Binding("Indigo--dog-1")
 	if !ok {
 		t.Fatal("second provider lost the binding")

@@ -43,10 +43,10 @@ const StartupDeliveryUnconfirmedMetaKey = "GC_STARTUP_DELIVERY_UNCONFIRMED"
 func WithStartupReadiness(window, settle time.Duration) Option {
 	return func(p *Provider) {
 		if window > 0 {
-			p.startupReadyWindow = window
+			p.nudge.startupReadyWindow = window
 		}
 		if settle > 0 {
-			p.startupSettleDelay = settle
+			p.nudge.startupSettleDelay = settle
 		}
 	}
 }
@@ -56,7 +56,7 @@ func WithStartupReadiness(window, settle time.Duration) Option {
 // keeps the default. It exists so tests can shrink the ladder.
 func WithStartupNudgeRetries(backoffs []time.Duration) Option {
 	return func(p *Provider) {
-		p.startupNudgeBackoffs = backoffs
+		p.nudge.startupNudgeBackoffs = backoffs
 	}
 }
 
@@ -87,7 +87,7 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		return
 	}
 
-	for _, backoff := range p.startupNudgeBackoffs {
+	for _, backoff := range p.nudge.startupNudgeBackoffs {
 		if ctx.Err() != nil {
 			break
 		}
@@ -169,15 +169,15 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 // reports no program_status at all, only the shorter settle delay is spent,
 // so an agent that never emits status is not held for the whole window.
 func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) {
-	window := p.startupReadyWindow
+	window := p.nudge.startupReadyWindow
 	if window <= 0 {
 		return
 	}
-	poll := p.nudgePollInterval
+	poll := p.nudge.nudgePollInterval
 	if poll <= 0 {
 		poll = defaultNudgePollInterval
 	}
-	settle := p.startupSettleDelay
+	settle := p.nudge.startupSettleDelay
 	start := time.Now()
 	sawRecord := false
 	for {

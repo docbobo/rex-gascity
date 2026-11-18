@@ -7,19 +7,32 @@ import (
 	"time"
 )
 
-func activityStores(t *testing.T) map[string]func() ActivityStore {
+type activityAPI interface {
+	Load(SessionName) (ActivityRecord, bool)
+	Save(SessionName, ActivityRecord)
+	Delete(SessionName) error
+}
+
+func activityStores(t *testing.T) map[string]func() activityAPI {
 	dir := t.TempDir()
-	return map[string]func() ActivityStore{
-		"memory": NewMemoryActivityStore,
-		"file":   func() ActivityStore { return NewFileActivityStore(dir) },
+	return map[string]func() activityAPI{
+		"memory": func() activityAPI { return NewMemoryActivityStore() },
+		"file":   func() activityAPI { return NewFileActivityStore(dir) },
 	}
 }
 
-func metaStores(t *testing.T) map[string]func() MetaStore {
+type metaAPI interface {
+	Get(SessionName, string) (string, bool, error)
+	Set(SessionName, string, string) error
+	Delete(SessionName, string) error
+	Clear(SessionName) error
+}
+
+func metaStores(t *testing.T) map[string]func() metaAPI {
 	dir := t.TempDir()
-	return map[string]func() MetaStore{
-		"memory": NewMemoryMetaStore,
-		"file":   func() MetaStore { return NewFileMetaStore(dir) },
+	return map[string]func() metaAPI{
+		"memory": func() metaAPI { return NewMemoryMetaStore() },
+		"file":   func() metaAPI { return NewFileMetaStore(dir) },
 	}
 }
 
@@ -138,7 +151,7 @@ func TestMetaFileStoreKeepsInvalidUTF8(t *testing.T) {
 
 func TestMetaFileStoreBadEntries(t *testing.T) {
 	dir := t.TempDir()
-	s := NewFileMetaStore(dir).(*fileMetaStore)
+	s := NewFileMetaStore(dir)
 	for _, tc := range []struct {
 		body    string
 		wantErr bool

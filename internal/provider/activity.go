@@ -41,6 +41,17 @@ type LastActivity struct {
 	Source ActivitySource
 }
 
+// activityRead and activityWrite are the provider's one place to reach the
+// generic activity store.
+func (p *Provider) activityRead(name SessionName) (ActivityRecord, bool) {
+	rec, ok, _ := p.activity.Read(name)
+	return rec, ok
+}
+
+func (p *Provider) activityWrite(name SessionName, rec ActivityRecord) {
+	_ = p.activity.Write(name, rec)
+}
+
 // GetLastActivity reports when the agent's pane was last active. It prefers
 // the latest program_status record; a newest state of working or blocked means
 // now, so a silent but busy program is not mistaken for idle. Without a
@@ -51,7 +62,7 @@ type LastActivity struct {
 // before its output changes. A session with no pane reports ActivityNone and a
 // zero time.
 func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivity, error) {
-	binding, ok, err := p.binder.Resolve(ctx, SessionName(name))
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil {
 		return LastActivity{}, err
 	}
@@ -77,11 +88,11 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 		return LastActivity{}, err
 	}
 	fp := formatFingerprint(out)
-	if rec, found := p.activity.Load(binding.Name); found && rec.Identity == string(binding.BlockID) && rec.Fingerprint == fp {
+	if rec, found := p.activityRead(binding.Name); found && rec.Identity == string(binding.BlockID) && rec.Fingerprint == fp {
 		return LastActivity{At: laterOf(rec.At, rec.InputAt), Source: ActivityFormatPoll}, nil
 	}
 	now := time.Now().UTC()
-	rec, found := p.activity.Load(binding.Name)
+	rec, found := p.activityRead(binding.Name)
 	if !found || rec.Identity != string(binding.BlockID) {
 		// A new incarnation starts clean: a floor from a recycled pane must
 		// not leak into this one.
@@ -90,7 +101,7 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 	rec.Identity = string(binding.BlockID)
 	rec.Fingerprint = fp
 	rec.At = now
-	p.activity.Save(binding.Name, rec)
+	p.activityWrite(binding.Name, rec)
 	return LastActivity{At: laterOf(now, rec.InputAt), Source: ActivityFormatPoll}, nil
 }
 
@@ -112,7 +123,7 @@ func newestProgramStatus(records []rex.ProgramStatusRecord) (time.Time, string, 
 // incarnation, or the zero time when there is none. A record from another
 // incarnation is ignored so a stale stamp cannot leak across a recycle.
 func (p *Provider) inputFloor(b Binding) time.Time {
-	rec, ok := p.activity.Load(b.Name)
+	rec, ok := p.activityRead(b.Name)
 	if !ok || rec.Identity != string(b.BlockID) {
 		return time.Time{}
 	}
@@ -124,12 +135,12 @@ func (p *Provider) inputFloor(b Binding) time.Time {
 // read as idle. It keeps the existing fingerprint and screen time for the same
 // incarnation.
 func (p *Provider) noteInput(b Binding) {
-	rec, found := p.activity.Load(b.Name)
+	rec, found := p.activityRead(b.Name)
 	if !found || rec.Identity != string(b.BlockID) {
 		rec = ActivityRecord{Identity: string(b.BlockID)}
 	}
 	rec.InputAt = time.Now().UTC()
-	p.activity.Save(b.Name, rec)
+	p.activityWrite(b.Name, rec)
 }
 
 // laterOf returns the later of two times, so an input floor can never be

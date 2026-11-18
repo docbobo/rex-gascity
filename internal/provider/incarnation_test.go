@@ -61,7 +61,7 @@ func TestStartAfterStopObservesNoMetaOrActivity(t *testing.T) {
 	fake := faketest.New()
 	name := "Indigo--dog-1"
 
-	p1 := provider.New("acme", fake, provider.WithStateDir(dir))
+	p1 := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	if err := p1.Start(ctx, name, provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestStartAfterStopObservesNoMetaOrActivity(t *testing.T) {
 	}
 
 	// A fresh provider and start of the same name observes nothing stale.
-	p2 := provider.New("acme", fake, provider.WithStateDir(dir))
+	p2 := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	if err := p2.Start(ctx, name, provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("restart: %v", err)
 	}

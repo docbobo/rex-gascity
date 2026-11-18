@@ -15,6 +15,18 @@ import (
 // some gc callers carry: start (a bare launchd controller) and the lookup ops
 // (a session or nudge-poller process) have to agree on one gc:<city> session
 // and one state directory. GC_REX_CITY stays the explicit per-city pin.
+// namespacesOption resolves cities and returns the one namespace option,
+// surfacing a state-dir error instead of letting the provider fall back to
+// memory.
+func namespacesOption(t *testing.T, cities []string) provider.Option {
+	t.Helper()
+	ns, err := provider.NewNamespace(cities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider.WithNamespace(ns)
+}
+
 func TestCityFromEnvIsCallerIndependent(t *testing.T) {
 	for _, tc := range []struct {
 		rex, path, city, want string
@@ -103,7 +115,7 @@ func TestLookupSpansCandidateNamespaces(t *testing.T) {
 		}},
 	}
 
-	p := provider.New("default", fake, provider.WithCityNamespaces(provider.CityCandidates()))
+	p := provider.New("default", fake, namespacesOption(t, provider.CityCandidates()))
 
 	running, err := p.IsRunning(ctx, string(name))
 	if err != nil || !running {
@@ -154,13 +166,13 @@ func TestPinnedNamespacesDoNotCrossResolve(t *testing.T) {
 	if got := provider.CityCandidates(); !slices.Equal(got, []string{"a"}) {
 		t.Fatalf("pinned candidates = %v, want [a]", got)
 	}
-	pA := provider.New("a", fake, provider.WithCityNamespaces(provider.CityCandidates()))
+	pA := provider.New("a", fake, namespacesOption(t, provider.CityCandidates()))
 	if err := pA.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"sh"}}); err != nil {
 		t.Fatalf("start in city a: %v", err)
 	}
 
 	t.Setenv("GC_REX_CITY", "b")
-	pB := provider.New("b", fake, provider.WithCityNamespaces(provider.CityCandidates()))
+	pB := provider.New("b", fake, namespacesOption(t, provider.CityCandidates()))
 	running, err := pB.IsRunning(ctx, "Indigo--dog-1")
 	if err != nil {
 		t.Fatalf("IsRunning in city b: %v", err)
@@ -187,7 +199,7 @@ func TestNudgeDeliversAcrossCandidateNamespaces(t *testing.T) {
 
 	// The nudge poller carries an incidental GC_CITY_PATH.
 	t.Setenv("GC_CITY_PATH", "/data/my-city")
-	poller := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(provider.CityCandidates()))
+	poller := provider.New(provider.CityFromEnv(), fake, namespacesOption(t, provider.CityCandidates()))
 	if err := poller.Start(ctx, name, provider.Config{Argv: []string{"sh"}}); err != nil {
 		t.Fatalf("poller Start: %v", err)
 	}
@@ -195,7 +207,7 @@ func TestNudgeDeliversAcrossCandidateNamespaces(t *testing.T) {
 	// The bare launchd controller carries no city env and resolves the
 	// canonical namespace.
 	t.Setenv("GC_CITY_PATH", "")
-	controller := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(provider.CityCandidates()))
+	controller := provider.New(provider.CityFromEnv(), fake, namespacesOption(t, provider.CityCandidates()))
 
 	running, err := controller.IsRunning(ctx, name)
 	if err != nil || !running {
@@ -274,7 +286,7 @@ func TestUnpinnedLookupDiscoversPinnedCity(t *testing.T) {
 	if !slices.Equal(cities, []string{"default", "my-city"}) {
 		t.Fatalf("candidates = %v, want [default my-city]", cities)
 	}
-	p := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(cities))
+	p := provider.New(provider.CityFromEnv(), fake, namespacesOption(t, cities))
 
 	running, err := p.IsRunning(ctx, name)
 	if err != nil || !running {
@@ -374,7 +386,7 @@ func TestUnpinnedLookupKeepsDistinctCitiesApart(t *testing.T) {
 	if !slices.Equal(cities, []string{"default", "alpha", "beta"}) {
 		t.Fatalf("candidates = %v, want [default alpha beta]", cities)
 	}
-	p := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(cities))
+	p := provider.New(provider.CityFromEnv(), fake, namespacesOption(t, cities))
 
 	for _, name := range []string{nameA, nameB} {
 		running, err := p.IsRunning(ctx, name)
@@ -429,7 +441,7 @@ func TestUnpinnedLookupDuplicateNamePrecedence(t *testing.T) {
 
 	cities := provider.CityCandidates()
 	cities = append(cities, provider.SiblingCityNamespaces(cities)...)
-	p := provider.New(provider.CityFromEnv(), fake, provider.WithCityNamespaces(cities))
+	p := provider.New(provider.CityFromEnv(), fake, namespacesOption(t, cities))
 
 	bd, ok := p.Binding(name)
 	if !ok || bd.SessionID != "session:gc:alpha" {

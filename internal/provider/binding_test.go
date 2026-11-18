@@ -39,7 +39,7 @@ func TestResolveCacheHit(t *testing.T) {
 	want := indigoBinding()
 	store.Save(want)
 
-	got, ok, err := b.Resolve(context.Background(), want.Name)
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: want.Name, Mode: ResolveFresh})
 	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -51,7 +51,7 @@ func TestResolveCacheHit(t *testing.T) {
 func TestResolveScanFallback(t *testing.T) {
 	b, store, _ := newTestBinder(t, indigoWindow())
 
-	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || !reflect.DeepEqual(got, indigoBinding()) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -62,7 +62,7 @@ func TestResolveScanFallback(t *testing.T) {
 
 func TestResolveNotFound(t *testing.T) {
 	b, _, _ := newTestBinder(t, indigoWindow())
-	_, ok, err := b.Resolve(context.Background(), "Indigo--cat")
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--cat", Mode: ResolveFresh})
 	if ok || err != nil {
 		t.Fatalf("Resolve = %v, %v", ok, err)
 	}
@@ -73,7 +73,7 @@ func TestResolveStaleBinding(t *testing.T) {
 		Blocks: []rex.Block{{ID: "block:dog-1b", Label: "dog-1"}}})
 	store.Save(indigoBinding())
 
-	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || got.BlockID != "block:dog-1b" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -86,7 +86,7 @@ func TestResolveStaleBindingGone(t *testing.T) {
 	b, store, _ := newTestBinder(t)
 	store.Save(indigoBinding())
 
-	_, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if ok || err != nil {
 		t.Fatalf("Resolve = %v, %v", ok, err)
 	}
@@ -101,7 +101,7 @@ func TestResolveTransportErrorKeepsBinding(t *testing.T) {
 	boom := errors.New("boom")
 	fake.SessionViewErr = boom
 
-	_, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if ok || !errors.Is(err, boom) {
 		t.Fatalf("Resolve = %v, %v", ok, err)
 	}
@@ -118,7 +118,7 @@ func TestResolveStaleSessionIDRescansOnNotFound(t *testing.T) {
 	old.SessionID = "session:old"
 	store.Save(old)
 
-	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || got.BlockID != "block:dog-1" || got.SessionID != "session:new" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -134,7 +134,7 @@ func TestResolveForeignSessionLabelIgnored(t *testing.T) {
 	foreign.SessionLabel = "gc:other"
 	store.Save(foreign)
 
-	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || got.SessionID != "session:acme" || got.SessionLabel != testLabel {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -154,7 +154,7 @@ func TestResolveLegacyBindingUsesNameLabels(t *testing.T) {
 	legacy.TabLabel, legacy.PaneLabel = "", ""
 	store.Save(legacy)
 
-	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || got.BlockID != "block:dog-1" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -171,7 +171,7 @@ func TestResolveAliasFindsPrimary(t *testing.T) {
 	primary.Aliases = []SessionName{"Rig--dog-1"}
 	store.Save(primary)
 
-	got, ok, err := b.Resolve(context.Background(), "Rig--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Rig--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || got.Name != "Indigo--dog-1" || got.BlockID != "block:dog-1" {
 		t.Fatalf("Resolve(alias) = %+v, %v, %v", got, ok, err)
 	}
@@ -198,7 +198,7 @@ func TestResolveTownAgent(t *testing.T) {
 	b, _, _ := newTestBinder(t, rex.Window{ID: "window:__town", Label: "__town",
 		Blocks: []rex.Block{{ID: "block:mayor", Label: "mayor"}}})
 
-	got, ok, err := b.Resolve(context.Background(), "mayor")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "mayor", Mode: ResolveFresh})
 	if err != nil || !ok || got.WindowID != "window:__town" || got.BlockID != "block:mayor" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -255,7 +255,7 @@ func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
 	stale.CreatedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	store.Save(stale)
 
-	got, ok, err := b.Resolve(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok || got.BlockID != "block:dog-1" {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
@@ -282,12 +282,12 @@ func TestBinderCachedPrimaryAndAlias(t *testing.T) {
 	store.Save(primary)
 
 	for _, name := range []SessionName{"Indigo--dog-1", "Rig--dog-1"} {
-		got, ok := b.Cached(name)
+		got, ok, _ := b.Resolve(context.Background(), ResolveRequest{Name: name})
 		if !ok || !reflect.DeepEqual(got, primary) {
 			t.Errorf("Cached(%q) = %+v, %v", name, got, ok)
 		}
 	}
-	if _, ok := b.Cached("Indigo--cat"); ok {
+	if _, ok, _ := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--cat"}); ok {
 		t.Error("Cached(unknown) found a binding")
 	}
 	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 0 {
@@ -306,7 +306,7 @@ func TestBinderCachedPrefersPrimaryRecord(t *testing.T) {
 	own := indigoBinding()
 	store.Save(own)
 
-	got, ok := b.Cached("Indigo--dog-1")
+	got, ok, _ := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1"})
 	if !ok || got.Name != "Indigo--dog-1" {
 		t.Errorf("Cached = %+v, %v", got, ok)
 	}
@@ -319,7 +319,7 @@ func TestBinderLiveAliasRevalidates(t *testing.T) {
 	primary := rigDogBinding()
 	store.Save(primary)
 
-	got, ok, err := b.Live(context.Background(), "Rig--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Rig--dog-1", Mode: ResolveLive})
 	if err != nil || !ok || !reflect.DeepEqual(got, primary) {
 		t.Fatalf("Live = %+v, %v, %v", got, ok, err)
 	}
@@ -335,7 +335,7 @@ func TestBinderLiveRescansStaleAddress(t *testing.T) {
 		Blocks: []rex.Block{{ID: "block:dog-1b", Label: "dog-1"}}})
 	store.Save(indigoBinding())
 
-	got, ok, err := b.Live(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive})
 	if err != nil || !ok || got.BlockID != "block:dog-1b" {
 		t.Fatalf("Live = %+v, %v, %v", got, ok, err)
 	}
@@ -350,7 +350,7 @@ func TestBinderLiveDeletesGoneRecord(t *testing.T) {
 	b, store, _ := newTestBinder(t)
 	store.Save(indigoBinding())
 
-	_, ok, err := b.Live(context.Background(), "Indigo--dog-1")
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive})
 	if ok || err != nil {
 		t.Fatalf("Live = %v, %v", ok, err)
 	}
@@ -364,14 +364,14 @@ func TestBinderLiveDeletesGoneRecord(t *testing.T) {
 func TestBinderLiveNoCacheScans(t *testing.T) {
 	b, store, _ := newTestBinder(t, indigoWindow())
 
-	got, ok, err := b.Live(context.Background(), "Indigo--dog-1")
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive})
 	if err != nil || !ok || got.BlockID != "block:dog-1" {
 		t.Fatalf("Live = %+v, %v, %v", got, ok, err)
 	}
 	if _, ok := store.Load("Indigo--dog-1"); !ok {
 		t.Error("scan did not save the binding")
 	}
-	if _, ok, err := b.Live(context.Background(), "Indigo--cat"); ok || err != nil {
+	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--cat", Mode: ResolveLive}); ok || err != nil {
 		t.Errorf("Live(unknown) = %v, %v", ok, err)
 	}
 }
@@ -383,12 +383,12 @@ func TestBinderLiveExitedPane(t *testing.T) {
 	store.Save(indigoBinding())
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 1}}}
 
-	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || err != nil {
+	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || err != nil {
 		t.Fatalf("Live(exited) = %v, %v", ok, err)
 	}
 	fake.Processes = nil
 	fake.ProcessErr = rex.ErrNotFound
-	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || err != nil {
+	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || err != nil {
 		t.Fatalf("Live(closed block) = %v, %v", ok, err)
 	}
 	if _, ok := store.Load("Indigo--dog-1"); !ok {
@@ -404,12 +404,12 @@ func TestBinderLiveTransportErrors(t *testing.T) {
 	store.Save(indigoBinding())
 
 	fake.SessionViewErr = boom
-	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || !errors.Is(err, boom) {
+	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || !errors.Is(err, boom) {
 		t.Fatalf("Live(view err) = %v, %v", ok, err)
 	}
 	fake.SessionViewErr = nil
 	fake.ProcessErr = boom
-	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || !errors.Is(err, boom) {
+	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || !errors.Is(err, boom) {
 		t.Fatalf("Live(process err) = %v, %v", ok, err)
 	}
 	if _, ok := store.Load("Indigo--dog-1"); !ok {
@@ -426,7 +426,7 @@ func TestBinderLiveSkipsOtherNameRecord(t *testing.T) {
 	// A corrupt key: the store hands back a record for another name.
 	store.t.put("Indigo--dog-1", bd)
 
-	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || err != nil {
+	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || err != nil {
 		t.Fatalf("Live = %v, %v", ok, err)
 	}
 }

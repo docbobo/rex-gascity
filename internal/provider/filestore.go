@@ -131,11 +131,65 @@ func (t *fileTable[K, R]) list() []R {
 	return out
 }
 
+// removeIfPresent removes path if present.
 func removeIfPresent(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil
+}
+
+// fileStore is the one file-backed adapter behind every file store: a
+// fileTable of JSON records plus the encode/decode pair that maps a domain
+// value to its on-disk record and back.
+type fileStore[K comparable, V, R any] struct {
+	t       *fileTable[K, R]
+	enc     func(K, V) R
+	dec     func(R) (V, error)
+	present func(R) bool
+}
+
+func newFileStore[K comparable, V, R any](dir string, path func(K) string, enc func(K, V) R, dec func(R) (V, error), present func(R) bool) *fileStore[K, V, R] {
+	return &fileStore[K, V, R]{t: newFileTable[K, R](dir, path), enc: enc, dec: dec, present: present}
+}
+
+func (s *fileStore[K, V, R]) Read(k K) (V, bool, error) {
+	r, ok, err := s.t.read(k)
+	if err != nil || !ok {
+		var zero V
+		return zero, false, err
+	}
+	if s.present != nil && !s.present(r) {
+		var zero V
+		return zero, false, nil
+	}
+	v, err := s.dec(r)
+	if err != nil {
+		var zero V
+		return zero, false, err
+	}
+	return v, true, nil
+}
+
+func (s *fileStore[K, V, R]) Write(k K, v V) error {
+	return s.t.write(k, s.enc(k, v))
+}
+
+func (s *fileStore[K, V, R]) Drop(k K) error { return s.t.remove(k) }
+
+// List decodes every record directly under the store's dir. Missing and
+// corrupt files are skipped.
+func (s *fileStore[K, V, R]) List() []V {
+	records := s.t.list()
+	out := make([]V, 0, len(records))
+	for _, r := range records {
+		v, err := s.dec(r)
+		if err != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // bindingRecord is the on-disk shape of a Binding. It has the same fields in
@@ -173,43 +227,41 @@ func bindingFromRecord(r bindingRecord) Binding {
 	return b
 }
 
-// FileStore is a BindingStore that keeps one JSON file per binding under a
-// directory, so bindings survive a process restart. It is safe for concurrent
-// use within a process; writes are atomic renames.
+// FileStore is a Store for bindings that keeps one JSON file per binding
+// under a directory, so bindings survive a process restart. It is safe for
+// concurrent use within a process; writes are atomic renames.
 type FileStore struct {
-	t *fileTable[SessionName, bindingRecord]
+	*fileStore[SessionName, Binding, bindingRecord]
 }
 
 // NewFileStore returns a FileStore rooted at dir. The directory is created on
 // the first Save.
 func NewFileStore(dir string) *FileStore {
-	return &FileStore{t: newFileTable[SessionName, bindingRecord](dir, flatPath(dir))}
+	return &FileStore{newFileStore[SessionName, Binding, bindingRecord](dir, flatPath(dir),
+		func(_ SessionName, b Binding) bindingRecord { return bindingRecord(b) },
+		func(r bindingRecord) (Binding, error) { return bindingFromRecord(r), nil },
+		nil,
+	)}
 }
 
-// Load implements BindingStore. A missing, unreadable or corrupt file reads
-// as not found.
+// Load returns the binding for name, if any. A missing, unreadable or corrupt
+// file reads as not found.
 func (s *FileStore) Load(name SessionName) (Binding, bool) {
-	r, ok, err := s.t.read(name)
-	if err != nil || !ok {
-		return Binding{}, false
-	}
-	return bindingFromRecord(r), true
+	b, ok, _ := s.Read(name)
+	return b, ok
 }
 
-// List implements BindingLister. Missing and corrupt files are skipped.
+// List returns every binding, sorted by Name. Missing and corrupt files are
+// skipped.
 func (s *FileStore) List() []Binding {
-	records := s.t.list()
-	out := make([]Binding, 0, len(records))
-	for _, r := range records {
-		out = append(out, bindingFromRecord(r))
-	}
+	out := s.fileStore.List()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// Save implements BindingStore. The interface has no error return, so a
-// failed write is dropped; the next Resolve rebuilds the binding by scanning.
-func (s *FileStore) Save(b Binding) { _ = s.t.write(b.Name, bindingRecord(b)) }
+// Save stores b, replacing any binding with the same name. A failed write is
+// dropped; the next Resolve rebuilds the binding by scanning.
+func (s *FileStore) Save(b Binding) { _ = s.Write(b.Name, b) }
 
-// Delete implements BindingStore. A missing file is not an error.
-func (s *FileStore) Delete(name SessionName) { _ = s.t.remove(name) }
+// Delete removes the binding for name. A missing file is not an error.
+func (s *FileStore) Delete(name SessionName) { _ = s.Drop(name) }

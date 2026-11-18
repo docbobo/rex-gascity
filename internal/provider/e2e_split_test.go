@@ -29,7 +29,7 @@ func TestE2ERigSplitGrid(t *testing.T) {
 	const agents = 8
 	city := fmt.Sprintf("e2e-grid-%d", time.Now().UnixNano())
 	client := cli.New()
-	p := provider.New(city, client, provider.WithStateDir(t.TempDir()))
+	p := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
 
 	names := make([]string, agents)
 	for i := range names {

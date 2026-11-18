@@ -257,7 +257,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 
 	city := fmt.Sprintf("e2e-p3-%d", time.Now().UnixNano())
 	stateDir := t.TempDir()
-	p := provider.New(city, cli.New(), provider.WithStateDir(stateDir))
+	p := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
 
 	const name = "Indigo--dog-1"
 	defer func() {
@@ -277,7 +277,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if !ok {
 		t.Fatal("Binding after Start: not found")
 	}
-	p2 := provider.New(city, cli.New(), provider.WithStateDir(stateDir))
+	p2 := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
 	b2, ok := p2.Binding(name)
 	if !ok {
 		t.Fatal("second provider: Binding not found in shared state dir")
@@ -480,7 +480,7 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 	defer cancel()
 
 	city := fmt.Sprintf("e2e-exit-%d", time.Now().UnixNano())
-	p := provider.New(city, cli.New(), provider.WithStateDir(t.TempDir()))
+	p := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
 
 	const name = "Indigo--dog-1"
 	defer func() {
@@ -555,7 +555,7 @@ func TestE2EParallelStarts(t *testing.T) {
 
 	const agents = 4
 	city := fmt.Sprintf("e2e-par-%d", time.Now().UnixNano())
-	p := provider.New(city, cli.New(), provider.WithStateDir(t.TempDir()))
+	p := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
 
 	names := make([]string, agents)
 	for i := range names {

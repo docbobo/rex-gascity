@@ -102,8 +102,8 @@ func TestFileMetaStoreTwoInstancesDifferentKeys(t *testing.T) {
 func TestStartWithSharedStateDirLock(t *testing.T) {
 	dir := t.TempDir()
 	fake := faketest.New()
-	p1 := provider.New("acme", fake, provider.WithStateDir(dir))
-	p2 := provider.New("acme", fake, provider.WithStateDir(dir))
+	p1 := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
+	p2 := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 	var wg sync.WaitGroup
 	for i, pr := range []*provider.Provider{p1, p2} {
 		name := []string{"Indigo--a", "Indigo--b"}[i]
@@ -140,7 +140,7 @@ func startNewRace(t *testing.T, names ...string) (*faketest.Fake, *provider.Prov
 	done := make(chan outcome, len(names))
 	release := make(chan struct{})
 	for i, name := range names {
-		pr := provider.New("acme", fake, provider.WithStateDir(dir))
+		pr := provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
 		go func() {
 			<-release
 			done <- outcome{i, pr.StartNew(context.Background(), name, teardownCfg)}
@@ -152,7 +152,7 @@ func startNewRace(t *testing.T, names ...string) (*faketest.Fake, *provider.Prov
 		o := <-done
 		errs[o.i] = o.err
 	}
-	return fake, provider.New("acme", fake, provider.WithStateDir(dir)), errs
+	return fake, provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir))), errs
 }
 
 func TestStartNewConcurrentSameNameOneWins(t *testing.T) {

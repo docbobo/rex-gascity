@@ -34,8 +34,9 @@ const poolClaimNudgeSignature = "gc hook --claim --drain-ack"
 const claimProbeTimeout = 5 * time.Second
 
 // nudgeConfig holds the tunables and external seam of nudge and startup
-// delivery. Provider embeds it, so the fields read as p.nudgeConfirmWindow and
-// so on; nudge.go and nudge_delivery.go are its only users.
+// delivery. Provider holds it in a named field, so the fields read as
+// p.nudge.nudgeConfirmWindow and so on; nudge.go and nudge_delivery.go are its
+// only users.
 type nudgeConfig struct {
 	// nudgeConfirmWindow bounds how long Nudge waits for a turn start before
 	// reporting the delivery unconfirmed. nudgePollInterval spaces the
@@ -90,9 +91,9 @@ const (
 // observation and returns immediately.
 func WithNudgeConfirmation(window, interval time.Duration) Option {
 	return func(p *Provider) {
-		p.nudgeConfirmWindow = window
+		p.nudge.nudgeConfirmWindow = window
 		if interval > 0 {
-			p.nudgePollInterval = interval
+			p.nudge.nudgePollInterval = interval
 		}
 	}
 }
@@ -119,7 +120,7 @@ const NudgeSubmitFailedMetaKey = "GC_NUDGE_SUBMIT_FAILED"
 func WithNudgeSubmitBudget(d time.Duration) Option {
 	return func(p *Provider) {
 		if d > 0 {
-			p.nudgeSubmitBudget = d
+			p.nudge.nudgeSubmitBudget = d
 		}
 	}
 }
@@ -315,7 +316,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	// seat is not idle, and the prompt would send it back through
 	// `gc hook --claim` to abandon its in-flight work (GCREX-33).
 	if isPoolClaimNudge(text) {
-		if claim, err := p.claimProbe(ctx, binding); err == nil && claim != "" {
+		if claim, err := p.nudge.claimProbe(ctx, binding); err == nil && claim != "" {
 			return NudgeReport{}, fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
 		}
 	}
@@ -369,10 +370,10 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind},
 			fmt.Errorf("nudge %s: text was typed but submit key failed: %w", name, err)
 	}
-	_ = p.meta.Delete(binding.Name, NudgeSubmitFailedMetaKey)
+	_ = p.metaDelete(binding.Name, NudgeSubmitFailedMetaKey)
 
 	report := NudgeReport{Delivered: true}
-	deadline := time.Now().Add(p.nudgeConfirmWindow)
+	deadline := time.Now().Add(p.nudge.nudgeConfirmWindow)
 	first := true
 	for {
 		confirmed := false
@@ -402,7 +403,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 		if remaining <= 0 {
 			break
 		}
-		wait := p.nudgePollInterval
+		wait := p.nudge.nudgePollInterval
 		if wait > remaining {
 			wait = remaining
 		}
@@ -426,7 +427,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 // context's deadline when it has one, else a fixed default, so neither call
 // can wait forever.
 func (p *Provider) nudgeSubmitContext(parent context.Context) (context.Context, context.CancelFunc) {
-	budget := p.nudgeSubmitBudget
+	budget := p.nudge.nudgeSubmitBudget
 	if budget <= 0 {
 		budget = defaultNudgeSubmitBudget
 	}
@@ -441,7 +442,7 @@ func (p *Provider) nudgeSubmitContext(parent context.Context) (context.Context, 
 // recordNudgeSubmitFailure marks the pane's metadata after the text reached it
 // but the Enter did not, so the split is visible after the error is gone.
 func (p *Provider) recordNudgeSubmitFailure(b Binding, err error) {
-	_ = p.meta.Set(b.Name, NudgeSubmitFailedMetaKey, err.Error())
+	_ = p.metaSet(b.Name, NudgeSubmitFailedMetaKey, err.Error())
 }
 
 // programStatusSnapshot returns the newest program_status record of a pane.

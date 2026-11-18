@@ -5,79 +5,69 @@ import (
 	"sort"
 )
 
-// composite is the namespace fan-out shared by every store: the canonical
-// store is first, any others are legacy namespaces. Reads fall back in order
-// (first hit wins), writes go to the canonical store only, and deletes cover
-// every store so a retired record cannot be resurrected from a legacy
-// directory.
-type composite[S any] struct {
-	stores []S
+// compositeStore is the one namespace fan-out behind every composite store:
+// the canonical store is first, any others are legacy namespaces. Reads fall
+// back in order (first hit wins), writes go to the canonical store only, and
+// drops cover every store so a retired record cannot be resurrected from a
+// legacy directory.
+type compositeStore[K comparable, V any] struct {
+	stores []Store[K, V]
 }
 
-// readFirst returns the first hit across the stores. A read error stops the
+func newCompositeStore[K comparable, V any](stores ...Store[K, V]) *compositeStore[K, V] {
+	return &compositeStore[K, V]{stores: stores}
+}
+
+// Read returns the first hit across the stores. A read error stops the
 // fallback and is returned, so an unreadable store never hides behind a later
 // one.
-func readFirst[S, T any](c composite[S], read func(S) (T, bool, error)) (T, bool, error) {
+func (c *compositeStore[K, V]) Read(k K) (V, bool, error) {
 	for _, s := range c.stores {
-		v, ok, err := read(s)
+		v, ok, err := s.Read(k)
 		if err != nil || ok {
 			return v, ok, err
 		}
 	}
-	var zero T
+	var zero V
 	return zero, false, nil
 }
 
-// writeCanonical applies write to the canonical store. With no stores it is a
-// no-op.
-func (c composite[S]) writeCanonical(write func(S) error) error {
+// Write applies v to the canonical store. With no stores it is a no-op.
+func (c *compositeStore[K, V]) Write(k K, v V) error {
 	if len(c.stores) == 0 {
 		return nil
 	}
-	return write(c.stores[0])
+	return c.stores[0].Write(k, v)
 }
 
-// deleteAll applies del to every store and joins the errors.
-func (c composite[S]) deleteAll(del func(S) error) error {
+// Drop applies to every store and joins the errors.
+func (c *compositeStore[K, V]) Drop(k K) error {
 	var errs []error
 	for _, s := range c.stores {
-		if err := del(s); err != nil {
+		if err := s.Drop(k); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// compositeBindingStore is the composite BindingStore.
-type compositeBindingStore struct{ composite[BindingStore] }
-
-func newCompositeBindingStore(stores ...BindingStore) BindingStore {
-	return &compositeBindingStore{composite[BindingStore]{stores}}
+// compositeBindingStore is the composite binding store. Its List is the union
+// of every namespace, canonical first so a primary record stored in more than
+// one place keeps its canonical copy.
+type compositeBindingStore struct {
+	*compositeStore[SessionName, Binding]
 }
 
-func (c *compositeBindingStore) Load(name SessionName) (Binding, bool) {
-	b, ok, _ := readFirst(c.composite, func(s BindingStore) (Binding, bool, error) {
-		b, ok := s.Load(name)
-		return b, ok, nil
-	})
-	return b, ok
+func newCompositeBindingStore(stores ...Store[SessionName, Binding]) *compositeBindingStore {
+	return &compositeBindingStore{newCompositeStore(stores...)}
 }
 
-func (c *compositeBindingStore) Save(b Binding) {
-	_ = c.writeCanonical(func(s BindingStore) error { s.Save(b); return nil })
-}
-
-func (c *compositeBindingStore) Delete(name SessionName) {
-	_ = c.deleteAll(func(s BindingStore) error { s.Delete(name); return nil })
-}
-
-// List implements BindingLister: the union of every namespace, canonical first
-// so a primary record stored in more than one place keeps its canonical copy.
+// List implements Lister: the union of every namespace, canonical first.
 func (c *compositeBindingStore) List() []Binding {
 	out := []Binding{}
 	seen := map[SessionName]bool{}
 	for _, store := range c.stores {
-		lister, ok := store.(BindingLister)
+		lister, ok := store.(Lister[Binding])
 		if !ok {
 			continue
 		}
@@ -93,49 +83,30 @@ func (c *compositeBindingStore) List() []Binding {
 	return out
 }
 
-// compositeActivityStore is the composite ActivityStore.
-type compositeActivityStore struct{ composite[ActivityStore] }
-
-func newCompositeActivityStore(stores ...ActivityStore) ActivityStore {
-	return &compositeActivityStore{composite[ActivityStore]{stores}}
+// compositeMetaStore is the composite metadata store. Clear sweeps every
+// namespace that can clear.
+type compositeMetaStore struct {
+	*compositeStore[metaKey, string]
 }
 
-func (c *compositeActivityStore) Load(name SessionName) (ActivityRecord, bool) {
-	rec, ok, _ := readFirst(c.composite, func(s ActivityStore) (ActivityRecord, bool, error) {
-		rec, ok := s.Load(name)
-		return rec, ok, nil
-	})
-	return rec, ok
+func newCompositeMetaStore(stores ...Store[metaKey, string]) *compositeMetaStore {
+	return &compositeMetaStore{newCompositeStore(stores...)}
 }
 
-func (c *compositeActivityStore) Save(name SessionName, rec ActivityRecord) {
-	_ = c.writeCanonical(func(s ActivityStore) error { s.Save(name, rec); return nil })
-}
-
-func (c *compositeActivityStore) Delete(name SessionName) error {
-	return c.deleteAll(func(s ActivityStore) error { return s.Delete(name) })
-}
-
-// compositeMetaStore is the composite MetaStore.
-type compositeMetaStore struct{ composite[MetaStore] }
-
-func newCompositeMetaStore(stores ...MetaStore) MetaStore {
-	return &compositeMetaStore{composite[MetaStore]{stores}}
-}
-
-func (c *compositeMetaStore) Get(name SessionName, key string) (string, bool, error) {
-	return readFirst(c.composite, func(s MetaStore) (string, bool, error) { return s.Get(name, key) })
-}
-
-func (c *compositeMetaStore) Set(name SessionName, key, value string) error {
-	return c.writeCanonical(func(s MetaStore) error { return s.Set(name, key, value) })
-}
-
-func (c *compositeMetaStore) Delete(name SessionName, key string) error {
-	return c.deleteAll(func(s MetaStore) error { return s.Delete(name, key) })
+// newCompositeActivityStore is the composite activity store.
+func newCompositeActivityStore(stores ...Store[SessionName, ActivityRecord]) *compositeStore[SessionName, ActivityRecord] {
+	return newCompositeStore(stores...)
 }
 
 // Clear removes every key for name from every namespace.
 func (c *compositeMetaStore) Clear(name SessionName) error {
-	return c.deleteAll(func(s MetaStore) error { return s.Clear(name) })
+	var errs []error
+	for _, s := range c.stores {
+		if cl, ok := s.(clearer); ok {
+			if err := cl.Clear(name); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
