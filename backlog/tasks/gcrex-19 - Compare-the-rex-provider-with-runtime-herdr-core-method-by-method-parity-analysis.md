@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@rex-agent'
 created_date: '2026-11-18T05:51:00Z'
-updated_date: '2026-11-18T05:58:00Z'
+updated_date: '2026-11-18T06:08:00Z'
 labels:
   - provider
   - parity
@@ -72,6 +72,8 @@ Fixing the deviations — this task only analyzes and classifies them. Follow-up
 
 <!-- SECTION:NOTES:BEGIN -->
 All 25 subtasks Done. docs/provider-herdr-parity.md: 1087 lines, 25 sections, 121 summary rows, 25 verdicts, 25 cross-reference blocks, 25 follow-up blocks. Unimplemented ops present and marked: exec, provision, observe, inventory, kill-object, server-stop, attach, watch-startup, copy-to. Consolidated sections added: 'Confirmed mistakes' (11 ranked, deduplicated), 'Gaps that are deliberate, not mistakes', 'Proposed follow-up work' (8 items, none implemented). Evidence per section cites cmd/gc-runtime-rex/main.go and internal/provider, against gastownhall/gascity-packs@0f07496 runtime-herdr-core.
+
+Verification pass (commit 5c8656d): all gc-behavior claims re-checked against gc tag v1.5.1 source (internal/runtime/exec, protocol.go, docs/reference/exec-session-provider.md). Verdict changes: attach -> mistake (gc calls it, exit 2 is a failure, 'gc session attach' breaks); is-running -> intentional (gc reads exit 1 and false alike as dead); is-attached unknown-client-kind -> mistake (fail-open on kill paths); send-keys BTab/partial-failure -> intentional (gc emits only Enter/Up/Down/Escape/C-u); start SIGTERM gap -> downgraded (gc runs stop after a failed start), start empty-env -> mistake (protocol says unset; use env -u). observe/inventory/kill-object/server-stop/copy-to confirmed never called by gc 1.5.1. Added 'Operational risks' section (Rex outage reads as all-dead; rex exit 3 mapped to ErrNotFound by our client; seam probe fan-out).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@rex-agent'
 created_date: '2026-11-18T05:52:00Z'
-updated_date: '2026-11-18T05:58:00Z'
+updated_date: '2026-11-18T06:08:00Z'
 labels: []
 dependencies: []
 references:
@@ -44,6 +44,8 @@ Compare behavior: stdin/input, stdout/stderr format, exit codes, capability gati
 
 <!-- SECTION:NOTES:BEGIN -->
 Verified: docs/provider-herdr-parity.md has exactly one 'send-keys' section (`### send-keys`) with our behavior, herdr-core behavior, a deviation table and a verdict; 9 summary row(s) under the same op in 'Summary of deviations'. Cross-checked against cmd/gc-runtime-rex/main.go and /tmp/gascity-packs/runtime-herdr-core.
+
+gc 1.5.1 verification (commit 5c8656d): send-keys: rows 2 and 7 downgraded to intentional — gc 1.5.1 emits only Enter/Up/Down/Escape/C-u and always splits navigation from Enter, so BTab/PPage/NPage and partial failure are unreachable.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

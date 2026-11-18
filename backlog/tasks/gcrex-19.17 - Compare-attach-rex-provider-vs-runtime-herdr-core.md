@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@rex-agent'
 created_date: '2026-11-18T05:52:00Z'
-updated_date: '2026-11-18T05:58:00Z'
+updated_date: '2026-11-18T06:08:00Z'
 labels: []
 dependencies: []
 references:
@@ -44,6 +44,8 @@ Compare behavior: stdin/input, stdout/stderr format, exit codes, capability gati
 
 <!-- SECTION:NOTES:BEGIN -->
 Verified: docs/provider-herdr-parity.md has exactly one 'attach' section (`### attach`) with our behavior, herdr-core behavior, a deviation table and a verdict; 5 summary row(s) under the same op in 'Summary of deviations'. Cross-checked against cmd/gc-runtime-rex/main.go and /tmp/gascity-packs/runtime-herdr-core.
+
+gc 1.5.1 verification (commit 5c8656d): attach: verdict changed to mistake — gc calls attach from 'gc session attach'/'new' and runWithTTY does not map exit 2 to success, so the CLI fails. Implement exit 0 with a hint or focus the Rex pane.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

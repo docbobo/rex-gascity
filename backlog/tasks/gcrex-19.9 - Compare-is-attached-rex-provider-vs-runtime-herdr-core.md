@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@rex-agent'
 created_date: '2026-11-18T05:52:00Z'
-updated_date: '2026-11-18T05:58:00Z'
+updated_date: '2026-11-18T06:08:00Z'
 labels: []
 dependencies: []
 references:
@@ -44,6 +44,8 @@ Compare behavior: stdin/input, stdout/stderr format, exit codes, capability gati
 
 <!-- SECTION:NOTES:BEGIN -->
 Verified: docs/provider-herdr-parity.md has exactly one 'is-attached' section (`### is-attached`) with our behavior, herdr-core behavior, a deviation table and a verdict; 7 summary row(s) under the same op in 'Summary of deviations'. Cross-checked against cmd/gc-runtime-rex/main.go and /tmp/gascity-packs/runtime-herdr-core.
+
+gc 1.5.1 verification (commit 5c8656d): is-attached: row 3 changed to mistake — gc reads exit 1 as 'not attached' (fail-open on config-drift restart, progress-stall recycle, drain-ack kill). Answer 'true' when the client kind is unknown.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
