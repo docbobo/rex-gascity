@@ -261,6 +261,76 @@ func (b *Binder) lookup(name SessionName) []Binding {
 	return out
 }
 
+// Cached returns the stored binding that answers to name: the primary binding
+// stored under name, or else a primary binding that lists name as an alias. It
+// never contacts Rex and does not check that the pane still exists; callers
+// that need a verified address use Resolve or Live.
+func (b *Binder) Cached(name SessionName) (Binding, bool) {
+	cands := b.lookup(name)
+	if len(cands) == 0 {
+		return Binding{}, false
+	}
+	return cands[0], true
+}
+
+// Live returns the first binding that answers to name whose pane is alive. Each
+// stored candidate is checked against the session view; a stale address is
+// re-scanned under the labels the record had, so a recreated pane still counts,
+// and a record whose pane cannot be found is deleted. With nothing cached it
+// falls back to the label scan Resolve performs. A name with no live pane is
+// reported as false with a nil error; a view or process error is returned as is.
+func (b *Binder) Live(ctx context.Context, name SessionName) (Binding, bool, error) {
+	cands := b.lookup(name)
+	if len(cands) == 0 {
+		// Nothing cached: fall back to the label scan Resolve performs.
+		bd, ok, err := b.Resolve(ctx, name)
+		if err != nil || !ok {
+			return Binding{}, false, err
+		}
+		return b.liveOnly(ctx, bd)
+	}
+	for _, bd := range cands {
+		if !matchesName(bd, name) {
+			continue
+		}
+		got, ok, err := b.revalidate(ctx, bd)
+		if err != nil {
+			return Binding{}, false, err
+		}
+		if !ok {
+			// The stored address is stale; rediscover the pane under the
+			// labels it had, so a recreated instance still counts as alive.
+			if got, ok, err = b.scan(ctx, bd.Name, bd); err != nil {
+				return Binding{}, false, err
+			}
+		}
+		if !ok {
+			b.store.Delete(bd.Name)
+			continue
+		}
+		if got, ok, err = b.liveOnly(ctx, got); err != nil || ok {
+			return got, ok, err
+		}
+	}
+	return Binding{}, false, nil
+}
+
+// liveOnly reports bd with true when its pane still has a live terminal. A pane
+// Rex no longer knows has exited and closed its block, so it is not alive.
+func (b *Binder) liveOnly(ctx context.Context, bd Binding) (Binding, bool, error) {
+	info, err := b.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
+	if errors.Is(err, rex.ErrNotFound) {
+		return Binding{}, false, nil
+	}
+	if err != nil {
+		return Binding{}, false, err
+	}
+	if info.LastExit != nil {
+		return Binding{}, false, nil
+	}
+	return bd, true, nil
+}
+
 // matchesName reports whether bd legitimately answers to name: it is stored
 // under name, or name is one of its aliases.
 func matchesName(bd Binding, name SessionName) bool {

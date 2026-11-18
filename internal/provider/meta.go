@@ -8,11 +8,8 @@ import "context"
 // identity even for a pane started under the short pool name.
 func (p *Provider) metaName(name string) SessionName {
 	n := SessionName(name)
-	if bd, ok := p.bindings.Load(n); ok && bd.Name == n {
-		return n
-	}
-	if cands := p.binder.lookup(n); len(cands) > 0 {
-		return cands[0].Name
+	if bd, ok := p.binder.Cached(n); ok {
+		return bd.Name
 	}
 	return n
 }

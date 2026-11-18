@@ -178,11 +178,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 // or one of its aliases) without contacting Rex. It is the dispatcher-facing
 // lookup; Resolve-based ops re-validate it against Rex.
 func (p *Provider) Binding(name string) (Binding, bool) {
-	cands := p.binder.lookup(SessionName(name))
-	if len(cands) == 0 {
-		return Binding{}, false
-	}
-	return cands[0], true
+	return p.binder.Cached(SessionName(name))
 }
 
 // Start creates the city session, the rig's tab, and the agent's pane, and
@@ -571,44 +567,8 @@ func (p *Provider) clearIncarnations(names ...SessionName) error {
 // alias-aware: a rig-qualified name is running while any instance bound to it
 // is alive. An agent with no pane is not running.
 func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
-	n := SessionName(name)
-	cands := p.binder.lookup(n)
-	if len(cands) == 0 {
-		// Nothing cached: fall back to the label scan Resolve performs.
-		binding, ok, err := p.binder.Resolve(ctx, n)
-		if err != nil || !ok {
-			return false, err
-		}
-		return p.paneAlive(ctx, binding)
-	}
-	for _, bd := range cands {
-		if !matchesName(bd, n) {
-			continue
-		}
-		got, ok, err := p.binder.revalidate(ctx, bd)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			// The stored address is stale; rediscover the pane under the
-			// labels it had, so a recreated instance still counts as alive.
-			if got, ok, err = p.binder.scan(ctx, bd.Name, bd); err != nil {
-				return false, err
-			}
-		}
-		if !ok {
-			p.binder.store.Delete(bd.Name)
-			continue
-		}
-		alive, err := p.paneAlive(ctx, got)
-		if err != nil {
-			return false, err
-		}
-		if alive {
-			return true, nil
-		}
-	}
-	return false, nil
+	_, ok, err := p.binder.Live(ctx, SessionName(name))
+	return ok, err
 }
 
 // Peek returns the agent's rendered terminal output. An agent with no pane

@@ -267,3 +267,166 @@ func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
 		t.Errorf("saved WorkDir = %q, want %q", saved.WorkDir, stale.WorkDir)
 	}
 }
+
+func rigDogBinding() Binding {
+	b := indigoBinding()
+	b.Aliases = []SessionName{"Rig--dog-1"}
+	return b
+}
+
+// TestBinderCachedPrimaryAndAlias pins Cached: the primary record wins, an alias
+// resolves to its primary, an unknown name is absent, and Rex is never called.
+func TestBinderCachedPrimaryAndAlias(t *testing.T) {
+	b, store, fake := newTestBinder(t, indigoWindow())
+	primary := rigDogBinding()
+	store.Save(primary)
+
+	for _, name := range []SessionName{"Indigo--dog-1", "Rig--dog-1"} {
+		got, ok := b.Cached(name)
+		if !ok || !reflect.DeepEqual(got, primary) {
+			t.Errorf("Cached(%q) = %+v, %v", name, got, ok)
+		}
+	}
+	if _, ok := b.Cached("Indigo--cat"); ok {
+		t.Error("Cached(unknown) found a binding")
+	}
+	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 0 {
+		t.Errorf("Cached contacted Rex: list=%d view=%d", fake.ListSessionsCalls, fake.SessionViewCalls)
+	}
+}
+
+// TestBinderCachedPrefersPrimaryRecord checks a record stored under the name
+// beats another primary that lists the same name as an alias.
+func TestBinderCachedPrefersPrimaryRecord(t *testing.T) {
+	b, store, _ := newTestBinder(t)
+	other := indigoBinding()
+	other.Name = "Indigo--dog-2"
+	other.Aliases = []SessionName{"Indigo--dog-1"}
+	store.Save(other)
+	own := indigoBinding()
+	store.Save(own)
+
+	got, ok := b.Cached("Indigo--dog-1")
+	if !ok || got.Name != "Indigo--dog-1" {
+		t.Errorf("Cached = %+v, %v", got, ok)
+	}
+}
+
+// TestBinderLiveAliasRevalidates checks Live finds a live pane through an alias
+// and returns the primary binding after one session-view check.
+func TestBinderLiveAliasRevalidates(t *testing.T) {
+	b, store, fake := newTestBinder(t, indigoWindow())
+	primary := rigDogBinding()
+	store.Save(primary)
+
+	got, ok, err := b.Live(context.Background(), "Rig--dog-1")
+	if err != nil || !ok || !reflect.DeepEqual(got, primary) {
+		t.Fatalf("Live = %+v, %v, %v", got, ok, err)
+	}
+	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 1 {
+		t.Errorf("calls: list=%d view=%d", fake.ListSessionsCalls, fake.SessionViewCalls)
+	}
+}
+
+// TestBinderLiveRescansStaleAddress checks a stale block id is rediscovered by
+// label, the record refreshed, and the new pane judged alive.
+func TestBinderLiveRescansStaleAddress(t *testing.T) {
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Indigo",
+		Blocks: []rex.Block{{ID: "block:dog-1b", Label: "dog-1"}}})
+	store.Save(indigoBinding())
+
+	got, ok, err := b.Live(context.Background(), "Indigo--dog-1")
+	if err != nil || !ok || got.BlockID != "block:dog-1b" {
+		t.Fatalf("Live = %+v, %v, %v", got, ok, err)
+	}
+	if saved, _ := store.Load("Indigo--dog-1"); saved.BlockID != "block:dog-1b" {
+		t.Errorf("store not refreshed: %+v", saved)
+	}
+}
+
+// TestBinderLiveDeletesGoneRecord checks a record whose pane is gone is deleted
+// and reported not alive without an error.
+func TestBinderLiveDeletesGoneRecord(t *testing.T) {
+	b, store, _ := newTestBinder(t)
+	store.Save(indigoBinding())
+
+	_, ok, err := b.Live(context.Background(), "Indigo--dog-1")
+	if ok || err != nil {
+		t.Fatalf("Live = %v, %v", ok, err)
+	}
+	if _, ok := store.Load("Indigo--dog-1"); ok {
+		t.Error("stale record not deleted")
+	}
+}
+
+// TestBinderLiveNoCacheScans checks the no-candidate fallback scans by label and
+// returns the live pane it finds.
+func TestBinderLiveNoCacheScans(t *testing.T) {
+	b, store, _ := newTestBinder(t, indigoWindow())
+
+	got, ok, err := b.Live(context.Background(), "Indigo--dog-1")
+	if err != nil || !ok || got.BlockID != "block:dog-1" {
+		t.Fatalf("Live = %+v, %v, %v", got, ok, err)
+	}
+	if _, ok := store.Load("Indigo--dog-1"); !ok {
+		t.Error("scan did not save the binding")
+	}
+	if _, ok, err := b.Live(context.Background(), "Indigo--cat"); ok || err != nil {
+		t.Errorf("Live(unknown) = %v, %v", ok, err)
+	}
+}
+
+// TestBinderLiveExitedPane checks a pane whose program exited, or whose block
+// Rex no longer knows, is not alive, and its record is kept.
+func TestBinderLiveExitedPane(t *testing.T) {
+	b, store, fake := newTestBinder(t, indigoWindow())
+	store.Save(indigoBinding())
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 1}}}
+
+	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || err != nil {
+		t.Fatalf("Live(exited) = %v, %v", ok, err)
+	}
+	fake.Processes = nil
+	fake.ProcessErr = rex.ErrNotFound
+	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || err != nil {
+		t.Fatalf("Live(closed block) = %v, %v", ok, err)
+	}
+	if _, ok := store.Load("Indigo--dog-1"); !ok {
+		t.Error("record dropped for a dead-but-present pane")
+	}
+}
+
+// TestBinderLiveTransportErrors checks view and process errors are returned and
+// leave the record alone.
+func TestBinderLiveTransportErrors(t *testing.T) {
+	boom := errors.New("boom")
+	b, store, fake := newTestBinder(t, indigoWindow())
+	store.Save(indigoBinding())
+
+	fake.SessionViewErr = boom
+	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || !errors.Is(err, boom) {
+		t.Fatalf("Live(view err) = %v, %v", ok, err)
+	}
+	fake.SessionViewErr = nil
+	fake.ProcessErr = boom
+	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || !errors.Is(err, boom) {
+		t.Fatalf("Live(process err) = %v, %v", ok, err)
+	}
+	if _, ok := store.Load("Indigo--dog-1"); !ok {
+		t.Error("record cleared on transport error")
+	}
+}
+
+// TestBinderLiveSkipsOtherNameRecord checks a record stored under name that
+// answers to a different name is not trusted.
+func TestBinderLiveSkipsOtherNameRecord(t *testing.T) {
+	b, store, _ := newTestBinder(t, indigoWindow())
+	bd := indigoBinding()
+	bd.Name = "Indigo--other"
+	// A corrupt key: the store hands back a record for another name.
+	store.t.put("Indigo--dog-1", bd)
+
+	if _, ok, err := b.Live(context.Background(), "Indigo--dog-1"); ok || err != nil {
+		t.Fatalf("Live = %v, %v", ok, err)
+	}
+}
