@@ -42,19 +42,29 @@ func (c *Client) run(ctx context.Context, argv ...string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
+		// The CLI's own exit-code space: 3 is a missing target, 4 is a server
+		// it could not reach. Every other failure stays a generic error.
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
-			if msg != "" {
-				return nil, fmt.Errorf("rex %s: %w: %s", strings.Join(argv, " "), rex.ErrNotFound, msg)
+		if errors.As(err, &exitErr) {
+			switch exitErr.ExitCode() {
+			case 3:
+				return nil, rexErr(argv, rex.ErrNotFound, msg)
+			case 4:
+				return nil, rexErr(argv, rex.ErrUnavailable, msg)
 			}
-			return nil, fmt.Errorf("rex %s: %w", strings.Join(argv, " "), rex.ErrNotFound)
 		}
-		if msg != "" {
-			return nil, fmt.Errorf("rex %s: %w: %s", strings.Join(argv, " "), err, msg)
-		}
-		return nil, fmt.Errorf("rex %s: %w", strings.Join(argv, " "), err)
+		return nil, rexErr(argv, err, msg)
 	}
 	return out, nil
+}
+
+// rexErr formats one failed rex invocation, wrapping cause so callers can
+// classify it with errors.Is while the command and its stderr stay readable.
+func rexErr(argv []string, cause error, msg string) error {
+	if msg != "" {
+		return fmt.Errorf("rex %s: %w: %s", strings.Join(argv, " "), cause, msg)
+	}
+	return fmt.Errorf("rex %s: %w", strings.Join(argv, " "), cause)
 }
 
 // call runs `rex api call <method> [<json>]` and decodes the reply into out

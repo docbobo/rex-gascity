@@ -184,10 +184,14 @@ This is the **CLI's** code space; RPP exit codes are separate and defined in §9
 | `1` | server reported a failure, or the request/reply failed to decode | `format` over the cap → `control response exceeds 1048576 bytes (status=413 code=too_large)`; `block.close` + `keep_last` → `cannot close the last block in window <id> (status=400 code=bad_request)`; `block.close` with `window_id:"nonsense"` → `netapi: decoding args ... (status=400 code=bad_request)` |
 | `2` | client-side usage or validation error | unknown flag (`rex --version`), unknown command, invalid JSON args, a JSON argument that fails validation (`rex api call session.view '{"session_id":"deadbeef"}'`) |
 | `3` | target not found: client-side positional resolution or a server `404` | `rex api describe no.such.method`; `rex block call -b block:deadbeef …`; `rex block inspect block:deadbeef`; `rex window list -s session:deadbeef`; `blob_read` for an expired result → `not found: no result is stored (status=404 code=not_found)` |
+| `4` | the client could not reach a server: no server on the socket, or the connection failed | `REX_SERVER=unix:///tmp/nonexistent-rex.sock rex api call session.view '{"session_id":"…"}'` → `no Rex server is running at /tmp/nonexistent-rex.sock` (GCREX-41) |
 
 A malformed id lands on different codes by path, all observed: a bad **JSON
 argument** is `2`, a bad **positional target** is `3`, and a bad field that
-reaches the **server decoder** is `1`.
+reaches the **server decoder** is `1`. Exit `4` is a later addition to the
+observed set: the rex CLI uses it for a server it cannot reach, which the
+provider maps to `rex.ErrUnavailable` so `list-running` can answer the
+parked-city empty exit `0` instead of failing the inventory.
 
 ## 9. RPP v0 (gc → provider)
 

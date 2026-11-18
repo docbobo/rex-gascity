@@ -63,6 +63,47 @@ func TestListRunning(t *testing.T) {
 	}
 }
 
+// TestListRunningUnreachableRexIsEmpty pins the parked-city answer: when Rex
+// cannot be reached, nothing can be confirmed running, so list-running returns
+// an empty listing and exit 0 instead of propagating the transport error (the
+// parity doc list-running deviation 5).
+func TestListRunningUnreachableRexIsEmpty(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	for _, n := range []string{"Indigo--dog-1", "Indigo--dog-2"} {
+		teardownStart(t, p, n)
+	}
+	fake.ProcessErr = rex.ErrUnavailable
+
+	got, err := p.ListRunning(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListRunning with Rex unreachable: %v, want nil", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListRunning with Rex unreachable = %v, want empty", got)
+	}
+}
+
+// TestListRunningUnreachableRexEmptyStoreUnchanged is the other half of the
+// rule: with no recorded bindings there is nothing to probe, so an unreachable
+// Rex is never consulted and the empty exit 0 is unchanged.
+func TestListRunningUnreachableRexEmptyStoreUnchanged(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	fake.ProcessErr = rex.ErrUnavailable
+
+	got, err := p.ListRunning(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListRunning empty store: %v, want nil", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListRunning empty store = %v, want empty", got)
+	}
+	if len(fake.BlockCalls) != 0 {
+		t.Errorf("ListRunning probed Rex %d times with an empty store, want 0", len(fake.BlockCalls))
+	}
+}
+
 func TestClearScrollback(t *testing.T) {
 	ctx := context.Background()
 	fake, p := teardownStarted(t, teardownDog)

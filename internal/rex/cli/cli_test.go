@@ -417,6 +417,22 @@ func TestNotFoundMapsToErrNotFound(t *testing.T) {
 	}
 }
 
+func TestServerUnreachableMapsToErrUnavailable(t *testing.T) {
+	fake := newFakeRex(t)
+	if err := os.WriteFile(filepath.Join(fake.responses, "session.view.exit"), []byte("4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &cli.Client{Bin: fake.bin}
+
+	_, err := c.SessionView(context.Background(), "session:a")
+	if !errors.Is(err, rex.ErrUnavailable) {
+		t.Fatalf("SessionView err = %v, want rex.ErrUnavailable", err)
+	}
+	if errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("exit 4 err = %v, must not match rex.ErrNotFound", err)
+	}
+}
+
 func TestGenericFailureIsNotErrNotFound(t *testing.T) {
 	fake := newFakeRex(t)
 	if err := os.WriteFile(filepath.Join(fake.responses, "session.view.exit"), []byte("1"), 0o644); err != nil {

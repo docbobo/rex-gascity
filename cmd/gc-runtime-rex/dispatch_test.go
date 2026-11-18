@@ -241,6 +241,20 @@ func TestListRunning(t *testing.T) {
 	}
 }
 
+// TestListRunningUnreachableRexIsEmptyExitZero pins AC1 through the real
+// dispatcher: a recorded binding exists, but Rex is unreachable, so
+// list-running must answer the parked-city inventory, empty stdout and exit 0,
+// not exit 1 (GCREX-41).
+func TestListRunningUnreachableRexIsEmptyExitZero(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.ProcessErr = rex.ErrUnavailable
+	r := h.run("", "list-running")
+	if r.code != exitOK || r.stdout != "" {
+		t.Errorf("list-running with Rex unreachable = exit %d, stdout %q; want exit 0, empty", r.code, r.stdout)
+	}
+}
+
 func TestMetaRoundTripAcrossCalls(t *testing.T) {
 	h, _ := newHarness(t)
 	const value = "line one\n  spaced\ttab\n\n"

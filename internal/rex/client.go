@@ -16,6 +16,12 @@ import (
 // stored result (the CLI exits 3).
 var ErrNotFound = errors.New("rex: not found")
 
+// ErrUnavailable is returned when the Rex client cannot reach a server: the
+// socket is absent, the server is down, or the connection fails. The rex CLI
+// reports this as exit 4 ("no Rex server is running at ..."), distinct from a
+// server-side failure (exit 1) and a missing target (exit 3).
+var ErrUnavailable = errors.New("rex: server unavailable")
+
 type (
 	SessionID string
 	WindowID  string

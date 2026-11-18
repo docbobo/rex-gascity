@@ -650,6 +650,13 @@ func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, er
 			continue
 		}
 		alive, err := p.paneAlive(ctx, b)
+		if errors.Is(err, rex.ErrUnavailable) {
+			// Rex is down, so no pane can be confirmed running. Answer with
+			// the parked-city inventory, empty and exit 0 (parity doc
+			// list-running deviation 5): gc reads an error here as a fleet it
+			// could not enumerate and refuses to tear the city down.
+			return []string{}, nil
+		}
 		if errors.Is(err, rex.ErrNotFound) {
 			continue
 		}
