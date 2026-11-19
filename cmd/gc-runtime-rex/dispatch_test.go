@@ -81,7 +81,7 @@ const dog = "Indigo--dog-1"
 func TestProtocolHandshake(t *testing.T) {
 	h, _ := newHarness(t)
 	r := h.must("", "protocol")
-	want := `{"version":0,"capabilities":["report-attachment","report-activity"]}` + "\n"
+	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}` + "\n"
 	if r.stdout != want {
 		t.Fatalf("stdout = %q, want %q", r.stdout, want)
 	}
@@ -99,7 +99,7 @@ func TestProtocolHandshake(t *testing.T) {
 	for _, c := range hs["capabilities"].([]any) {
 		caps = append(caps, c.(string))
 	}
-	if !slices.Equal(caps, []string{"report-attachment", "report-activity"}) {
+	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary"}) {
 		t.Errorf("capabilities = %v", caps)
 	}
 }

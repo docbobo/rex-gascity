@@ -276,7 +276,10 @@ Operations — the spec's 17 rows:
 | `provision` | `script provision <name>` | JSON config | — |
 
 Beyond that table, gc also calls `clear-scrollback`, `send-keys`, and
-`watch-startup`. The dedicated **driving ops** (`interrupt`, `nudge`, `peek`,
+`watch-startup`. Our provider also answers `idle <name>` (GCREX-63), a
+one-word point-in-time idle snapshot (`idle`, `busy`, `indeterminate`); gc
+1.5.1 never calls it and the token that gates it is ignored. The dedicated
+**driving ops** (`interrupt`, `nudge`, `peek`,
 `clear-scrollback`, `send-keys`) are deliberately **not** conformance
 requirements: gc drives input and reads output over `exec` (`RPP-CONN-001`) when
 a runtime implements it, and falls back to the driving ops when `exec` is
@@ -286,12 +289,14 @@ request/response `exec` connection cannot carry a stream.
 Handshake (`protocol` op):
 
 ```json
-{"version": 0, "capabilities": ["report-attachment", "report-activity"]}
+{"version": 0, "capabilities": ["report-attachment", "report-activity", "idle-boundary"]}
 ```
 
 There is **no `locality` field**. A script that does not implement `protocol`
 (exit 2) is version 0 with no optional capabilities. Unknown capability strings
-are ignored (forward compatibility); malformed handshake JSON is an error.
+are ignored (forward compatibility); malformed handshake JSON is an error. Our
+handshake additionally declares `idle-boundary` for the `idle` op (GCREX-63);
+it is outside the 1.5.1 baseline and gc 1.5.1 ignores it.
 
 The pinned baseline has exactly **six** capability strings
 (`internal/runtime/protocol.go`):
@@ -305,18 +310,24 @@ The pinned baseline has exactly **six** capability strings
 | `proc.stream` | reserved: the persistent bidirectional `stream` op |
 | `tty.attach` | reserved: the interactive PTY `attach` connection op |
 
-**Not in the pinned baseline — do not declare.** The plan
-(`docs/plans/native-rex-provider.md`) and the research notes use capability names
-that do not exist in gc 1.5.1, so `gc runtime check` would ignore them:
-`fs.host`, `carrier.ops`, `observe.v1`, `input-outcome` appear nowhere in the
-source. `idle-boundary` is design-doc language for sleep tiers
-(`engdocs/design/idle-session-sleep.md`), not a token. `server-lifecycle`
-appears only in a release-gate evidence file for a provider interface, not in
-`protocol.go`. Treat all of them as design shorthand. Concretely, `fs.host` is
-not a declaration — agents simply run on gc's host (D4) — and idle state is
-reported through `report-activity` plus the block's `program_status`, not
-through a handshake token. `GC_READY_PROMPT_PREFIX` is real in gc but is a
-tmux-provider environment variable, not part of RPP; round-tripping it through
+**Not in the pinned baseline — declare only alongside the behavior it gates.**
+The plan (`docs/plans/native-rex-provider.md`) and the research notes use
+capability names that do not exist in gc 1.5.1, so `gc runtime check` would
+ignore them: `fs.host`, `carrier.ops`, `observe.v1`, `input-outcome` appear
+nowhere in the source. `idle-boundary` is not a 1.5.1 token; gc's working tree
+defines it (`internal/runtime/protocol.go`, ahead of the pin) as the
+idle-observation gate, and our provider declares it in the same change that
+adds the `idle` snapshot op it gates (GCREX-63). `server-lifecycle` appears only
+in a release-gate evidence file for a provider interface, not in `protocol.go`.
+Treat all of them as design shorthand. A non-baseline token may be declared only
+in the change that implements the behavior it gates, so it stays inert at the
+pin and carries meaning only for a gc that consumes it; a token with no
+implemented behavior stays undeclared. Concretely, `fs.host` is not a
+declaration — agents simply run on gc's host (D4) — and the idle *state* is
+reported through `report-activity` plus the block's `program_status`, not through
+a handshake token: `idle-boundary` gates the `idle` op, it does not carry the
+reading. `GC_READY_PROMPT_PREFIX` is real in gc but is a tmux-provider
+environment variable, not part of RPP; round-tripping it through
 `set-meta`/`get-meta` is our design.
 
 ## 10. Re-verification probes
@@ -520,9 +531,11 @@ Phase 0 also confirms the plan's decisions against the live surface:
   declares `[runtimes.rex]` with `command = "gc-runtime-rex"` and `protocol = 0`,
   and both `gc runtime check rex` and `gc runtime conformance rex` pass against
   `testdata/city` (14/14 checks; 6/8 requirements with `exec`/`provision` as
-  optional skips). The handshake declares version 0, `report-attachment` and
-  `report-activity`, and no `locality` field; `proc.exec`/`proc.provision` are
-  not declared because `exec`/`provision` stay unimplemented (exit 2).
+  optional skips). The handshake declares version 0, `report-attachment`,
+  `report-activity` and `idle-boundary` — the last outside the 1.5.1 baseline
+  and declared only in the same change as the `idle` snapshot op it gates
+  (GCREX-63) — and no `locality` field; `proc.exec`/`proc.provision` are not
+  declared because `exec`/`provision` stay unimplemented (exit 2).
 - **No city in an RPP invocation (resolved, GCREX-17; pilot GCREX-6).** RPP
   carries only the op and session name, and the exec runtime provider passes the
   caller's environment through unchanged, so `GC_REX_CITY`, `GC_CITY_PATH` and

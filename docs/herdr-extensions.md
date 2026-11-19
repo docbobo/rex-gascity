@@ -38,8 +38,10 @@ ahead of the `v1.5.1` tag — does with the tokens the pin ignores.
    against the pin (`docs/provider-herdr-parity.md` §"Gaps that are
    deliberate, not mistakes").
 2. `REX-CONTRACT.md` §9 says not to declare tokens outside the pinned
-   baseline, and the pin ignores unknown capability strings by design
-   (`internal/runtime/protocol.go`; pinned by `exec/handshake_test.go`).
+   baseline without the behavior they gate, and the pin ignores unknown
+   capability strings by design (`internal/runtime/protocol.go`; pinned by
+   `exec/handshake_test.go`). A non-baseline token is declared only in the
+   change that implements the gated op, so it stays inert at the pin.
 3. A consuming gc gives those tokens meaning. `observe.v1` is not an
    `observe`-only gate: it is the *reconciler-v2 profile token*
    (`internal/runtime/protocol.go` `ProtocolCapabilityObserveV1`). Declaring
@@ -52,8 +54,9 @@ ahead of the `v1.5.1` tag — does with the tokens the pin ignores.
    switches a consuming gc's city to reconciler v2.
 
 Fact 2 means an **implement** verdict is also a contract change: the accepted
-extension's token moves from the §9 "not in the baseline — do not declare"
-list to the declared set, in the same change that implements the op
+extension's token moves from the §9 "not in the pinned baseline — declare only
+alongside the behavior it gates" list to the declared set, in the same change that
+implements the op
 (GCREX-28.2 AC 1). An op that is not implemented must not have its token
 declared, and by Fact 3 a profile token must not be declared without the
 whole profile. That is why the accepted set is the `observe.v1` profile as one
@@ -89,7 +92,7 @@ only when the behavior it declares is implemented (Fact 2).
 | `city-scoped` | server model | reject | False for Rex: one user-scoped server serves every city. Declaring it would misrepresent the model; revisit only with GCREX-30. | only if GCREX-30 changes the server model to city-owned |
 | `fs.host` | host filesystem | reject | Rex exposes no host-fs op and the token needs a newer gc (`handshake.py` docstring cites gastownhall/gascity#9032/#9129). No Rex behavior to gate. | only if a newer gc consumes `fs.host` and Rex gains a host-fs op — a model change |
 | `input-outcome` | input exit codes | defer | gc 1.5.1 has no `input-outcome` and treats exit 80 as failure, so tmux-style best-effort stays correct. | gc consumes outcome-bearing input responses |
-| `idle-boundary` | activity | defer | No gc 1.5.1 consumer and no settled Rex meaning for an "idle boundary". | gc declares/consumes it |
+| `idle-boundary` | activity | **implement** | gc's working tree consumes it as the idle-observation gate (`internal/runtime/protocol.go:60`), but no `SnapshotIdle` is implemented for the exec backend (`internal/runtime/exec/cutover.go:46-48`), so a Rex city's `snapshotHoldFor` returns "" (`cmd/gc/execution_backstop.go:493`). GCREX-63 adds the `idle` snapshot op under this token. It is inert until a carrier op is declared too. | GCREX-63 implements the reading |
 | `conformance-faults` | diagnostics | defer | herdr-internal diagnostics with no gc 1.5.1 consumer. | gc declares/consumes it (e.g. inside `gc runtime check`) |
 
 ## Designs for accepted extensions
@@ -102,6 +105,53 @@ ignores the non-baseline tokens, so declaring `observe.v1` and `carrier.ops`
 cannot change baseline behavior (GCREX-28.2 AC 2); a consuming gc reads
 `observe.v1` as the reconciler-v2 profile (Fact 3), so GCREX-28.2 carries the
 profile's remaining obligations, not just the three ops.
+
+### `idle` (point-in-time idle snapshot)
+
+- **Op contract.** `idle <name>` takes the session name as its single
+  positional argument and no stdin. It is a read: it never starts, stops, nudges
+  or otherwise mutates a session. It answers gc's `runtime.IdleSnapshotProvider`
+  (`internal/runtime/runtime.go:757` in the working tree), the point-in-time
+  sibling of `WaitForIdle`.
+- **Capability token.** `idle-boundary`, declared in the `protocol` handshake in
+  the same change that adds the handler. gc's working tree defines the token
+  (`internal/runtime/protocol.go:60`) and gates the exec backend's `WaitForIdle`
+  on it (`internal/runtime/exec/idle.go:36`), but it implements no `SnapshotIdle`
+  for the exec backend: `seamBackedProvider` lists `IdleWaitProvider` and
+  `IdleProbeBudgetProvider` and not `IdleSnapshotProvider`
+  (`internal/runtime/exec/cutover.go:46-48`). So a Rex city's `snapshotHoldFor`
+  returns `""` (`cmd/gc/execution_backstop.go:493`) and the activity clock
+  decides alone. The token is the idle-observation gate; `idle` is the reading
+  it selects. Declaring `idle-boundary` alone is inert: `idleBoundaryDeclared`
+  also needs `carrier.ops` or `proc.exec` (`internal/runtime/exec/idle.go:36`),
+  neither of which this change declares, and gc 1.5.1 has no such token at all
+  and ignores it.
+- **Deadline class.** *default* (30 s, set by gc): the op sets no per-op
+  deadline, so, like every other op in `cmd/gc-runtime-rex/main.go`, it uses
+  gc's exec default. The read is one local program-status read plus, at most,
+  one pane capture, so a *probe* class would also fit; a consuming gc applies
+  its own op deadline when it wires `SnapshotIdle`.
+- **stdin.** Ignored (must not read).
+- **stdout shape.** Exactly one word per invocation: `idle`, `busy` or
+  `indeterminate`. No JSON, no extra lines.
+- **Exit codes.** 0 for every state — the state is the payload. 1 when the read
+  could not be made (a missing session, an unreachable Rex server, a failed
+  program-status or pane read); a failed read is never reported as `idle`. Never
+  2 once declared.
+- **Derivation.** The newest `program_status` record decides: `idle` → idle,
+  `working`/`blocked` → busy, any other state → indeterminate. With no record
+  the rendered pane is classified: a busy-indicator line → busy, a startup
+  dialog → indeterminate, a bare ready prompt → idle, anything else →
+  indeterminate. This is the same data `get-last-activity` and nudge gating
+  already read (`internal/provider/activity.go`, `internal/provider/nudge.go`).
+- **gc consumer (follow-up, gc repo).** A gc that consumes it implements
+  `SnapshotIdle` on the exec backend and reads it where the tmux leaf is read:
+  `snapshotHoldFor` (`cmd/gc/execution_backstop.go:493`, which reads the
+  snapshot at `:498`), `program_status_shadow_fresh.go:101`, and
+  `cmd/gc/idle_nudge.go:673`. At the
+  v1.5.1 pin the token is unknown and ignored, so the baseline handshake is
+  unchanged in behaviour.
+- **State and cleanup.** None. Read-only; no meta writes, no session changes.
 
 ### `observe`
 
@@ -218,7 +268,7 @@ A deferred extension needs no design now. When its trigger fires, open a
 follow-up task that: accepts the extension, adds the design section here, and
 scopes GCREX-28.2-style implementation with the same gate/token rule. The
 deferred set is `copy-to`, streaming `watch-startup`, `tty attach`, and — for
-tokens — `input-outcome`, `idle-boundary`, `conformance-faults`.
+tokens — `input-outcome`, `conformance-faults`.
 
 ## Consequences for GCREX-28.2
 

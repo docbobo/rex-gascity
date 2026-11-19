@@ -130,10 +130,10 @@ Bindings, activity observations and metadata are stored per city under `<state d
 ### RPP capabilities
 
 ```json
-{"version":0,"capabilities":["report-attachment","report-activity"]}
+{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}
 ```
 
-Implemented operations: `protocol`, `start`, `stop`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
+Implemented operations: `protocol`, `start`, `stop`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
 
 `proc.exec`, `proc.provision`, `proc.stream` and `tty.attach` are not implemented and are not declared.
 

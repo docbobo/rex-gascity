@@ -41,7 +41,9 @@ const (
 
 // handshake is the protocol op's reply. It declares only what is implemented:
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
-const handshake = `{"version":0,"capabilities":["report-attachment","report-activity"]}`
+// idle-boundary gates the `idle` snapshot op (GCREX-63). gc 1.5.1 has no such
+// token and ignores it; a gc that consumes it reads the point-in-time reading.
+const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}`
 
 // buildVersion is the version the `version` op reports. A pack build may set
 // it with -ldflags "-X main.buildVersion=<version>"; a bare `go install`
@@ -183,6 +185,7 @@ var ops = map[string]opSpec{
 	"peek":              {1, "peek <name> [lines]", opPeek},
 	"list-running":      {0, "list-running [prefix]", opListRunning},
 	"get-last-activity": {1, "get-last-activity <name>", opGetLastActivity},
+	"idle":              {1, "idle <name>", opIdle},
 	"is-attached":       {1, "is-attached <name>", opIsAttached},
 	"set-meta":          {2, "set-meta <name> <key>", opSetMeta},
 	"get-meta":          {2, "get-meta <name> <key>", opGetMeta},
@@ -520,6 +523,18 @@ func opGetLastActivity(ctx context.Context, p *provider.Provider, args []string,
 		fmt.Fprintln(out, act.At.UTC().Format(time.RFC3339))
 	}
 	return nil
+}
+
+// opIdle answers gc's point-in-time idle snapshot (runtime.IdleSnapshotProvider):
+// one word, idle, busy or indeterminate, and exit 0 for every state because the
+// state is the payload. A failed read is an error and exits 1, never idle.
+func opIdle(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+	state, err := p.IdleSnapshot(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, state)
+	return err
 }
 
 func opIsAttached(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {

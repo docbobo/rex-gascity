@@ -206,13 +206,13 @@ compares that `version` against the `[pack] version` in
 `gc-runtime-rex protocol` returns the RPP v0 handshake:
 
 ```json
-{"version":0,"capabilities":["report-attachment","report-activity"]}
+{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}
 ```
 
-- **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`).
+- **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`), `idle-boundary` (`idle`).
 - **Capabilities not declared**: `proc.exec`, `proc.provision`, `proc.stream`, `tty.attach` (and no locality capability).
 
-Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
+Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
 
 ## Identity Mapping
 
