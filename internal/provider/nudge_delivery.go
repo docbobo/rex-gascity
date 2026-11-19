@@ -59,6 +59,11 @@ const (
 	// readinessPromptBound is a wait that ended on its window because a set
 	// ready_prompt_prefix never appeared on screen.
 	readinessPromptBound = "prompt-bound"
+	// readinessDialog is a wait that ended because the pane's screen showed a
+	// startup dialog. The nudge is withheld, not delivered: gc answers the
+	// dialog only once start returns, and the turn's Enter would pick the
+	// dialog's selected option (herdrcore/lifecycle.py:1078-1096).
+	readinessDialog = "dialog"
 )
 
 // maxReadyDelay caps ready_delay_ms, mirroring herdr-core READY_WAIT_S
@@ -132,6 +137,13 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			return nil
 		}
 		return fmt.Errorf("%s: the agent exited during startup, before its first turn", name)
+	}
+	// A startup dialog is gc's to answer once start returns; typing the turn
+	// now would press whichever option the dialog has selected. The withhold is
+	// recorded, never a failed start, so a healthy pane is not torn down.
+	if outcome == readinessDialog {
+		p.recordStartupNudgeWithheld(ctx, binding, "the pane shows a startup dialog")
+		return nil
 	}
 
 	report, err := p.nudgeReportBinding(ctx, binding, cfg.Nudge, NudgeModeImmediate)
@@ -267,6 +279,15 @@ func (p *Provider) sleepStartupBackoff(ctx context.Context, d time.Duration) boo
 	}
 }
 
+// recordStartupNudgeWithheld marks a pane whose startup nudge was withheld, so
+// the withhold is observable and gc's queued-nudge backstop can cover the first
+// prompt. It reuses the unconfirmed marker: the first turn never reached the
+// agent, which is exactly what an operator greps for. Best effort; a metadata
+// failure must not turn a live start into a failure.
+func (p *Provider) recordStartupNudgeWithheld(ctx context.Context, binding Binding, why string) {
+	_ = p.SetMeta(ctx, string(binding.Name), StartupDeliveryUnconfirmedMetaKey, "withheld: "+why)
+}
+
 // recordStartupDeliveryUnconfirmed leaves a durable marker on the pane after a
 // startup nudge could not be confirmed. The marker is best effort; a metadata
 // write failure must not turn a live start into a failure.
@@ -292,9 +313,10 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 // spent, so an agent that never emits status is not held for the whole window.
 //
 // It returns how the wait ended (idle, a window or settle bound, canceled,
-// ended, or disabled), how long it took, and whether the agent ended. The
-// caller records the bound and, on an end, fails the start unless the lifecycle
-// is one_shot (GCREX-53, GCREX-58).
+// ended, disabled, or a startup dialog), how long it took, and whether the
+// agent ended. The caller records the bound and, on an end, fails the start
+// unless the lifecycle is one_shot (GCREX-53, GCREX-58); a dialog withholds the
+// nudge (GCREX-59).
 // readinessBounds are the three times the wait can end on: the ready_delay_ms
 // floor, the full window, and the shorter settle delay used before the program
 // has reported any status. promptWatch records whether a ready_prompt_prefix
@@ -345,18 +367,42 @@ func readyDelay(cfg Config) time.Duration {
 // readinessNote decides whether the wait is over and how it ended: the pane's
 // prompt when ready_prompt_prefix is set (herdr-core _shows_ready), else an
 // idle program_status once the ready_delay_ms floor has passed, else a bound.
-// It returns ready=false to keep waiting.
+// A screen showing a startup dialog is never ready (readinessDialog), in any
+// mode, because the first turn must not land in it (herdr-core
+// withholds_first_turn; herdrcore/lifecycle.py:1078-1096). It returns
+// ready=false to keep waiting.
 func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config, r readinessBounds, snap programStatusSnapshot, snapErr error, sawRecord bool, elapsed time.Duration) (string, bool) {
 	if r.promptWatch {
-		if p.screenShowsReadyPrefix(ctx, sid, block, cfg.ReadyPromptPrefix) {
-			return readinessPrompt, true
+		screen, err := p.paneScreen(ctx, sid, block)
+		if err == nil {
+			if withholdsFirstTurn(screen, cfg.ReadyPromptPrefix) {
+				return readinessDialog, true
+			}
+			if screenHasPromptPrefix(screen, cfg.ReadyPromptPrefix) {
+				return readinessPrompt, true
+			}
 		}
 		return p.readinessBound(r, sawRecord, elapsed)
 	}
 	if elapsed >= r.delay && snapErr == nil && snap.Present && snap.State == "idle" {
+		// A dialog can sit over a prompt that still reports idle (the live case
+		// GCREX-59 fixes): the write lands, the Enter is consumed by the dialog
+		// and no turn starts. Read the screen once and withhold instead.
+		if screen, err := p.paneScreen(ctx, sid, block); err == nil && withholdsFirstTurn(screen, "") {
+			return readinessDialog, true
+		}
 		return readinessIdle, true
 	}
-	return p.readinessBound(r, sawRecord, elapsed)
+	note, ready := p.readinessBound(r, sawRecord, elapsed)
+	if !ready {
+		return "", false
+	}
+	// A pane that never reported idle can still be showing a dialog at the
+	// bound; a first turn typed then would land in it too.
+	if screen, err := p.paneScreen(ctx, sid, block); err == nil && withholdsFirstTurn(screen, "") {
+		return readinessDialog, true
+	}
+	return note, true
 }
 
 // readinessBound names the bound the wait ended on, or reports not-over yet.
@@ -418,18 +464,11 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 	}
 }
 
-// screenShowsReadyPrefix reports whether the pane's rendered output shows the
-// ready_prompt_prefix as a live prompt line, reading it as gc's
-// paneShowsReadyPrompt does (gc v1.5.1 internal/runtime/tmux/tmux.go:4199-4231;
-// herdrcore/readiness.py:78-86): the bottom-most prompt line decides, NBSP
-// reads as a space, one leading box border is skipped, and a numbered menu's
-// cursor row is not a prompt.
-func (p *Provider) screenShowsReadyPrefix(ctx context.Context, sid rex.SessionID, block rex.BlockID, prefix string) bool {
-	screen, err := p.client.BlockFormat(ctx, sid, block)
-	if err != nil {
-		return false
-	}
-	return screenHasPromptPrefix(screen, prefix)
+// paneScreen reads the pane's rendered output, the bounded screen read the
+// readiness wait uses for both the ready prompt and the startup-dialog check.
+// A read failure is the caller's to fall back from, never a failed start.
+func (p *Provider) paneScreen(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, error) {
+	return p.client.BlockFormat(ctx, sid, block)
 }
 
 // screenHasPromptPrefix reports whether the screen's live composer shows
