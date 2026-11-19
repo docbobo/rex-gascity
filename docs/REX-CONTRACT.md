@@ -278,7 +278,11 @@ Operations — the spec's 17 rows:
 Beyond that table, gc also calls `clear-scrollback`, `send-keys`, and
 `watch-startup`. Our provider also answers `idle <name>` (GCREX-63), a
 one-word point-in-time idle snapshot (`idle`, `busy`, `indeterminate`); gc
-1.5.1 never calls it and the token that gates it is ignored. The dedicated
+1.5.1 never calls it and the token that gates it is ignored. It also answers
+`program-status <name>` (GCREX-64), a judged OSC 7501 reading as one JSON line
+(`validity` `valid`/`not_armed`/`exited`, with `state` and `kind` when valid);
+the pinned gc has no `runtime.ProgramStatusProvider` to consume it and no token
+gates it, so the handshake is unchanged and the op is inert there. The dedicated
 **driving ops** (`interrupt`, `nudge`, `peek`,
 `clear-scrollback`, `send-keys`) are deliberately **not** conformance
 requirements: gc drives input and reads output over `exec` (`RPP-CONN-001`) when

@@ -153,6 +153,20 @@ profile's remaining obligations, not just the three ops.
   unchanged in behaviour.
 - **State and cleanup.** None. Read-only; no meta writes, no session changes.
 
+### `program-status` (judged agent reading; not a herdr extension)
+
+`program-status <name>` is not a herdr-core extension and carries no token: it
+exposes the OSC 7501 reading the provider already reads to gc's optional
+`runtime.ProgramStatusProvider`, a working-tree feature
+(`internal/runtime/program_status.go:184`; absent at the `v1.5.1` pin). No gc
+token gates it, so nothing moves between the §9 do-not-declare list and the
+declared set and the handshake is unchanged. The capture arm flags (`Capture`,
+`App`, `Relay`, `HoldMidTurn`, `DecideStartup`, `DecideSettle`) are gc's tmux
+pane capture, carried on the launch config and not on the exec start config, so
+they are out of scope for a Rex pane. The reading and the per-flag reasons are
+recorded in `docs/provider-herdr-parity.md` §"Rex-specific extension: the judged
+program-status reading (GCREX-64)".
+
 ### `observe`
 
 - **Op contract.** `observe <name>` takes the session name as its single

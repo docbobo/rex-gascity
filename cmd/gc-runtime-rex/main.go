@@ -186,6 +186,7 @@ var ops = map[string]opSpec{
 	"list-running":      {0, "list-running [prefix]", opListRunning},
 	"get-last-activity": {1, "get-last-activity <name>", opGetLastActivity},
 	"idle":              {1, "idle <name>", opIdle},
+	"program-status":    {1, "program-status <name>", opProgramStatus},
 	"is-attached":       {1, "is-attached <name>", opIsAttached},
 	"set-meta":          {2, "set-meta <name> <key>", opSetMeta},
 	"get-meta":          {2, "get-meta <name> <key>", opGetMeta},
@@ -534,6 +535,23 @@ func opIdle(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 		return err
 	}
 	_, err = fmt.Fprintln(out, state)
+	return err
+}
+
+// opProgramStatus answers gc's point-in-time judged program-status reading
+// (runtime.ProgramStatusProvider): one JSON line, exit 0 for every reading
+// because the reading is the payload. A failed read is an error and exits 1,
+// never a reading.
+func opProgramStatus(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+	reading, err := p.ProgramStatus(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	line, err := json.Marshal(reading)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, string(line))
 	return err
 }
 

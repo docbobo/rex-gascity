@@ -1136,3 +1136,95 @@ docs/herdr-extensions.md — the `idle` design section and the `idle-boundary`
 verdict, moved from *defer* to *implement*.
 docs/REX-CONTRACT.md §9 — RPP v0 op table; `idle` is beyond the 17 rows, like
 `clear-scrollback`, `send-keys` and `watch-startup`.
+
+## Rex-specific extension: the judged program-status reading (GCREX-64)
+
+This section is not a herdr-core comparison: herdr-core has no program-status
+op. It records how a Rex city answers gc's optional `runtime.ProgramStatusProvider`,
+the judged agent reading gc reads beside its own screen scrape.
+
+**The gap.** gc reads a session's judged agent state through
+`runtime.ProgramStatusProvider` (`internal/runtime/program_status.go:184` in the
+working tree, ahead of the `v1.5.1` pin). The interface is a working-tree
+feature: `internal/runtime/program_status.go` does not exist at `v1.5.1`, and
+`git grep ProgramStatusProvider v1.5.1 -- '*.go'` finds nothing, so a pinned
+city has no such reading at all. On the working tree only tmux implements it
+(`internal/runtime/tmux/program_status_read.go:207`); the exec backend's
+`seamBackedProvider` lists `IdleWaitProvider` and `IdleProbeBudgetProvider` and
+no `ProgramStatusProvider` (`internal/runtime/exec/cutover.go:42-60`), and the
+exec package names `ProgramStatus` nowhere. Consumers that lose the reading
+today:
+
+- the doctor capture check (`cmd/gc/doctor_program_capture.go:65`, `:69`);
+- the capture heal lane (`cmd/gc/program_capture_heal.go:127`, fed by the
+  leaf's judged inventory reading, `internal/runtime/tmux/program_status_read.go:264`);
+- the starved-delivery hold in the conversation lane
+  (`cmd/gc/busy_delivery_starvation.go:103`, through
+  `runtime.ProgramRecordTypingHold`, `internal/runtime/program_status_hold.go:80`);
+- the worker phase (`internal/worker/program_status.go:12`, `ProgramStatusOf`).
+
+**The record is already read.** The provider reads the pane program's OSC 7501
+`program_status` records for `get-last-activity` (`internal/provider/activity.go`)
+and for nudge busy-gating (`internal/provider/nudge.go`, which already
+distinguishes working from blocked). GCREX-64 exposes them as a new RPP op,
+`program-status <name>`, one JSON line carrying the judged reading.
+
+**The reading's shape.** `ProgramStatusReading`
+(`internal/provider/programstatus.go`) carries `validity` and, only when valid,
+`state` (`idle`/`working`/`done`/`blocked`/`error`) and `kind` (`blocked` with
+`permission`/`question`/`auth`), plus `since`/`updated` (the newest record's
+`UpdatedAt`) and `reported`. It is a reduced `runtime.ProgramStatus`: because Rex
+captures OSC 7501 itself, the provider has the program's record but not gc's tap
+nonce, pipe liveness or capture arm, so it cannot judge gc's `silent`, `cleared`
+or `reader_lost` states and never claims them. The validities it does produce are
+`valid`, `not_armed` and `exited`; `unread` is gc's switch-off zero value and the
+provider is not consulted then.
+
+**not_armed and a missing session.** A live pane whose newest record is absent,
+empty or not a known root word reads `validity: not_armed` (there is no root
+record to judge). A session with no pane is `ErrSessionNotFound` (exit 1); a Rex
+transport failure is returned as-is (exit 1), which a consuming exec adapter maps
+to `ErrRuntimeUnavailable`; a pane whose program has exited reads
+`validity: exited` and keeps no state. A failed read is never a reading. The
+provider resolves the binding fresh and holds no reading across calls, so a
+stale reading cannot be served; a consumer bounds a live record's age with gc's
+`ProgramStatusHoldLimit` (`internal/runtime/program_status.go:123, 10 min`) as it
+does for tmux.
+
+**The capture arm is out of scope.** gc resolves `ProgramStatusArm` from config
+(`internal/config/program_status.go:90, 108`) and carries it on the launch
+config (`internal/runtime/runtime.go:1621`), and only tmux consumes it
+(`internal/runtime/tmux/adapter.go:1574`, `:1721`). The exec start config does
+not carry it — `internal/runtime/exec/json.go:27-51` has no `program_status`
+field — and the exec backend implements no `HealProgramCapture`
+(`ProgramCaptureHealerFor`, `internal/runtime/program_status.go:260`, resolves
+the tmux leaf only). So none of the arm's flags can reach a Rex pane, and each is
+out of scope for a reason:
+
+- **Capture / App / Relay.** Rex captures OSC 7501 itself and stores the records;
+the provider arms no pane tap and wraps no relay, so there is nothing to gate and
+nothing for these flags to select. The reading is available without them.
+- **HoldMidTurn.** gc's flag arms the tmux pane and the conversation lane reads a
+fresh record to veto a mid-turn typing. Rex's nudge already refuses a working or
+blocked pane unconditionally (`internal/provider/nudge.go`), which is the
+behaviour the flag drives, so the flag itself is out of scope as an arm.
+- **DecideStartup.** gc's flag is the tmux startup ladder. The provider's own
+startup readiness already waits on the program's `idle` record
+(`internal/provider/nudge_delivery.go`), so the flag is out of scope as an arm.
+- **DecideSettle.** The provider implements no interrupt idle-wait to decide, so
+the flag is out of scope.
+
+**No capability token.** gc's working tree defines no program-status or capture
+token (`internal/runtime/protocol.go:18-118` lists none; the pin has none
+either), so the op is exposed but undeclared and the handshake is unchanged
+(`cmd/gc-runtime-rex/main.go:46`). A gc that adds an exec-side
+`ProgramStatusProvider` and a token that gates it declares the token in that
+change, per the gated-declaration rule in `docs/REX-CONTRACT.md` §9; until then
+the op is inert on both the working tree and the pin.
+
+**Cross-references.**
+GCREX-64 — this extension.
+docs/herdr-extensions.md — the program-status note; the extension carries no
+herdr-only token decision.
+docs/REX-CONTRACT.md §9 — RPP v0 op table; `program-status` is beyond the 17 rows,
+like `clear-scrollback`, `send-keys` and `watch-startup`.
