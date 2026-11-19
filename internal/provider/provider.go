@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/docbobo/rex-gascity/internal/launch"
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -734,7 +735,7 @@ func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, er
 		if !alive {
 			continue
 		}
-		if strings.HasPrefix(string(b.Name), prefix) {
+		if strings.HasPrefix(string(b.Name), prefix) && readableName(string(b.Name)) {
 			names = append(names, string(b.Name))
 		}
 		// Only a non-empty prefix lists aliases. gc's adoption barrier and dead-
@@ -744,13 +745,30 @@ func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, er
 			continue
 		}
 		for _, alias := range b.Aliases {
-			if strings.HasPrefix(string(alias), prefix) {
+			if strings.HasPrefix(string(alias), prefix) && readableName(string(alias)) {
 				names = append(names, string(alias))
 			}
 		}
 	}
 	sort.Strings(names)
 	return slices.Compact(names), nil
+}
+
+// readableName reports whether name is safe to print as one list-running line:
+// non-empty, without leading or trailing whitespace, and without a control
+// character. It mirrors herdr-core's readable_name (rpp/wire.py:194), so a name
+// gc cannot parse back (a stray newline would split one session into two) is
+// never emitted.
+func readableName(name string) bool {
+	if name == "" || name != strings.TrimSpace(name) {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // prefixMatches reports whether b is worth probing for prefix: its primary name

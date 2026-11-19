@@ -104,6 +104,48 @@ func TestListRunningUnreachableRexEmptyStoreUnchanged(t *testing.T) {
 	}
 }
 
+// TestListRunningSkipsUnreadableNames pins the readable-name guard (GCREX-27):
+// ListRunning drops any name that is empty, has leading or trailing whitespace,
+// or contains a control character before printing it, because gc parses the
+// output line by line and a stray newline would split one session into two. A
+// readable alias of an unreadable binding still appears.
+func TestListRunningSkipsUnreadableNames(t *testing.T) {
+	fake := faketest.New()
+	store := provider.NewMemoryStore()
+	p := provider.New("acme", fake, provider.WithBindingStore(store))
+
+	// A readable binding must survive the filter.
+	store.Save(provider.Binding{Name: "Indigo--good", SessionID: "session:good", BlockID: "block:good"})
+	// The three unreadable shapes: empty, leading/trailing whitespace, control.
+	store.Save(provider.Binding{Name: "", SessionID: "session:empty", BlockID: "block:empty"})
+	store.Save(provider.Binding{Name: " Indigo--lead", SessionID: "session:lead", BlockID: "block:lead"})
+	store.Save(provider.Binding{Name: "Indigo--trail ", SessionID: "session:trail", BlockID: "block:trail"})
+	store.Save(provider.Binding{Name: "Indigo--ctl\x01", SessionID: "session:ctl", BlockID: "block:ctl"})
+	// An unreadable primary name whose alias is readable: the alias still lists.
+	store.Save(provider.Binding{
+		Name:      "Indigo--alias-ctl\x02",
+		SessionID: "session:alias",
+		BlockID:   "block:alias",
+		Aliases:   []provider.SessionName{"Indigo--alias-good"},
+	})
+
+	got, err := p.ListRunning(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListRunning(all): %v", err)
+	}
+	if want := []string{"Indigo--good"}; !slices.Equal(got, want) {
+		t.Errorf("ListRunning(all) = %q, want %q", got, want)
+	}
+
+	got, err = p.ListRunning(context.Background(), "Indigo--alias-")
+	if err != nil {
+		t.Fatalf("ListRunning(alias prefix): %v", err)
+	}
+	if want := []string{"Indigo--alias-good"}; !slices.Equal(got, want) {
+		t.Errorf("ListRunning(alias prefix) = %q, want %q", got, want)
+	}
+}
+
 func TestClearScrollback(t *testing.T) {
 	ctx := context.Background()
 	fake, p := teardownStarted(t, teardownDog)

@@ -63,7 +63,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `exec` | not implemented | 1 | not-implemented |
 | `is-running` | implemented | 5 | intentional |
 | `process-alive` | implemented | 6 | intentional |
-| `list-running` | implemented | 6 | intentional (with a mistake inside) |
+| `list-running` | implemented | 6 | intentional |
 | `is-attached` | implemented | 6 | intentional |
 | `get-last-activity` | implemented | 5 | intentional |
 | `peek` | implemented | 7 | intentional |
@@ -129,7 +129,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `process-alive` | matched fields | name, argv0, basenames of path and argv0 | basename of comm and argv0 | intentional | different process data model |
 | `list-running` | aliases in output | Lists aliases only for non-empty prefix | Lists only the session label name | intentional | GCREX-18 claim identity; avoids phantom orphan beads |
 | `list-running` | what counts as running | Block exists with no LastExit | Live, pid label matches, not broken | intentional | No pid-label reincarnation case in Rex |
-| `list-running` | name filter | None | Drops empty, padded, control-char names | mistake | Bad name would corrupt gc's line parse |
+| `list-running` | name filter | Drops empty, padded, control-char names | Drops empty, padded, control-char names | intentional | GCREX-27 closed the mistake: a newline would split one session across two output lines and padding would leave a name gc cannot match, so both sides drop it before printing. |
 | `list-running` | stdout cap | None | Fails over 8 MiB | intentional | Cap is only for inventory op in baseline |
 | `list-running` | stopped/unreachable server | Rex transport error (`rex.ErrUnavailable`, CLI exit 4) returns empty, exit 0 | Parked city gives empty exit 0 | intentional | GCREX-41: no park concept, but an unreachable server answers the parked-city inventory |
 | `list-running` | scope source | Local binding store, probed per binding | City-label terminal list from core | intentional | City→session mapping; bindings record ownership |
@@ -235,11 +235,12 @@ handler, so they are no longer listed. GCREX-26 has since resolved the
 incarnation-hygiene mistake
 in `stop`/`set-meta` (every meta key and the activity entry are cleared with the
 incarnation) and the empty-key mistake in the meta ops, so those items are no
-longer listed either.
+longer listed either. GCREX-27 has since resolved the `list-running`
+readable-name mistake (a name that is empty, padded, or holds a control
+character is dropped before printing), so the table below is now empty.
 
 | # | Where | Mistake | Consequence in gc 1.5.1 | Sections |
 |---|---|---|---|---|
-| 1 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
 
 Two earlier candidates were withdrawn after the gc check: the missing SIGTERM
 handler in `start` (gc runs `stop <name>` after every failed or cancelled start,
@@ -279,12 +280,9 @@ in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
 
 ## Proposed follow-up work
 
-Not implemented in this task. Each item closes a set of the sections above; the
-numbering of the mistake table is what they refer to.
+Not implemented in this task. Each item closes a set of the sections above.
 
-1. **List output guard.** Skip names that are empty, padded or contain control
-   characters. Closes 1.
-2. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
+1. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
    transport failure (see "Operational risks"); probe `block.method clear` and
    `format` coverage.
 
@@ -531,7 +529,7 @@ GCREX-18 — `GC_BIN`/claim identity seeding that the `gc` hint depends on
 
 **Status** — implemented
 
-**Our implementation.** Dispatch is `ops["list-running"]` with 0 required args (`cmd/gc-runtime-rex/main.go:91`); `opListRunning` takes `args[0]` as the prefix, default `""`, and prints one name per line with `Fprintln` (`main.go:260-273`). `Provider.ListRunning` walks the provider's sidecar binding stores (`internal/provider/provider.go:919-...`), which are the canonical per-city state dir plus, for an unpinned caller, the discovered sibling namespaces (GCREX-35), not every Rex session on the server. A binding is skipped unless its name or an alias has the string prefix (`provider.go:506-509,551-562`). It is kept if `BlockProcess` finds the block with no `LastExit`; a missing block is dead and skipped, an unreachable server (`rex.ErrUnavailable`) returns the parked-city empty listing and exit 0, and any other error fails the whole op (`provider.go:652-665`, `liveness.go:105-115`). Names are matched with case-sensitive `strings.HasPrefix`. Aliases are listed only for a non-empty prefix (`provider.go:520-536`). The result is sorted and compacted (`provider.go:538`). Stdin is not read, the exit code is 0 or 1, and empty output is exit 0. There is no stdout cap and no name filtering. The 30 s deadline comes from gc.
+**Our implementation.** Dispatch is `ops["list-running"]` with 0 required args (`cmd/gc-runtime-rex/main.go:91`); `opListRunning` takes `args[0]` as the prefix, default `""`, and prints one name per line with `Fprintln` (`main.go:260-273`). `Provider.ListRunning` walks the provider's sidecar binding stores (`internal/provider/provider.go:919-...`), which are the canonical per-city state dir plus, for an unpinned caller, the discovered sibling namespaces (GCREX-35), not every Rex session on the server. A binding is skipped unless its name or an alias has the string prefix (`provider.go:506-509,551-562`). It is kept if `BlockProcess` finds the block with no `LastExit`; a missing block is dead and skipped, an unreachable server (`rex.ErrUnavailable`) returns the parked-city empty listing and exit 0, and any other error fails the whole op (`provider.go:652-665`, `liveness.go:105-115`). Names are matched with case-sensitive `strings.HasPrefix`. Aliases are listed only for a non-empty prefix (`provider.go:520-536`). The result is sorted and compacted (`provider.go:538`). Stdin is not read, the exit code is 0 or 1, and empty output is exit 0. There is no stdout cap; names that are empty, padded, or hold a control character are dropped before printing (`readableName`, `provider.go`; GCREX-27), matching herdr-core's `readable_name`. The 30 s deadline comes from gc.
 
 **herdr-core.** Dispatch is `spec(reads.op_list_running, cap=INVENTORY_STDOUT_CAP)` (`herdrcore/ops_table.py:76`). The handler reads `args[0]` as the prefix, default `""` (`herdrcore/reads.py:307-308`). It lists the city's non-finished terminals filtered by the city label (`reads.py:68-73,310`), so it is city-scoped. A name is kept if it starts with the prefix (case-sensitive `str.startswith`), its newest record `is_intact` (live, has a pid, not a broken reason, pid label matches; `records.py:53-62`), and `readable_name` holds (non-empty, untrimmed, no control character; `rpp/wire.py:194-196`). Names are grouped by session label, sorted, and written as `name\n` lines (`reads.py:314-321`). A stopped city (parked, nothing running) gives empty exit 0. Other core read failures exit 1 (`reads.py:311-313`). Output over 8 MiB (`rpp/ops.py:34`) is turned into a failure (`rpp/perop.py:158-159`).
 
@@ -541,12 +539,12 @@ GCREX-18 — `GC_BIN`/claim identity seeding that the `gc` hint depends on
 |---|---|---|---|---|---|
 | 1 | aliases in output | Non-empty prefix also lists matching aliases; empty prefix never does (`provider.go:520-536`) | Only the one gc session label per record; no aliases | intentional | GCREX-18 alias claim identity; empty-prefix exclusion avoids phantom orphan beads (comment `provider.go:520-523`). |
 | 2 | what counts as running | Block exists and `LastExit == nil` (`liveness.go:114`) | `is_intact`: live, pid label matches recorded pid, not broken (`records.py:53-62`) | intentional | Rex has no pid-label reincarnation case; a closed block is dead. Replaced-shell detection is unverified for Rex. |
-| 3 | name filter | None; any binding name is printed | `readable_name` drops empty, padded, or control-char names (`wire.py:194`) | mistake | A name with a newline or padding would corrupt gc's line parse. Names come from gc, so the risk is low, but the guard is missing. |
+| 3 | name filter | `readableName` drops empty, padded, or control-char names (`provider.go`; GCREX-27) | `readable_name` drops empty, padded, or control-char names (`wire.py:194`) | intentional | A newline would split one session across two lines and padding would leave a name gc cannot match; both sides now drop it before printing. |
 | 4 | stdout cap | None | Fails over 8 MiB (`perop.py:158`) | intentional | gc's `inventory` cap only applies to the `inventory` op (`ops.py:35`); `list-running` is not capped in the RPP v0 baseline. Not needed. Note that gc treats a `list-running` failure as an incomplete inventory, which blocks "stopped" confirmation in `gc stop` (`cmd/gc/cmd_stop.go:861-864`). |
 | 5 | stopped/unreachable server | A transport error (`rex.ErrUnavailable`, rex CLI exit 4) returns empty, exit 0; a missing target still skips (`provider.go:653-659`, `internal/rex/cli/cli.go:52`) | Parked city gives empty exit 0 (`reads.py:311-312`) | intentional | GCREX-41: Rex has no park concept, but its "no Rex server is running" exit 4 is the unreachable signal, so `list-running` answers the parked-city inventory and gc still enumerates the fleet instead of aborting on an incomplete inventory. |
 | 6 | scope source | Local binding store in city state dir, probed per binding; sessions not bound by this provider are invisible | Core's terminal list filtered by city label, server truth | intentional | Mapping is City→Rex session; bindings are the ownership record. Stale or unrecorded panes are not listed. |
 
-**Verdict.** intentional (with a mistake inside). Prefix semantics, case sensitivity, sorting, and one-name-per-line output match. The differences are alias listing and binding-store scope, which are deliberate. The missing readable-name guard (row 3) is the only gap.
+**Verdict.** intentional. Prefix semantics, case sensitivity, sorting, name filtering, and one-name-per-line output match. The differences are alias listing and binding-store scope, which are deliberate. GCREX-27 closed the readable-name guard (row 3), so no gap remains in the printed output.
 
 **Cross-references.**
 GCREX-18 — alias/claim identity that drives alias listing and the empty-prefix exception
@@ -554,10 +552,10 @@ GCREX-35 — the binding store set an unpinned caller reads
 GCREX-2 — start/stop/is-running; shared `paneAlive` liveness
 GCREX-4 — identity/metadata; binding store
 GCREX-41 — return the parked-city empty listing when Rex is unreachable
+GCREX-27 — drop names that are empty, padded, or hold a control character before printing
 `docs/REX-CONTRACT.md` §9 — list-running row
 
 **Follow-ups.**
-- Skip (or reject) names that are empty, padded, or contain control characters before printing (mistake).
 - Document that unbound Rex panes are never listed (gap).
 
 
