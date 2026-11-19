@@ -679,15 +679,26 @@ func lastLines(s string, n int) string {
 	return out
 }
 
-// ClearScrollback clears the agent's pane scrollback. It is best effort: an
-// agent with no pane, or a pane that vanished, is not an error.
+// ClearScrollback clears the agent's pane scrollback. A missing pane, or one
+// whose program has exited, is gone (an RPP input outcome) rather than a
+// silent success, so a caller can tell a cleared scrollback from a vanished
+// pane (GCREX-57). A mid-call ErrNotFound is also gone: the pane vanished
+// before Rex could clear it. An unreachable server is unavailable; any other
+// pre-send failure is not_sent.
 func (p *Provider) ClearScrollback(ctx context.Context, name string) error {
-	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
-	if err != nil || !ok {
-		return err
+	binding, err := p.livePane(ctx, name)
+	if err != nil {
+		return paneLookupOutcome(err)
 	}
-	if err := p.client.BlockClear(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return err
+	if err := p.client.BlockClear(ctx, binding.SessionID, binding.BlockID); err != nil {
+		switch {
+		case errors.Is(err, rex.ErrNotFound):
+			return &InputOutcomeError{Outcome: "gone", Detail: fmt.Sprintf("clear-scrollback %s: %v", name, err), Err: err}
+		case errors.Is(err, rex.ErrUnavailable):
+			return &InputOutcomeError{Outcome: "unavailable", Detail: fmt.Sprintf("clear-scrollback %s: %v", name, err), Err: err}
+		default:
+			return fmt.Errorf("clear-scrollback %s: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -791,7 +802,7 @@ func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) er
 func (p *Provider) Interrupt(ctx context.Context, name string) error {
 	binding, err := p.livePane(ctx, name)
 	if err != nil {
-		return interruptLookupOutcome(err)
+		return paneLookupOutcome(err)
 	}
 	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, interruptKey); err != nil {
 		err = fmt.Errorf("interrupt %s: %w", name, err)
@@ -806,10 +817,10 @@ func (p *Provider) Interrupt(ctx context.Context, name string) error {
 	return nil
 }
 
-// interruptLookupOutcome classifies a failure before the interrupt key is sent.
+// paneLookupOutcome classifies a livePane failure before any input is sent.
 // A missing or dead pane is gone, an unreachable server is unavailable, and
 // every other pre-send failure is not_sent.
-func interruptLookupOutcome(err error) error {
+func paneLookupOutcome(err error) error {
 	switch {
 	case errors.Is(err, ErrSessionNotFound):
 		return &InputOutcomeError{Outcome: "gone", Detail: err.Error(), Err: err}

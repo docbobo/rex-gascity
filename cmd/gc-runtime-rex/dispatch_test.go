@@ -419,7 +419,6 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 		{"hello\n", []string{"nudge", "ghost"}},
 		{"", []string{"send-keys", "ghost", "C-c", "Enter"}},
 		{"", []string{"send-keys", "ghost"}},
-		{"", []string{"clear-scrollback", "ghost"}},
 	} {
 		r := h.run(c.stdin, c.args...)
 		if r.code != exitOK || r.stdout != "" {
@@ -428,6 +427,74 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 	}
 	if len(fake.SentKeys) != 0 {
 		t.Errorf("keys sent to a missing session: %+v", fake.SentKeys)
+	}
+}
+
+// TestClearScrollbackReturnsGoneForMissingOrDeadSession pins the RPP failure
+// case for a vanished pane: exit 80 with one JSON outcome line naming it gone,
+// and no clear call (GCREX-57).
+func TestClearScrollbackReturnsGoneForMissingOrDeadSession(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		start bool
+		dead  bool
+	}{
+		{"missing pane", false, false},
+		{"dead pane", true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, fake := newHarness(t)
+			if c.start {
+				h.start(dog)
+			}
+			if c.dead {
+				fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+					"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+				}
+			}
+			r := h.run("", "clear-scrollback", dog)
+			if r.code != exitInputOutcome {
+				t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+			}
+			var line struct {
+				Outcome string `json:"outcome"`
+				Detail  string `json:"detail"`
+			}
+			if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+				t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+			}
+			if line.Outcome != "gone" {
+				t.Errorf("outcome = %q, want gone", line.Outcome)
+			}
+			if !strings.Contains(r.stderr, "gone") {
+				t.Errorf("stderr = %q, want the gone word", r.stderr)
+			}
+			for _, call := range fake.BlockCalls {
+				if call.Op == "clear" {
+					t.Errorf("cleared %s, want no mutation for a gone pane", call.BlockID)
+				}
+			}
+		})
+	}
+}
+
+// TestClearScrollbackDeliveredExitsZero keeps the live-pane path at exit 0 with
+// empty stdout and stderr, matching the RPP success envelope.
+func TestClearScrollbackDeliveredExitsZero(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	r := h.run("", "clear-scrollback", dog)
+	if r.code != exitOK || r.stdout != "" || r.stderr != "" {
+		t.Errorf("clear-scrollback: exit %d stdout %q stderr %q, want 0 and empty", r.code, r.stdout, r.stderr)
+	}
+	cleared := false
+	for _, call := range fake.BlockCalls {
+		if call.Op == "clear" && call.BlockID == "block:dog-1" {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("BlockClear not called for a live pane")
 	}
 }
 

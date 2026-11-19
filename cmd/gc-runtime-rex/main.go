@@ -342,8 +342,11 @@ func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.R
 	return bestEffort(p.SendKeys(ctx, args[0], keys...))
 }
 
+// opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a
+// missing or dead pane is an *provider.InputOutcomeError answered as exit 80
+// `gone`, not swallowed as a silent success.
 func opClearScrollback(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
-	return bestEffort(p.ClearScrollback(ctx, args[0]))
+	return p.ClearScrollback(ctx, args[0])
 }
 
 func opProcessAlive(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {

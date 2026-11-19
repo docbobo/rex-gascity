@@ -107,9 +107,6 @@ func TestListRunningUnreachableRexEmptyStoreUnchanged(t *testing.T) {
 func TestClearScrollback(t *testing.T) {
 	ctx := context.Background()
 	fake, p := teardownStarted(t, teardownDog)
-	if err := p.ClearScrollback(ctx, "nobody"); err != nil {
-		t.Errorf("missing: %v", err)
-	}
 	if err := p.ClearScrollback(ctx, teardownDog); err != nil {
 		t.Fatalf("ClearScrollback: %v", err)
 	}
@@ -121,6 +118,36 @@ func TestClearScrollback(t *testing.T) {
 	}
 	if !found {
 		t.Error("BlockClear not called")
+	}
+}
+
+// TestClearScrollbackMissingOrDeadIsGone pins the RPP input outcome for a
+// vanished pane: a missing binding or an exited program is `gone`, not a
+// silent success, and nothing is cleared (GCREX-57).
+func TestClearScrollbackMissingOrDeadIsGone(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		dead bool
+	}{
+		{"nobody", false},
+		{teardownDog, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake, p := teardownStarted(t, teardownDog)
+			if c.dead {
+				teardownExit(fake, "block:dog-1")
+			}
+			err := p.ClearScrollback(context.Background(), c.name)
+			var outcome *provider.InputOutcomeError
+			if !errors.As(err, &outcome) || outcome.Outcome != "gone" {
+				t.Fatalf("error = %v, want an InputOutcomeError with outcome gone", err)
+			}
+			for _, call := range fake.BlockCalls {
+				if call.Op == "clear" {
+					t.Errorf("cleared %s, want no mutation for a gone pane", call.BlockID)
+				}
+			}
+		})
 	}
 }
 
