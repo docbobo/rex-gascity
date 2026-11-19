@@ -264,6 +264,96 @@ func TestSendKeysExitedPaneFails(t *testing.T) {
 	}
 }
 
+// TestSendKeysMissingPaneIsGone pins the typed outcome for a name no pane
+// answers to: the RPP word is gone, not a generic failure.
+func TestSendKeysMissingPaneIsGone(t *testing.T) {
+	p := provider.New("acme", faketest.New())
+
+	err := p.SendKeys(context.Background(), "Indigo--ghost", "Enter")
+	got := outcomeOf(t, err)
+	if got.Outcome != "gone" {
+		t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+	}
+	if !errors.Is(err, provider.ErrSessionNotFound) {
+		t.Errorf("err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+// TestSendKeysDeadPaneIsGone covers a pane whose program exited: same gone
+// outcome as a missing pane.
+func TestSendKeysDeadPaneIsGone(t *testing.T) {
+	fake, p := started(t)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+	}
+
+	err := p.SendKeys(context.Background(), "Indigo--dog-1", "Enter")
+	if got := outcomeOf(t, err); got.Outcome != "gone" {
+		t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+	}
+	if len(fake.SentKeys) != 0 {
+		t.Errorf("send-keys calls = %v, want none", fake.SentKeys)
+	}
+}
+
+// TestSendKeysUnreachableIsUnavailable models a down Rex server during the
+// pane lookup: the send was never sent, and the word is unavailable.
+func TestSendKeysUnreachableIsUnavailable(t *testing.T) {
+	fake := faketest.New()
+	fake.ListSessionsErr = rex.ErrUnavailable
+	p := provider.New("acme", fake)
+
+	err := p.SendKeys(context.Background(), "Indigo--ghost", "Enter")
+	if got := outcomeOf(t, err); got.Outcome != "unavailable" {
+		t.Errorf("outcome = %q, want unavailable (detail %q)", got.Outcome, got.Detail)
+	}
+	if !errors.Is(err, rex.ErrUnavailable) {
+		t.Errorf("err = %v, want rex.ErrUnavailable", err)
+	}
+}
+
+// TestSendKeysPreSendFailureIsNotSent covers a lookup that fails for a reason
+// other than an unreachable server before any key is sent.
+func TestSendKeysPreSendFailureIsNotSent(t *testing.T) {
+	fake := faketest.New()
+	fake.ListSessionsErr = errors.New("rex: protocol error")
+	p := provider.New("acme", fake)
+
+	err := p.SendKeys(context.Background(), "Indigo--ghost", "Enter")
+	if got := outcomeOf(t, err); got.Outcome != "not_sent" {
+		t.Errorf("outcome = %q, want not_sent (detail %q)", got.Outcome, got.Detail)
+	}
+}
+
+// TestSendKeysSendUnavailableIsUnavailable covers a server that is reachable
+// for the lookup but gone before the send: no key reached the pane.
+func TestSendKeysSendUnavailableIsUnavailable(t *testing.T) {
+	fake, p := started(t)
+	fake.SendKeysErr = rex.ErrUnavailable
+
+	err := p.SendKeys(context.Background(), "Indigo--dog-1", "Enter")
+	if got := outcomeOf(t, err); got.Outcome != "unavailable" {
+		t.Errorf("outcome = %q, want unavailable (detail %q)", got.Outcome, got.Detail)
+	}
+}
+
+// TestSendKeysSendFailureStaysUnknown keeps a post-write failure an exit-1
+// error: the key may already have reached the program, so no typed word claims
+// it was not sent.
+func TestSendKeysSendFailureStaysUnknown(t *testing.T) {
+	fake, p := started(t)
+	fake.SendKeysErr = errors.New("rex: connection reset")
+
+	err := p.SendKeys(context.Background(), "Indigo--dog-1", "Enter")
+	if err == nil {
+		t.Fatal("SendKeys = nil, want an unknown-outcome error")
+	}
+	var outcome *provider.InputOutcomeError
+	if errors.As(err, &outcome) {
+		t.Errorf("err = %v, want no InputOutcomeError", err)
+	}
+}
+
 func TestInterruptSendsCtrlC(t *testing.T) {
 	fake, p := started(t)
 

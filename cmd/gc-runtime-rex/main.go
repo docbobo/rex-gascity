@@ -449,8 +449,17 @@ func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.R
 	if len(keys) == 0 {
 		return nil
 	}
-	return bestEffort(p.SendKeys(ctx, args[0], keys...))
+	err := p.SendKeys(ctx, args[0], keys...)
+	if inputOutcomeDeclared() {
+		return err
+	}
+	return bestEffort(err)
 }
+
+// inputOutcomeDeclared reports whether the caller's handshake declares
+// input-outcome. gc 1.5.1 does not, so send-keys keeps the best-effort
+// wrapper; GCREX-70 declares the capability and removes this seam.
+var inputOutcomeDeclared = func() bool { return false }
 
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a
 // missing or dead pane is an *provider.InputOutcomeError answered as exit 80

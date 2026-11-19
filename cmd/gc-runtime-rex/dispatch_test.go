@@ -430,6 +430,34 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 	}
 }
 
+// TestSendKeysOutcomeDeclaredGoneExits80 pins AC-2: once the caller declares
+// input-outcome, send-keys answers a missing pane with exit 80 and one
+// {"outcome":"gone",...} stdout line instead of the baseline best-effort exit 0.
+func TestSendKeysOutcomeDeclaredGoneExits80(t *testing.T) {
+	restore := inputOutcomeDeclared
+	inputOutcomeDeclared = func() bool { return true }
+	t.Cleanup(func() { inputOutcomeDeclared = restore })
+
+	h, _ := newHarness(t)
+	r := h.run("", "send-keys", "ghost", "C-c", "Enter")
+	if r.code != exitInputOutcome {
+		t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+	}
+	var line struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+		t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+	}
+	if line.Outcome != "gone" {
+		t.Errorf("outcome = %q, want gone", line.Outcome)
+	}
+	if !strings.Contains(r.stderr, "gone") {
+		t.Errorf("stderr = %q, want the gone word", r.stderr)
+	}
+}
+
 // TestClearScrollbackReturnsGoneForMissingOrDeadSession pins the RPP failure
 // case for a vanished pane: exit 80 with one JSON outcome line naming it gone,
 // and no clear call (GCREX-57).

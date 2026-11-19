@@ -908,10 +908,17 @@ func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) er
 	}
 	binding, err := p.livePane(ctx, name)
 	if err != nil {
-		return err
+		return paneLookupOutcome(err)
 	}
 	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, rexKeys...); err != nil {
-		return fmt.Errorf("send-keys %s: %w", name, err)
+		err = fmt.Errorf("send-keys %s: %w", name, err)
+		// A send that could not reach the server never pressed the key. Any
+		// other send failure may have written the request, so it stays an
+		// unknown-outcome error (exit 1) rather than claiming not_sent.
+		if errors.Is(err, rex.ErrUnavailable) {
+			return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
+		}
+		return err
 	}
 	// Keys pressed into the pane are input even when the screen does not
 	// change, so record the floor for idle detection.

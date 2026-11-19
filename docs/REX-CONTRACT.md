@@ -223,8 +223,12 @@ Beyond the three spec codes there is herdr-core's **extended input-outcome code
 `80`**: the op prints one `{"outcome":"<word>","detail":"…"}` line on stdout
 and `<word>[: detail]` on stderr, with `<word>` in `not_sent`, `rejected`,
 `unavailable`, `gone`, `busy` or `pending_interaction`. Our provider answers
-`send-keys` whose key has no Rex spelling with exit `80` `rejected` (GCREX-43);
-`interrupt` with `80` `gone` for a missing or dead pane, `unavailable` when the
+`send-keys` whose key has no Rex spelling with exit `80` `rejected` (GCREX-43),
+classifies a missing or dead pane as `80` `gone` and an unreachable server or
+another pre-send failure as `80` `unavailable`/`not_sent` (GCREX-42), but keeps
+the best-effort wrapper while the handshake omits `input-outcome`, so a gone box
+still exits `0` at the pinned baseline (GCREX-70 drops the wrapper); `interrupt`
+with `80` `gone` for a missing or dead pane, `unavailable` when the
 Rex server is unreachable, and `not_sent` for another pre-send failure
 (GCREX-44); and `nudge` with `80` `rejected` for non-UTF-8 stdin,
 `pending_interaction` for a blocked pane, `busy` for a working pane,
@@ -251,7 +255,8 @@ stay inert at the pinned baseline: gc already read the previous `busy`,
 `blocked` and send failures as exit `1` and the unconfirmed delivery as exit
 `0`, so the typed word and the added `delivered_unobserved` line change nothing
 gc acts on; a nudge to a missing or dead pane is still a best-effort exit `0`
-(`gc docs/reference/exec-session-provider.md:370`).
+(`gc docs/reference/exec-session-provider.md:370`), and so is a `send-keys` to a
+gone box under the pinned baseline (GCREX-42).
 
 Operations — the spec's 17 rows:
 
