@@ -550,6 +550,26 @@ func TestStartBadConfigFails(t *testing.T) {
 	assertFailure(t, h.run(`{not json`, "start", dog), exitFail)
 }
 
+// TestStartEmptyStdinFails covers the document's start failure case: an empty
+// or whitespace-only body is an invalid start config, not a request to launch
+// a default shell.
+func TestStartEmptyStdinFails(t *testing.T) {
+	for _, body := range []string{"", "  \n\t "} {
+		t.Run(fmt.Sprintf("%q", body), func(t *testing.T) {
+			h, fake := newHarness(t)
+			r := h.run(body, "start", dog)
+			assertFailure(t, r, exitFail)
+			if !strings.Contains(r.stderr, "start config") {
+				t.Errorf("stderr = %q, want a start config message", r.stderr)
+			}
+			if len(fake.CreatedWindows)+len(fake.CreatedSplits) != 0 {
+				t.Errorf("launched a pane for an empty start config: windows=%d splits=%d",
+					len(fake.CreatedWindows), len(fake.CreatedSplits))
+			}
+		})
+	}
+}
+
 // failWriter fails every write.
 type failWriter struct{}
 

@@ -234,10 +234,11 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		return fmt.Errorf("read config: %w", err)
 	}
 	var cfg startConfig
-	if len(bytes.TrimSpace(raw)) > 0 {
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return fmt.Errorf("parse config: %w", err)
-		}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return errors.New("parse start config: empty stdin")
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("parse config: %w", err)
 	}
 	err = p.StartNew(ctx, name, provider.Config{
 		Argv:            launch.CommandArgv(cfg.Command),
