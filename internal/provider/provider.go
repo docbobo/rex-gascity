@@ -705,18 +705,19 @@ func prefixMatches(b Binding, prefix string) bool {
 
 // SendKeys presses keys in the agent's pane without submitting. gc passes
 // tmux-style names ("C-c", "Enter"); they are translated to Rex's syntax.
-// No keys is a no-op.
+// No keys is a no-op. Every key is validated before the pane lookup, so a key
+// with no Rex spelling rejects the call without touching Rex (KeyRejectedError).
 func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	binding, err := p.livePane(ctx, name)
+	rexKeys, err := translateKeys(keys)
 	if err != nil {
 		return err
 	}
-	rexKeys := make([]string, len(keys))
-	for i, key := range keys {
-		rexKeys[i] = rexKey(key)
+	binding, err := p.livePane(ctx, name)
+	if err != nil {
+		return err
 	}
 	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, rexKeys...); err != nil {
 		return fmt.Errorf("send-keys %s: %w", name, err)

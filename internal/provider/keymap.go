@@ -1,96 +1,202 @@
 package provider
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+)
 
-// rexKey translates a gc/tmux key name into Rex's key-binding syntax. gc
-// passes tmux names such as "C-c", "Enter" and "Up"; Rex expects "ctrl+c",
-// "enter" and "up". A name that is already Rex syntax, or a bare character,
-// passes through unchanged so Rex reports an unknown key honestly.
-func rexKey(key string) string {
-	if key == "" {
-		return ""
-	}
-	mods, base := splitMods(key)
-	base = rexBaseKey(base)
-	if len(mods) == 0 {
-		return base
-	}
-	return strings.Join(mods, "+") + "+" + base
+// ErrKeyRejected is the sentinel wrapped by KeyRejectedError. Callers classify
+// a key with no Rex spelling with errors.Is.
+var ErrKeyRejected = errors.New("rex: key rejected")
+
+// KeyRejectedError reports a key the grammar cannot spell. herdr-core rejects
+// the whole send-keys call as `rejected` (exit 80) before any lookup, and the
+// dispatcher maps this error to that outcome.
+type KeyRejectedError struct {
+	Key string
 }
 
-// splitMods peels tmux's modifier prefixes (C-, M-, S-) off key and returns
-// them in Rex's canonical order (shift, ctrl, alt). Rex accepts any order, but
-// emitting one canonical form keeps tests and logs stable.
-func splitMods(key string) (mods []string, base string) {
-	seen := map[string]bool{}
+func (e *KeyRejectedError) Error() string {
+	return fmt.Sprintf("key %q has no Rex spelling", e.Key)
+}
+
+func (e *KeyRejectedError) Unwrap() error { return ErrKeyRejected }
+
+// tmuxKeys is the exact-case tmux key table herdr-core matches first
+// (TMUX_KEYS), mapped onto Rex's key names. Matched case-sensitively:
+// docs/provider-herdr-method-io.md §send-keys Key grammar step 1.
+var tmuxKeys = map[string]string{
+	"Enter":    "enter",
+	"Escape":   "esc",
+	"Esc":      "esc",
+	"Tab":      "tab",
+	"BTab":     "shift+tab",
+	"BSpace":   "backspace",
+	"Space":    "space",
+	"Up":       "up",
+	"Down":     "down",
+	"Left":     "left",
+	"Right":    "right",
+	"Home":     "home",
+	"End":      "end",
+	"PageUp":   "page_up",
+	"PgUp":     "page_up",
+	"PPage":    "page_up",
+	"PageDown": "page_down",
+	"PgDn":     "page_down",
+	"NPage":    "page_down",
+	"IC":       "insert",
+	"Insert":   "insert",
+	"DC":       "delete",
+	"Delete":   "delete",
+}
+
+// hcPunctuation is the punctuation herdr-core accepts as literal text (and as
+// a modifiable single-character base), besides letters, digits and space.
+const hcPunctuation = "`\\[],=-.';/"
+
+// translateKeys maps gc/tmux key arguments to Rex key names, mirroring
+// herdr-core's grammar (docs/provider-herdr-method-io.md §send-keys Key
+// grammar). Every key is translated before any Rex call; the first key with no
+// Rex spelling rejects the whole call, so a bad key never reaches Rex.
+func translateKeys(keys []string) ([]string, error) {
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		expanded, ok := translateKey(key)
+		if !ok {
+			return nil, &KeyRejectedError{Key: key}
+		}
+		out = append(out, expanded...)
+	}
+	return out, nil
+}
+
+// translateKey spells one key as one or more Rex keys. A table name maps to one
+// key; a C-/M-/S- modified table name or single character maps to one modified
+// key; any other string is literal text typed character by character. ok is
+// false when the key has no Rex spelling.
+func translateKey(key string) ([]string, bool) {
+	if key == "" {
+		return nil, false
+	}
+	if rex, ok := namedKey(key); ok {
+		return []string{rex}, true
+	}
+	mods, base := peelMods(key)
+	if len(mods) > 0 {
+		if rex, ok := namedKey(base); ok {
+			return []string{joinMods(mods) + rex}, true
+		}
+		if r, ok := singleLiteralChar(base); ok {
+			return []string{joinMods(mods) + string(r)}, true
+		}
+		return nil, false
+	}
+	return literalKeys(key)
+}
+
+// namedKey resolves an exact-case table name, including the F1–F12 function
+// keys, to a Rex key name.
+func namedKey(key string) (string, bool) {
+	if rex, ok := tmuxKeys[key]; ok {
+		return rex, true
+	}
+	if n, ok := functionKeyNumber(key); ok {
+		return "f" + strconv.Itoa(n), true
+	}
+	return "", false
+}
+
+// functionKeyNumber reports whether key is an exact-case F1–F12 name and
+// returns its number. herdr-core's table stops at F12; a higher number is
+// literal text.
+func functionKeyNumber(key string) (int, bool) {
+	if len(key) < 2 || key[0] != 'F' {
+		return 0, false
+	}
+	n := 0
+	for i := 1; i < len(key); i++ {
+		c := key[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n < 1 || n > 12 {
+		return 0, false
+	}
+	return n, true
+}
+
+// peelMods strips tmux's C-/M-/S- prefixes, in typed order, while more than one
+// character remains. The length rule is what makes "C-" literal text rather
+// than a modifier with an empty base (herdr-core: while len(rest) > 2).
+func peelMods(key string) (mods []string, base string) {
 	rest := key
-loop:
-	for {
+	for len(rest) > 2 {
 		switch {
 		case strings.HasPrefix(rest, "C-"):
-			seen["ctrl"] = true
-			rest = rest[2:]
+			mods = append(mods, "ctrl")
 		case strings.HasPrefix(rest, "M-"):
-			seen["alt"] = true
-			rest = rest[2:]
+			mods = append(mods, "alt")
 		case strings.HasPrefix(rest, "S-"):
-			seen["shift"] = true
-			rest = rest[2:]
+			mods = append(mods, "shift")
 		default:
-			break loop
+			return mods, rest
 		}
-	}
-	for _, m := range []string{"shift", "ctrl", "alt"} {
-		if seen[m] {
-			mods = append(mods, m)
-		}
+		rest = rest[2:]
 	}
 	return mods, rest
 }
 
-// rexBaseKey maps tmux's named keys onto Rex's names. Named keys are matched
-// case-insensitively; anything else (a single character, an already-Rex name,
-// or an unknown name) is returned as is.
-func rexBaseKey(key string) string {
-	if key == "" {
-		return key
-	}
-	lower := strings.ToLower(key)
-	switch lower {
-	case "enter", "return":
-		return "enter"
-	case "escape", "esc":
-		return "esc"
-	case "bspace", "backspace":
-		return "backspace"
-	case "delete", "dc":
-		return "delete"
-	case "insert", "ic":
-		return "insert"
-	case "pageup", "pgup":
-		return "page_up"
-	case "pagedown", "pgdn":
-		return "page_down"
-	case "tab", "space", "home", "end", "up", "down", "left", "right":
-		return lower
-	}
-	if isFunctionKey(lower) {
-		return lower
-	}
-	return key
+// joinMods renders modifier names in typed order as a Rex prefix.
+func joinMods(mods []string) string {
+	return strings.Join(mods, "+") + "+"
 }
 
-// isFunctionKey reports whether k names a function key, f1 through f24.
-func isFunctionKey(k string) bool {
-	if len(k) < 2 || k[0] != 'f' {
-		return false
+// singleLiteralChar accepts a one-character modifier base, lower-cased the way
+// herdr-core lower-cases it. Space is not a legal modifier base (use Space).
+func singleLiteralChar(base string) (rune, bool) {
+	r := []rune(base)
+	if len(r) != 1 {
+		return 0, false
 	}
-	n := 0
-	for _, r := range k[1:] {
-		if r < '0' || r > '9' {
-			return false
+	lower := r[0]
+	if lower >= 'A' && lower <= 'Z' {
+		lower += 'a' - 'A'
+	}
+	if isLiteralRune(lower) {
+		return lower, true
+	}
+	return 0, false
+}
+
+// literalKeys types a key as literal text, one Rex key per character.
+func literalKeys(key string) ([]string, bool) {
+	out := make([]string, 0, len(key))
+	for _, r := range key {
+		switch {
+		case r == ' ':
+			out = append(out, "space")
+		case r >= 'A' && r <= 'Z':
+			out = append(out, "shift+"+string(r+'a'-'A'))
+		case isLiteralRune(r):
+			out = append(out, string(r))
+		default:
+			return nil, false
 		}
-		n = n*10 + int(r-'0')
 	}
-	return n >= 1 && n <= 24
+	return out, true
+}
+
+// isLiteralRune reports whether r is a character herdr-core accepts as literal
+// text: a lower-case letter, a digit, or hcPunctuation. Upper-case letters are
+// handled as shift+<lower>; space is handled separately.
+func isLiteralRune(r rune) bool {
+	if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+		return true
+	}
+	return strings.ContainsRune(hcPunctuation, r)
 }

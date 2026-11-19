@@ -388,6 +388,27 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 	}
 }
 
+func TestSendKeysRejectsBadKeyWithOutcome(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	before := len(fake.BlockCalls)
+
+	r := h.run("", "send-keys", dog, "!")
+	if r.code != exitInputOutcome {
+		t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+	}
+	if !strings.Contains(r.stdout, `"outcome":"rejected"`) {
+		t.Errorf("stdout = %q, want a rejected outcome line", r.stdout)
+	}
+	if !strings.Contains(r.stderr, "rejected") {
+		t.Errorf("stderr = %q, want the rejected word", r.stderr)
+	}
+	// A rejected key is caught before the lookup, so no Rex call follows.
+	if len(fake.BlockCalls) != before {
+		t.Errorf("Rex calls after rejection = %d, want %d (no lookup)", len(fake.BlockCalls), before)
+	}
+}
+
 func TestInputOpsReachPane(t *testing.T) {
 	h, fake := newHarness(t)
 	h.start(dog)

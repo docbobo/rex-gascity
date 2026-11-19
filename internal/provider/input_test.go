@@ -203,6 +203,38 @@ func TestSendKeysTranslatesKeyNames(t *testing.T) {
 	}
 }
 
+func TestSendKeysRejectsBadKeyBeforeLookup(t *testing.T) {
+	fake, p := started(t)
+
+	err := p.SendKeys(context.Background(), "Indigo--dog-1", "!")
+	if !errors.Is(err, provider.ErrKeyRejected) {
+		t.Fatalf("SendKeys error = %v, want ErrKeyRejected", err)
+	}
+	// The rejection precedes the pane lookup and any Rex call.
+	if len(fake.BlockCalls) != 0 {
+		t.Errorf("block ops = %v, want none for a rejected key", ops(fake))
+	}
+	if len(fake.SentKeys) != 0 {
+		t.Errorf("keys sent = %v, want none", fake.SentKeys)
+	}
+}
+
+func TestSendKeysSplitsLiteralText(t *testing.T) {
+	fake, p := started(t)
+
+	if err := p.SendKeys(context.Background(), "Indigo--dog-1", "ok go"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	if len(fake.SentKeys) != 1 {
+		t.Fatalf("send-keys calls = %d, want 1", len(fake.SentKeys))
+	}
+	got := fake.SentKeys[0].Keys
+	want := []string{"o", "k", "space", "g", "o"}
+	if !slices.Equal(got, want) {
+		t.Errorf("keys = %v, want %v", got, want)
+	}
+}
+
 func TestSendKeysEmptyIsANoOp(t *testing.T) {
 	fake, p := started(t)
 

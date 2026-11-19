@@ -219,6 +219,15 @@ Exit codes — the spec has exactly three:
 | `1` | failure; stderr carries the message |
 | `2` | unknown operation, treated as **success** (forward compatibility) by gc's `run` helper. Not universal: `start` and `provision` treat it as a failure (those two may never be unknown), `attach` runs through `runWithTTY` and so surfaces exit 2 as a failure, and `exec` reads it as "unsupported" before falling back to the driving ops. A provider must therefore never answer `attach` with exit 2. |
 
+Beyond the three spec codes there is herdr-core's **extended input-outcome code
+`80`**: the op prints one `{"outcome":"<word>","detail":"…"}` line on stdout
+and `<word>[: detail]` on stderr, with `<word>` in `not_sent`, `rejected`,
+`unavailable` or `gone`. Our provider answers `send-keys` whose key has no Rex
+spelling with exit `80` `rejected` (GCREX-43); the key grammar and the exit-80
+word follow `docs/provider-herdr-method-io.md` §send-keys. gc 1.5.1 does not
+declare `input-outcome` and reads exit `80` as a plain error, so this code is
+inert at the pinned baseline.
+
 Operations — the spec's 17 rows:
 
 | Operation | Invocation | Stdin | Stdout |

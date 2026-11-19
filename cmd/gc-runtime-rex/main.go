@@ -32,6 +32,10 @@ const (
 	exitOK      = 0
 	exitFail    = 1
 	exitUnknown = 2
+	// exitInputOutcome is RPP's typed input-outcome code (herdr-core's exit
+	// 80): the op prints one {"outcome":...,"detail":...} line on stdout.
+	// gc 1.5.1 has no input-outcome capability and reads it as a plain error.
+	exitInputOutcome = 80
 )
 
 // handshake is the protocol op's reply. It declares only what is implemented:
@@ -170,6 +174,10 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 
 	var out bytes.Buffer
 	if err := spec.handle(ctx, prov, rest, stdin, &out); err != nil {
+		var rejected *provider.KeyRejectedError
+		if errors.As(err, &rejected) {
+			return writeInputOutcome(stdout, stderr, "rejected", rejected.Error())
+		}
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, err)
 		return exitFail
 	}
@@ -178,6 +186,28 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		return exitFail
 	}
 	return exitOK
+}
+
+// writeInputOutcome answers an RPP input-outcome: one
+// {"outcome":...,"detail":...} line on stdout and "<outcome>: <detail>" on
+// stderr, with exit 80. gc 1.5.1 reads exit 80 as a plain error, but a caller
+// that declares input-outcome reads the word.
+func writeInputOutcome(stdout, stderr io.Writer, outcome, detail string) int {
+	line, err := json.Marshal(struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+	}{outcome, detail})
+	if err != nil {
+		fmt.Fprintf(stderr, "gc-runtime-rex: encode %s outcome: %v\n", outcome, err)
+		return exitFail
+	}
+	fmt.Fprintln(stdout, string(line))
+	if detail != "" {
+		fmt.Fprintf(stderr, "%s: %s\n", outcome, detail)
+	} else {
+		fmt.Fprintln(stderr, outcome)
+	}
+	return exitInputOutcome
 }
 
 // bestEffort maps a missing session to success: input to an agent that is
