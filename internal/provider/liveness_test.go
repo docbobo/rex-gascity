@@ -27,6 +27,14 @@ func TestProcessAlive(t *testing.T) {
 		{"foreground matches by argv0 basename", rex.ProcessInfo{Foreground: &agent}, []string{"claude"}, LivenessAlive},
 		{"foreground matches by name", rex.ProcessInfo{Foreground: &agent}, []string{"node"}, LivenessAlive},
 		{"ancestor matches", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{agent}}, []string{"claude"}, LivenessAlive},
+		// Rex reports the script an interpreter runs, so node /path/to/claude
+		// matches the agent name that gc configures.
+		{"foreground matches an interpreter script", rex.ProcessInfo{Foreground: &rex.Process{Name: "node", Path: "/usr/bin/node", Script: "/path/to/claude"}}, []string{"claude"}, LivenessAlive},
+		{"ancestor matches an interpreter script", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{{Name: "bun", Script: "/opt/bin/claude"}}}, []string{"claude"}, LivenessAlive},
+		// The pack matches a script argument with or without its extension.
+		{"script matches without its extension", rex.ProcessInfo{Foreground: &rex.Process{Name: "deno", Script: "/work/agent.js"}}, []string{"agent"}, LivenessAlive},
+		{"script matches with its extension", rex.ProcessInfo{Foreground: &rex.Process{Name: "npx", Script: "/work/agent.js"}}, []string{"agent.js"}, LivenessAlive},
+		{"readable script with no match is dead", rex.ProcessInfo{Foreground: &rex.Process{Name: "node", Script: "/path/to/other"}}, []string{"claude"}, LivenessDead},
 		// A fully readable table with no match is a definite dead.
 		{"shell only, agent missing", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{*shell}}, []string{"claude"}, LivenessDead},
 		// An empty table (the launcher is not at the agent yet) cannot be

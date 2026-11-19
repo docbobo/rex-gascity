@@ -109,11 +109,14 @@ func processAlive(info rex.ProcessInfo, names []string) Liveness {
 // processOpaque reports whether a process carries no readable identity, so it
 // can neither match a name nor be ruled out as the agent.
 func processOpaque(p rex.Process) bool {
-	return p.Name == "" && p.Path == "" && p.Argv0 == ""
+	return p.Name == "" && p.Path == "" && p.Argv0 == "" && p.Script == ""
 }
 
-// processMatches reports whether p is one of names, by name, argv0, or the
-// basename of its path or argv0. Empty names never match.
+// processMatches reports whether p is one of names, by name, argv0, the
+// basename of its path or argv0, or the script an interpreter runs. Rex only
+// reports a script for interpreters such as node, bun, npx and deno; the pack
+// matches that argument with and without its extension. Empty names never
+// match.
 func processMatches(p rex.Process, names []string) bool {
 	candidates := []string{p.Name, p.Argv0}
 	if p.Path != "" {
@@ -121,6 +124,13 @@ func processMatches(p rex.Process, names []string) bool {
 	}
 	if p.Argv0 != "" {
 		candidates = append(candidates, filepath.Base(p.Argv0))
+	}
+	if p.Script != "" {
+		base := filepath.Base(p.Script)
+		candidates = append(candidates, base)
+		if ext := filepath.Ext(base); ext != "" {
+			candidates = append(candidates, strings.TrimSuffix(base, ext))
+		}
 	}
 	for _, name := range names {
 		if name == "" {

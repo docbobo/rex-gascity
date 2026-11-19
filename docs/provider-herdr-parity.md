@@ -62,7 +62,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `provision` | not implemented | 1 | not-implemented |
 | `exec` | not implemented | 1 | not-implemented |
 | `is-running` | implemented | 5 | intentional |
-| `process-alive` | implemented | 6 | intentional (with a mistake inside) |
+| `process-alive` | implemented | 6 | intentional |
 | `list-running` | implemented | 6 | intentional (with a mistake inside) |
 | `is-attached` | implemented | 6 | intentional |
 | `get-last-activity` | implemented | 5 | intentional |
@@ -122,7 +122,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `is-running` | alias handling | Any alive alias-bound instance gives true | Newest record by exact name | intentional | Rex name-resolution model has aliases |
 | `is-running` | side effects | Deletes stale sidecar bindings on read | Read-only apart from start kick | intentional | Sidecar self-heal; race safety unverified |
 | `process-alive` | match scope | Rex foreground process plus ancestors | whole box process subtree | intentional | Rex API exposes only foreground and ancestors |
-| `process-alive` | interpreter scripts | no node/bun script-argument matching | matches script arg after node/bun/npx/deno | mistake | gc rule; needs live probe of Rex argv0 |
+| `process-alive` | interpreter scripts | matches the interpreter's reported `script` basename, with and without its extension | matches script arg after node/bun/npx/deno | intentional | Rex reports the script path for interpreters (`docs/REX-CONTRACT.md:89`); no argv array is needed (GCREX-47). |
 | `process-alive` | missing pane | `ErrNotFound` from `BlockProcess` returns `false`, nil (GCREX-23) | dead record answers false | intentional | Same answer; a pane that vanished mid-call no longer exits 1. |
 | `process-alive` | zombie / liveness gate | LastExit non-nil forces false | zombie never matches; intact-record gate | intentional | last_exit is Rex liveness truth (GCREX-4) |
 | `process-alive` | stdin line splitting | split on newline only, trim later | splitlines then strip | intentional | same result for gc newline input |
@@ -222,8 +222,9 @@ since resolved `is-attached` by answering true for an unclassifiable client
 kind. GCREX-23 has since resolved the missing-pane handling in `process-alive`
 and `peek`, so those items are no longer listed; GCREX-46 has since resolved the
 `process-alive` cannot-tell answer (a transient error, empty table or opaque
-process now answers empty stdout, which gc reads as alive); the
-interpreter-script gap in `process-alive` remains. GCREX-24 has since resolved `get-last-activity` (return
+process now answers empty stdout, which gc reads as alive); GCREX-47 has since
+resolved the interpreter-script gap by matching Rex's reported `script`
+basename, with and without its extension. GCREX-24 has since resolved `get-last-activity` (return
 now for `working`/`blocked`, plus the pack-input floor from nudge/send-keys), so
 it is no longer listed either. GCREX-25.1 has since resolved the empty-env
 mistake in `start` (values are emitted as `env -u KEY`), so it is no longer
@@ -238,8 +239,7 @@ longer listed either.
 
 | # | Where | Mistake | Consequence in gc 1.5.1 | Sections |
 |---|---|---|---|---|
-| 1 | `process-alive` | No interpreter-script matching, so `node agent.js` does not match `agent` | An agent run as `node agent.js` with hint `agent` reads dead; unverified whether Rex `name`/`argv0` ever carry the script | §process-alive row 2 |
-| 2 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
+| 1 | `list-running` | No readable-name guard when printing | A padded or control-character name would corrupt gc's line parse; low risk, names come from gc | §list-running row 3 |
 
 Two earlier candidates were withdrawn after the gc check: the missing SIGTERM
 handler in `start` (gc runs `stop <name>` after every failed or cancelled start,
@@ -282,14 +282,11 @@ in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
 Not implemented in this task. Each item closes a set of the sections above; the
 numbering of the mistake table is what they refer to.
 
-1. **Liveness answers.** Decide on interpreter-script matching after a live
-   probe. Closes 1.
-2. **List output guard.** Skip names that are empty, padded or contain control
-   characters. Closes 2.
-3. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
+1. **List output guard.** Skip names that are empty, padded or contain control
+   characters. Closes 1.
+2. **Rex-side probes and one CLI check.** Confirm that `rex` never exits 3 for a
    transport failure (see "Operational risks"); probe `block.method clear` and
-   `format` coverage; probe a `node agent.js` pane's `argv0` for the
-   interpreter-script decision.
+   `format` coverage.
 
 ### protocol
 
@@ -501,7 +498,7 @@ GCREX-11 — env-derived tab/pane labels used in rescans
 
 **Status** — implemented
 
-**Our implementation.** Dispatch is `cmd/gc-runtime-rex/main.go:114` (`{1, "process-alive <name>", opProcessAlive}`). `opProcessAlive` (`main.go:346-368`) reads all of stdin, splits on `\n`, drops one trailing empty element, calls `Provider.ProcessAlive`, and prints `true`/`false` (`printBool`, `main.go:226-228`) for a definite answer; `LivenessUnknown` prints nothing and exits 0, the pack's cannot-tell answer that gc reads as alive (`herdrcore/reads.py:301-302`; gc `exec/exec.go:709-718`). `ProcessAlive` (`internal/provider/liveness.go:155-182`) resolves the binding (no binding returns dead, nil), calls Rex `process` once for the pane (`BlockProcess`): `ErrNotFound` is dead (GCREX-23), any other error is unknown (GCREX-46), so a transient or unreadable process call never reads as dead. It then expands names with `expandProcessNames` (`liveness.go:32-59`: TrimSpace each line, drop blanks, add the `kimi`→`kimi-code` alias, add the basename of `GC_BIN` for the `gc` hint, falling back to the provider's own `$GC_BIN` for legacy bindings). `processAlive` (`liveness.go:81-109`) is dead if `LastExit != nil`; alive if the expanded list is empty; alive iff the pane's `Foreground` process or any of its `Ancestors` matches; unknown if the process list is empty or holds an opaque process (no `name`, `path` or `argv0`) after no match; dead otherwise. `processMatches` (`liveness.go:117-137`) is exact equality of a name against Rex `name`, `argv0`, `basename(path)` or `basename(argv0)`; no substring and no interpreter-script logic. Multiple names mean any-of. Touches no state files; deadline is the default 30 s. gc skips the op unless `process_names` is non-empty (`exec/exec.go:703-706`), and in production only after two successful `is-running` probes.
+**Our implementation.** Dispatch is `cmd/gc-runtime-rex/main.go:114` (`{1, "process-alive <name>", opProcessAlive}`). `opProcessAlive` (`main.go:346-368`) reads all of stdin, splits on `\n`, drops one trailing empty element, calls `Provider.ProcessAlive`, and prints `true`/`false` (`printBool`, `main.go:226-228`) for a definite answer; `LivenessUnknown` prints nothing and exits 0, the pack's cannot-tell answer that gc reads as alive (`herdrcore/reads.py:301-302`; gc `exec/exec.go:709-718`). `ProcessAlive` (`internal/provider/liveness.go:155-182`) resolves the binding (no binding returns dead, nil), calls Rex `process` once for the pane (`BlockProcess`): `ErrNotFound` is dead (GCREX-23), any other error is unknown (GCREX-46), so a transient or unreadable process call never reads as dead. It then expands names with `expandProcessNames` (`liveness.go:32-59`: TrimSpace each line, drop blanks, add the `kimi`→`kimi-code` alias, add the basename of `GC_BIN` for the `gc` hint, falling back to the provider's own `$GC_BIN` for legacy bindings). `processAlive` (`liveness.go:81-109`) is dead if `LastExit != nil`; alive if the expanded list is empty; alive iff the pane's `Foreground` process or any of its `Ancestors` matches; unknown if the process list is empty or holds an opaque process (no `name`, `path`, `argv0` or `script`) after no match; dead otherwise. `processMatches` (`liveness.go:120-147`) is exact equality of a name against Rex `name`, `argv0`, `basename(path)`, `basename(argv0)`, or the basename of the interpreter's reported `script` with and without its extension (GCREX-47); no substring matching. Multiple names mean any-of. Touches no state files; deadline is the default 30 s. gc skips the op unless `process_names` is non-empty (`exec/exec.go:703-706`), and in production only after two successful `is-running` probes.
 
 **herdr-core.** Dispatch is `herdrcore/ops_table.py:75` (`stdin=True`). `op_process_alive` (`herdrcore/reads.py:292-303`) parses stdin with `stdin_names` (`reads.py:63-65`: `splitlines()`, strip, drop blanks), then returns `false` if the name has no intact record (`reads.py:295-296`), `true` if no names (`reads.py:297-298`), else runs `agent_state` (`reads.py:104-118`) and prints `true`/`false` via `encode_bool` (`rpp/wire.py:293-295`). `agent_state` expands names with `expand_names` (`herdrcore/procs.py:550-561`: strip, drop blanks, `kimi-code` alias, basename of the stored `gc_bin` for `gc`) and `find_agent` (`procs.py:608-613`) searches the box's whole host-process subtree (`subtree`, `procs.py:504-522`) from the box pid. `matches` (`procs.py:564-583`) is exact basename of `comm` or `argv[0]`; if `argv[0]` is one of `node/bun/npx/deno` it also tests the first non-flag, non-`run/exec/x` argument, with and without extension; zombies never match. It answers an empty stdout (gc reads that as alive) when it cannot tell: process table unreadable, launcher not yet at the agent, or no match with an unreadable process in the subtree (`reads.py:110-117,301-302`). Any-of semantics over names.
 
@@ -510,13 +507,13 @@ GCREX-11 — env-derived tab/pane labels used in rescans
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
 | 1 | match scope | Rex-reported foreground process plus its ancestors (`liveness.go:95-100`) | every process in the box's subtree (`procs.py:608-613`) | intentional | Rex exposes only foreground/ancestors via `process` (`docs/REX-CONTRACT.md:89`); no host process table walk. A background child of the agent is not seen. |
-| 2 | interpreter scripts | none: `node foo.js` matches `node`, not `foo` (`liveness.go:117-137`) | matches script arg of node/bun/npx/deno (`procs.py:63,576-582`) | mistake | gc's process-table rule (cited in `procs.py:21-26`) has it; an agent run as `node agent.js` with hint `agent` reads dead. Unverified whether Rex `name`/`argv0` ever carry the script; needs a live probe. |
+| 2 | interpreter scripts | matches Rex's reported interpreter `script` basename, with and without its extension (`liveness.go:128-134`, GCREX-47) | matches script arg of node/bun/npx/deno (`procs.py:63,576-582`) | intentional | Rex reports the script path for interpreters (`docs/REX-CONTRACT.md:89`); an agent run as `node agent.js` with hint `agent` now reads alive, matching the pack's with-and-without-extension rule. |
 | 3 | missing pane | `BlockProcess` `ErrNotFound` maps to `false`, nil (`liveness.go:161-164`, GCREX-23) | not applicable; a dead record answers `false` (`reads.py:295-296`) | intentional | Matches `paneAlive` (`liveness.go:145-148`); a pane that vanished mid-call now answers dead instead of exiting 1. |
 | 4 | zombie / liveness gate | `LastExit != nil` forces `false` (`liveness.go:81-84`) | zombie never matches (`procs.py:567`); intact record gate (`reads.py:295`) | intentional | Same intent, different primitive: Rex `last_exit` is its liveness truth (GCREX-4). |
 | 5 | stdin line splitting | split on `\n` only (`main.go:351`); whitespace trimmed later in `expandProcessNames` | `splitlines()` (also `\r`, `\v`, `\f`, U+2028 etc.) then strip (`reads.py:64-65`) | intentional | gc sends `\n`-separated names; result is identical for that input. All-blank stdin gives alive in both. |
-| 6 | matched fields | Rex `name`, `argv0`, `basename(path)`, `basename(argv0)` (`liveness.go:117-125`) | basename of `comm`, basename of `argv[0]` (`procs.py:569-573`) | intentional | Different process data model. Ours also matches a full-path name equal to `argv0` and the Rex `name` (Rex runs commands under the default shell with `argv0` set; see `docs/plans/native-rex-provider.md:643`). |
+| 6 | matched fields | Rex `name`, `argv0`, `basename(path)`, `basename(argv0)`, and `basename(script)` with/without extension (`liveness.go:120-134`) | basename of `comm`, basename of `argv[0]`, script arg (`procs.py:569-573`) | intentional | Different process data model. Ours also matches a full-path name equal to `argv0` and the Rex `name` (Rex runs commands under the default shell with `argv0` set; see `docs/plans/native-rex-provider.md:643`). |
 
-**Verdict.** intentional (with a mistake inside). Output vocabulary, stdin shape, empty-input and any-of semantics, aliases and the `gc`→`GC_BIN` basename rule match herdr-core. GCREX-46 closed the cannot-tell deviation: an unreadable process call, an empty process table, or an opaque process with no match now answers empty stdout (exit 0) like herdr-core, so a transient Rex error never reads as dead. The foreground/ancestor scope is forced by the Rex `process` API. Row 2 is the remaining gap: no interpreter-script matching.
+**Verdict.** intentional. Output vocabulary, stdin shape, empty-input and any-of semantics, aliases, the `gc`→`GC_BIN` basename rule, and interpreter-script matching now match herdr-core. GCREX-46 closed the cannot-tell deviation: an unreadable process call, an empty process table, or an opaque process with no match now answers empty stdout (exit 0) like herdr-core, so a transient Rex error never reads as dead. GCREX-47 closed the interpreter-script gap by matching Rex's reported `script` basename with and without extension. The foreground/ancestor scope is forced by the Rex `process` API; a process outside that tree is not seen.
 
 **Cross-references.**
 GCREX-4 — made `last_exit` the liveness truth and `ProcessAlive` strict with empty ⇒ alive
@@ -527,7 +524,6 @@ GCREX-18 — `GC_BIN`/claim identity seeding that the `gc` hint depends on
 `docs/plans/native-rex-provider.md:643` — why name heuristics are not used for `is-running`
 
 **Follow-ups.**
-- Probe a live pane running `node script.js` and decide whether to add interpreter-script matching to `processMatches`. (gap)
 - Add a test for all-blank stdin and CRLF input in `opProcessAlive`. (gap)
 
 

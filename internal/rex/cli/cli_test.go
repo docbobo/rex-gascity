@@ -209,7 +209,7 @@ func TestSessionViewFlattensLayers(t *testing.T) {
 
 func TestBlockProcess(t *testing.T) {
 	fake := newFakeRex(t)
-	fake.respond(t, "process", `{"last_exit":null,"foreground":{"pid":42,"name":"claude"}}`)
+	fake.respond(t, "process", `{"last_exit":null,"foreground":{"pid":42,"name":"node","script":"/path/to/claude"}}`)
 	c := &cli.Client{Bin: fake.bin}
 
 	info, err := c.BlockProcess(context.Background(), "session:a", "block:dog-1")
@@ -221,6 +221,9 @@ func TestBlockProcess(t *testing.T) {
 	}
 	if info.Foreground == nil || info.Foreground.PID != 42 {
 		t.Errorf("Foreground = %+v", info.Foreground)
+	}
+	if info.Foreground == nil || info.Foreground.Script != "/path/to/claude" {
+		t.Errorf("Foreground.Script = %+v, want /path/to/claude", info.Foreground)
 	}
 	args := blockMethodArgs(t, fake.calls(t))
 	if args["method"] != "process" {

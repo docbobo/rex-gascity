@@ -86,7 +86,7 @@ carries every method's full input and output schema.
 
 | Method | Input | Output | Use |
 |---|---|---|---|
-| `process` | — | `{last_exit: {exit_code, error?} \| null, child, foreground, ancestors[], home}`; each process `{pid, user_id, user, name, path, invoked_path, argv0, cwd}` | `process-alive`; agent-exit detection (`last_exit`) |
+| `process` | — | `{last_exit: {exit_code, error?} \| null, child, foreground, ancestors[], home}`; each process `{pid, user_id, user, name, path, invoked_path, argv0, script?, cwd}` (`script` is set for interpreters such as node) | `process-alive`; agent-exit detection (`last_exit`) |
 | `format` | `{format: text\|html\|vt, trim, unwrap, extra_charsets, extra_cursor, extra_hyperlink, max_bytes}` | `content` always. With `max_bytes` set, `total` is always present and **either** `id` (more remains; `eof` is absent) **or** `eof: true` (complete). With no `max_bytes`, the whole capture comes in one reply or the call fails `too_large` | `peek`; send output; exec output |
 | `blob_read` | `{id?, offset?, max_bytes?}` | `{id, data, total, eof}` — all four always present. `id` 0/omitted reads the newest result, `offset` defaults to 0, `max_bytes` defaults to 49152 and is clamped to 983040; results are kept ~5 minutes, then `not_found` | `peek` paging; large events |
 | `write` | `{data}` | `{bytes_written}` | type text (`nudge`) |

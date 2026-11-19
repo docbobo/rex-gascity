@@ -129,6 +129,7 @@ type Process struct {
 	Name   string `json:"name"`
 	Path   string `json:"path"`
 	Argv0  string `json:"argv0"`
+	Script string `json:"script,omitempty"` // interpreter script path, when the process runs one
 	Cwd    string `json:"cwd"`
 }
 
