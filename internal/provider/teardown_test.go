@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -241,5 +242,186 @@ func TestProcessAliveTransientProcessErrorIsUnknown(t *testing.T) {
 	state, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
 	if err != nil || state != provider.LivenessUnknown {
 		t.Errorf("ProcessAlive after a transient error = %v, %v; want unknown, nil", state, err)
+	}
+}
+
+// GCREX-65: Stop destroys the city session this provider created once it holds
+// no window and no human is attached.
+
+func teardownCanonicalSID(t *testing.T, fake *faketest.Fake) rex.SessionID {
+	t.Helper()
+	if len(fake.CreatedSessions) != 1 {
+		t.Fatalf("created sessions = %v, want one", fake.CreatedSessions)
+	}
+	return rex.SessionID("session:" + fake.CreatedSessions[0])
+}
+
+func TestStopDestroysEmptyOwnedSession(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	sid := teardownCanonicalSID(t, fake)
+	// The provider's own CLI connection must not count as an attached human.
+	fake.Clients = []rex.ClientInfo{{ID: "client:1", Kind: "cli", Name: "rex"}}
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 1 || fake.DestroyedSessions[0] != sid {
+		t.Errorf("destroyed = %v, want [%s]", fake.DestroyedSessions, sid)
+	}
+}
+
+func TestStopWithoutPaneDestroysEmptyOwnedSession(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	sid := teardownCanonicalSID(t, fake)
+	// The pane vanished (the tab went with it) before Stop ran.
+	fake.View.Windows = nil
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 1 || fake.DestroyedSessions[0] != sid {
+		t.Errorf("destroyed = %v, want [%s]", fake.DestroyedSessions, sid)
+	}
+}
+
+func TestStopKeepsSessionWithOtherContent(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	teardownStart(t, p, teardownCat)
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none while another pane lives", fake.DestroyedSessions)
+	}
+}
+
+func TestStopKeepsSessionWithAttachedApp(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.Clients = []rex.ClientInfo{{ID: "client:1", Kind: "cli", Name: "rex"}, {ID: "client:2", Kind: "app", Name: "Rex"}}
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none while a Rex app is attached", fake.DestroyedSessions)
+	}
+}
+
+func TestStopNeverDestroysLegacyLabelledSession(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:oldacme", Label: "gc:oldacme"}}
+	p := provider.New("acme", fake, namespacesOption(t, []string{"acme", "oldacme"}))
+	teardownStart(t, p, teardownDog)
+	if len(fake.CreatedSessions) != 0 {
+		t.Fatalf("Start created %v, want it to adopt the legacy session", fake.CreatedSessions)
+	}
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none: the provider did not create it", fake.DestroyedSessions)
+	}
+}
+
+func TestStopToleratesDestroyAndLookupFailures(t *testing.T) {
+	for name, set := range map[string]func(*faketest.Fake){
+		"destroy unavailable": func(f *faketest.Fake) { f.DestroySessionErr = rex.ErrUnavailable },
+		"destroy gone":        func(f *faketest.Fake) { f.DestroySessionErr = rex.ErrNotFound },
+		"destroy other":       func(f *faketest.Fake) { f.DestroySessionErr = errors.New("boom") },
+		"list unavailable":    func(f *faketest.Fake) { f.ListSessionsErr = rex.ErrUnavailable },
+		"list other":          func(f *faketest.Fake) { f.ListSessionsErr = errors.New("boom") },
+		"clients other":       func(f *faketest.Fake) { f.ListClientsErr = errors.New("boom") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, p := teardownStarted(t, teardownDog)
+			set(fake)
+			if err := p.Stop(context.Background(), teardownDog); err != nil {
+				t.Errorf("Stop = %v, want nil: the pane is closed and destroy is best effort", err)
+			}
+		})
+	}
+}
+
+func TestStopFailsClosedOnDuplicateCanonicalSessions(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.Sessions = append(fake.Sessions, rex.Session{ID: "session:dup", Label: fake.CreatedSessions[0]})
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none when the label is ambiguous", fake.DestroyedSessions)
+	}
+}
+
+// destroyedBeforeLaunch models a concurrent Stop of another name destroying the
+// city session after Start found it but before Start's launch read the view.
+type destroyedBeforeLaunch struct {
+	*faketest.Fake
+	once sync.Once
+}
+
+func (d *destroyedBeforeLaunch) SessionView(ctx context.Context, sid rex.SessionID) (rex.SessionView, error) {
+	gone := false
+	d.once.Do(func() {
+		_ = d.DestroySession(ctx, sid)
+		gone = true
+	})
+	if gone {
+		return rex.SessionView{}, rex.ErrNotFound
+	}
+	return d.Fake.SessionView(ctx, sid)
+}
+
+func TestStartRecreatesSessionDestroyedBeforeLaunch(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", &destroyedBeforeLaunch{Fake: fake})
+
+	if err := p.Start(context.Background(), teardownDog, teardownCfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.CreatedSessions) != 2 {
+		t.Errorf("created sessions = %v, want the session recreated once", fake.CreatedSessions)
+	}
+	if len(fake.CreatedWindows) != 1 {
+		t.Errorf("windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	if b, ok := p.Binding(teardownDog); !ok || b.SessionID == "" {
+		t.Errorf("binding = %+v, %v; want a recorded pane", b, ok)
+	}
+}
+
+// goneAfterClose makes the session vanish once a block is closed, as when
+// another process destroys it between the close and the emptiness check.
+type goneAfterClose struct {
+	*faketest.Fake
+	closed bool
+}
+
+func (g *goneAfterClose) CloseBlock(ctx context.Context, sid rex.SessionID, b rex.BlockID) error {
+	g.closed = true
+	return g.Fake.CloseBlock(ctx, sid, b)
+}
+
+func (g *goneAfterClose) SessionView(ctx context.Context, sid rex.SessionID) (rex.SessionView, error) {
+	if g.closed {
+		return rex.SessionView{}, rex.ErrNotFound
+	}
+	return g.Fake.SessionView(ctx, sid)
+}
+
+func TestStopToleratesSessionGoneBeforeEmptinessCheck(t *testing.T) {
+	fake := faketest.New()
+	g := &goneAfterClose{Fake: fake}
+	p := provider.New("acme", g)
+	teardownStart(t, p, teardownDog)
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none", fake.DestroyedSessions)
 	}
 }

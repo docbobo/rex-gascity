@@ -475,22 +475,24 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// Find or create the city session under the short state lock: two starts of
 	// different names may run concurrently, and both would otherwise create the
 	// shared `gc:<city>` session.
-	var sid rex.SessionID
-	if err := p.withStateLock(ctx, func() error {
-		var ok bool
-		var err error
-		sid, ok, err = p.binder.FindSession(ctx)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
+	findOrCreate := func() (rex.SessionID, error) {
+		var sid rex.SessionID
+		err := p.withStateLock(ctx, func() error {
+			var ok bool
+			var err error
+			sid, ok, err = p.binder.FindSession(ctx)
 			if err != nil {
 				return err
 			}
-		}
-		return nil
-	}); err != nil {
+			if !ok {
+				sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
+			}
+			return err
+		})
+		return sid, err
+	}
+	sid, err := findOrCreate()
+	if err != nil {
 		return startResult{}, err
 	}
 
@@ -581,35 +583,52 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// two concurrent starts in one rig cannot both create the tab.
 	var launched startResult
 	launchStart := time.Now()
-	if err := p.withTabLock(ctx, tab, func() error {
-		view, err := p.client.SessionView(ctx, sid)
-		if err != nil {
-			return err
-		}
-		for _, w := range view.Windows {
-			if w.Label != tab {
-				continue
-			}
-			anchor, direction, ok := nextSplit(w)
-			if !ok {
-				continue
-			}
-			block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
+	launch := func() error {
+		return p.withTabLock(ctx, tab, func() error {
+			view, err := p.client.SessionView(ctx, sid)
 			if err != nil {
 				return err
 			}
-			p.record(ctx, n, sid, w.ID, block, "split", cfg)
+			for _, w := range view.Windows {
+				if w.Label != tab {
+					continue
+				}
+				anchor, direction, ok := nextSplit(w)
+				if !ok {
+					continue
+				}
+				block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
+				if err != nil {
+					return err
+				}
+				p.record(ctx, n, sid, w.ID, block, "split", cfg)
+				launched = startResult{sessionID: sid, blockID: block}
+				return nil
+			}
+			wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
+			if err != nil {
+				return err
+			}
+			p.record(ctx, n, sid, wid, block, "window", cfg)
 			launched = startResult{sessionID: sid, blockID: block}
 			return nil
+		})
+	}
+	err = launch()
+	if errors.Is(err, rex.ErrNotFound) {
+		// A concurrent Stop of another name destroyed the empty city session
+		// after find-or-create released the state lock. Create it again and
+		// launch once more; a second miss is returned as is.
+		if sid, err = findOrCreate(); err == nil {
+			if err = p.withStateLock(ctx, func() error {
+				p.recordProvisionalBinding(n, sid, "", cfg)
+				return nil
+			}); err == nil {
+				err = launch()
+			}
 		}
-		wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
-		if err != nil {
-			return err
-		}
-		p.record(ctx, n, sid, wid, block, "window", cfg)
-		launched = startResult{sessionID: sid, blockID: block}
-		return nil
-	}); err != nil {
+	}
+	if err != nil {
 		return startResult{}, err
 	}
 	launched.launchDur = time.Since(launchStart)
@@ -711,6 +730,7 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		// Even with no pane, nothing the incarnation left must outlive its
 		// life: clear the whole meta sidecar and the activity record, not just
 		// the identity seed a failed or rolled-back start may have written.
+		p.destroyEmptyCitySession(ctx)
 		return p.clearIncarnations(n, stored.Name)
 	}
 	// Sample the work tree before the pane closes, while the worker is alive.
@@ -718,11 +738,83 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return err
 	}
+	p.destroyEmptyCitySession(ctx)
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
 	}
 	p.binder.Forget(binding.Name)
 	return nil
+}
+
+// destroyEmptyCitySession destroys the city session this provider creates
+// (the canonical `gc:<city>` label, the only label CreateSession is called
+// with) once it holds no window and no Rex app is attached, so the last
+// agent's exit does not leave an empty shell on the shared server. It never
+// touches a legacy-labelled session the provider only adopted, and it is best
+// effort: the pane is already closed, so every failure is logged and swallowed
+// and Stop still succeeds. The caller holds the state lock, which serialises
+// this with Start's find-or-create.
+//
+// Rex has no conditional destroy, so a human who opens a pane between the
+// emptiness check and the destroy loses it. The window is three back-to-back
+// CLI calls and is accepted (docs/REX-CONTRACT.md §12).
+func (p *Provider) destroyEmptyCitySession(ctx context.Context) {
+	sessions, err := p.client.ListSessions(ctx)
+	if err != nil {
+		p.stopWarnf(err, "list sessions")
+		return
+	}
+	label := p.binder.canonicalLabel()
+	var sid rex.SessionID
+	n := 0
+	for _, s := range sessions {
+		if s.Label == label {
+			sid, n = s.ID, n+1
+		}
+	}
+	switch {
+	case n == 0:
+		return
+	case n > 1:
+		p.stopWarnf(nil, "%d sessions labelled %q; destroying none", n, label)
+		return
+	}
+	view, err := p.client.SessionView(ctx, sid)
+	if err != nil {
+		p.stopWarnf(err, "view %s", sid)
+		return
+	}
+	// An empty view omits "windows"; any window, whatever runs in it, blocks.
+	if len(view.Windows) > 0 {
+		return
+	}
+	clients, err := p.client.ListClients(ctx, sid)
+	if err != nil {
+		p.stopWarnf(err, "list clients of %s", sid)
+		return
+	}
+	// kind "cli" is this provider's own connection; "app" is a human's Rex.
+	for _, c := range clients {
+		if c.Kind == "app" {
+			return
+		}
+	}
+	if err := p.client.DestroySession(ctx, sid); err != nil {
+		p.stopWarnf(err, "destroy %s", sid)
+	}
+}
+
+// stopWarnf logs a best-effort teardown failure. A missing session or an
+// unreachable server is the expected "already gone" outcome and stays quiet.
+func (p *Provider) stopWarnf(err error, format string, args ...any) {
+	if p.warn == nil || errors.Is(err, rex.ErrNotFound) || errors.Is(err, rex.ErrUnavailable) {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	if err != nil {
+		msg += ": " + err.Error()
+	}
+	fmt.Fprintf(p.warn, "stop: destroy empty city session: %s\n", msg)
 }
 
 // clearIncarnations removes the whole metadata sidecar and the activity record

@@ -280,7 +280,9 @@ func TestStopUsesRecordedBindingWithoutScan(t *testing.T) {
 	if err := p.Stop(ctx, "Indigo--dog-1"); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 1 {
+	// One view resolves the recorded pane; the empty-session check then lists
+	// sessions once and takes a fresh view (GCREX-65). No scan finds the pane.
+	if fake.ListSessionsCalls != 1 || fake.SessionViewCalls != 2 {
 		t.Errorf("calls: list=%d view=%d", fake.ListSessionsCalls, fake.SessionViewCalls)
 	}
 	if !slices.Equal(fake.ClosedBlocks, []rex.BlockID{"block:dog-1"}) {
