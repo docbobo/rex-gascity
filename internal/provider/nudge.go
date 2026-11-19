@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // defaultPoolClaimNudge is gc's stalled-claim fallback text (v1.5.1
@@ -213,7 +215,7 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 	}
 	binding, err := p.livePane(ctx, name)
 	if err != nil {
-		return NudgeReport{}, err
+		return NudgeReport{}, nudgeLookupOutcome(err)
 	}
 	return p.nudgeReportBinding(ctx, binding, text, mode)
 }
@@ -312,6 +314,29 @@ func claimRecordHeld(out string, sessionID string) bool {
 	return true
 }
 
+// nudgeLookupOutcome classifies a pre-send lookup failure into an RPP input
+// outcome. An unreachable server is unavailable. A missing or dead session
+// keeps ErrSessionNotFound, so the dispatcher's best-effort rule still exits 0;
+// any other lookup failure stays a plain error (exit 1), matching the pack's
+// untyped list failure.
+func nudgeLookupOutcome(err error) error {
+	if errors.Is(err, rex.ErrUnavailable) {
+		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
+	}
+	return err
+}
+
+// nudgeSendOutcome classifies a failed write or submit into an RPP input
+// outcome. An unreachable server is unavailable; anything else is not_sent,
+// because the send never reached the pane whole (or was cut short before the
+// submit). The wrapped error is kept for errors.Is callers.
+func nudgeSendOutcome(err error) error {
+	if errors.Is(err, rex.ErrUnavailable) {
+		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
+	}
+	return &InputOutcomeError{Outcome: "not_sent", Detail: err.Error(), Err: err}
+}
+
 // nudgeReportBinding is NudgeReport against an already-resolved pane. Startup
 // delivery uses it so the nudge goes to the pane it launched, not to whatever
 // a name lookup resolves to after a concurrent stop and start of the same
@@ -332,13 +357,18 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	if mode == NudgeModeWait {
 		switch baseline.State {
 		case "working":
-			return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("%w: %s", ErrNudgeBusy, name)
+			err := fmt.Errorf("%w: %s", ErrNudgeBusy, name)
+			return NudgeReport{State: baseline.State, Kind: baseline.Kind},
+				&InputOutcomeError{Outcome: "busy", Detail: err.Error(), Err: err}
 		case "blocked":
 			report := NudgeReport{State: baseline.State, Kind: baseline.Kind}
+			var err error
 			if baseline.Kind != "" {
-				return report, fmt.Errorf("%w: %s (%s)", ErrNudgeBlocked, name, baseline.Kind)
+				err = fmt.Errorf("%w: %s (%s)", ErrNudgeBlocked, name, baseline.Kind)
+			} else {
+				err = fmt.Errorf("%w: %s", ErrNudgeBlocked, name)
 			}
-			return report, fmt.Errorf("%w: %s", ErrNudgeBlocked, name)
+			return report, &InputOutcomeError{Outcome: "pending_interaction", Detail: err.Error(), Err: err}
 		}
 	}
 
@@ -364,7 +394,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	writeStart := time.Now()
 	if err := p.client.BlockWrite(submitCtx, binding.SessionID, binding.BlockID, text); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: time.Since(writeStart)},
-			fmt.Errorf("nudge %s: type text: %w", name, err)
+			nudgeSendOutcome(fmt.Errorf("nudge %s: type text: %w", name, err))
 	}
 	writeDur := time.Since(writeStart)
 	// The text is in the pane now: stamp the input floor so the delivery is
@@ -379,7 +409,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	if err := p.client.SendKeys(enterCtx, binding.SessionID, binding.BlockID, submitKey); err != nil {
 		p.recordNudgeSubmitFailure(binding, err)
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: writeDur},
-			fmt.Errorf("nudge %s: text was typed but submit key failed: %w", name, err)
+			nudgeSendOutcome(fmt.Errorf("nudge %s: text was typed but submit key failed: %w", name, err))
 	}
 	_ = p.metaDelete(binding.Name, NudgeSubmitFailedMetaKey)
 

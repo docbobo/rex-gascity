@@ -413,3 +413,104 @@ func TestNudgeWriteIsBoundedByTheSubmitBudget(t *testing.T) {
 		t.Errorf("send-keys calls = %d, want 0 after a failed write", len(base.SentKeys))
 	}
 }
+
+// needOutcome asserts err carries an RPP input outcome with the given word.
+func needOutcome(t *testing.T, err error, word string) *provider.InputOutcomeError {
+	t.Helper()
+	var outcome *provider.InputOutcomeError
+	if !errors.As(err, &outcome) {
+		t.Fatalf("error = %v, want an *InputOutcomeError", err)
+	}
+	if outcome.Outcome != word {
+		t.Fatalf("outcome = %q, want %q", outcome.Outcome, word)
+	}
+	return outcome
+}
+
+// TestNudgeBusyIsBusyOutcome pins the typed word for a working pane: the pane
+// is refused before any input, and the error still wraps ErrNudgeBusy for
+// callers that classify it structurally.
+func TestNudgeBusyIsBusyOutcome(t *testing.T) {
+	fake := faketest.New()
+	fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{
+		activityBlock: {Records: []rex.ProgramStatusRecord{{ID: "a", State: "working"}}},
+	}
+	p := nudgeStarted(t, fake)
+
+	_, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	needOutcome(t, err, "busy")
+	if !errors.Is(err, provider.ErrNudgeBusy) {
+		t.Errorf("error = %v, want it to still wrap ErrNudgeBusy", err)
+	}
+	if len(fake.SentKeys) != 0 {
+		t.Errorf("send-keys calls = %d, want 0 into a working pane", len(fake.SentKeys))
+	}
+}
+
+// TestNudgeBlockedIsPendingInteraction pins the word for a pane waiting on a
+// dialog; the detail still names the blocked kind.
+func TestNudgeBlockedIsPendingInteraction(t *testing.T) {
+	fake := faketest.New()
+	fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{
+		activityBlock: {Records: []rex.ProgramStatusRecord{{ID: "a", State: "blocked", Kind: "permission"}}},
+	}
+	p := nudgeStarted(t, fake)
+
+	_, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	outcome := needOutcome(t, err, "pending_interaction")
+	if !errors.Is(err, provider.ErrNudgeBlocked) {
+		t.Errorf("error = %v, want it to still wrap ErrNudgeBlocked", err)
+	}
+	if !strings.Contains(outcome.Detail, "permission") {
+		t.Errorf("detail = %q, want it to name the blocked kind", outcome.Detail)
+	}
+}
+
+// TestNudgeUnreachableLookupIsUnavailable: a server that cannot be listed is
+// unavailable, not a plain exit 1.
+func TestNudgeUnreachableLookupIsUnavailable(t *testing.T) {
+	fake := faketest.New()
+	// Do not start a pane: a live binding resolves from disk, so the list call
+	// (and thus the unreachable server) is only exercised for an unknown name.
+	p := provider.New("acme", fake, provider.WithNudgeConfirmation(20*time.Millisecond, time.Millisecond))
+	fake.ListSessionsErr = rex.ErrUnavailable
+
+	_, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	needOutcome(t, err, "unavailable")
+}
+
+// TestNudgeWriteFailureIsNotSent: a write that fails before any submit typed
+// nothing usable, so it is not_sent.
+func TestNudgeWriteFailureIsNotSent(t *testing.T) {
+	fake := faketest.New()
+	p := nudgeStarted(t, fake)
+	fake.WriteErr = errors.New("rex: protocol error")
+
+	_, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	needOutcome(t, err, "not_sent")
+}
+
+// TestNudgeWriteUnavailableIsUnavailable keeps the unreachable-server word on
+// the write path.
+func TestNudgeWriteUnavailableIsUnavailable(t *testing.T) {
+	fake := faketest.New()
+	p := nudgeStarted(t, fake)
+	fake.WriteErr = rex.ErrUnavailable
+
+	_, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	needOutcome(t, err, "unavailable")
+}
+
+// TestNudgeSubmitFailureIsNotSent: the text reached the pane but the submit
+// did not, so the send was cut short.
+func TestNudgeSubmitFailureIsNotSent(t *testing.T) {
+	fake := faketest.New()
+	p := nudgeStarted(t, fake)
+	fake.SendKeysErr = errors.New("pane vanished")
+
+	_, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	outcome := needOutcome(t, err, "not_sent")
+	if !strings.Contains(outcome.Detail, "typed") {
+		t.Errorf("detail = %q, want it to say the text was typed", outcome.Detail)
+	}
+}

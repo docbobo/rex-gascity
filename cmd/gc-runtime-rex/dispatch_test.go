@@ -583,7 +583,12 @@ func TestNudgeRejectsInvalidUTF8(t *testing.T) {
 	before := len(fake.BlockCalls)
 
 	r := h.run("prompt \xff bytes", "nudge", dog)
-	assertFailure(t, r, exitFail)
+	if r.code != exitInputOutcome {
+		t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+	}
+	if !strings.Contains(r.stdout, `"outcome":"rejected"`) {
+		t.Errorf("stdout = %q, want a rejected outcome line", r.stdout)
+	}
 	if !strings.Contains(r.stderr, "UTF-8") {
 		t.Errorf("stderr = %q, want it to name UTF-8", r.stderr)
 	}
@@ -632,5 +637,99 @@ func TestLookupResolvesPinnedBindingFromUnpinnedCaller(t *testing.T) {
 	}
 	if got := strings.TrimSpace(h.must("", "is-running", "Indigo--absent").stdout); got != "false" {
 		t.Errorf("is-running(absent) = %q, want false", got)
+	}
+}
+
+// TestNudgeReturnsInputOutcomes pins the typed exit-80 words nudge answers for
+// blocked, busy, an unreachable server, and an unwritten send. Every case
+// types nothing.
+func TestNudgeReturnsInputOutcomes(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		start    bool
+		status   *rex.ProgramStatus
+		listErr  error
+		writeErr error
+		outcome  string
+	}{
+		{"busy", true, &rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{ID: "a", State: "working"}}}, nil, nil, "busy"},
+		{"blocked", true, &rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{ID: "a", State: "blocked", Kind: "permission"}}}, nil, nil, "pending_interaction"},
+		// No pane is started: a down server cannot list, so the lookup itself is
+		// what is unreachable.
+		{"server unreachable", false, nil, rex.ErrUnavailable, nil, "unavailable"},
+		{"unwritten send", true, nil, nil, errors.New("rex: protocol error"), "not_sent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, fake := newHarness(t)
+			if c.start {
+				h.start(dog)
+			}
+			if c.status != nil {
+				fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{"block:dog-1": *c.status}
+			}
+			if c.listErr != nil {
+				fake.ListSessionsErr = c.listErr
+			}
+			if c.writeErr != nil {
+				fake.WriteErr = c.writeErr
+			}
+			r := h.run("hello", "nudge", dog)
+			if r.code != exitInputOutcome {
+				t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+			}
+			var line struct {
+				Outcome string `json:"outcome"`
+				Detail  string `json:"detail"`
+			}
+			if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+				t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+			}
+			if line.Outcome != c.outcome {
+				t.Errorf("outcome = %q, want %q", line.Outcome, c.outcome)
+			}
+			if !strings.Contains(r.stderr, c.outcome) {
+				t.Errorf("stderr = %q, want the %q word", r.stderr, c.outcome)
+			}
+			if len(fake.SentKeys) != 0 {
+				t.Errorf("keys sent = %+v, want none", fake.SentKeys)
+			}
+		})
+	}
+}
+
+// TestNudgeUnconfirmedExitsZeroWithOutcome pins the delivered_unobserved
+// success form: exit 0, one JSON line, and the diagnostic file kept.
+func TestNudgeUnconfirmedExitsZeroWithOutcome(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{
+		"block:dog-1": {Records: []rex.ProgramStatusRecord{{ID: "a", State: "idle", UpdatedAt: time.Unix(1, 0).UTC()}}},
+	}
+	r := h.run("hello", "nudge", dog)
+	if r.code != exitOK {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", r.code, r.stderr)
+	}
+	var line struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+		t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+	}
+	if line.Outcome != "delivered_unobserved" {
+		t.Errorf("outcome = %q, want delivered_unobserved", line.Outcome)
+	}
+	base := os.Getenv("GC_REX_STATE_DIR")
+	found := false
+	if err := filepath.WalkDir(base, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(d.Name(), "-nudge-unconfirmed.json") {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk state dir: %v", err)
+	}
+	if !found {
+		t.Errorf("no *-nudge-unconfirmed.json under %s, want the diagnostic kept", base)
 	}
 }

@@ -29,9 +29,10 @@ var ErrSessionNotFound = errors.New("session not found")
 var ErrAlreadyRunning = errors.New("provider: already running")
 
 // InputOutcomeError carries an RPP typed input outcome (herdr-core's exit 80)
-// for an input op. Outcome is the wire word, one of "gone", "not_sent" or
-// "unavailable"; Detail is the human-readable reason. The wrapped Err keeps
-// classification available to callers.
+// for an input op. Outcome is the wire word, one of "gone", "not_sent",
+// "unavailable", "busy", "pending_interaction" or "rejected"; Detail is the
+// human-readable reason. The wrapped Err keeps classification available to
+// callers.
 type InputOutcomeError struct {
 	Outcome string
 	Detail  string

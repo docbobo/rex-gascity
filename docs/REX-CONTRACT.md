@@ -222,13 +222,21 @@ Exit codes — the spec has exactly three:
 Beyond the three spec codes there is herdr-core's **extended input-outcome code
 `80`**: the op prints one `{"outcome":"<word>","detail":"…"}` line on stdout
 and `<word>[: detail]` on stderr, with `<word>` in `not_sent`, `rejected`,
-`unavailable` or `gone`. Our provider answers `send-keys` whose key has no Rex
-spelling with exit `80` `rejected` (GCREX-43), and `interrupt` with `80` `gone`
-for a missing or dead pane, `unavailable` when the Rex server is unreachable,
-and `not_sent` for another pre-send failure (GCREX-44). A delivered interrupt
-stays exit `0`, and a send failure that may have written the request stays exit
-`1` (outcome unknown). The key grammar and the exit-80 words follow
-`docs/provider-herdr-method-io.md` §send-keys and §interrupt. gc 1.5.1 does not
+`unavailable`, `gone`, `busy` or `pending_interaction`. Our provider answers
+`send-keys` whose key has no Rex spelling with exit `80` `rejected` (GCREX-43);
+`interrupt` with `80` `gone` for a missing or dead pane, `unavailable` when the
+Rex server is unreachable, and `not_sent` for another pre-send failure
+(GCREX-44); and `nudge` with `80` `rejected` for non-UTF-8 stdin,
+`pending_interaction` for a blocked pane, `busy` for a working pane,
+`unavailable` when the server is unreachable, and `not_sent` for a write or
+submit that did not land (GCREX-45). A delivered interrupt stays exit `0`; a
+nudge that reached the pane but whose turn start was not observed exits `0`
+with one `delivered_unobserved` line; and an interrupt send failure that may
+have written the request stays exit `1` (outcome unknown). A nudge to a missing
+or dead pane still exits `0` (best effort), and `nudge`'s live-claim guard stays
+a plain exit `1`. The key grammar and the exit-80 words follow
+`docs/provider-herdr-method-io.md` §send-keys, §interrupt and §nudge. gc 1.5.1
+does not
 declare `input-outcome` and reads exit `80` as a plain error, so the typed word
 has no meaning to it. That is not fully inert for `interrupt`: the contract asks
 for a best-effort exit `0` on a gone session (gc
@@ -238,7 +246,12 @@ propagates it unguarded (gc `internal/worker/runtime_handle.go:243-248`); the
 managed `SessionHandle` path pre-checks `IsRunning` and never reaches that case
 (gc `internal/worker/handle_lifecycle.go:322-330`,
 gc `internal/session/submit.go:261-275`). `docs/provider-herdr-method-io.md`
-§interrupt Conflicts #1 records the deviation.
+§interrupt Conflicts #1 records the deviation. For `nudge` the exit-80 words
+stay inert at the pinned baseline: gc already read the previous `busy`,
+`blocked` and send failures as exit `1` and the unconfirmed delivery as exit
+`0`, so the typed word and the added `delivered_unobserved` line change nothing
+gc acts on; a nudge to a missing or dead pane is still a best-effort exit `0`
+(`gc docs/reference/exec-session-provider.md:370`).
 
 Operations — the spec's 17 rows:
 

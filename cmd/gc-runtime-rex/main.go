@@ -287,17 +287,48 @@ func opInterrupt(ctx context.Context, p *provider.Provider, args []string, _ io.
 	return p.Interrupt(ctx, args[0])
 }
 
-func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, _ io.Writer) error {
+func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
 	text, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("read message: %w", err)
 	}
 	if !utf8.Valid(text) {
 		// json.Marshal would rewrite the bytes to U+FFFD and type corrupted
-		// text. Reject before touching Rex so nothing reaches the pane.
-		return fmt.Errorf("nudge: message is not valid UTF-8")
+		// text. Reject before touching Rex so nothing reaches the pane. The
+		// detail matches herdr-core's failed nudge wording.
+		return &provider.InputOutcomeError{
+			Outcome: "rejected",
+			Detail:  "the nudge text is not UTF-8; nothing was typed",
+		}
 	}
-	return bestEffort(p.Nudge(ctx, args[0], string(text)))
+	report, err := p.NudgeReport(ctx, args[0], string(text), provider.NudgeModeWait)
+	if err != nil {
+		// A missing session stays best effort; a busy, blocked or failed-send
+		// outcome is an *InputOutcomeError and maps to exit 80.
+		return bestEffort(err)
+	}
+	if report.Delivered && !report.Confirmed {
+		return writeDeliveredUnobserved(out, args[0])
+	}
+	return nil
+}
+
+// writeDeliveredUnobserved answers a nudge that reached the pane but whose
+// turn start was not observed: exit 0 and one
+// {"outcome":"delivered_unobserved","detail":...} line, matching the pack's
+// success envelope. gc discards nudge stdout, so the line is informational for
+// other callers; the unconfirmed diagnostic file is still written by the
+// provider.
+func writeDeliveredUnobserved(out io.Writer, name string) error {
+	line, err := json.Marshal(struct {
+		Outcome string `json:"outcome"`
+		Detail  string `json:"detail"`
+	}{Outcome: "delivered_unobserved", Detail: fmt.Sprintf("nudge %s: delivered but no turn start was observed", name)})
+	if err != nil {
+		return fmt.Errorf("encode delivered_unobserved outcome: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(line))
+	return err
 }
 
 func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
