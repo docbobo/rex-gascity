@@ -201,33 +201,45 @@ func TestProcessAliveMatchesByName(t *testing.T) {
 		Ancestors:  []rex.Process{{Name: "node", Argv0: "/usr/local/bin/claude"}},
 	}}
 
-	alive, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
-	if err != nil || !alive {
-		t.Errorf("ProcessAlive(claude) = %v, %v, want true, nil", alive, err)
+	state, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
+	if err != nil || state != provider.LivenessAlive {
+		t.Errorf("ProcessAlive(claude) = %v, %v, want alive, nil", state, err)
 	}
-	alive, err = p.ProcessAlive(context.Background(), teardownDog, []string{"codex"})
-	if err != nil || alive {
-		t.Errorf("ProcessAlive(codex) = %v, %v, want false, nil", alive, err)
+	state, err = p.ProcessAlive(context.Background(), teardownDog, []string{"codex"})
+	if err != nil || state != provider.LivenessDead {
+		t.Errorf("ProcessAlive(codex) = %v, %v, want dead, nil", state, err)
 	}
-	alive, err = p.ProcessAlive(context.Background(), teardownDog, nil)
-	if err != nil || !alive {
-		t.Errorf("ProcessAlive(no names) = %v, %v, want true, nil", alive, err)
+	state, err = p.ProcessAlive(context.Background(), teardownDog, nil)
+	if err != nil || state != provider.LivenessAlive {
+		t.Errorf("ProcessAlive(no names) = %v, %v, want alive, nil", state, err)
 	}
 }
 
 func TestProcessAliveMissingPane(t *testing.T) {
 	p := provider.New("acme", faketest.New())
-	alive, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
-	if err != nil || alive {
-		t.Errorf("ProcessAlive = %v, %v, want false, nil", alive, err)
+	state, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
+	if err != nil || state != provider.LivenessDead {
+		t.Errorf("ProcessAlive = %v, %v, want dead, nil", state, err)
 	}
 }
 
 func TestProcessAliveVanishedPane(t *testing.T) {
 	fake, p := teardownStarted(t, teardownDog)
 	fake.ProcessErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
-	alive, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
-	if err != nil || alive {
-		t.Errorf("ProcessAlive after pane vanished = %v, %v; want false, nil", alive, err)
+	state, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
+	if err != nil || state != provider.LivenessDead {
+		t.Errorf("ProcessAlive after pane vanished = %v, %v; want dead, nil", state, err)
+	}
+}
+
+// TestProcessAliveTransientProcessErrorIsUnknown: a BlockProcess failure other
+// than a vanished pane must not report the agent dead. gc reads the empty
+// cannot-tell answer as alive.
+func TestProcessAliveTransientProcessErrorIsUnknown(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.ProcessErr = errors.New("rex block.method: connection reset")
+	state, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
+	if err != nil || state != provider.LivenessUnknown {
+		t.Errorf("ProcessAlive after a transient error = %v, %v; want unknown, nil", state, err)
 	}
 }

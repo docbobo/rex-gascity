@@ -54,12 +54,12 @@ func TestProcessAliveRecognizesWrappedGC(t *testing.T) {
 	fake, p, block := retireStarted(t, name)
 	fake.Processes = wrappedForeground(block)
 
-	alive, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
+	state, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
 	if err != nil {
 		t.Fatalf("ProcessAlive: %v", err)
 	}
-	if !alive {
-		t.Fatal("ProcessAlive(gc) = false with a live wrapped gc; gc would reap the pane as a zombie")
+	if state != provider.LivenessAlive {
+		t.Fatalf("ProcessAlive(gc) = %v with a live wrapped gc; gc would reap the pane as a zombie", state)
 	}
 }
 
@@ -70,12 +70,12 @@ func TestProcessAliveWrappedGCStillDiesOnExit(t *testing.T) {
 		block: {LastExit: &rex.ExitStatus{ExitCode: 1}},
 	}
 
-	alive, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
+	state, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
 	if err != nil {
 		t.Fatalf("ProcessAlive: %v", err)
 	}
-	if alive {
-		t.Error("ProcessAlive(gc) = true for an exited program; want false")
+	if state != provider.LivenessDead {
+		t.Errorf("ProcessAlive(gc) = %v for an exited program; want dead", state)
 	}
 }
 
@@ -86,9 +86,9 @@ func TestProcessAliveStillMatchesLiteralGC(t *testing.T) {
 		block: {Foreground: &rex.Process{Name: "gc", Path: "/usr/bin/gc"}},
 	}
 
-	alive, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
-	if err != nil || !alive {
-		t.Fatalf("ProcessAlive(literal gc) = %v, %v, want true, nil", alive, err)
+	state, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
+	if err != nil || state != provider.LivenessAlive {
+		t.Fatalf("ProcessAlive(literal gc) = %v, %v, want alive, nil", state, err)
 	}
 }
 
@@ -99,9 +99,9 @@ func TestProcessAliveKimiAlias(t *testing.T) {
 		block: {Foreground: &rex.Process{Name: "kimi-code", Path: "/usr/bin/kimi-code"}},
 	}
 
-	alive, err := p.ProcessAlive(context.Background(), name, []string{"kimi"})
-	if err != nil || !alive {
-		t.Fatalf("ProcessAlive(kimi->kimi-code) = %v, %v, want true, nil", alive, err)
+	state, err := p.ProcessAlive(context.Background(), name, []string{"kimi"})
+	if err != nil || state != provider.LivenessAlive {
+		t.Fatalf("ProcessAlive(kimi->kimi-code) = %v, %v, want alive, nil", state, err)
 	}
 }
 
@@ -116,9 +116,9 @@ func TestRetireDrainClosesWrappedGCDispatcher(t *testing.T) {
 
 	// gc observes a live agent process, so the reconciler does not treat the
 	// drain-ack as a zombie and does reach provider stop.
-	alive, err := p.ProcessAlive(ctx, name, []string{"gc"})
-	if err != nil || !alive {
-		t.Fatalf("ProcessAlive = %v, %v, want true, nil", alive, err)
+	state, err := p.ProcessAlive(ctx, name, []string{"gc"})
+	if err != nil || state != provider.LivenessAlive {
+		t.Fatalf("ProcessAlive = %v, %v, want alive, nil", state, err)
 	}
 	running, err := p.IsRunning(ctx, name)
 	if err != nil || !running {
@@ -158,8 +158,8 @@ func TestProcessAliveLegacyBindingFallsBackToEnv(t *testing.T) {
 	}
 	fake.Processes = wrappedForeground(b.BlockID)
 
-	alive, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
-	if err != nil || !alive {
-		t.Fatalf("ProcessAlive = %v, %v, want true, nil", alive, err)
+	state, err := p.ProcessAlive(context.Background(), name, []string{"gc"})
+	if err != nil || state != provider.LivenessAlive {
+		t.Fatalf("ProcessAlive = %v, %v, want alive, nil", state, err)
 	}
 }

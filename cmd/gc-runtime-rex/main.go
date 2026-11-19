@@ -352,11 +352,18 @@ func opProcessAlive(ctx context.Context, p *provider.Provider, args []string, st
 	if names[len(names)-1] == "" {
 		names = names[:len(names)-1]
 	}
-	alive, err := p.ProcessAlive(ctx, args[0], names)
+	state, err := p.ProcessAlive(ctx, args[0], names)
 	if err != nil {
 		return err
 	}
-	printBool(out, alive)
+	switch state {
+	case provider.LivenessAlive:
+		printBool(out, true)
+	case provider.LivenessDead:
+		printBool(out, false)
+	}
+	// LivenessUnknown prints nothing: exit 0 with empty stdout, which gc's
+	// reader treats as alive (gc v1.5.1 exec/exec.go:709-718).
 	return nil
 }
 

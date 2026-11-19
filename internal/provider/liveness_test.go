@@ -18,17 +18,27 @@ func TestProcessAlive(t *testing.T) {
 		name  string
 		info  rex.ProcessInfo
 		names []string
-		want  bool
+		want  Liveness
 	}{
-		{"last exit beats a matching foreground", rex.ProcessInfo{LastExit: exited, Foreground: &agent}, []string{"claude"}, false},
-		{"last exit with no names", rex.ProcessInfo{LastExit: exited}, nil, false},
-		{"last exit beats a matching ancestor", rex.ProcessInfo{LastExit: exited, Ancestors: []rex.Process{agent}}, []string{"claude"}, false},
-		{"empty names and no exit is alive", rex.ProcessInfo{Foreground: shell}, nil, true},
-		{"foreground matches by argv0 basename", rex.ProcessInfo{Foreground: &agent}, []string{"claude"}, true},
-		{"foreground matches by name", rex.ProcessInfo{Foreground: &agent}, []string{"node"}, true},
-		{"ancestor matches", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{agent}}, []string{"claude"}, true},
-		{"shell only, agent missing", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{*shell}}, []string{"claude"}, false},
-		{"empty names never match", rex.ProcessInfo{Foreground: &rex.Process{}}, []string{""}, false},
+		{"last exit beats a matching foreground", rex.ProcessInfo{LastExit: exited, Foreground: &agent}, []string{"claude"}, LivenessDead},
+		{"last exit with no names", rex.ProcessInfo{LastExit: exited}, nil, LivenessDead},
+		{"last exit beats a matching ancestor", rex.ProcessInfo{LastExit: exited, Ancestors: []rex.Process{agent}}, []string{"claude"}, LivenessDead},
+		{"empty names and no exit is alive", rex.ProcessInfo{Foreground: shell}, nil, LivenessAlive},
+		{"foreground matches by argv0 basename", rex.ProcessInfo{Foreground: &agent}, []string{"claude"}, LivenessAlive},
+		{"foreground matches by name", rex.ProcessInfo{Foreground: &agent}, []string{"node"}, LivenessAlive},
+		{"ancestor matches", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{agent}}, []string{"claude"}, LivenessAlive},
+		// A fully readable table with no match is a definite dead.
+		{"shell only, agent missing", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{*shell}}, []string{"claude"}, LivenessDead},
+		// An empty table (the launcher is not at the agent yet) cannot be
+		// resolved into dead: gc reads the empty answer as alive.
+		{"empty table is unknown", rex.ProcessInfo{}, []string{"claude"}, LivenessUnknown},
+		// An opaque process with no readable identity could be the agent.
+		{"opaque process is unknown", rex.ProcessInfo{Foreground: &rex.Process{PID: 7}}, []string{"claude"}, LivenessUnknown},
+		// Readable non-match plus an opaque process is still unknown.
+		{"opaque ancestor with a readable foreground is unknown", rex.ProcessInfo{Foreground: shell, Ancestors: []rex.Process{{PID: 7}}}, []string{"claude"}, LivenessUnknown},
+		// Empty names never match a readable non-matching process: dead, not
+		// unknown, because the table was readable.
+		{"empty names never match", rex.ProcessInfo{Foreground: shell}, []string{""}, LivenessDead},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

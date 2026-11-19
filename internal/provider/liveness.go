@@ -52,26 +52,64 @@ func expandProcessNames(names []string, gcBin string) []string {
 	return out
 }
 
-// processAlive reports whether the agent program is running in a pane. A
-// non-nil LastExit is always dead. With no names, a nil LastExit is alive.
-// With names, the foreground process or an ancestor must match one; the check
-// is strict, so a pane that reports no matching process is dead.
-func processAlive(info rex.ProcessInfo, names []string) bool {
+// Liveness is the three-valued answer for the RPP process-alive op. gc's
+// reader treats an empty stdout as alive and only an explicit "false" (or an
+// error) as dead (gc v1.5.1 internal/runtime/exec/exec.go:709-718), so a
+// definite "no match" must be kept distinct from the pack's "cannot tell".
+type Liveness int
+
+const (
+	// LivenessUnknown is the pack's "cannot tell": the process table could not
+	// be read, or an opaque process could not be ruled out. The op answers exit
+	// 0 with empty stdout, which gc reads as alive. It is the zero value so a
+	// failure to probe defaults to the safe answer.
+	LivenessUnknown Liveness = iota
+	// LivenessAlive means a process in the pane matched one of the names.
+	LivenessAlive
+	// LivenessDead means a fully readable process table held no matching
+	// process, or the program had exited.
+	LivenessDead
+)
+
+// processAlive is the strict foreground/ancestor match plus the pack's
+// cannot-tell cases. A non-nil LastExit is always dead. With no names, a nil
+// LastExit is alive. With names, the foreground process or an ancestor must
+// match one: a fully readable table with no match is dead, while an empty
+// table or a table holding an opaque (unreadable) process is unknown, because
+// we cannot rule out that the agent is that process and gc reads the empty
+// answer as alive.
+func processAlive(info rex.ProcessInfo, names []string) Liveness {
 	if info.LastExit != nil {
-		return false
+		return LivenessDead
 	}
 	if len(names) == 0 {
-		return true
+		return LivenessAlive
 	}
-	if info.Foreground != nil && processMatches(*info.Foreground, names) {
-		return true
+	procs := make([]rex.Process, 0, len(info.Ancestors)+1)
+	if info.Foreground != nil {
+		procs = append(procs, *info.Foreground)
 	}
-	for _, a := range info.Ancestors {
-		if processMatches(a, names) {
-			return true
+	procs = append(procs, info.Ancestors...)
+	for _, p := range procs {
+		if processMatches(p, names) {
+			return LivenessAlive
 		}
 	}
-	return false
+	if len(procs) == 0 {
+		return LivenessUnknown
+	}
+	for _, p := range procs {
+		if processOpaque(p) {
+			return LivenessUnknown
+		}
+	}
+	return LivenessDead
+}
+
+// processOpaque reports whether a process carries no readable identity, so it
+// can neither match a name nor be ruled out as the agent.
+func processOpaque(p rex.Process) bool {
+	return p.Name == "" && p.Path == "" && p.Argv0 == ""
 }
 
 // processMatches reports whether p is one of names, by name, argv0, or the
@@ -111,19 +149,23 @@ func (p *Provider) paneAlive(ctx context.Context, b Binding) (bool, error) {
 
 // ProcessAlive reports whether one of names is the foreground process or an
 // ancestor in the agent's pane. It backs the RPP process-alive op; empty names
-// means alive. An agent with no pane is not alive.
-func (p *Provider) ProcessAlive(ctx context.Context, name string, names []string) (bool, error) {
+// means alive. An agent with no pane is dead. A BlockProcess failure other
+// than a vanished pane is LivenessUnknown: gc reads the empty answer as alive,
+// which is safer than reporting a transient error as dead.
+func (p *Provider) ProcessAlive(ctx context.Context, name string, names []string) (Liveness, error) {
 	b, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil || !ok {
-		return false, err
+		return LivenessDead, err
 	}
 	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
 		// A pane that vanished between resolve and process has no live agent.
-		return false, nil
+		return LivenessDead, nil
 	}
 	if err != nil {
-		return false, err
+		// The process table could not be read (a transient Rex error or a lost
+		// reply). Cannot tell: do not report the agent dead.
+		return LivenessUnknown, nil
 	}
 	// Legacy bindings started before GCBin was persisted carry none; fall back
 	// to the provider's own environment so an already-running wrapped gc is

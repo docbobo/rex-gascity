@@ -262,7 +262,7 @@ Operations — the spec's 17 rows:
 | `interrupt` | `script interrupt <name>` | — | — |
 | `is-running` | `script is-running <name>` | — | `true` or `false` |
 | `attach` | `script attach <name>` | tty passthrough | tty passthrough |
-| `process-alive` | `script process-alive <name>` | process names (1/line) | `true` or `false` |
+| `process-alive` | `script process-alive <name>` | process names (1/line) | `true`, `false`, or empty (cannot tell; gc reads empty as alive) |
 | `nudge` | `script nudge <name>` | message text | — |
 | `set-meta` | `script set-meta <name> <key>` | value on stdin | — |
 | `get-meta` | `script get-meta <name> <key>` | — | value (empty = not set) |

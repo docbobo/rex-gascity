@@ -292,6 +292,37 @@ func TestProcessAlive(t *testing.T) {
 	}
 }
 
+// TestProcessAliveTransientErrorIsIndeterminate pins the medium deviation: an
+// unreadable process table must answer exit 0 with empty stdout (gc reads that
+// as alive), not exit 1 with stderr (gc reads an error as dead).
+func TestProcessAliveTransientErrorIsIndeterminate(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {Foreground: &rex.Process{Name: "sleep"}},
+	}
+	fake.ProcessErr = errors.New("rex block.method: connection reset")
+	r := h.run("claude\n", "process-alive", dog)
+	if r.code != exitOK {
+		t.Errorf("exit = %d, want %d (stderr %q)", r.code, exitOK, r.stderr)
+	}
+	if r.stdout != "" {
+		t.Errorf("stdout = %q, want empty (cannot tell)", r.stdout)
+	}
+}
+
+// TestProcessAliveEmptyTableIsIndeterminate: with no readable process at all
+// the answer is cannot-tell (exit 0, empty stdout), not a spurious dead.
+func TestProcessAliveEmptyTableIsIndeterminate(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{"block:dog-1": {}}
+	r := h.must("claude\n", "process-alive", dog)
+	if r.stdout != "" {
+		t.Errorf("stdout = %q, want empty (cannot tell)", r.stdout)
+	}
+}
+
 func TestGetLastActivity(t *testing.T) {
 	h, fake := newHarness(t)
 	h.start(dog)
