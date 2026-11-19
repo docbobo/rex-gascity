@@ -24,6 +24,11 @@ func nudgeStarted(t *testing.T, fake rex.Client, opts ...provider.Option) *provi
 	if err := p.Start(context.Background(), activityName, provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// Start now performs a post-launch liveness read; these tests measure the
+	// Nudge op's own Rex calls, so the setup's are cleared.
+	if f, ok := fake.(*faketest.Fake); ok {
+		f.BlockCalls = nil
+	}
 	return p
 }
 

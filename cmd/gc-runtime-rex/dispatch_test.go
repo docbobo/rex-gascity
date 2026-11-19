@@ -570,6 +570,77 @@ func TestStartEmptyStdinFails(t *testing.T) {
 	}
 }
 
+// TestStartInstantExitFails covers the document's post-launch liveness failure:
+// a pane whose program has already exited is not a successful start, and the
+// dead pane is left in place for gc's stop.
+func TestStartInstantExitFails(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 1}},
+	}
+	r := h.run(`{"command":"false"}`, "start", dog)
+	assertFailure(t, r, exitFail)
+	if !strings.Contains(r.stderr, "exited during startup") {
+		t.Errorf("stderr = %q, want an exited-during-startup message", r.stderr)
+	}
+	if n := len(fake.CreatedWindows) + len(fake.CreatedSplits); n != 1 {
+		t.Errorf("panes launched = %d, want 1 (the dead pane is left for gc's stop)", n)
+	}
+}
+
+// TestStartOneShotInstantExitSucceeds covers lifecycle=one_shot: a batch job
+// that exits at once is expected to end, so the start still succeeds.
+func TestStartOneShotInstantExitSucceeds(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+	}
+	r := h.run(`{"command":"true","lifecycle":"one_shot"}`, "start", dog)
+	if r.code != exitOK {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", r.code, r.stderr)
+	}
+}
+
+// livenessAfter returns a fake ProcessFunc that reports a live pane for the
+// first aliveCalls calls and a dead one afterwards, modelling an agent that
+// exits after the post-launch probe but before its first turn.
+func livenessAfter(aliveCalls int) func(rex.BlockID) rex.ProcessInfo {
+	var calls int
+	return func(rex.BlockID) rex.ProcessInfo {
+		calls++
+		if calls > aliveCalls {
+			return rex.ProcessInfo{LastExit: &rex.ExitStatus{ExitCode: 1}}
+		}
+		return rex.ProcessInfo{}
+	}
+}
+
+// TestStartMissedFirstTurnFails covers the document's second liveness failure:
+// an agent that ends while the first-turn readiness wait runs, before its first
+// turn, fails the start.
+func TestStartMissedFirstTurnFails(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ProcessFunc = livenessAfter(1) // alive at the post-launch probe, dead in the readiness wait
+	r := h.run(`{"command":"sleep 300","nudge":"hi"}`, "start", dog)
+	assertFailure(t, r, exitFail)
+	if !strings.Contains(r.stderr, "before its first turn") {
+		t.Errorf("stderr = %q, want a before-its-first-turn message", r.stderr)
+	}
+}
+
+// TestStartOneShotMissedFirstTurnSucceeds covers lifecycle=one_shot for the
+// same case: the agent ending before its first turn is expected, not a failure.
+func TestStartOneShotMissedFirstTurnSucceeds(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ProcessFunc = func(rex.BlockID) rex.ProcessInfo {
+		return rex.ProcessInfo{LastExit: &rex.ExitStatus{ExitCode: 0}}
+	}
+	r := h.run(`{"command":"sleep 300","nudge":"hi","lifecycle":"one_shot"}`, "start", dog)
+	if r.code != exitOK {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", r.code, r.stderr)
+	}
+}
+
 // failWriter fails every write.
 type failWriter struct{}
 

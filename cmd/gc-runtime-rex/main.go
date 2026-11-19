@@ -74,6 +74,7 @@ type startConfig struct {
 	Env             map[string]string `json:"env"`
 	PreStart        []string          `json:"pre_start"`
 	Nudge           string            `json:"nudge"`
+	Lifecycle       string            `json:"lifecycle"`
 	PackOverlayDirs []string          `json:"pack_overlay_dirs"`
 }
 
@@ -246,6 +247,7 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		Env:             cfg.Env,
 		PreStart:        cfg.PreStart,
 		Nudge:           cfg.Nudge,
+		Lifecycle:       cfg.Lifecycle,
 		PackOverlayDirs: cfg.PackOverlayDirs,
 	})
 	if errors.Is(err, provider.ErrAlreadyRunning) {

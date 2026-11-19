@@ -720,6 +720,41 @@ func TestStartupTimingDiagnosticRecordsBoundReadiness(t *testing.T) {
 	}
 }
 
+// TestStartupTimingRecordsEndedReadiness pins the readiness_outcome value for
+// the agent-ended case (GCREX-53): a wait cut short because the pane's program
+// had already exited records "ended" and fails the start before its first turn.
+func TestStartupTimingRecordsEndedReadiness(t *testing.T) {
+	const name = "Indigo--dog-1"
+	stateDir := t.TempDir()
+	fake := faketest.New()
+	var calls int
+	fake.ProcessFunc = func(rex.BlockID) rex.ProcessInfo {
+		calls++
+		// Alive at the single post-launch probe, dead in the readiness wait.
+		if calls > 1 {
+			return rex.ProcessInfo{LastExit: &rex.ExitStatus{ExitCode: 1}}
+		}
+		return rex.ProcessInfo{}
+	}
+	p := startupProvider(fake,
+		provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)),
+		provider.WithStartupReadiness(80*time.Millisecond, 10*time.Millisecond),
+	)
+
+	err := p.Start(context.Background(), name, provider.Config{
+		Argv:  []string{"pi"},
+		Nudge: "hello agent",
+	})
+	if err == nil || !strings.Contains(err.Error(), "before its first turn") {
+		t.Fatalf("Start error = %v, want before-its-first-turn", err)
+	}
+
+	got := readStartupTiming(t, stateDir, name)
+	if got["readiness_outcome"] != "ended" {
+		t.Errorf("readiness_outcome = %v, want ended", got["readiness_outcome"])
+	}
+}
+
 // TestStartupTimingRecordsEachRetryAttempt covers AC1's "each retry attempt":
 // when the submit is not confirmed and the nudge is resent, every attempt's
 // backoff, write and confirmation duration must be recorded, not just the

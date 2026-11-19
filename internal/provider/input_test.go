@@ -21,6 +21,9 @@ func started(t *testing.T) (*faketest.Fake, *provider.Provider) {
 	if err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// Start now performs a post-launch liveness read; these tests measure the
+	// op under test's own Rex calls, so the setup's are cleared.
+	fake.BlockCalls = nil
 	return fake, p
 }
 

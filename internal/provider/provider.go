@@ -73,6 +73,13 @@ type Config struct {
 	// immediately. Delivery is best effort: a transport failure does not fail
 	// the start. An empty string is a no-op.
 	Nudge string
+	// Lifecycle is gc's start-config lifecycle. Only "one_shot" is
+	// distinguished: a one-shot command is expected to exit on its own, so it
+	// skips the post-launch and first-turn agent-liveness failures. Any other
+	// value, including empty, is the default lifecycle that fails a start whose
+	// agent ends during startup or before its first turn (parity doc ### start
+	// row 14).
+	Lifecycle string
 	// PackOverlayDirs lists pack overlay directories. The provider stages each
 	// directory's per-provider/<GC_PROVIDER> subtree into WorkDir after pre_start,
 	// so a pack's per-provider override reaches a workdir that already holds a
@@ -251,8 +258,10 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	p.deliverStartupNudge(ctx, name, launch, cfg.Nudge)
-	return nil
+	if err := p.failIfAgentEnded(ctx, name, launch, cfg); err != nil {
+		return err
+	}
+	return p.deliverStartupNudge(ctx, name, launch, cfg)
 }
 
 // StartNew starts the agent like Start, but fails with ErrAlreadyRunning when
@@ -277,8 +286,36 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 	if err != nil {
 		return err
 	}
-	p.deliverStartupNudge(ctx, name, launch, cfg.Nudge)
-	return nil
+	if err := p.failIfAgentEnded(ctx, name, launch, cfg); err != nil {
+		return err
+	}
+	return p.deliverStartupNudge(ctx, name, launch, cfg)
+}
+
+// lifecycleOneShot is the only start-config lifecycle this provider
+// distinguishes; gc sends no other value (internal/runtime/exec/json.go:29 at
+// v1.5.1). A one-shot command is expected to exit on its own, so it skips the
+// post-launch and first-turn agent-liveness failures (parity doc ### start row
+// 14; herdr-core ONE_SHOT, herdrcore/lifecycle.py:161).
+const lifecycleOneShot = "one_shot"
+
+// failIfAgentEnded fails a start whose agent program already exited, unless the
+// lifecycle is one_shot. It mirrors herdr-core's _fail_if_ended
+// (herdrcore/lifecycle.py:1027-1036): a single liveness read right after the
+// launch, not a wait, and only a definite end is a failure. The dead pane is
+// left in place for gc's post-failure stop, so the binding stays recorded.
+func (p *Provider) failIfAgentEnded(ctx context.Context, name string, launch startResult, cfg Config) error {
+	if cfg.Lifecycle == lifecycleOneShot || launch.blockID == "" {
+		return nil
+	}
+	b := Binding{Name: SessionName(name), SessionID: launch.sessionID, BlockID: launch.blockID}
+	alive, err := p.paneAlive(ctx, b)
+	if err != nil || alive {
+		// An observation error cannot prove the agent ended, so it must not
+		// fail a start that might be healthy.
+		return nil
+	}
+	return fmt.Errorf("%s: the agent exited during startup", name)
 }
 
 // startResult identifies the pane a start launched. A zero result means the

@@ -47,6 +47,11 @@ type Fake struct {
 	// Processes is the process state BlockProcess reports, keyed by block.
 	Processes map[rex.BlockID]rex.ProcessInfo
 
+	// ProcessFunc, when non-nil, supersedes Processes. It is called with the
+	// fake's lock held, so it must not call Fake methods; tests use it to model
+	// a pane whose program exits between calls.
+	ProcessFunc func(rex.BlockID) rex.ProcessInfo
+
 	// Formats is the rendered output BlockFormat reports, keyed by block.
 	Formats map[rex.BlockID]string
 
@@ -168,6 +173,9 @@ func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID)
 		return f.CloseBlockErr
 	}
 	f.ClosedBlocks = append(f.ClosedBlocks, block)
+	// A closed pane has no process: drop any recorded liveness so a block ID
+	// reused by a relaunched pane starts live, as a fresh Rex block does.
+	delete(f.Processes, block)
 	var windows []rex.Window
 	for _, w := range f.View.Windows {
 		var kept []rex.Block
@@ -226,6 +234,9 @@ func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.Bloc
 	f.record(sid, block, "process")
 	if f.ProcessErr != nil {
 		return rex.ProcessInfo{}, f.ProcessErr
+	}
+	if f.ProcessFunc != nil {
+		return f.ProcessFunc(block), nil
 	}
 	return f.Processes[block], nil
 }

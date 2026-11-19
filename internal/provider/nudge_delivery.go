@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -47,6 +48,9 @@ const (
 	readinessSettleBound = "settle-bound"
 	readinessCanceled    = "canceled"
 	readinessDisabled    = "disabled"
+	// readinessEnded is a wait cut short because the pane's program had already
+	// exited: the agent ended before its first turn.
+	readinessEnded = "ended"
 )
 
 // WithStartupReadiness sets how long Start waits for the pane program to
@@ -74,8 +78,11 @@ func WithStartupNudgeRetries(backoffs []time.Duration) Option {
 }
 
 // deliverStartupNudge waits for the launched pane to become ready, then types
-// and submits the startup nudge. It is best effort: no error from the wait or
-// the delivery is returned to Start. It targets the pane Start just launched,
+// and submits the startup nudge. Delivery itself is best effort: no error from
+// the wait or the delivery is returned. The one exception is agent liveness: an
+// agent that ends before its first turn fails the start, unless the lifecycle is
+// one_shot, mirroring herdr-core's first_turn (herdrcore/lifecycle.py:1113-1125).
+// It targets the pane Start just launched,
 // resolved from launch rather than re-looked-up by name, so a concurrent stop
 // and start of the same name cannot receive a stale nudge. A delivery whose
 // submit is not confirmed is resent down a bounded ladder, because readiness
@@ -84,9 +91,9 @@ func WithStartupNudgeRetries(backoffs []time.Duration) Option {
 // attempt is unconfirmed, StartupDeliveryUnconfirmedMetaKey marks the pane;
 // a confirmed delivery clears it. A zero launch result means Start found the
 // pane already alive and must not deliver a second nudge.
-func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch startResult, text string) {
-	if text == "" || launch.blockID == "" {
-		return
+func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch startResult, cfg Config) error {
+	if cfg.Nudge == "" || launch.blockID == "" {
+		return nil
 	}
 	binding := Binding{Name: SessionName(name), SessionID: launch.sessionID, BlockID: launch.blockID}
 	timing := startupTiming{
@@ -102,21 +109,30 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		timing.TotalMS = millis(time.Since(start)) + timing.LaunchMS
 		p.writeStartupTimingDiagnostic(binding, timing)
 	}()
-	outcome, readiness := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID)
+	outcome, readiness, ended := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID)
 	timing.ReadinessOutcome = outcome
 	timing.ReadinessMS = millis(readiness)
+	// An agent that ended before its first turn: fail unless the lifecycle is
+	// one_shot, and never type a nudge into a dead pane. The timing diagnostic
+	// is still written by the defer above.
+	if ended {
+		if cfg.Lifecycle == lifecycleOneShot {
+			return nil
+		}
+		return fmt.Errorf("%s: the agent exited during startup, before its first turn", name)
+	}
 
-	report, err := p.nudgeReportBinding(ctx, binding, text, NudgeModeImmediate)
+	report, err := p.nudgeReportBinding(ctx, binding, cfg.Nudge, NudgeModeImmediate)
 	timing.WriteMS = millis(report.Write)
 	timing.ConfirmMS = millis(report.Confirm)
 	timing.Confirmed = err == nil && report.Confirmed
 	if err == nil && report.Confirmed {
 		p.clearStartupDeliveryUnconfirmed(ctx, name)
-		return
+		return nil
 	}
 	if err != nil {
 		p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
-		return
+		return nil
 	}
 
 	attempt := 1
@@ -132,27 +148,28 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		// moment after the confirmation window is not typed twice.
 		if snap, snapErr := p.programStatusSnapshot(ctx, binding); snapErr == nil && (snap.State == "working" || snap.State == "blocked") {
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
-			return
+			return nil
 		}
 		attempt++
 		rt := retryTiming{Attempt: attempt, BackoffMS: millis(backoff)}
 		// Clear the still-drafted line before re-typing, mirroring gc's
 		// clear+paste+submit resend cycle.
 		_ = p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, startupClearKey)
-		report, err = p.nudgeReportBinding(ctx, binding, text, NudgeModeImmediate)
+		report, err = p.nudgeReportBinding(ctx, binding, cfg.Nudge, NudgeModeImmediate)
 		rt.WriteMS = millis(report.Write)
 		rt.ConfirmMS = millis(report.Confirm)
 		rt.Confirmed = err == nil && report.Confirmed
 		timing.Attempts = append(timing.Attempts, rt)
 		if err == nil && report.Confirmed {
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
-			return
+			return nil
 		}
 		if err != nil {
 			break
 		}
 	}
 	p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
+	return nil
 }
 
 // startupTiming is the per-stage startup-nudge timing left in
@@ -256,19 +273,20 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 }
 
 // waitForStartupReady blocks until the pane program reports an idle
-// program_status record, the bounded window elapses, or the start context is
-// done. It never returns an error: the startup nudge is best effort, so a
-// missing readiness signal falls through to delivery. When the program
-// reports no program_status at all, only the shorter settle delay is spent,
-// so an agent that never emits status is not held for the whole window.
+// program_status record, the pane's program ends, the bounded window elapses,
+// or the start context is done. It never returns an error: the startup nudge is
+// best effort, so a missing readiness signal falls through to delivery. When the
+// program reports no program_status at all, only the shorter settle delay is
+// spent, so an agent that never emits status is not held for the whole window.
 //
-// It returns how the wait ended (idle, a window or settle bound, canceled, or
-// disabled) and how long it took, so the caller can record whether the bound
-// was the cost (GCREX-58).
-func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, time.Duration) {
+// It returns how the wait ended (idle, a window or settle bound, canceled,
+// ended, or disabled), how long it took, and whether the agent ended. The
+// caller records the bound and, on an end, fails the start unless the lifecycle
+// is one_shot (GCREX-53, GCREX-58).
+func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, time.Duration, bool) {
 	window := p.nudge.startupReadyWindow
 	if window <= 0 {
-		return readinessDisabled, 0
+		return readinessDisabled, 0, false
 	}
 	poll := p.nudge.nudgePollInterval
 	if poll <= 0 {
@@ -278,11 +296,16 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 	start := time.Now()
 	sawRecord := false
 	for {
+		// A pane whose program has ended will never report readiness, so stop
+		// the wait at once rather than spending the bound on a dead pane.
+		if alive, err := p.paneAlive(ctx, Binding{SessionID: sid, BlockID: block}); err == nil && !alive {
+			return readinessEnded, time.Since(start), true
+		}
 		snap, err := p.programStatusSnapshot(ctx, Binding{SessionID: sid, BlockID: block})
 		if err == nil && snap.Present {
 			sawRecord = true
 			if snap.State == "idle" {
-				return readinessIdle, time.Since(start)
+				return readinessIdle, time.Since(start), false
 			}
 		}
 		elapsed := time.Since(start)
@@ -294,9 +317,9 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		}
 		if elapsed >= bound {
 			if sawRecord {
-				return readinessWindowBound, elapsed
+				return readinessWindowBound, elapsed, false
 			}
-			return readinessSettleBound, elapsed
+			return readinessSettleBound, elapsed, false
 		}
 		wait := poll
 		if remaining := bound - elapsed; wait > remaining {
@@ -306,7 +329,7 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return readinessCanceled, time.Since(start)
+			return readinessCanceled, time.Since(start), false
 		case <-timer.C:
 		}
 	}
