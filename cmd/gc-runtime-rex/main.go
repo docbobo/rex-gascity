@@ -178,6 +178,10 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		if errors.As(err, &rejected) {
 			return writeInputOutcome(stdout, stderr, "rejected", rejected.Error())
 		}
+		var outcome *provider.InputOutcomeError
+		if errors.As(err, &outcome) {
+			return writeInputOutcome(stdout, stderr, outcome.Outcome, outcome.Detail)
+		}
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, err)
 		return exitFail
 	}
@@ -280,7 +284,7 @@ func opIsRunning(ctx context.Context, p *provider.Provider, args []string, _ io.
 }
 
 func opInterrupt(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
-	return bestEffort(p.Interrupt(ctx, args[0]))
+	return p.Interrupt(ctx, args[0])
 }
 
 func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, _ io.Writer) error {

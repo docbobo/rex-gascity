@@ -173,8 +173,8 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `send-keys` | activity side-effect | records input time after a successful send (`provider.go`) | records input activity | intentional | GCREX-24 closed the gap: both stamp the input floor that `get-last-activity` reads. |
 | `interrupt` | mechanism | ctrl+c keystroke via Rex SendKeys | hc terminal.interrupt; signal vs key unverified | intentional | Rex has no signal API |
 | `interrupt` | wait/confirm | none; returns after send | hc waits up to 3 s to settle | intentional | RPP v0 has no outcome contract |
-| `interrupt` | no live program | exit 0, silent | exit 80 `gone` | intentional | gc 1.5.1 knows only exit 0/1/2 |
-| `interrupt` | failure mapping | non-NotFound errors exit 1 | unsent exit 80; unknown-after-write exit 1 | intentional | Rex lacks written/unwritten distinction |
+| `interrupt` | no live program | exit 80 `gone`, one stdout line | exit 80 `gone` | intentional | GCREX-44; gc 1.5.1 reads 80 as a plain error, so a gone interrupt is now an error where the contract asks for a best-effort exit 0 |
+| `interrupt` | failure mapping | pre-send exit 80 `unavailable`/`not_sent`; unknown-after-write exit 1 | unsent exit 80; unknown-after-write exit 1 | intentional | GCREX-44; Rex lacks a written/unwritten distinction |
 | `interrupt` | repeat/retry | single send; client retry unverified | never retried | unverified | Check Rex SendKeys retry code |
 | `clear-scrollback` | what is cleared | Rex `clear` call on the pane | no-op after intactness check | intentional | Rex has clear; hc has no clearable scrollback. |
 | `clear-scrollback` | missing session | exit 0 silently | exit 80 `gone` | intentional | gc 1.5.1 has no input-outcome; best-effort. |
@@ -269,9 +269,9 @@ in `docs/REX-CONTRACT.md` §12 and `docs/rex-provider.md`.
   There is no "unknown" channel for an exec provider in 1.5.1.
 - **`rex` exit code 3 is overloaded in our client.** `internal/rex/cli/cli.go`
   maps *any* `rex` exit 3 to `ErrSessionNotFound`, and the driving ops treat
-  that as success. If Rex ever uses exit 3 for a transport failure, a nudge,
-  interrupt or clear against a down server would report success. Worth
-  confirming with the Rex CLI.
+  that as success. If Rex ever uses exit 3 for a transport failure, a nudge or
+  clear against a down server would report success, and interrupt would report
+  `gone` rather than `unavailable`. Worth confirming with the Rex CLI.
 - **Probe fan-out.** gc's seam layer makes one `IsAttached`/`GetLastActivity`/
   `ProcessAlive` call cost up to four provider invocations (two `is-running`
   probes first). Each extra Rex round trip is paid on every observation.
@@ -744,7 +744,7 @@ GCREX-1 — pinned Rex key syntax (`docs/REX-CONTRACT.md:136`) and driving-op st
 
 **Status** — implemented
 
-**Our implementation.** Dispatched at `cmd/gc-runtime-rex/main.go:85` (arity 1, no stdin) to `opInterrupt` (`main.go:202-203`), which wraps `Provider.Interrupt` in `bestEffort`. `bestEffort` turns `ErrSessionNotFound` into exit 0 (`main.go:151-156`). `Interrupt` (`internal/provider/provider.go:604-613`) resolves the pane with `livePane` (`provider.go:618-634`), then calls `client.SendKeys(..., "ctrl+c")` (`interruptKey`, `provider.go:36`). That is a keystroke through Rex's key API, not a signal; the doc comment says Rex has no signal API (`provider.go:601-603`). It sends once, does not wait or confirm anything, and does not retry. A missing binding or an exited pane program gives `ErrSessionNotFound`, so exit 0 with no output. Any other error (transport, SendKeys) exits 1 as `interrupt <name>: …`. Deadline is the default 30 s. No state is touched. Note for a Pi-first city: gc 1.5.1 does not interrupt Pi sessions at all; it stops and restarts them (`internal/session/submit.go:520-525`).
+**Our implementation.** Dispatched at `cmd/gc-runtime-rex/main.go:110` (arity 1, no stdin) to `opInterrupt` (`main.go:286`), which returns `Provider.Interrupt` directly (GCREX-44 removed the old `bestEffort` wrapper). `Interrupt` (`internal/provider/provider.go:753-769`) resolves the pane with `livePane` (`provider.go:788-804`), then calls `client.SendKeys(..., "ctrl+c")` (`interruptKey`, `provider.go:54`). That is a keystroke through Rex's key API, not a signal; the doc comment says Rex has no signal API (`provider.go:750-752`). It sends once, does not wait or confirm anything, and does not retry. A missing binding or an exited pane program gives `ErrSessionNotFound`, which `interruptLookupOutcome` (`provider.go:774-783`) turns into exit 80 `gone` with one stdout line. An unreachable server (live lookup or send) gives exit 80 `unavailable`; any other pre-send failure gives exit 80 `not_sent`. A send failure that may have written the request stays exit 1 as `interrupt <name>: …` (outcome unknown). A delivered interrupt is exit 0 with no output. Deadline is the default 30 s. No state is touched. Note for a Pi-first city: gc 1.5.1 does not interrupt Pi sessions at all; it stops and restarts them (`internal/session/submit.go:520-525`).
 
 **herdr-core.** `ops_table.py:85` maps `interrupt` to `inputs.op_interrupt` (`herdrcore/inputs.py:355-356`), which runs `interrupt()` (`inputs.py:304-319`). It lists the city, takes the newest box and requires it to be intact (`inputs.py:209-229`). Then it calls hc `terminal.interrupt` with `timeout: 3.0` (`hc/client.py:102,268-270`), so hc waits up to 3 s for the program to settle. The client budget is 5 s (`hc/client.py:133`). The signal or key hc uses is not in this clone. The reply carries `outcome` and `key` (`hc/parse.py:149-151`). The test fake does `killpg(pid, SIGINT)` (`tests/fakehc/terminal.py:363-364`), but the real hc is unverified; I would need the hc source. A missing or finished box answers `gone`, an unreachable core `unavailable`. Both exit 80 with one stdout line (`rpp/outcome.py:103-115`). Success is exit 0 with empty stdout. The call is never retried, because a second Ctrl-C can end the program (`inputs.py:314-316`, `hc/client.py:21-24`). If the request may have been written but no reply came, it exits 1 as unknown (`inputs.py:277-281`).
 
@@ -752,13 +752,13 @@ GCREX-1 — pinned Rex key syntax (`docs/REX-CONTRACT.md:136`) and driving-op st
 
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
-| 1 | mechanism | `ctrl+c` keystroke via Rex SendKeys (`provider.go:609`) | hc `terminal.interrupt` (`hc/client.py:268`); real signal/key unverified | intentional | Matches gc, which models an interrupt as `C-c` (`carrier.go:113-116`); Rex has no signal API (`provider.go:601`). Whether hc signals the group needs hc source. |
+| 1 | mechanism | `ctrl+c` keystroke via Rex SendKeys (`provider.go:729`; `interruptKey`, `provider.go:54`) | hc `terminal.interrupt` (`hc/client.py:268`); real signal/key unverified | intentional | Matches gc, which models an interrupt as `C-c` (`carrier.go:113-116`); Rex has no signal API (`provider.go:750-752`). Whether hc signals the group needs hc source. |
 | 2 | wait/confirm | none; returns once keys are sent | hc waits up to 3 s for the program to settle (`hc/client.py:102`) | intentional | RPP v0 has no outcome contract, and gc does not wait after `interrupt` on exec providers: its idle wait needs `IdleWaitProvider`, which the exec carrier does not implement (`submit.go:273-282`). |
-| 3 | no live program | exit 0, silent (`main.go:152`) | exit 80 `gone: …` (`outcome.py:114`) | intentional | gc 1.5.1 knows only exit 0/1/2; 80 is an extension. tmux-style best effort. |
-| 4 | failure mapping | all non-NotFound errors exit 1 | unsent maps to `not_sent`/`unavailable` (exit 80). Unknown after write exits 1 (`inputs.py:277-281`) | intentional | Rex has no written/unwritten distinction. 80 is outside RPP v0. |
+| 3 | no live program | exit 80 `gone: …` (`provider.go:774-783`; GCREX-44) | exit 80 `gone: …` (`outcome.py:114`) | intentional | Now uses herdr-core's word. gc 1.5.1 reads 80 as a plain error, so the contract's best-effort exit 0 becomes an error on the unguarded `RuntimeHandle` path; the managed path pre-checks `IsRunning` (`method-io` §interrupt Conflicts #1). |
+| 4 | failure mapping | pre-send errors exit 80 `unavailable`/`not_sent`; post-send errors exit 1 (`provider.go:753-783`; GCREX-44) | unsent maps to `not_sent`/`unavailable` (exit 80). Unknown after write exits 1 (`inputs.py:277-281`) | intentional | Rex cannot tell written from unwritten, so every ambiguous send failure stays exit 1 rather than claiming `not_sent`. |
 | 5 | repeat/retry | one SendKeys, no retry; client retry policy unverified | never retried (`inputs.py:314`) | unverified | gc never retries `interrupt` itself, but codex/kimi/gemini may see an `Escape` first and `C-c` as fallback (`submit.go:290-305`). Rex client retry on a dropped connection remains to check; a second Ctrl-C can end the program. |
 
-**Verdict.** intentional. The behaviour fits RPP v0 and Rex's key-only API. Row 5 is the only open point, and it needs a read of the Rex client's retry code.
+**Verdict.** intentional. GCREX-44 closed rows 3 and 4: the typed `gone`, `unavailable` and `not_sent` outcomes now match herdr-core, while the ambiguous post-write case keeps exit 1. The behaviour fits RPP v0 and Rex's key-only API. Row 5 is the only open point, and it needs a read of the Rex client's retry code.
 
 **Cross-references.**
 GCREX-3 — agent input path (Nudge/SendKeys/Interrupt)
@@ -794,7 +794,9 @@ GCREX-5 — RPP v0 delivery, exit-code contract
 **Cross-references.**
 GCREX-5 — Phase 4 RPP v0 delivery; added the driving ops including clear-scrollback.
 GCREX-1 — pinned Rex contract; `clear` method row (`REX-CONTRACT.md:93`).
-GCREX-3 — nudge/send-keys/interrupt share `bestEffort` missing-session handling.
+GCREX-3 — the driving ops; nudge/send-keys/clear-scrollback share `bestEffort`
+missing-session handling.
+GCREX-44 — interrupt's typed `gone`/`unavailable`/`not_sent` outcomes.
 `docs/REX-CONTRACT.md` §9 (line 224-226) — driving ops not conformance requirements.
 
 **Follow-ups.**

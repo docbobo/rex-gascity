@@ -303,3 +303,100 @@ func TestInterruptExitedPaneFails(t *testing.T) {
 		t.Fatalf("Interrupt error = %v, want ErrSessionNotFound", err)
 	}
 }
+
+// TestInterruptMissingPaneIsGone pins the typed outcome for a name no pane
+// answers to: the RPP word is gone, not a generic failure.
+func TestInterruptMissingPaneIsGone(t *testing.T) {
+	p := provider.New("acme", faketest.New())
+
+	err := p.Interrupt(context.Background(), "Indigo--ghost")
+	got := outcomeOf(t, err)
+	if got.Outcome != "gone" {
+		t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+	}
+	if !errors.Is(err, provider.ErrSessionNotFound) {
+		t.Errorf("err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+// TestInterruptDeadPaneIsGone covers a pane whose program exited: same gone
+// outcome as a missing pane.
+func TestInterruptDeadPaneIsGone(t *testing.T) {
+	fake, p := started(t)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+	}
+
+	err := p.Interrupt(context.Background(), "Indigo--dog-1")
+	if got := outcomeOf(t, err); got.Outcome != "gone" {
+		t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+	}
+}
+
+// TestInterruptUnreachableIsUnavailable models a down Rex server during the
+// pane lookup: the interrupt was never sent, and the word is unavailable.
+func TestInterruptUnreachableIsUnavailable(t *testing.T) {
+	fake := faketest.New()
+	fake.ListSessionsErr = rex.ErrUnavailable
+	p := provider.New("acme", fake)
+
+	err := p.Interrupt(context.Background(), "Indigo--ghost")
+	if got := outcomeOf(t, err); got.Outcome != "unavailable" {
+		t.Errorf("outcome = %q, want unavailable (detail %q)", got.Outcome, got.Detail)
+	}
+	if !errors.Is(err, rex.ErrUnavailable) {
+		t.Errorf("err = %v, want rex.ErrUnavailable", err)
+	}
+}
+
+// TestInterruptPreSendFailureIsNotSent covers a lookup that fails for a reason
+// other than an unreachable server before any key is sent.
+func TestInterruptPreSendFailureIsNotSent(t *testing.T) {
+	fake := faketest.New()
+	fake.ListSessionsErr = errors.New("rex: protocol error")
+	p := provider.New("acme", fake)
+
+	err := p.Interrupt(context.Background(), "Indigo--ghost")
+	if got := outcomeOf(t, err); got.Outcome != "not_sent" {
+		t.Errorf("outcome = %q, want not_sent (detail %q)", got.Outcome, got.Detail)
+	}
+}
+
+// TestInterruptSendUnavailableIsUnavailable covers a server that is reachable
+// for the lookup but gone before the send: no key reached the pane.
+func TestInterruptSendUnavailableIsUnavailable(t *testing.T) {
+	fake, p := started(t)
+	fake.SendKeysErr = rex.ErrUnavailable
+
+	err := p.Interrupt(context.Background(), "Indigo--dog-1")
+	if got := outcomeOf(t, err); got.Outcome != "unavailable" {
+		t.Errorf("outcome = %q, want unavailable (detail %q)", got.Outcome, got.Detail)
+	}
+}
+
+// TestInterruptSendFailureStaysUnknown keeps a post-write failure an exit-1
+// error: the key may already have reached the program, so no typed word claims
+// it was not sent.
+func TestInterruptSendFailureStaysUnknown(t *testing.T) {
+	fake, p := started(t)
+	fake.SendKeysErr = errors.New("rex: connection reset")
+
+	err := p.Interrupt(context.Background(), "Indigo--dog-1")
+	if err == nil {
+		t.Fatal("Interrupt = nil, want an unknown-outcome error")
+	}
+	var outcome *provider.InputOutcomeError
+	if errors.As(err, &outcome) {
+		t.Errorf("err = %v, want no InputOutcomeError", err)
+	}
+}
+
+// outcomeOf fails unless err carries a typed input outcome.
+func outcomeOf(t *testing.T, err error) *provider.InputOutcomeError {
+	t.Helper()
+	var outcome *provider.InputOutcomeError
+	if !errors.As(err, &outcome) {
+		t.Fatalf("err = %v, want *provider.InputOutcomeError", err)
+	}
+	return outcome
+}

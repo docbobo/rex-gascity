@@ -28,6 +28,25 @@ var ErrSessionNotFound = errors.New("session not found")
 // The RPP dispatcher maps it to gc's "already running" start collision.
 var ErrAlreadyRunning = errors.New("provider: already running")
 
+// InputOutcomeError carries an RPP typed input outcome (herdr-core's exit 80)
+// for an input op. Outcome is the wire word, one of "gone", "not_sent" or
+// "unavailable"; Detail is the human-readable reason. The wrapped Err keeps
+// classification available to callers.
+type InputOutcomeError struct {
+	Outcome string
+	Detail  string
+	Err     error
+}
+
+func (e *InputOutcomeError) Error() string {
+	if e.Detail != "" {
+		return e.Detail
+	}
+	return e.Outcome
+}
+
+func (e *InputOutcomeError) Unwrap() error { return e.Err }
+
 // submitKey submits typed input; interruptKey is the soft interrupt keystroke.
 // Rex has no signal API, so both are keys.
 const (
@@ -734,12 +753,33 @@ func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) er
 func (p *Provider) Interrupt(ctx context.Context, name string) error {
 	binding, err := p.livePane(ctx, name)
 	if err != nil {
-		return err
+		return interruptLookupOutcome(err)
 	}
 	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, interruptKey); err != nil {
-		return fmt.Errorf("interrupt %s: %w", name, err)
+		err = fmt.Errorf("interrupt %s: %w", name, err)
+		// A send that could not reach the server never pressed the key. Any
+		// other send failure may have written the request, so it stays an
+		// unknown-outcome error (exit 1) rather than claiming not_sent.
+		if errors.Is(err, rex.ErrUnavailable) {
+			return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
+		}
+		return err
 	}
 	return nil
+}
+
+// interruptLookupOutcome classifies a failure before the interrupt key is sent.
+// A missing or dead pane is gone, an unreachable server is unavailable, and
+// every other pre-send failure is not_sent.
+func interruptLookupOutcome(err error) error {
+	switch {
+	case errors.Is(err, ErrSessionNotFound):
+		return &InputOutcomeError{Outcome: "gone", Detail: err.Error(), Err: err}
+	case errors.Is(err, rex.ErrUnavailable):
+		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
+	default:
+		return &InputOutcomeError{Outcome: "not_sent", Detail: err.Error(), Err: err}
+	}
 }
 
 // livePane resolves name to a pane whose program is still running. A missing

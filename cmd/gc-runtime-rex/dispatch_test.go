@@ -372,7 +372,6 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 		stdin string
 		args  []string
 	}{
-		{"", []string{"interrupt", "ghost"}},
 		{"hello\n", []string{"nudge", "ghost"}},
 		{"", []string{"send-keys", "ghost", "C-c", "Enter"}},
 		{"", []string{"send-keys", "ghost"}},
@@ -385,6 +384,69 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 	}
 	if len(fake.SentKeys) != 0 {
 		t.Errorf("keys sent to a missing session: %+v", fake.SentKeys)
+	}
+}
+
+// TestInterruptReturnsInputOutcomes pins the typed exit-80 words interrupt now
+// answers for a missing/dead pane, a down server, and a pre-send failure.
+func TestInterruptReturnsInputOutcomes(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		start   bool
+		dead    bool
+		listErr error
+		outcome string
+	}{
+		{"missing pane", false, false, nil, "gone"},
+		{"dead pane", true, true, nil, "gone"},
+		{"server unreachable", false, false, rex.ErrUnavailable, "unavailable"},
+		{"pre-send failure", false, false, errors.New("rex: protocol error"), "not_sent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, fake := newHarness(t)
+			if c.start {
+				h.start(dog)
+			}
+			if c.dead {
+				fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+					"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+				}
+			}
+			if c.listErr != nil {
+				fake.ListSessionsErr = c.listErr
+			}
+			r := h.run("", "interrupt", dog)
+			if r.code != exitInputOutcome {
+				t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+			}
+			var line struct {
+				Outcome string `json:"outcome"`
+				Detail  string `json:"detail"`
+			}
+			if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+				t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+			}
+			if line.Outcome != c.outcome {
+				t.Errorf("outcome = %q, want %q", line.Outcome, c.outcome)
+			}
+			if len(fake.SentKeys) != 0 {
+				t.Errorf("keys sent = %+v, want none", fake.SentKeys)
+			}
+		})
+	}
+}
+
+// TestInterruptDeliveredExitsZero keeps the delivered path at exit 0 with no
+// stdout, matching the RPP success envelope.
+func TestInterruptDeliveredExitsZero(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	r := h.run("", "interrupt", dog)
+	if r.code != exitOK || r.stdout != "" || r.stderr != "" {
+		t.Errorf("interrupt: exit %d stdout %q stderr %q, want 0 and empty", r.code, r.stdout, r.stderr)
+	}
+	if len(fake.SentKeys) != 1 || fake.SentKeys[0].Keys[0] != "ctrl+c" {
+		t.Errorf("sent keys = %+v, want one ctrl+c", fake.SentKeys)
 	}
 }
 
