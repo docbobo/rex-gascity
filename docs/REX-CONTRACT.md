@@ -490,6 +490,61 @@ Phase 0 also confirms the plan's decisions against the live surface:
   requirement is real, only the source of attachment differs. The provider
   never calls it: teardown closes city-owned blocks with `block.close` (D3), and
   §10 asserts its contract from the schema instead of executing it.
+- **Empty city session (GCREX-65).** Live record, 2026-11-20, rex
+  0.1.0-preview.21, scratch label `gc:gcrex65-scratch` (no real city touched;
+  `gc:my-city` and `rex-gas-city` were left alone). The Rex app was not
+  attached to the scratch session. Verbatim, trimmed to the lines that matter:
+
+  ```text
+  $ rex api call session.create '{"label":"gc:gcrex65-scratch"}'
+  {"session_id":"session:01a1f629-3bb1-73e4-87d8-a5422df2eb56"}
+  $ rex window new -s $SID --focus=false scratch -- sleep 2
+  window:01a1f629-49a8-7b3b-ab8b-4cf533939953
+  # BEFORE (pane running)
+  $ rex session inspect $SID
+  label: gc:gcrex65-scratch
+  windows: 1
+  $ rex api call session.list_clients "{session_id:$SID}"
+  {"clients":[{"client_id":"client:01a1f629-49f2-...","info":{"kind":"cli","name":"rex",...},...}]}
+  # AFTER (pane exited, ~5s)
+  $ rex session ls
+  gc:gcrex65-scratch  f2eb56            <- still listed
+  $ rex session inspect $SID
+  active-window: -
+  windows: 0
+  $ rex api call session.view "{session_id:$SID}"
+  {"revision":3,"session_id":"session:01a1f629-3bb1-73e4-87d8-a5422df2eb56","label":"gc:gcrex65-scratch"}
+  $ rex api call session.list_clients "{session_id:$SID}"
+  {"clients":[{"client_id":"client:01a1f629-5dce-...","info":{"kind":"cli","name":"rex",...},...}]}
+  $ rex api call session.destroy "{session_id:$SID}"; echo exit=$?
+  {}
+  exit=0
+  $ rex api call session.destroy "{session_id:$SID}"; echo exit=$?    # again
+  Error: stream response "control-1" failed: session session:01a1f629-... not found (status=404 code=session_not_found)
+  exit=3
+  $ REX_SERVER=unix:///tmp/nonexistent-rex.sock rex api call session.destroy "{session_id:$SID}"; echo exit=$?
+  Error: no Rex server is running at /tmp/nonexistent-rex.sock. ...
+  exit=4
+  $ rex session ls                       # after destroy
+  rex-gas-city  ae020c
+  gc:my-city    3f6ccc
+  ```
+
+  Findings: (1) when its last pane exits the session is **not** removed; it stays
+  listed with zero windows. (2) An empty `session.view` **omits** `windows`
+  (not `"windows":[]`); the CLI decoder sees a nil slice, so `len == 0` is the
+  emptiness check. (3) `session.destroy` through a plain `rex api call`
+  returned exit 0 with no `session.attach` and no `conflict`, so the provider
+  needs no attach step. (4) A second destroy exits **3**
+  (`session_not_found`, maps to `rex.ErrNotFound`); an unreachable server exits
+  **4** (`rex.ErrUnavailable`). No new exit-code mapping is needed. (5) On the
+  unattended empty session `session.list_clients` lists only the CLI's own
+  `kind:"cli"` connection and **no** `kind:"app"` client, so `kind == "app"`
+  is the human-attached signal and the destroy branch stays open (it is not
+  the skip branch). `session.destroy` has no revision precondition, so a human
+  attaching between the emptiness check and the destroy cannot be detected;
+  the window is the lookup, `session.view`, `session.list_clients` and
+  `session.destroy` run back to back under the state flock, and is accepted.
 - **Attachment signals.** `session.view` has no `clients` field; attached
   clients come from `session.list_clients`. That is where the D1 risk lands: any
   app client attached to the city session makes every agent in it read as
