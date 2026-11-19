@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -41,6 +42,59 @@ const (
 // handshake is the protocol op's reply. It declares only what is implemented:
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
 const handshake = `{"version":0,"capabilities":["report-attachment","report-activity"]}`
+
+// buildVersion is the version the `version` op reports. A pack build may set
+// it with -ldflags "-X main.buildVersion=<version>"; a bare `go install`
+// leaves it empty and the module version embedded in the binary is used
+// instead. The pack's Makefile sets it to the version pack.toml declares.
+var buildVersion string
+
+// versionReport is the `version` op's reply: the build identity the
+// rex:rex-binary doctor check compares against the pack's declared version.
+// Version is empty when the build carries no module version (a local build
+// reports the Go placeholder "(devel)", which is not a version).
+type versionReport struct {
+	Module   string `json:"module"`
+	Version  string `json:"version"`
+	Revision string `json:"revision,omitempty"`
+	Modified bool   `json:"modified,omitempty"`
+}
+
+// currentBuildInfo returns the running binary's build info, or nil when the
+// toolchain embedded none.
+func currentBuildInfo() *debug.BuildInfo {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		return bi
+	}
+	return nil
+}
+
+// versionReportFrom resolves the report from build info and an ldflags
+// override. override wins; otherwise the embedded module version is used, and
+// the placeholder "(devel)" reads as unknown (empty). bi may be nil (a binary
+// built without module info).
+func versionReportFrom(bi *debug.BuildInfo, override string) versionReport {
+	var rep versionReport
+	if bi != nil {
+		rep.Module = bi.Main.Path
+		rep.Version = bi.Main.Version
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rep.Revision = s.Value
+			case "vcs.modified":
+				rep.Modified = s.Value == "true"
+			}
+		}
+	}
+	if v := strings.TrimSpace(override); v != "" {
+		rep.Version = v
+	}
+	if rep.Version == "(devel)" {
+		rep.Version = ""
+	}
+	return rep
+}
 
 func main() {
 	// gc cancels a start by sending SIGTERM to the adapter's process group and
@@ -149,6 +203,21 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 	if op == "protocol" {
 		if _, err := fmt.Fprintln(stdout, handshake); err != nil {
 			fmt.Fprintf(stderr, "gc-runtime-rex: protocol: write output: %v\n", err)
+			return exitFail
+		}
+		return exitOK
+	}
+	// version reports the build identity for the pack's doctor check. It is
+	// local and needs no city, state dir or Rex server, so it is answered
+	// before the provider is built.
+	if op == "version" {
+		line, err := json.Marshal(versionReportFrom(currentBuildInfo(), buildVersion))
+		if err != nil {
+			fmt.Fprintf(stderr, "gc-runtime-rex: version: encode report: %v\n", err)
+			return exitFail
+		}
+		if _, err := fmt.Fprintln(stdout, string(line)); err != nil {
+			fmt.Fprintf(stderr, "gc-runtime-rex: version: write output: %v\n", err)
 			return exitFail
 		}
 		return exitOK

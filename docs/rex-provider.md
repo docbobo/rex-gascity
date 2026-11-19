@@ -144,10 +144,13 @@ The check:
 - resolves the runtime command from `pack/pack.toml`, accepting a bare name on
   `PATH` or a path relative to the pack directory;
 - confirms the provider answers the `protocol` op with an RPP v0 handshake;
+- compares the provider's reported version against the `[pack] version` in
+  `pack.toml` (see [Version match](#version-match));
 - resolves the `rex` CLI, honoring `GC_REX_BIN`.
 
-It exits `0` when both are present, `1` for a warning, and `2` when the provider
-binary or the `rex` CLI cannot be resolved. The first stdout line is the
+It exits `0` when the provider matches and both binaries are present, `1` for a
+warning, and `2` when the provider binary or the `rex` CLI cannot be resolved,
+or the provider's version disagrees with the pack. The first stdout line is the
 message; later lines name the missing binary and give a remediation. A missing
 provider otherwise surfaces only as opaque agent state (`unknown (partial
 status)`) and a supervisor log line:
@@ -159,6 +162,44 @@ exec: "gc-runtime-rex": executable file not found in $PATH
 A supervisor or controller resolves the provider with its own `PATH`, so the
 directory that holds `gc-runtime-rex` must be on that environment's `PATH`, not
 just your interactive shell's.
+
+#### Version match
+
+gc resolves and handshakes the provider but never compares the binary it
+installed against the version the pack declares, so a pack upgrade that leaves
+an older `gc-runtime-rex` on `PATH` shows up only as an opaque runtime error.
+The check closes that gap: the provider answers the `version` op with one JSON
+line carrying the module version and VCS revision it was built from —
+
+```json
+{"module":"github.com/docbobo/rex-gascity","version":"0.1.0","revision":"e6f743b8b2a0"}
+```
+
+A clean build omits `modified`, and a build with no VCS revision omits
+`revision`; the provider prints only the fields it resolved. The check
+compares that `version` against the `[pack] version` in
+`pack.toml`. The semantics are:
+
+- **Match (exit 0)**: the reported version equals the declared version after a
+  leading `v` and any `+build-metadata` suffix are stripped, so a tagged
+  `v0.1.0` and an `-ldflags`-stamped `0.1.0` both match `version = "0.1.0"`.
+- **Mismatch (exit 2)**: a determined version that differs, with a remediation
+  naming the pack's version.
+- **Undeterminable (exit 1)**: the provider reports no version or has no
+  `version` op. This is the no-VCS/no-module-info case: the toolchain embeds
+  the placeholder `(devel)`, which the provider reports as an empty version. A
+  bare local `go install` from a Git checkout is not this case — it reports a
+  module pseudo-version and so is a determined mismatch (exit 2). The binary
+  still handshakes, so this warns rather than errors.
+- **Local and dirty builds**: `make build` and `make install` stamp the pack's
+  version with `-ldflags "-X main.buildVersion=<version>"`, so a build from
+  this repository matches. A `go install` from an untagged tree reports a
+  module pseudo-version, which does not match the declared release and so
+  errors; a build from a modified tree reports `"modified":true` and, when its
+  version still matches, passes with a note.
+- **No declared version**: when `pack.toml` has no `[pack] version`, the check
+  has nothing to compare against, so it skips the comparison and reports only
+  the handshake result.
 
 ## Protocol and Capabilities
 

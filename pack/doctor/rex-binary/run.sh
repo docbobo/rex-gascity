@@ -1,9 +1,22 @@
 #!/bin/sh
 # gc doctor check: the pack's runtime provider binary and the rex CLI are
-# installed. The pack declares [runtimes.rex] command = "gc-runtime-rex"; gc
+# installed, and the provider matches the version the pack declares. The pack
+# declares [runtimes.rex] command = "gc-runtime-rex" and [pack] version; gc
 # resolves a bare name through PATH and a path with a separator relative to
 # the pack directory. A missing provider surfaces only as opaque agent state,
 # so this check reports it with a remediation.
+#
+# Version comparison: the provider answers the `version` op with one JSON line
+# (see gc-runtime-rex). The declared version comes from pack.toml, which gc
+# does not otherwise expose to a check. Match = the reported version equals the
+# declared version after stripping a leading `v` and any `+build-metadata`
+# suffix, so a tagged `v0.1.0` and a `-ldflags`-stamped `0.1.0` both match. A
+# version that cannot be determined (the provider reports none, or lacks the
+# op) warns rather than errors, because the binary still handshakes; a
+# determined but different version is an error. A local `go install` from an
+# untagged tree reports a module pseudo-version, which will not match the
+# declared release version; build with `make build` (or `-ldflags
+# "-X main.buildVersion=<version>"`) to stamp the pack's version.
 #
 # Pack doctor protocol: exit 0 OK, 1 warning, 2 error; the first stdout line
 # is the message and later lines are details. Read-only: it never starts a
@@ -16,15 +29,33 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 pack_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 pack_toml="$pack_dir/pack.toml"
 
-# The runtime command the pack declares. Fall back to the known binary name if
-# pack.toml cannot be read, so the check still reports something useful.
+# normalize_version strips a leading `v` and any `+build-metadata` suffix, so
+# `v0.1.0`, `0.1.0` and `0.1.0+dirty` all compare as `0.1.0`.
+normalize_version() {
+  v=$1
+  v=${v#v}
+  v=${v%%+*}
+  printf '%s' "$v"
+}
+
+# The runtime command and the declared version. Fall back to the known binary
+# name if pack.toml cannot be read, so the check still reports something
+# useful; a missing declared version skips the comparison.
 command_name=
+declared_version=
 if [ -r "$pack_toml" ]; then
   command_name=$(
     awk -F'"' '
       /^[[:space:]]*\[runtimes[^]]*rex[^]]*\][[:space:]]*$/ { in_section = 1; next }
       /^[[:space:]]*\[/ { in_section = 0 }
       in_section && /^[[:space:]]*command[[:space:]]*=/ { print $2; exit }
+    ' "$pack_toml"
+  )
+  declared_version=$(
+    awk -F'"' '
+      /^[[:space:]]*\[pack\][[:space:]]*$/ { in_pack = 1; next }
+      /^[[:space:]]*\[/ { in_pack = 0 }
+      in_pack && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
     ' "$pack_toml"
   )
 fi
@@ -58,24 +89,57 @@ case "$rex_name" in
     ;;
 esac
 
-# --- provider binary ---------------------------------------------------------
+# --- provider binary and version --------------------------------------------
 
 provider_status=ok
+provider_message="the rex runtime provider and rex CLI are installed"
 provider_detail=
+remediation=
+
 if [ -z "$provider_path" ]; then
   provider_status=error
+  provider_message="the rex runtime provider binary is not installed"
   provider_detail="\`$command_name\` is not on PATH"
+  remediation="Install it with \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@latest\`, then put \$(go env GOBIN) on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too."
 elif [ ! -x "$provider_path" ]; then
   provider_status=error
+  provider_message="the rex runtime provider binary is not executable"
   provider_detail="$provider_path is not executable"
+  remediation="Install the provider binary and make it executable."
 else
-  # Verify the binary speaks RPP v0. The protocol op is local and cheap.
-  if handshake=$("$provider_path" protocol 2>/dev/null) &&
-    printf '%s' "$handshake" | grep -Eq '"version"[[:space:]]*:[[:space:]]*0'; then
+  handshake=$("$provider_path" protocol 2>/dev/null) || handshake=""
+  if printf '%s' "$handshake" | grep -Eq '"version"[[:space:]]*:[[:space:]]*0'; then
     provider_detail="provider: $provider_path"
+    if [ -n "$declared_version" ]; then
+      reported_version=
+      version_json=
+      if version_json=$("$provider_path" version 2>/dev/null); then
+        reported_version=$(printf '%s' "$version_json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      fi
+      normalized_reported=$(normalize_version "$reported_version")
+      normalized_declared=$(normalize_version "$declared_version")
+      if [ -z "$normalized_reported" ]; then
+        provider_status=warn
+        provider_message="the rex runtime provider version could not be determined"
+        provider_detail="provider: $provider_path (version could not be determined)"
+        remediation="The provider did not report a module version (a binary built without module/VCS info reports the placeholder \"(devel)\", and an older binary has no \`version\` op). Install a released build, or rebuild with -ldflags \"-X main.buildVersion=$declared_version\"."
+      elif [ "$normalized_reported" = "$normalized_declared" ]; then
+        provider_detail="provider: $provider_path (version $reported_version)"
+        if printf '%s' "$version_json" | grep -Eq '"modified"[[:space:]]*:[[:space:]]*true'; then
+          remediation="The provider was built from a modified working tree; its version still matches pack version $declared_version."
+        fi
+      else
+        provider_status=error
+        provider_message="the rex runtime provider version does not match the pack"
+        provider_detail="provider: $provider_path reports version $reported_version, but the pack declares $declared_version"
+        remediation="Install the provider that matches pack version $declared_version: \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@v$normalized_declared\`, or build from the pack revision with -ldflags \"-X main.buildVersion=$declared_version\". Then put \$(go env GOBIN) on PATH."
+      fi
+    fi
   else
     provider_status=error
+    provider_message="the rex runtime provider did not answer the RPP handshake"
     provider_detail="\`$provider_path protocol\` did not print an RPP v0 handshake"
+    remediation="Reinstall the provider binary; it must answer \`protocol\` with an RPP v0 handshake."
   fi
 fi
 
@@ -96,10 +160,10 @@ fi
 # --- report, worst finding first --------------------------------------------
 
 if [ "$provider_status" = error ]; then
-  echo "the rex runtime provider binary is not installed"
+  echo "$provider_message"
   echo "$provider_detail"
-  echo "Install it with \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@latest\`, then put \$(go env GOBIN) on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too."
-  [ "$rex_status" = error ] && echo "$rex_detail"
+  if [ -n "$remediation" ]; then echo "$remediation"; fi
+  if [ "$rex_status" = error ]; then echo "$rex_detail"; fi
   exit 2
 fi
 
@@ -111,6 +175,16 @@ if [ "$rex_status" = error ]; then
   exit 2
 fi
 
+if [ "$provider_status" = warn ]; then
+  echo "$provider_message"
+  echo "$provider_detail"
+  if [ -n "$remediation" ]; then echo "$remediation"; fi
+  echo "$rex_detail"
+  exit 1
+fi
+
 echo "the rex runtime provider and rex CLI are installed"
 echo "$provider_detail"
+if [ -n "$remediation" ]; then echo "$remediation"; fi
 echo "$rex_detail"
+exit 0

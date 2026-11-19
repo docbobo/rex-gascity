@@ -103,7 +103,12 @@ gc doctor --check rex:rex-binary --city /path/to/city
 
 The check resolves the runtime command from `pack/pack.toml` (a bare name on
 `PATH` or a path relative to the pack directory), probes the provider's RPP v0
-handshake, and resolves the `rex` CLI, honoring `GC_REX_BIN`.
+handshake, resolves the `rex` CLI, honoring `GC_REX_BIN`, and compares the
+provider's reported version (`gc-runtime-rex version`) against the `version`
+`pack.toml` declares. A mismatch exits `2` with a remediation; a version it
+cannot determine warns (`1`) rather than failing, because the binary still
+handshakes. `make build` stamps the pack's version into `bin/gc-runtime-rex`,
+so a build from this repository matches.
 
 ## Configuration
 
