@@ -153,6 +153,9 @@ type Client interface {
 	NewWindow(ctx context.Context, sessionID SessionID, label string, spec LaunchSpec) (WindowID, BlockID, error)
 	NewSplit(ctx context.Context, sessionID SessionID, anchor BlockID, direction, side string, spec LaunchSpec) (BlockID, error)
 	CloseBlock(ctx context.Context, sessionID SessionID, blockID BlockID) error
+	// DestroySession destroys a session and every window in it. The provider
+	// calls it only on its own empty canonical city session.
+	DestroySession(ctx context.Context, sessionID SessionID) error
 	SessionView(ctx context.Context, sessionID SessionID) (SessionView, error)
 	ListSessions(ctx context.Context) ([]Session, error)
 	// ListClients returns the clients attached to a session. It is the
