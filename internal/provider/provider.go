@@ -35,6 +35,11 @@ var ErrAlreadyRunning = errors.New("provider: already running")
 // maps it to herdr-core's FRESH_COLLISION exit 73.
 var ErrFreshCollision = errors.New("provider: session already exists (fresh_only)")
 
+// ErrNoScreen reports that peek found no screen to read: the session has no
+// record, its pane vanished, or Rex is unreachable. The RPP dispatcher maps it
+// to herdr-core's exit 66 (`no screen for '<name>'`).
+var ErrNoScreen = errors.New("provider: no screen")
+
 // warnf writes one start warning. Warnings never fail a start; gc drops a
 // successful start's stderr, so this is a diagnostic channel only.
 func (p *Provider) warnf(format string, args ...any) {
@@ -756,24 +761,27 @@ func (p *Provider) IsRunning(ctx context.Context, name string) (bool, error) {
 	return ok, err
 }
 
-// Peek returns the agent's rendered terminal output. An agent with no pane
-// has no output.
+// Peek returns the agent's rendered terminal output, or ErrNoScreen when the
+// agent has no pane to read.
 func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
 	return p.PeekLines(ctx, name, 0)
 }
 
 // PeekLines returns the last lines lines of the agent's rendered output, or
-// all of it when lines <= 0. An agent with no pane has no output.
+// all of it when lines <= 0. It returns ErrNoScreen when there is no screen to
+// read: no binding, a pane that vanished before it could be formatted, or Rex
+// unreachable (from the resolve or the format call).
 func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (string, error) {
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
-	if err != nil || !ok {
+	if err != nil && !errors.Is(err, rex.ErrUnavailable) {
 		return "", err
 	}
+	if err != nil || !ok {
+		return "", ErrNoScreen
+	}
 	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
-	if errors.Is(err, rex.ErrNotFound) {
-		// A pane that vanished between resolve and format has no output, the
-		// same as an already-missing pane.
-		return "", nil
+	if errors.Is(err, rex.ErrNotFound) || errors.Is(err, rex.ErrUnavailable) {
+		return "", ErrNoScreen
 	}
 	if err != nil || lines <= 0 {
 		return out, err
