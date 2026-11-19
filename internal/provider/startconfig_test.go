@@ -143,9 +143,9 @@ func TestStartOverlayDirNotADirectoryFails(t *testing.T) {
 
 // TestStartStagesBeforePreStart pins the documented phase order: staging runs
 // before pre_start, so a hook can rely on the staged work dir. The pre_start
-// hook fails unless the staged overlay and copy_files files are already there,
-// and pre_start is fatal, so a reordering makes this test fail
-// (herdrcore/lifecycle.py:789).
+// hook fails unless the staged overlay and copy_files files are already there;
+// a reordering therefore leaves a pre_start warning even though the start
+// continues (herdrcore/lifecycle.py:789).
 func TestStartStagesBeforePreStart(t *testing.T) {
 	overlay := t.TempDir()
 	writeTestFile(t, overlay, "notes/top.txt", "top")
@@ -154,7 +154,8 @@ func TestStartStagesBeforePreStart(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "work")
 
 	fake := faketest.New()
-	p := provider.New("acme", fake)
+	var warnings bytes.Buffer
+	p := provider.New("acme", fake, provider.WithWarnings(&warnings))
 	cfg := provider.Config{
 		Argv:       []string{"pi"},
 		WorkDir:    workDir,
@@ -163,7 +164,10 @@ func TestStartStagesBeforePreStart(t *testing.T) {
 		PreStart:   []string{"test -f " + filepath.Join(workDir, "notes", "top.txt") + " && test -f " + filepath.Join(workDir, "sub", "seed.txt")},
 	}
 	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
-		t.Fatalf("Start: %v (pre_start did not see the staged work dir)", err)
+		t.Fatalf("Start: %v", err)
+	}
+	if strings.Contains(warnings.String(), "pre_start") {
+		t.Fatalf("pre_start did not see the staged work dir: %s", warnings.String())
 	}
 }
 

@@ -79,20 +79,43 @@ func safeName(s string) string {
 	return sb.String()
 }
 
+// cityNameFromPath names a city by the last component of the path gc serves it
+// from. gc's contract uses absolute paths, which filepath.Clean keeps under a
+// named directory; an empty base (the naked root) or one that is only dots
+// names nothing, so it yields "" and the caller falls through to the next
+// source rather than pinning a namespace like "." or "/".
+func cityNameFromPath(path string) string {
+	name := filepath.Base(filepath.Clean(path))
+	switch name {
+	case "", ".", "..", string(filepath.Separator):
+		return ""
+	}
+	return name
+}
+
 // cityPin returns the explicit city a caller is bound to, or "" when it is
-// unpinned. GC_EXEC_CITY_PATH is gc's per-op city contract and takes
-// precedence; GC_REX_CITY is the provider's own pin for callers that run the
-// script without gc, kept as the fallback.
+// unpinned. gc's per-op city contract takes precedence: GC_EXEC_CITY_NAME is
+// the city's name, and a caller that carries only GC_EXEC_CITY_PATH is named by
+// that path's last component. GC_REX_CITY is the provider's own pin for callers
+// that run the script without gc, kept as the fallback.
+//
+// The pin is a city NAME, never a path. Using the raw GC_EXEC_CITY_PATH as the
+// pin made the Rex session label gc:<absolute path> and split a city's sidecar
+// state into a second, path-encoded namespace the moment gc started setting the
+// variable (GCREX-40's review flagged the label; gc edge made it real).
 func cityPin() string {
-	if v := os.Getenv("GC_EXEC_CITY_PATH"); v != "" {
+	if v := os.Getenv("GC_EXEC_CITY_NAME"); v != "" {
+		return v
+	}
+	if v := cityNameFromPath(os.Getenv("GC_EXEC_CITY_PATH")); v != "" {
 		return v
 	}
 	return os.Getenv("GC_REX_CITY")
 }
 
 // CityFromEnv returns the canonical city namespace for this process. A pinned
-// caller (GC_EXEC_CITY_PATH, then GC_REX_CITY) keeps exactly its pin; without
-// one the namespace is the fixed "default".
+// caller (GC_EXEC_CITY_NAME, else basename(GC_EXEC_CITY_PATH), else GC_REX_CITY)
+// keeps exactly its pin; without one the namespace is the fixed "default".
 //
 // RPP v0 carries no city, and the exec runtime provider passes the caller's
 // env through unchanged, so different gc callers on one city see a different
@@ -102,9 +125,9 @@ func cityPin() string {
 // depending on the caller (GCREX-17): start wrote one namespace and the
 // nudge poller read another. GC_CITY_PATH/GC_CITY are incidental (the start
 // config carries them but the runtime contract does not), so they do not
-// select the canonical store. GC_EXEC_CITY_PATH is gc's own city key and does
-// select it; set GC_REX_CITY to isolate cities that share one Rex server when
-// running the script outside gc.
+// select the canonical store. gc's GC_EXEC_CITY_NAME/GC_EXEC_CITY_PATH are its
+// own city key and do select it; set GC_REX_CITY to isolate cities that share
+// one Rex server when running the script outside gc.
 func CityFromEnv() string {
 	if v := cityPin(); v != "" {
 		return v
@@ -210,11 +233,12 @@ func hexVal(c byte) (byte, bool) {
 }
 
 // CityCandidates returns the ordered, deduplicated namespaces a lookup should
-// read across, canonical first. A pin (GC_EXEC_CITY_PATH, then GC_REX_CITY) is
-// the only candidate, so two cities pinned to different values never
-// cross-resolve. Otherwise the canonical "default" comes first, followed by the
-// incidental basename(GC_CITY_PATH) and GC_CITY, where a record written by an
-// earlier version (or an older caller) may still live.
+// read across, canonical first. A pin (GC_EXEC_CITY_NAME, then
+// basename(GC_EXEC_CITY_PATH), then GC_REX_CITY) is the only candidate, so two
+// cities pinned to different values never cross-resolve. Otherwise the
+// canonical "default" comes first, followed by the incidental
+// basename(GC_CITY_PATH) and GC_CITY, where a record written by an earlier
+// version (or an older caller) may still live.
 func CityCandidates() []string {
 	if v := cityPin(); v != "" {
 		return []string{v}

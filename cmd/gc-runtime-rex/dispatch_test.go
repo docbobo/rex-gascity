@@ -417,6 +417,7 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 		args  []string
 	}{
 		{"hello\n", []string{"nudge", "ghost"}},
+		{"", []string{"interrupt", "ghost"}},
 		{"", []string{"send-keys", "ghost", "C-c", "Enter"}},
 		{"", []string{"send-keys", "ghost"}},
 	} {
@@ -526,20 +527,24 @@ func TestClearScrollbackDeliveredExitsZero(t *testing.T) {
 	}
 }
 
-// TestInterruptReturnsInputOutcomes pins the typed exit-80 words interrupt now
-// answers for a missing/dead pane, a down server, and a pre-send failure.
+// TestInterruptReturnsInputOutcomes pins the typed exit-80 words interrupt
+// answers for a down server and a pre-send failure. A missing or dead pane is
+// best-effort: the handshake does not declare input-outcome, so gc v1.5.1 asks
+// for exit 0 there (docs/reference/exec-session-provider.md "Best-effort
+// interrupt/nudge"), and bestEffort answers it.
 func TestInterruptReturnsInputOutcomes(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		start   bool
 		dead    bool
 		listErr error
+		code    int
 		outcome string
 	}{
-		{"missing pane", false, false, nil, "gone"},
-		{"dead pane", true, true, nil, "gone"},
-		{"server unreachable", false, false, rex.ErrUnavailable, "unavailable"},
-		{"pre-send failure", false, false, errors.New("rex: protocol error"), "not_sent"},
+		{"missing pane", false, false, nil, exitOK, ""},
+		{"dead pane", true, true, nil, exitOK, ""},
+		{"server unreachable", false, false, rex.ErrUnavailable, exitInputOutcome, "unavailable"},
+		{"pre-send failure", false, false, errors.New("rex: protocol error"), exitInputOutcome, "not_sent"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h, fake := newHarness(t)
@@ -555,18 +560,24 @@ func TestInterruptReturnsInputOutcomes(t *testing.T) {
 				fake.ListSessionsErr = c.listErr
 			}
 			r := h.run("", "interrupt", dog)
-			if r.code != exitInputOutcome {
-				t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+			if r.code != c.code {
+				t.Fatalf("exit = %d, want %d (stderr %q)", r.code, c.code, r.stderr)
 			}
-			var line struct {
-				Outcome string `json:"outcome"`
-				Detail  string `json:"detail"`
-			}
-			if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
-				t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
-			}
-			if line.Outcome != c.outcome {
-				t.Errorf("outcome = %q, want %q", line.Outcome, c.outcome)
+			if c.code == exitOK {
+				if r.stdout != "" || r.stderr != "" {
+					t.Errorf("stdout %q stderr %q, want empty for a best-effort exit 0", r.stdout, r.stderr)
+				}
+			} else {
+				var line struct {
+					Outcome string `json:"outcome"`
+					Detail  string `json:"detail"`
+				}
+				if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+					t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+				}
+				if line.Outcome != c.outcome {
+					t.Errorf("outcome = %q, want %q", line.Outcome, c.outcome)
+				}
 			}
 			if len(fake.SentKeys) != 0 {
 				t.Errorf("keys sent = %+v, want none", fake.SentKeys)

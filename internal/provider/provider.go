@@ -505,9 +505,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		return startResult{}, err
 	}
 
-	// Run pre_start hooks before seeding identity or a provisional binding, so
-	// a failed hook leaves nothing behind. The state lock is not held here: a
-	// slow hook must not stall the rest of the city. Each hook is bounded by
+	// Run pre_start hooks before seeding identity or a provisional binding.
+	// gc's exec-session-provider contract makes a failing pre_start non-fatal:
+	// warn on stderr and keep starting (docs/reference/exec-session-provider.md
+	// at v1.5.1, "pre_start"). Only cancellation of the whole start aborts; a
+	// hook's own failure or timeout does not. The state lock is not held here:
+	// a slow hook must not stall the rest of the city. Each hook is bounded by
 	// the per-hook timeout, capped by whatever remains of the start budget
 	// (the op context's deadline when it carries one, else startBudget).
 	if len(cfg.PreStart) > 0 {
@@ -519,14 +522,21 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		for i, cmd := range cfg.PreStart {
 			remaining := time.Until(budgetDeadline)
 			if remaining <= 0 {
-				return startResult{}, fmt.Errorf("pre_start[%d]: start budget %s exhausted before the hook ran", i, p.startBudget)
+				if err := ctx.Err(); err != nil {
+					return startResult{}, fmt.Errorf("pre_start[%d]: start canceled: %w", i, err)
+				}
+				p.warnf("pre_start[%d] start budget %s exhausted before the hook ran", i, p.startBudget)
+				break
 			}
 			hookTimeout := p.preStartHookTimeout
 			if remaining < hookTimeout {
 				hookTimeout = remaining
 			}
 			if err := runPreStartWithTimeout(ctx, cmd, cfg.WorkDir, merged, hookTimeout); err != nil {
-				return startResult{}, fmt.Errorf("pre_start[%d]: %w", i, err)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return startResult{}, fmt.Errorf("pre_start[%d]: start canceled: %w", i, ctxErr)
+				}
+				p.warnf("pre_start[%d] %v", i, err)
 			}
 		}
 	}

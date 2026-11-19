@@ -242,15 +242,16 @@ a plain exit `1`. The key grammar and the exit-80 words follow
 `docs/provider-herdr-method-io.md` §send-keys, §interrupt and §nudge. gc 1.5.1
 does not
 declare `input-outcome` and reads exit `80` as a plain error, so the typed word
-has no meaning to it. That is not fully inert for `interrupt`: the contract asks
-for a best-effort exit `0` on a gone session (gc
-`docs/reference/exec-session-provider.md:370`), but our gone answer is now exit
-`80`, which gc reads as a plain error. gc's `RuntimeHandle.Interrupt`
-propagates it unguarded (gc `internal/worker/runtime_handle.go:243-248`); the
-managed `SessionHandle` path pre-checks `IsRunning` and never reaches that case
-(gc `internal/worker/handle_lifecycle.go:322-330`,
-gc `internal/session/submit.go:261-275`). `docs/provider-herdr-method-io.md`
-§interrupt Conflicts #1 records the deviation. For `nudge` the exit-80 words
+has no meaning to it. For `interrupt` that matters: the contract asks for a
+best-effort exit `0` on a gone session (gc
+`docs/reference/exec-session-provider.md:370`), so `opInterrupt` keeps the
+`bestEffort` wrapper and answers a missing or dead pane with exit `0` and empty
+output instead of exit `80` `gone`. gc's `RuntimeHandle.Interrupt` propagates a
+non-zero exit unguarded (gc `internal/worker/runtime_handle.go:243-248`), so the
+typed `gone` would surface as an error there. Declaring `input-outcome` and
+answering typed `gone` is the intended follow-up (GCREX-70).
+`docs/provider-herdr-method-io.md` §interrupt Conflicts #1 records the
+deviation. For `nudge` the exit-80 words
 stay inert at the pinned baseline: gc already read the previous `busy`,
 `blocked` and send failures as exit `1` and the unconfirmed delivery as exit
 `0`, so the typed word and the added `delivered_unobserved` line change nothing

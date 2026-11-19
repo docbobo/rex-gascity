@@ -292,26 +292,31 @@ holding the city-wide `lock` across a hook or the blocking launch.
 The dispatcher resolves one canonical namespace and, when needed, reads a small
 ordered set of legacy namespaces:
 
-- **Canonical:** `$GC_REX_CITY` when set, else `"default"`. New sessions, new
-  bindings, metadata writes and the state lock use this namespace.
+- **Canonical:** gc's per-op city name `$GC_EXEC_CITY_NAME`, else
+  `basename($GC_EXEC_CITY_PATH)` (GCREX-71), else `$GC_REX_CITY`, else
+  `"default"`. New sessions, new bindings, metadata writes and the state lock
+  use this namespace. gc's two variables outrank the provider's own pin,
+  because gc sets them on every op it runs the provider for.
 - **Read set:** the canonical namespace first, then `basename($GC_CITY_PATH)`
   and `$GC_CITY` when they differ. Reads fall back through the set in order;
   deletes cover every directory. A record written by an older build (or by a
   caller that carried `GC_CITY_PATH`) therefore still resolves.
-- **Unpinned discovery (GCREX-35):** when `$GC_REX_CITY` is unset, the read set
+- **Unpinned discovery (GCREX-35):** when no city pin is set, the read set
   also includes the sibling city state directories under the same base. Each
   directory name is decoded (the inverse of the percent encoding) and only a
   name that re-encodes to the same directory is trusted; duplicates of an
   existing candidate are skipped and the rest are sorted after the env-derived
-  entries. This is what lets the gc CLI fallback provider — invoked with no
-  `GC_REX_CITY`, `GC_CITY_PATH` or `GC_CITY` at all — resolve a binding the
-  pinned controller wrote. Discovery only widens reads: a live pane still has
-  to revalidate against its `gc:<city>` Rex session, so a dead city's record is
-  never reported as running. The relaxation is that an unpinned caller cannot
+  entries. This is what lets the gc CLI fallback provider — invoked with none
+  of `GC_EXEC_CITY_NAME`, `GC_EXEC_CITY_PATH`, `GC_REX_CITY`, `GC_CITY_PATH` or
+  `GC_CITY` at all — resolve a binding the pinned controller wrote. Discovery
+  only widens reads: a live pane still has to revalidate against its
+  `gc:<city>` Rex session, so a dead city's record is never reported as
+  running. The relaxation is that an unpinned caller cannot
   name a city, so if two live cities hold the same session name, the name
   resolves in read-set order (canonical `default`, then env fallbacks, then
   sorted siblings). Pin a caller with `GC_REX_CITY` to keep it isolated.
-- **Pinned:** when `$GC_REX_CITY` is set the read set is exactly that one
+- **Pinned:** when a city pin is set (`GC_EXEC_CITY_NAME`,
+  `GC_EXEC_CITY_PATH` or `GC_REX_CITY`) the read set is exactly that one
   namespace, so cities pinned to different values never cross-resolve and
   pinned callers never read sibling directories.
 
@@ -323,8 +328,17 @@ processes and the nudge poller therefore see different incidental `GC_CITY*`
 values for the same city. To keep the provider from disagreeing with itself,
 the canonical namespace is caller-independent:
 
-1. `$GC_REX_CITY` when set (an explicit pin)
-2. `"default"` otherwise
+1. `$GC_EXEC_CITY_NAME` when set (gc's name for the city it serves)
+2. `basename($GC_EXEC_CITY_PATH)` when the name is absent and that path names a
+   directory (gc edge sets both on every op)
+3. `$GC_REX_CITY` when set (the provider's own pin, for running outside gc)
+4. `"default"` otherwise
+
+The pin is a city **name**, never a path: gc's absolute
+`GC_EXEC_CITY_PATH` names the city by its last path component, so the Rex
+session label stays `gc:my-city` and a city's sidecar state stays in one
+namespace. Using the raw path as the pin made the label `gc:/Users/…/my-city`
+and split the state the moment gc started setting the variable (GCREX-71).
 
 `basename($GC_CITY_PATH)` and `$GC_CITY` do **not** select the canonical store;
 they are only additional read namespaces for records written by earlier
@@ -344,6 +358,8 @@ the widened read honest.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GC_REX_BIN` | `rex` (resolved via `PATH`) | Path or name of the `rex` CLI binary used by the provider |
+| `GC_EXEC_CITY_NAME` | unset | gc's per-op city name; pins the canonical city namespace (highest precedence) |
+| `GC_EXEC_CITY_PATH` | unset | gc's per-op city path; names the city by its last path component when `GC_EXEC_CITY_NAME` is unset |
 | `GC_REX_CITY` | `"default"` | Pins the canonical city namespace for the `gc:<city>` Rex session label and sidecar state subdirectory; also removes all fallback read namespaces |
 | `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Overrides the base directory for per-city sidecar state |
 

@@ -12,3 +12,6 @@ bin/
 .beads/*
 !.beads/identity.toml
 /.pi
+
+# bv (b9s) local config and caches
+.bv/

@@ -117,11 +117,13 @@ so a build from this repository matches.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GC_REX_BIN` | `rex` (via `PATH`) | Path or name of the `rex` CLI the provider drives |
+| `GC_EXEC_CITY_NAME` | unset | gc's per-op city name; pins the city namespace (highest precedence) |
+| `GC_EXEC_CITY_PATH` | unset | gc's per-op city path; names the city by its last path component when `GC_EXEC_CITY_NAME` is unset |
 | `GC_REX_CITY` | `basename($GC_CITY_PATH)`, then `$GC_CITY`, else `"default"` | City namespace for the `gc:<city>` session label and sidecar state |
 | `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Base directory for per-city sidecar state |
 | `GC_SESSION` | unset | Selects the provider for a foreground controller (`rex`) |
 
-RPP v0 calls carry no city identifier, so the provider resolves the city from the environment. Set `GC_REX_CITY` explicitly when several cities share one Rex server; otherwise they all fall back to the same `gc:default` session and state directory.
+RPP v0 calls carry no city identifier, so the provider resolves the city from the environment. gc sets `GC_EXEC_CITY_NAME` and `GC_EXEC_CITY_PATH` on every op, so under gc the city is the name gc serves, never a path. Set `GC_REX_CITY` explicitly when several cities share one Rex server and you run the provider outside gc; otherwise they all fall back to the same `gc:default` session and state directory.
 
 ### Sidecar state
 
@@ -139,7 +141,7 @@ Implemented operations: `protocol`, `start`, `stop`, `is-running`, `interrupt`, 
 
 ## Known limits
 
-- **No city in RPP v0 invocations.** Without `GC_REX_CITY`, cities fall back to `$GC_CITY_PATH`, `$GC_CITY`, then `"default"`. Under `launchd`, `gc` does not pass `GC_CITY` or `GC_CITY_PATH`, so cities without `GC_REX_CITY` share one `gc:default` session and state directory.
+- **No city in RPP v0 invocations.** gc edge sets `GC_EXEC_CITY_NAME`/`GC_EXEC_CITY_PATH` on every op, so the city resolves without any provider-side pin. Without a pin (an older gc, or the CLI fallback provider) cities fall back to `basename($GC_CITY_PATH)`, `$GC_CITY`, then `"default"`. Under `launchd`, `gc` does not pass `GC_CITY` or `GC_CITY_PATH`, so cities without a pin share one `gc:default` session and state directory.
 - **A launched command that exits closes its pane.** The provider sets no keep-open, so an agent that exits leaves no pane behind. The provider reports the agent as stopped rather than erroring.
 - **No per-tab pane cap.** Panes stay balanced by area, but a rig with many agents still divides the tab indefinitely.
 

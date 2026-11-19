@@ -397,7 +397,7 @@ func opIsRunning(ctx context.Context, p *provider.Provider, args []string, _ io.
 }
 
 func opInterrupt(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
-	return p.Interrupt(ctx, args[0])
+	return bestEffort(p.Interrupt(ctx, args[0]))
 }
 
 func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {

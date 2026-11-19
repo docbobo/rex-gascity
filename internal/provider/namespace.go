@@ -45,8 +45,9 @@ func NewNamespaceForDirs(dirs ...string) Namespace {
 // city and reads across the candidates, so start and every lookup op agree on
 // one store.
 //
-// A pinned caller (GC_EXEC_CITY_PATH or GC_REX_CITY set) keeps exactly its
-// pin, so cities stay isolated from each other. An unpinned caller (the gc CLI fallback provider
+// A pinned caller (GC_EXEC_CITY_NAME, GC_EXEC_CITY_PATH or GC_REX_CITY set)
+// keeps exactly its pin, so cities stay isolated from each other. An unpinned
+// caller (the gc CLI fallback provider
 // carries no city env) cannot be told which pin wrote a binding, so the
 // sibling city namespaces a pinned controller wrote under are appended after
 // the canonical candidates.

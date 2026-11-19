@@ -1,0 +1,30 @@
+# Method Audit: `stop`
+
+**Verdict:** `deviations`
+
+Audited against `docs/provider-herdr-method-io.md` (`## stop` and `## Shared RPP contract`).
+
+## Deviations
+
+| Doc claim (`## stop` / `## Shared RPP contract`) | Current implementation | Behavioral impact | Severity |
+|---|---|---|---|
+| **Deadline & `GC_EXEC_DEADLINE_MS`** (`## stop` §Registration; `## Shared RPP contract` §Deadlines): `default` 30 s deadline from start, overridable by `GC_EXEC_DEADLINE_MS`; pre-handler gate fails with exit 1 `no time left before the op's deadline`. | `cmd/gc-runtime-rex/main.go:48-49,128-174,218-220` passes `signal.NotifyContext(context.Background(), ...)` with no timeout and never reads `GC_EXEC_DEADLINE_MS` (`internal/provider/provider.go:176-177`). | Standalone runs have no 30 s op deadline and ignore `GC_EXEC_DEADLINE_MS`. Under `gc` v1.5.1, `gc` still enforces its 30 s timeout externally via SIGTERM. | low |
+| **Per-name lock wait bound & error** (`## stop` §Failure cases): waits `min(30, max(0.1, budget(30)))` s and fails with exit 1 `busy: exclusive lock <path> still held after Xs`. | `internal/provider/lock.go:13,62-97` uses `lockTimeout = 60 * time.Second` for both `withNameLock` and `withStateLock` (`provider.go:532-534`), returning `provider: timed out waiting for lock <path>`. | Contended locks wait up to 60 s instead of <=30 s (so `gc`'s 30 s SIGTERM preempts it), and the timeout message differs. | low |
+| **Descendant reaping & survivor check** (`## stop` §Success output, §Failure cases, §Conflicts #1): snapshots subtree + instance token, reaps TERM then KILL (2 s), rescans up to 3x; exits 1 (`stopped 'N', but descendants may survive...`) and keeps record/meta on survivors. | `internal/provider/provider.go:558-564` delegates solely to Rex `block.close` (`internal/rex/cli/cli.go:181-186`). No process-tree snapshot, TERM/KILL reap, rescan, or survivor check. | Detached descendants are not verified dead or reported as exit 1; binding, meta, and activity are cleared whenever `CloseBlock` returns `nil` or `rex.ErrNotFound`. | medium |
+| **Core/server unreachable** (`## stop` §Success output, §Failure cases, §Conflicts #2–3): when core is down, sweeps by stored PID/token without starting core and exits 0 if nothing runs; otherwise exits 1 and kicks core start. | `internal/provider/provider.go:539-543` calls `binder.Resolve`, which always queries Rex (`internal/provider/binding.go:349-357,385-417,438-446`). Any transport/unreachable error returns exit 1; no PID sweep or server start kick. | `stop` fails (exit 1) whenever the Rex server is unreachable, even for an absent or already-dead session. | medium |
+| **Stderr redaction** (`## stop` §Failure cases; `## Shared RPP contract` §Failure envelope): redacts sensitive env values and `KEY=value` / `--flag value` patterns on stderr. | `cmd/gc-runtime-rex/main.go:165` writes `gc-runtime-rex: %s: %v\n` verbatim with no redaction. | Any secret text appearing in an underlying error would be emitted unredacted to `gc`. | low |
+| **Stderr prefix & SIGTERM message** (`## stop` §Failure cases; `## Shared RPP contract` §Failure envelope): errors use `<op>: <message>`; SIGTERM `Cancelled` yields `stop: canceled (terminated)`. | `cmd/gc-runtime-rex/main.go:48,165` prefixes errors with `gc-runtime-rex: stop: ...`; SIGTERM cancels `ctx` via `signal.NotifyContext`, surfacing `context canceled`. | Minor stderr text difference; exit code 1 and `gc`'s own cancel reporting are unaffected. | low |
+| **Housekeeping sweep** (`## stop` §Registration; `## Shared RPP contract` §Dispatch #6): runs `sweep_spawn_files` before handler. | `cmd/gc-runtime-rex/main.go:128-174` and `internal/provider/provider.go:531-566` perform no spawn-file sweep. | None – Rex provider does not use spawn files. | low |
+
+## Matches
+
+- **Registration & stdin** (`cmd/gc-runtime-rex/main.go:103,218-220`): registered as `"stop"` requiring 1 arg; `opStop` ignores `stdin` (`reads_stdin=False` equivalent) and writes nothing to `stdout` (empty stdout, well under 64 KiB cap).
+- **Argument validation** (`cmd/gc-runtime-rex/main.go:149-152`, `dispatch_test.go:126,131`): missing or empty session name fails with exit 1, empty stdout, and usage message on stderr; extra positional args after `<name>` are ignored.
+- **Idempotency / absent or vanished pane** (`internal/provider/provider.go:545-564`, `provider_test.go:150-161,259-269`, `teardown_test.go:114-125,137-149`): missing session or `rex.ErrNotFound` from `CloseBlock` succeeds with exit 0 and empty stdout/stderr; repeated `stop` is a no-op.
+- **Per-name serialization** (`internal/provider/provider.go:532-534`, `internal/provider/lock.go:34-42`, `lock_scope_test.go:35-109`): exclusive per-name flock (`<stateDir>/locks/<name>.lock`) serializes `start` and `stop` for the same name without blocking other names.
+- **Incarnation cleanup & error preservation** (`internal/provider/provider.go:553,558-564,575-591`, `incarnation_test.go:16-149`, `teardown_test.go:127-135`): `clearIncarnations` removes all metadata and activity in both live-pane and no-pane paths; a non-`ErrNotFound` `CloseBlock` error returns exit 1 and preserves the binding, metadata, and activity for retry.
+
+## Unverified
+
+- **Rex `block.close` descendant behavior** (`internal/rex/cli/cli.go:181-186`): whether the external `rex` server kills detached descendant processes or only the pane's PTY/process group cannot be settled from this repo's Go code.
+- **Live SIGTERM / 30 s cancellation timing** (`cmd/gc-runtime-rex/main.go:48-50`, `internal/provider/lock.go:73-94`): exact elapsed shutdown timing when `gc` sends SIGTERM (and SIGKILL after 2 s) while `stop` is blocked in `withFlock` or `CloseBlock` is not verified in a live run.

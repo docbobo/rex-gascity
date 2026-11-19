@@ -1,6 +1,7 @@
 package provider_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -43,31 +44,29 @@ func TestPreStartCommandsRunBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestPreStartFailureAborts(t *testing.T) {
+func TestPreStartFailureWarnsAndContinues(t *testing.T) {
 	fake := faketest.New()
-	p := provider.New("acme", fake)
+	var warnings bytes.Buffer
+	p := provider.New("acme", fake, provider.WithWarnings(&warnings))
 
 	cfg := provider.Config{
+		Argv:     []string{"pi"},
 		PreStart: []string{"false"},
 	}
-	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
-	if err == nil {
-		t.Fatal("expected error from failing pre_start, got nil")
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (a failing pre_start is non-fatal)", err)
 	}
 
-	// No pane must have been launched.
-	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
-		t.Error("NewWindow or NewSplit called after pre_start failure")
+	// A failing hook must still surface a warning naming the hook.
+	if !strings.Contains(warnings.String(), "pre_start[0]") {
+		t.Errorf("warnings = %q, want a pre_start[0] failure warning", warnings.String())
 	}
-	// No binding must remain.
-	if _, ok := p.Binding("pi-mc-wisp-abc"); ok {
-		t.Error("binding exists after failed start")
+	// The launch must still happen and the binding must remain.
+	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
+		t.Error("no pane launched after a failing pre_start")
 	}
-	// No seeded identity.
-	for _, key := range []string{"GC_SESSION_ID", "GC_INSTANCE_TOKEN", "GC_RUNTIME_EPOCH"} {
-		if got, _ := p.GetMeta(context.Background(), "pi-mc-wisp-abc", key); got != "" {
-			t.Errorf("%s = %q after failed start, want empty", key, got)
-		}
+	if _, ok := p.Binding("pi-mc-wisp-abc"); !ok {
+		t.Error("binding missing after a non-fatal pre_start failure")
 	}
 }
 
@@ -154,43 +153,50 @@ func TestPreStartEnvEmptyValueIsUnset(t *testing.T) {
 	}
 }
 
-func TestPreStartHookTimesOut(t *testing.T) {
+func TestPreStartHookTimeoutWarnsAndContinues(t *testing.T) {
 	fake := faketest.New()
-	p := provider.New("acme", fake, provider.WithPreStartHookTimeout(50*time.Millisecond))
+	var warnings bytes.Buffer
+	p := provider.New("acme", fake,
+		provider.WithWarnings(&warnings),
+		provider.WithPreStartHookTimeout(50*time.Millisecond))
 
 	cfg := provider.Config{
 		Argv:     []string{"pi"},
 		PreStart: []string{"sleep 10"},
 	}
 	start := time.Now()
-	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
-	if err == nil {
-		t.Fatal("expected a pre_start timeout, got nil")
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (a pre_start timeout is non-fatal)", err)
 	}
-	if !strings.Contains(err.Error(), "pre_start[0]") || !strings.Contains(err.Error(), "timed out after") {
-		t.Errorf("error = %q, want a pre_start[0] timeout", err)
+	if !strings.Contains(warnings.String(), "pre_start[0]") || !strings.Contains(warnings.String(), "timed out after") {
+		t.Errorf("warnings = %q, want a pre_start[0] timeout", warnings.String())
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Errorf("Start took %v with a 50ms hook timeout", elapsed)
 	}
-	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
-		t.Error("launch happened after a pre_start timeout")
+	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
+		t.Error("no pane launched after a pre_start timeout")
 	}
 }
 
 func TestPreStartHookCappedByStartBudget(t *testing.T) {
 	// The per-hook timeout is 10s but the start budget is 50ms: the hook must
-	// be bounded by the budget, not the per-hook constant.
+	// be bounded by the budget, not the per-hook constant. The timeout warns
+	// and the start continues.
 	fake := faketest.New()
+	var warnings bytes.Buffer
 	p := provider.New("acme", fake,
+		provider.WithWarnings(&warnings),
 		provider.WithStartBudget(50*time.Millisecond),
 		provider.WithPreStartHookTimeout(10*time.Second))
 
 	cfg := provider.Config{Argv: []string{"pi"}, PreStart: []string{"sleep 10"}}
 	start := time.Now()
-	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
-	if err == nil || !strings.Contains(err.Error(), "timed out after") {
-		t.Fatalf("Start = %v, want a pre_start timeout", err)
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (a pre_start timeout is non-fatal)", err)
+	}
+	if !strings.Contains(warnings.String(), "timed out after") {
+		t.Errorf("warnings = %q, want a pre_start timeout", warnings.String())
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Errorf("Start took %v, want it capped by the 50ms start budget", elapsed)
@@ -208,8 +214,8 @@ func TestPreStartHookCappedByContextDeadline(t *testing.T) {
 	cfg := provider.Config{Argv: []string{"pi"}, PreStart: []string{"sleep 10"}}
 	start := time.Now()
 	err := p.Start(ctx, "pi-mc-wisp-abc", cfg)
-	if err == nil || !strings.Contains(err.Error(), "timed out after") {
-		t.Fatalf("Start = %v, want a pre_start timeout", err)
+	if err == nil || !strings.Contains(err.Error(), "start canceled") {
+		t.Fatalf("Start = %v, want a canceled start", err)
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Errorf("Start took %v, want it capped by the 50ms context deadline", elapsed)
@@ -293,64 +299,70 @@ func TestPreStartCwd(t *testing.T) {
 	}
 }
 
-func TestPreStartFailureAbortsWithIdentityEnv(t *testing.T) {
-	// When the start config carries identity env, a pre_start failure must
-	// leave no seed behind even though the env was available.
+func TestPreStartFailureWithIdentityEnvStillStarts(t *testing.T) {
+	// When the start config carries identity env, a pre_start failure warns
+	// but the launch still happens and the identity is seeded.
 	fake := faketest.New()
-	p := provider.New("acme", fake)
+	var warnings bytes.Buffer
+	p := provider.New("acme", fake, provider.WithWarnings(&warnings))
 
 	cfg := provider.Config{
+		Argv:     []string{"pi"},
 		PreStart: []string{"false"},
 		Env:      identityEnv(),
 	}
-	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
-	if err == nil {
-		t.Fatal("expected error from failing pre_start, got nil")
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (a failing pre_start is non-fatal)", err)
 	}
-
-	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
-		t.Error("NewWindow or NewSplit called after pre_start failure")
+	if !strings.Contains(warnings.String(), "pre_start[0]") {
+		t.Errorf("warnings = %q, want a pre_start[0] failure warning", warnings.String())
 	}
-	if _, ok := p.Binding("pi-mc-wisp-abc"); ok {
-		t.Error("binding exists after failed start")
+	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
+		t.Error("no pane launched after a failing pre_start")
 	}
-	for _, key := range []string{"GC_SESSION_ID", "GC_INSTANCE_TOKEN", "GC_RUNTIME_EPOCH"} {
-		if got, _ := p.GetMeta(context.Background(), "pi-mc-wisp-abc", key); got != "" {
-			t.Errorf("%s = %q after failed start, want empty", key, got)
-		}
+	if _, ok := p.Binding("pi-mc-wisp-abc"); !ok {
+		t.Error("binding missing after a non-fatal pre_start failure")
+	}
+	if got, _ := p.GetMeta(context.Background(), "pi-mc-wisp-abc", "GC_SESSION_ID"); got == "" {
+		t.Error("identity not seeded after a non-fatal pre_start failure")
 	}
 }
 
-func TestPreStartSecondCommandFails(t *testing.T) {
+func TestPreStartSecondCommandWarnsAndLaterHooksRun(t *testing.T) {
 	dir := t.TempDir()
 	fake := faketest.New()
-	p := provider.New("acme", fake)
+	var warnings bytes.Buffer
+	p := provider.New("acme", fake, provider.WithWarnings(&warnings))
 
 	first := filepath.Join(dir, "first")
+	third := filepath.Join(dir, "third")
 	cfg := provider.Config{
+		Argv:    []string{"pi"},
 		WorkDir: dir,
 		PreStart: []string{
 			"echo ran > " + first,
 			"false",
+			"echo ran > " + third,
 		},
 	}
-	err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg)
-	if err == nil {
-		t.Fatal("expected error from second pre_start command, got nil")
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (a failing pre_start is non-fatal)", err)
 	}
-	if !strings.Contains(err.Error(), "pre_start[1]") {
-		t.Errorf("error %q does not mention pre_start[1]", err)
+	if !strings.Contains(warnings.String(), "pre_start[1]") {
+		t.Errorf("warnings = %q, want a pre_start[1] failure warning", warnings.String())
 	}
 
-	// The first command ran; the second aborted before any launch.
-	if _, statErr := os.Stat(first); statErr != nil {
-		t.Errorf("first pre_start file missing: %v", statErr)
+	// The first and third commands ran; the failed second did not stop the run.
+	for _, f := range []string{first, third} {
+		if _, statErr := os.Stat(f); statErr != nil {
+			t.Errorf("pre_start file %s missing: %v", f, statErr)
+		}
 	}
-	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
-		t.Error("NewWindow or NewSplit called after pre_start failure")
+	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
+		t.Error("no pane launched after a failing pre_start")
 	}
-	if _, ok := p.Binding("pi-mc-wisp-abc"); ok {
-		t.Error("binding exists after failed start")
+	if _, ok := p.Binding("pi-mc-wisp-abc"); !ok {
+		t.Error("binding missing after a non-fatal pre_start failure")
 	}
 }
 

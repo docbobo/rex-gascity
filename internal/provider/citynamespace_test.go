@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -37,6 +38,7 @@ func TestCityFromEnvIsCallerIndependent(t *testing.T) {
 		{"", "/a/b/mycity", "c", "default"},
 		{"r", "/a/b/mycity", "c", "r"},
 	} {
+		t.Setenv("GC_EXEC_CITY_NAME", "")
 		t.Setenv("GC_EXEC_CITY_PATH", "")
 		t.Setenv("GC_REX_CITY", tc.rex)
 		t.Setenv("GC_CITY_PATH", tc.path)
@@ -47,21 +49,51 @@ func TestCityFromEnvIsCallerIndependent(t *testing.T) {
 	}
 }
 
-// gc's per-op city contract (GC_EXEC_CITY_PATH) selects the canonical city and
-// outranks the provider's own GC_REX_CITY pin, which stays as a fallback.
-func TestCityFromEnvPrefersExecCityPath(t *testing.T) {
+// gc's per-op city contract names the city (GC_EXEC_CITY_NAME) and gives its
+// path (GC_EXEC_CITY_PATH): the name selects the canonical city, and a caller
+// that carries only the path is named by its last component. A pin is a name,
+// never a path — gc:<absolute path> is not a city name. Both outrank the
+// provider's own GC_REX_CITY pin, which stays as a fallback.
+func TestCityFromEnvPrefersExecCityName(t *testing.T) {
 	for _, tc := range []struct {
-		exec, rex, want string
+		name, exec, rex, want string
 	}{
-		{"/a/b/mycity", "pin", "/a/b/mycity"},
-		{"/a/b/mycity", "", "/a/b/mycity"},
-		{"", "pin", "pin"},
-		{"", "", "default"},
+		{"my-city", "/a/b/mycity", "", "my-city"},
+		{"my-city", "/a/b/mycity", "pin", "my-city"},
+		{"my-city", "", "pin", "my-city"},
+		{"", "/a/b/mycity", "", "mycity"},
+		{"", "/a/b/mycity/", "", "mycity"},
+		{"", "/a/b/mycity", "pin", "mycity"},
+		{"", "", "pin", "pin"},
+		{"", "", "", "default"},
 	} {
+		t.Setenv("GC_EXEC_CITY_NAME", tc.name)
 		t.Setenv("GC_EXEC_CITY_PATH", tc.exec)
 		t.Setenv("GC_REX_CITY", tc.rex)
 		if got := provider.CityFromEnv(); got != tc.want {
-			t.Errorf("exec=%q rex=%q: CityFromEnv = %q, want %q", tc.exec, tc.rex, got, tc.want)
+			t.Errorf("name=%q exec=%q rex=%q: CityFromEnv = %q, want %q", tc.name, tc.exec, tc.rex, got, tc.want)
+		}
+	}
+}
+
+// Whatever gc supplies, the pin is a name: the Rex session label never carries
+// a path separator. GCREX-40's review flagged the path-shaped label
+// (gc:<absolute path>) as unverified against the 128-char label rule.
+func TestCityLabelIsNeverPathShaped(t *testing.T) {
+	for _, tc := range []struct{ name, exec string }{
+		{"my-city", "/a/b/mycity"},
+		{"", "/a/b/mycity"},
+		{"", "/Users/boris/my-city"},
+	} {
+		t.Setenv("GC_EXEC_CITY_NAME", tc.name)
+		t.Setenv("GC_EXEC_CITY_PATH", tc.exec)
+		t.Setenv("GC_REX_CITY", "")
+		labels := provider.SessionLabels(provider.CityCandidates())
+		if len(labels) != 1 {
+			t.Fatalf("name=%q exec=%q: labels = %v, want exactly one", tc.name, tc.exec, labels)
+		}
+		if strings.Contains(labels[0], "/") {
+			t.Errorf("name=%q exec=%q: label %q carries a path", tc.name, tc.exec, labels[0])
 		}
 	}
 }
@@ -83,6 +115,7 @@ func TestCityCandidates(t *testing.T) {
 		{"", "/a/b/mycity", "mycity", []string{"default", "mycity"}},
 		{"r", "/a/b/mycity", "c", []string{"r"}},
 	} {
+		t.Setenv("GC_EXEC_CITY_NAME", "")
 		t.Setenv("GC_EXEC_CITY_PATH", "")
 		t.Setenv("GC_REX_CITY", tc.rex)
 		t.Setenv("GC_CITY_PATH", tc.path)
@@ -93,15 +126,17 @@ func TestCityCandidates(t *testing.T) {
 	}
 }
 
-// A caller pinned by gc's GC_EXEC_CITY_PATH reads exactly that city, like the
+// A caller pinned by gc's city contract reads exactly that city, like the
 // GC_REX_CITY pin: the incidental GC_CITY_PATH/GC_CITY candidates are not read.
+// The pin is the name gc gives the city, not the path it serves it from.
 func TestCityCandidatesExecCityPathIsPin(t *testing.T) {
+	t.Setenv("GC_EXEC_CITY_NAME", "")
 	t.Setenv("GC_EXEC_CITY_PATH", "/a/b/mycity")
 	t.Setenv("GC_REX_CITY", "")
 	t.Setenv("GC_CITY_PATH", "/a/b/mycity")
 	t.Setenv("GC_CITY", "mycity")
-	if got := provider.CityCandidates(); !slices.Equal(got, []string{"/a/b/mycity"}) {
-		t.Errorf("CityCandidates = %v, want [/a/b/mycity]", got)
+	if got := provider.CityCandidates(); !slices.Equal(got, []string{"mycity"}) {
+		t.Errorf("CityCandidates = %v, want [mycity]", got)
 	}
 	t.Setenv("GC_EXEC_CITY_PATH", "")
 	if got := provider.CityCandidates(); !slices.Equal(got, []string{"default", "mycity"}) {
