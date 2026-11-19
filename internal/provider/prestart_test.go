@@ -126,6 +126,34 @@ func TestPreStartEnv(t *testing.T) {
 	}
 }
 
+// An empty env value must reach the pre_start hook as unset, not as K=
+// (GCREX-55). `${VAR+x}` is set only when the variable exists at all.
+func TestPreStartEnvEmptyValueIsUnset(t *testing.T) {
+	dir := t.TempDir()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	outFile := filepath.Join(dir, "unset.txt")
+	cfg := provider.Config{
+		Argv:    []string{"pi"},
+		WorkDir: dir,
+		Env:     map[string]string{"MY_EMPTY_VAR": ""},
+		PreStart: []string{
+			`if [ -z "${MY_EMPTY_VAR+x}" ]; then printf unset > ` + outFile + `; else printf set > ` + outFile + `; fi`,
+		},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read env output: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "unset" {
+		t.Errorf("hook saw MY_EMPTY_VAR %q, want unset (an empty value must unset the variable)", got)
+	}
+}
+
 func TestPreStartHookTimesOut(t *testing.T) {
 	fake := faketest.New()
 	p := provider.New("acme", fake, provider.WithPreStartHookTimeout(50*time.Millisecond))

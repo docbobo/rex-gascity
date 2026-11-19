@@ -226,7 +226,10 @@ func projectPoolRouting(env map[string]string) map[string]string {
 }
 
 // mergeEnv merges the base environment slice with an overlay map, returning a
-// new sorted slice. Overlay entries replace base entries with the same key.
+// new sorted slice. Overlay entries replace base entries with the same key; an
+// empty overlay value unsets the key (removes it), matching gc's env contract
+// and the pack's envplan, so neither a pre_start hook nor the launched command
+// sees `K=` for an empty value.
 func mergeEnv(base []string, overlay map[string]string) []string {
 	m := make(map[string]string, len(base)+len(overlay))
 	for _, kv := range base {
@@ -235,6 +238,10 @@ func mergeEnv(base []string, overlay map[string]string) []string {
 		}
 	}
 	for k, v := range overlay {
+		if v == "" {
+			delete(m, k)
+			continue
+		}
 		m[k] = v
 	}
 	out := make([]string, 0, len(m))

@@ -6,8 +6,29 @@ import (
 )
 
 func TestMergeEnvOverlayReplacesAndSorts(t *testing.T) {
-	got := mergeEnv([]string{"B=1", "A=old", "junk"}, map[string]string{"A": "new", "C": ""})
-	want := []string{"A=new", "B=1", "C="}
+	got := mergeEnv([]string{"B=1", "A=old", "junk"}, map[string]string{"A": "new"})
+	want := []string{"A=new", "B=1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// An empty overlay value means the variable must be unset, matching gc's env
+// contract (docs/reference/exec-session-provider.md:269 at v1.5.1) and the
+// pack's envplan: the key is removed rather than set to empty, so a pre_start
+// hook sees it unset instead of K= (GCREX-55).
+func TestMergeEnvEmptyValueUnsets(t *testing.T) {
+	got := mergeEnv([]string{"B=1", "A=old"}, map[string]string{"A": "", "C": ""})
+	want := []string{"B=1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// A non-empty overlay value is passed through unchanged.
+func TestMergeEnvNonEmptyValuePassedThrough(t *testing.T) {
+	got := mergeEnv(nil, map[string]string{"K": "v"})
+	want := []string{"K=v"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
