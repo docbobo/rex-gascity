@@ -65,7 +65,7 @@ gc city → Rex session, gc rig → Rex tab, gc agent → Rex pane (Option B).
 | `session.view` | `session_id` | `session_id`, `active_window_id`, `label`, `revision` (increments per change, jumps on restore), `windows[].{window_id, label, focused_block_id, layers[]}`; each `layers[].blocks[]` entry is `{block_id, flavor, label, owner, creator_name, host_id}`. **The view has no `clients` field** |
 | `session.list` | — | `sessions[] {session_id, label}` in creation order |
 | `session.list_clients` | `session_id` | `clients[] {client_id, principal, info, connected_at, connection_state}` — the attached-client source (§12), not `session.view` |
-| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe or in teardown**; the provider tears down with `block.close` and leaves the session (§12) |
+| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe.** Teardown calls it only on the provider's own empty canonical `gc:<city>` session, behind the guards in §12 (D3) |
 | `session.focus_block` / `session.focus_window` | ids | focus a pane / tab |
 | `session.set_block_label` / `session.set_window_label` / `session.set_label` | ids, label | ≤128 chars |
 | `block.close` | `session_id`, `block_id` **or** `window_id`, `keep_last` | returns `{block_id, revision}`; `keep_last` refuses the last block in a window (`bad_request`, exit 1) |
@@ -344,8 +344,9 @@ environment variable, not part of RPP; round-tripping it through
 
 Run after any Rex upgrade. Every line must match the tables above. Uses
 `REX_BLOCK` / `REX_SESSION` from the calling pane. It creates exactly one
-scratch session, kills only the id it just created, and never calls
-`session.destroy` — that op is destructive and the provider does not use it.
+scratch session, kills only the id it just created, and never executes
+`session.destroy` — that op is destructive; the provider calls it only on its
+own empty canonical session (§12).
 Set `GC_SRC` to a gc checkout to re-check the §9 capability names.
 
 ```bash
@@ -436,7 +437,7 @@ rex api call block.event "$(jq -nc --arg s "$SID" --arg b "$BID" \
 rex api call block.close "$(jq -nc --arg s "$SID" --arg b "$BID" '{session_id:$s, block_id:$b}')" \
   | jq -c '{block_id, revision}'
 
-# session.destroy is checked from its schema, never executed (destructive).
+# session.destroy is checked from its schema, never executed by the probe (destructive).
 rex api describe session.destroy | grep -qE 'must be attached' \
   && echo "session.destroy: attachment requirement present" \
   || echo "MISSING session.destroy attachment requirement"
@@ -472,7 +473,7 @@ Phase 0 also confirms the plan's decisions against the live surface:
 | D0 delivery form | Out-of-tree RPP v0 executable via pack `[runtimes.rex]`. §9 records the op set and handshake; `gc runtime check` is the verifier. |
 | D1 mapping | session = city, tab = rig, pane = agent. §1; supported by `session.create` + `session.new_window` + `session.new_split`. |
 | D2 transport | Shell out to the CLI behind `rex.Client`; the socket protocol is undocumented and revision-numbered (§7). |
-| D3 server ownership | Never stop the shared server. `session.destroy` closes only that session's blocks; `server.stop` exists and must not be called. The version skew in §0 is another reason: the server only moves on restart. |
+| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes, and the canonical `gc:<city>` session (created at `internal/provider/provider.go:488`, the `CreateSession` call in the `FindSession`-miss branch) once it is empty and no Rex app is attached (§12, GCREX-65). The version skew in §0 is another reason never to touch the server: it only moves on restart. |
 | D4 scope | Local server via the default socket or `-S <host>`; agents run on gc's host. RPP has no declaration for this. |
 | D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — emitted by the pane program; Pi does, and gc-managed Pi panes report under Rex). Fall back to `timed_only` if classification proves unreliable. |
 | D6 v1 breadth | Core `Provider` + idle/wait + relaunch + metadata sidecar + activity + attachment; skip `ExecProvider` and `DialogProvider`. |
@@ -482,14 +483,27 @@ Phase 0 also confirms the plan's decisions against the live surface:
 - **Resolved since capture.** `format` paging (Phase 1, GCREX-2): the hard
   control-response cap is 1 048 576 bytes; `peek` requests `max_bytes: 983040`
   and follows `id` with `blob_read` until `eof`.
-- **`session.destroy` is destructive and unused.** The schema requires an
-  attached connection (or `conflict`) and rejects an unknown id with
-  `session_not_found`; `session_id` is mandatory. A fresh CLI call on a scratch
-  session returned exit 0 (observed once; the recurring probe only reads the
-  schema, never destroys), so the CLI satisfies the attachment itself — the
-  requirement is real, only the source of attachment differs. The provider
-  never calls it: teardown closes city-owned blocks with `block.close` (D3), and
-  §10 asserts its contract from the schema instead of executing it.
+- **`session.destroy` is destructive; the provider calls it on one session
+  only (GCREX-65).** The schema requires an attached connection (or `conflict`)
+  and rejects an unknown id with `session_not_found`; `session_id` is
+  mandatory. A fresh CLI call on a scratch session returned exit 0 (recorded in
+  the "Empty city session" bullet below), so the CLI satisfies the attachment
+  itself. Ownership rule (D3): `Provider.stop` calls it only for a session whose
+  label equals `canonicalLabel()` — the one label `CreateSession` is ever called
+  with (`internal/provider/provider.go:488`) — never for a legacy-labelled
+  session it merely adopted. Guards, all under the state flock `Stop` already
+  holds: a fresh `session.view` has zero windows, `session.list_clients` lists no
+  `kind == "app"` client, and exactly one session carries the label. An
+  unreachable server or an already-gone session counts as success; any other
+  lookup or destroy error is logged and `Stop` still returns nil. The next
+  `Start` re-creates the session through `CreateSession`, and a `Start` whose
+  session vanished between find-or-create and launch retries once. Accepted
+  residual risks: the lookup→destroy window (below), and a human-created session
+  carrying the exact `gc:<city>` label would be destroyed once empty and
+  unattended. Self-exit of the agent with no later `Stop` leaves the empty shell
+  until the next `Stop` in that city (no pane-exit watcher; gc v1.5.1 has no such
+  caller). §10 still asserts the op's contract from the schema instead of
+  executing it.
 - **Empty city session (GCREX-65).** Live record, 2026-11-20, rex
   0.1.0-preview.21, scratch label `gc:gcrex65-scratch` (no real city touched;
   `gc:my-city` and `rex-gas-city` were left alone). The Rex app was not
@@ -587,10 +601,11 @@ Phase 0 also confirms the plan's decisions against the live surface:
   metadata live under `$GC_REX_STATE_DIR/<city>`, else
   `$XDG_STATE_HOME/rex-gascity/<city>`, else
   `~/.local/state/rex-gascity/<city>`, one JSON file per `sha256(name)`.
-- **Empty-tab teardown (resolved, GCREX-4).** A live probe closed a scratch
-  session's only block and `session.view` then reported zero windows: Rex
-  removes a tab when its last block closes. Teardown is block-only
-  (`block.close`); the provider never calls `session.close_window`.
+- **Empty-tab teardown (resolved, GCREX-4; amended GCREX-65).** A live probe
+  closed a scratch session's only block and `session.view` then reported zero
+  windows: Rex removes a tab when its last block closes. Teardown closes blocks
+  with `block.close` and never calls `session.close_window`; when the session is
+  ours and left empty with no app attached, `Stop` then destroys it (above).
 - **Delivery and handshake (resolved, GCREX-5).** `gc-runtime-rex`
   (`cmd/gc-runtime-rex`) is the out-of-tree RPP v0 dispatcher; `pack/pack.toml`
   declares `[runtimes.rex]` with `command = "gc-runtime-rex"` and `protocol = 0`,
