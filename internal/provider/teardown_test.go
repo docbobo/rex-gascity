@@ -243,3 +243,22 @@ func TestProcessAliveTransientProcessErrorIsUnknown(t *testing.T) {
 		t.Errorf("ProcessAlive after a transient error = %v, %v; want unknown, nil", state, err)
 	}
 }
+
+// TestStopUnreachableWithoutBindingSucceeds pins GCREX-51 REQ-001: with Rex
+// unreachable and no binding answering to the name, stop has nothing to close
+// and succeeds, as herdr-core does with the core down and nothing running.
+func TestStopUnreachableWithoutBindingSucceeds(t *testing.T) {
+	fake := faketest.New()
+	fake.ListSessionsErr = rex.ErrUnavailable
+	p := provider.New("acme", fake)
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop with Rex unreachable and no binding = %v, want nil", err)
+	}
+	if _, ok := p.Binding(teardownDog); ok {
+		t.Error("binding exists after Stop, want none")
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed = %v, want none", fake.ClosedBlocks)
+	}
+}
