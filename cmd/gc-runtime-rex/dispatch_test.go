@@ -255,8 +255,21 @@ func TestListRunningUnreachableRexIsEmptyExitZero(t *testing.T) {
 	}
 }
 
+// TestSetMetaUnknownSessionFailsExitOne pins GCREX-49: set-meta requires a
+// session record, so a name that was never started exits 1, writes nothing to
+// stdout, and leaves no value behind.
+func TestSetMetaUnknownSessionFailsExitOne(t *testing.T) {
+	h, _ := newHarness(t)
+	assertFailure(t, h.run("value", "set-meta", "Indigo--ghost-1", "GC_KEY"), exitFail)
+	if got := h.must("", "get-meta", "Indigo--ghost-1", "GC_KEY").stdout; got != "" {
+		t.Errorf("value stored by a rejected set-meta: %q", got)
+	}
+}
+
 func TestMetaRoundTripAcrossCalls(t *testing.T) {
 	h, _ := newHarness(t)
+	// set-meta requires a session record, so start the pane first.
+	h.start(dog)
 	const value = "line one\n  spaced\ttab\n\n"
 	h.must(value, "set-meta", dog, "GC_KEY")
 	if got := h.must("", "get-meta", dog, "GC_KEY").stdout; got != value {

@@ -111,7 +111,11 @@ func TestStartSeedsIdentityBeforeLaunch(t *testing.T) {
 func TestStartClearsStaleIdentityWhenEnvHasEmptyValues(t *testing.T) {
 	const name = "pi-mc-wisp-abc"
 	ctx := context.Background()
-	p := provider.New("acme", faketest.New())
+	// Simulate a crashed prior incarnation: its session record and identity
+	// sidecar survive together, so setting the stale identity is allowed.
+	bs := provider.NewMemoryStore()
+	bs.Save(provider.Binding{Name: provider.SessionName(name), SessionID: "session:stale", BlockID: "block:stale"})
+	p := provider.New("acme", faketest.New(), provider.WithBindingStore(bs))
 
 	for key, old := range map[string]string{
 		"GC_SESSION_ID":     "old-session",
@@ -610,7 +614,9 @@ func TestStartupNudgeConfirmedClearsMarker(t *testing.T) {
 			UpdatedAt: time.Now(),
 		}}}
 	}
-	p := startupProvider(fake, provider.WithNudgeConfirmation(200*time.Millisecond, 2*time.Millisecond))
+	bs := provider.NewMemoryStore()
+	bs.Save(provider.Binding{Name: provider.SessionName(name), SessionID: "session:stale", BlockID: "block:stale"})
+	p := startupProvider(fake, provider.WithNudgeConfirmation(200*time.Millisecond, 2*time.Millisecond), provider.WithBindingStore(bs))
 	if err := p.SetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey, "old strand"); err != nil {
 		t.Fatalf("SetMeta: %v", err)
 	}
