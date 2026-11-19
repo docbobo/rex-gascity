@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,20 @@ var ErrSessionNotFound = errors.New("session not found")
 // ErrAlreadyRunning reports that StartNew found a live pane for the session.
 // The RPP dispatcher maps it to gc's "already running" start collision.
 var ErrAlreadyRunning = errors.New("provider: already running")
+
+// ErrFreshCollision reports that a start with fresh_only found a name any
+// record holds (live or dead) and refused to recycle it. The RPP dispatcher
+// maps it to herdr-core's FRESH_COLLISION exit 73.
+var ErrFreshCollision = errors.New("provider: session already exists (fresh_only)")
+
+// warnf writes one start warning. Warnings never fail a start; gc drops a
+// successful start's stderr, so this is a diagnostic channel only.
+func (p *Provider) warnf(format string, args ...any) {
+	if p.warn == nil {
+		return
+	}
+	fmt.Fprintf(p.warn, "start: "+format+"\n", args...)
+}
 
 // InputOutcomeError carries an RPP typed input outcome (herdr-core's exit 80)
 // for an input op. Outcome is the wire word, one of "gone", "not_sent",
@@ -55,6 +70,14 @@ const (
 	submitKey    = "enter"
 	interruptKey = "ctrl+c"
 )
+
+// CopyFile is one gc `copy_files` entry: Src is the source path and RelDst is
+// the destination relative to the launch work_dir (empty means the source's
+// base name in work_dir).
+type CopyFile struct {
+	Src    string `json:"src"`
+	RelDst string `json:"rel_dst,omitempty"`
+}
 
 // Config is the launch configuration the RPP `start` op carries as JSON.
 type Config struct {
@@ -86,6 +109,39 @@ type Config struct {
 	// so a pack's per-provider override reaches a workdir that already holds a
 	// managed file gc's preserve predicate would keep. Later directories win.
 	PackOverlayDirs []string
+	// SessionSetup is an ordered list of shell commands run after the agent pane
+	// launches and before the startup nudge. A failure is a warning, not a
+	// failed start, mirroring herdr-core (herdrcore/lifecycle.py:811-814).
+	SessionSetup []string
+	// SessionSetupScript is one shell command run with SessionSetup's semantics.
+	SessionSetupScript string
+	// SessionLive is gc's tmux live configuration (theming, keybindings, status
+	// bars). It is never applied on Rex; a non-empty value yields one
+	// SESSION_LIVE_SKIPPED warning, mirroring herdr-core
+	// (herdrcore/lifecycle.py:162-164,823-824).
+	SessionLive []string
+	// OverlayDir is a gc overlay directory staged into WorkDir before pre_start:
+	// its universal tree (minus the top-level per-provider and .gc subtrees),
+	// then its per-provider/<GC_PROVIDER> subtree flattened into WorkDir
+	// (herdrcore/staging.py:225-246).
+	OverlayDir string
+	// CopyFiles stages individual files (or trees) into WorkDir before pre_start.
+	CopyFiles []CopyFile
+	// FreshOnly refuses a name any record already holds, with RPP exit 73
+	// (herdr-core FRESH_COLLISION), instead of recycling a dead record. It is
+	// enforced by StartNew, the op gc's start maps to; Start does not consult it
+	// because a plain start is allowed to adopt a live pane.
+	FreshOnly bool
+	// ReadyPromptPrefix, when set, is the pane prompt prefix that marks the agent
+	// ready for its first turn. It gates the startup-nudge readiness wait and
+	// replaces the program_status signal while set.
+	ReadyPromptPrefix string
+	// ReadyDelayMS is a minimum delay before readiness is declared, in
+	// milliseconds. It is capped at 60 s, mirroring herdr-core READY_WAIT_S,
+	// and ignored while ReadyPromptPrefix is set, because gc sends ready_delay_ms
+	// instead of a prompt to watch for and herdr-core consults the prompt first
+	// (gc v1.5.1 docs/reference/exec-session-provider.md:228-229).
+	ReadyDelayMS int
 }
 
 // Provider drives Rex for one gc city.
@@ -120,6 +176,11 @@ type Provider struct {
 	// by whatever remains of startBudget (see start).
 	startBudget         time.Duration
 	preStartHookTimeout time.Duration
+
+	// warn receives start warnings (ignored session_setup hooks, session_live,
+	// a refused copy_files destination). It is stderr in production; tests can
+	// capture it with WithWarnings.
+	warn io.Writer
 }
 
 // Option configures a Provider.
@@ -205,6 +266,17 @@ func WithPreStartHookTimeout(d time.Duration) Option {
 	}
 }
 
+// WithWarnings sets where start warnings are written. A nil writer keeps the
+// default (os.Stderr). Warnings never change the start result: gc drops a
+// successful start's stderr, so they are diagnostics, not a failure channel.
+func WithWarnings(w io.Writer) Option {
+	return func(p *Provider) {
+		if w != nil {
+			p.warn = w
+		}
+	}
+}
+
 // New builds a Provider for city, driving client. Without options all state is
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
@@ -219,6 +291,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 
 		startBudget:         defaultStartBudget,
 		preStartHookTimeout: defaultPreStartHookTimeout,
+		warn:                os.Stderr,
 	}
 	p.nudge.claimProbe = p.probeLiveClaim
 	for _, opt := range opts {
@@ -262,6 +335,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 	if err := p.failIfAgentEnded(ctx, name, launch, cfg); err != nil {
 		return err
 	}
+	p.runSessionSetup(ctx, name, launch, cfg)
 	return p.deliverStartupNudge(ctx, name, launch, cfg)
 }
 
@@ -273,9 +347,22 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error {
 	var launch startResult
 	err := p.withNameLock(ctx, SessionName(name), func() error {
+		if cfg.FreshOnly {
+			// fresh_only refuses a name any record holds, live or dead, and
+			// never recycles or reuses it (herdr-core _check_name,
+			// herdrcore/lifecycle.py:755-756). A stale binding is a record, and
+			// so is a binding that holds the name only as an alias, so the
+			// check goes through lookup, not the primary-key read alone.
+			if len(p.binder.lookup(SessionName(name))) > 0 {
+				return fmt.Errorf("%w: %s", ErrFreshCollision, name)
+			}
+		}
 		running, err := p.IsRunning(ctx, name)
 		if err != nil {
 			return err
+		}
+		if cfg.FreshOnly && running {
+			return fmt.Errorf("%w: %s", ErrFreshCollision, name)
 		}
 		if running {
 			return fmt.Errorf("%w: %s", ErrAlreadyRunning, name)
@@ -290,6 +377,7 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 	if err := p.failIfAgentEnded(ctx, name, launch, cfg); err != nil {
 		return err
 	}
+	p.runSessionSetup(ctx, name, launch, cfg)
 	return p.deliverStartupNudge(ctx, name, launch, cfg)
 }
 
@@ -328,6 +416,11 @@ type startResult struct {
 	// stage in the startup-timing diagnostic (GCREX-58); zero on the idempotent
 	// already-alive path, which delivers no nudge.
 	launchDur time.Duration
+	// env is the launch plan's projected environment (pool routing applied).
+	// The post-launch setup hooks run with it, so they see the same identity
+	// the launched pane carries (herdr-core applies the session env to setup;
+	// herdrcore/envplan.py:51-76).
+	env map[string]string
 }
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
@@ -398,6 +491,17 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		}
 		return nil
 	}); err != nil {
+		return startResult{}, err
+	}
+
+	// Stage gc's overlay_dir and copy_files before pre_start, so a hook sees the
+	// staged work_dir (herdrcore/lifecycle.py:789). pack_overlay_dirs stays
+	// after pre_start: its per-provider subtree deliberately overwrites a
+	// managed hook the hook may have rewritten.
+	if err := stageOverlayDir(cfg.WorkDir, cfg.OverlayDir, cfg.Env["GC_PROVIDER"]); err != nil {
+		return startResult{}, err
+	}
+	if err := stageCopyFiles(cfg.WorkDir, cfg.CopyFiles, func(msg string) { p.warnf("%s", msg) }); err != nil {
 		return startResult{}, err
 	}
 
@@ -499,6 +603,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		return startResult{}, err
 	}
 	launched.launchDur = time.Since(launchStart)
+	launched.env = plan.Env
 	return launched, nil
 }
 
@@ -906,6 +1011,60 @@ func runPreStartWithTimeout(ctx context.Context, command, workDir string, env []
 		return fmt.Errorf("%s: timed out after %s", command, timeout)
 	}
 	return err
+}
+
+// sessionLiveSkipped is the one warning a non-empty session_live produces.
+// gc's session_live styles and binds a tmux server; the Rex provider runs no
+// tmux server, so applying it would reach an unrelated one
+// (herdrcore/lifecycle.py:162-164).
+const sessionLiveSkipped = "session_live is not applied on this runtime: it styles and binds a tmux server, and the Rex provider runs no tmux server"
+
+// runSessionSetup runs the start config's post-launch hooks and reports the
+// ignored session_live. A hook failure is a warning, never a failed start,
+// mirroring herdr-core (herdrcore/lifecycle.py:811-824): gc drops a successful
+// start's stderr, and the startup nudge must still be attempted. It is a no-op
+// when the start launched nothing (an idempotent Start) or the config names no
+// setup work.
+func (p *Provider) runSessionSetup(ctx context.Context, name string, res startResult, cfg Config) {
+	if res.blockID == "" {
+		return
+	}
+	if len(cfg.SessionSetup) == 0 && cfg.SessionSetupScript == "" && len(cfg.SessionLive) == 0 {
+		return
+	}
+	// res.env is the launch plan's projected environment: merging it over the
+	// process environment gives the hooks the same environment the launched
+	// pane carries (including pool routing), plus GC_SESSION, matching
+	// herdr-core's setup env (herdrcore/lifecycle.py:599-613).
+	env := append(launch.Plan{Env: res.env}.MergedEnv(os.Environ()), "GC_SESSION="+name)
+	// Each hook is bounded like a pre_start hook: the per-hook timeout, capped
+	// by whatever remains of the start budget, so a slow setup hook cannot run
+	// until the outer deadline cuts the whole op (herdr-core reserves the
+	// first-turn margin; herdrcore/lifecycle.py:616-624).
+	budgetDeadline := time.Now().Add(p.startBudget)
+	if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
+		budgetDeadline = d
+	}
+	runHook := func(command string) error {
+		hookTimeout := min(p.preStartHookTimeout, time.Until(budgetDeadline))
+		if hookTimeout <= 0 {
+			return fmt.Errorf("start budget %s exhausted before the hook ran", p.startBudget)
+		}
+		return runPreStartWithTimeout(ctx, command, cfg.WorkDir, env, hookTimeout)
+	}
+	for i, command := range cfg.SessionSetup {
+		if err := runHook(command); err != nil {
+			p.warnf("session_setup[%d] %v", i, err)
+		}
+	}
+	if cfg.SessionSetupScript != "" {
+		if err := runHook(cfg.SessionSetupScript); err != nil {
+			p.warnf("session_setup_script %v", err)
+		}
+	}
+	if len(cfg.SessionLive) > 0 {
+		p.warnf("%s", sessionLiveSkipped)
+	}
 }
 
 // preStartCwd returns workDir when it is an existing directory, else "/". A

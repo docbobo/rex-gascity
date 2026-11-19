@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -51,7 +53,17 @@ const (
 	// readinessEnded is a wait cut short because the pane's program had already
 	// exited: the agent ended before its first turn.
 	readinessEnded = "ended"
+	// readinessPrompt is a wait that ended because the pane's screen showed the
+	// start config's ready_prompt_prefix (herdr-core's prompt readiness).
+	readinessPrompt = "prompt"
+	// readinessPromptBound is a wait that ended on its window because a set
+	// ready_prompt_prefix never appeared on screen.
+	readinessPromptBound = "prompt-bound"
 )
+
+// maxReadyDelay caps ready_delay_ms, mirroring herdr-core READY_WAIT_S
+// (herdrcore/lifecycle.py:171,1064).
+const maxReadyDelay = 60 * time.Second
 
 // WithStartupReadiness sets how long Start waits for the pane program to
 // report idle before delivering the startup nudge, and the shorter settle
@@ -109,7 +121,7 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		timing.TotalMS = millis(time.Since(start)) + timing.LaunchMS
 		p.writeStartupTimingDiagnostic(binding, timing)
 	}()
-	outcome, readiness, ended := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID)
+	outcome, readiness, ended := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID, cfg)
 	timing.ReadinessOutcome = outcome
 	timing.ReadinessMS = millis(readiness)
 	// An agent that ended before its first turn: fail unless the lifecycle is
@@ -283,16 +295,99 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 // ended, or disabled), how long it took, and whether the agent ended. The
 // caller records the bound and, on an end, fails the start unless the lifecycle
 // is one_shot (GCREX-53, GCREX-58).
-func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, time.Duration, bool) {
-	window := p.nudge.startupReadyWindow
-	if window <= 0 {
+// readinessBounds are the three times the wait can end on: the ready_delay_ms
+// floor, the full window, and the shorter settle delay used before the program
+// has reported any status. promptWatch records whether a ready_prompt_prefix
+// is set, which makes the prompt the only readiness signal and keeps the full
+// window (the wait is not tied to program_status).
+type readinessBounds struct {
+	delay       time.Duration
+	window      time.Duration
+	settle      time.Duration
+	promptWatch bool
+}
+
+// bound is how long the wait may run before it ends on a bound: the full
+// window once the program has reported a status (or for a prompt watch), else
+// the settle delay. It is widened to the ready_delay_ms floor, so that floor
+// can actually elapse before the wait gives up.
+func (r readinessBounds) bound(sawRecord bool) time.Duration {
+	base := r.settle
+	if r.promptWatch || sawRecord {
+		base = r.window
+	}
+	if r.delay > base {
+		base = r.delay
+	}
+	return base
+}
+
+// readyDelay is the ready_delay_ms floor, clamped before conversion so a huge
+// value cannot overflow a Duration, and zero when a ready_prompt_prefix is set:
+// gc sends ready_delay_ms only when there is no prompt to watch for, and
+// herdr-core's _shows_ready consults the prompt first (gc v1.5.1
+// docs/reference/exec-session-provider.md:228-229; herdrcore/lifecycle.py
+// :1059-1064).
+func readyDelay(cfg Config) time.Duration {
+	if cfg.ReadyPromptPrefix != "" {
+		return 0
+	}
+	ms := cfg.ReadyDelayMS
+	if maxMS := int(maxReadyDelay / time.Millisecond); ms > maxMS {
+		ms = maxMS
+	}
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// readinessNote decides whether the wait is over and how it ended: the pane's
+// prompt when ready_prompt_prefix is set (herdr-core _shows_ready), else an
+// idle program_status once the ready_delay_ms floor has passed, else a bound.
+// It returns ready=false to keep waiting.
+func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config, r readinessBounds, snap programStatusSnapshot, snapErr error, sawRecord bool, elapsed time.Duration) (string, bool) {
+	if r.promptWatch {
+		if p.screenShowsReadyPrefix(ctx, sid, block, cfg.ReadyPromptPrefix) {
+			return readinessPrompt, true
+		}
+		return p.readinessBound(r, sawRecord, elapsed)
+	}
+	if elapsed >= r.delay && snapErr == nil && snap.Present && snap.State == "idle" {
+		return readinessIdle, true
+	}
+	return p.readinessBound(r, sawRecord, elapsed)
+}
+
+// readinessBound names the bound the wait ended on, or reports not-over yet.
+func (p *Provider) readinessBound(r readinessBounds, sawRecord bool, elapsed time.Duration) (string, bool) {
+	if elapsed < r.bound(sawRecord) {
+		return "", false
+	}
+	switch {
+	case r.promptWatch:
+		return readinessPromptBound, true
+	case sawRecord:
+		return readinessWindowBound, true
+	default:
+		return readinessSettleBound, true
+	}
+}
+
+func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config) (string, time.Duration, bool) {
+	if p.nudge.startupReadyWindow <= 0 {
 		return readinessDisabled, 0, false
 	}
 	poll := p.nudge.nudgePollInterval
 	if poll <= 0 {
 		poll = defaultNudgePollInterval
 	}
-	settle := p.nudge.startupSettleDelay
+	r := readinessBounds{
+		delay:       readyDelay(cfg),
+		window:      p.nudge.startupReadyWindow,
+		settle:      p.nudge.startupSettleDelay,
+		promptWatch: cfg.ReadyPromptPrefix != "",
+	}
 	start := time.Now()
 	sawRecord := false
 	for {
@@ -304,25 +399,13 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		snap, err := p.programStatusSnapshot(ctx, Binding{SessionID: sid, BlockID: block})
 		if err == nil && snap.Present {
 			sawRecord = true
-			if snap.State == "idle" {
-				return readinessIdle, time.Since(start), false
-			}
 		}
 		elapsed := time.Since(start)
-		// The full window applies once the program has reported a status;
-		// before that the shorter settle delay bounds the wait.
-		bound := window
-		if !sawRecord {
-			bound = settle
-		}
-		if elapsed >= bound {
-			if sawRecord {
-				return readinessWindowBound, elapsed, false
-			}
-			return readinessSettleBound, elapsed, false
+		if note, ready := p.readinessNote(ctx, sid, block, cfg, r, snap, err, sawRecord, elapsed); ready {
+			return note, elapsed, false
 		}
 		wait := poll
-		if remaining := bound - elapsed; wait > remaining {
+		if remaining := r.bound(sawRecord) - elapsed; wait > remaining {
 			wait = remaining
 		}
 		timer := time.NewTimer(wait)
@@ -333,4 +416,121 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		case <-timer.C:
 		}
 	}
+}
+
+// screenShowsReadyPrefix reports whether the pane's rendered output shows the
+// ready_prompt_prefix as a live prompt line, reading it as gc's
+// paneShowsReadyPrompt does (gc v1.5.1 internal/runtime/tmux/tmux.go:4199-4231;
+// herdrcore/readiness.py:78-86): the bottom-most prompt line decides, NBSP
+// reads as a space, one leading box border is skipped, and a numbered menu's
+// cursor row is not a prompt.
+func (p *Provider) screenShowsReadyPrefix(ctx context.Context, sid rex.SessionID, block rex.BlockID, prefix string) bool {
+	screen, err := p.client.BlockFormat(ctx, sid, block)
+	if err != nil {
+		return false
+	}
+	return screenHasPromptPrefix(screen, prefix)
+}
+
+// screenHasPromptPrefix reports whether the screen's live composer shows
+// prefix. It reads the screen as gc's paneShowsReadyPrompt does (gc v1.5.1
+// internal/runtime/tmux/tmux.go:4199-4231): the bottom-most line showing the
+// prefix is the composer (lines above it are past turns), NBSP reads as a
+// space, one leading box border is skipped, the bare glyph counts, and the
+// cursor row of a numbered menu is no prompt (a startup dialog marks its
+// selected option with the same glyph, and typing would pick it). A screen
+// showing a dialog as a whole is GCREX-59's gap, not this function's.
+func screenHasPromptPrefix(screen, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	lines := strings.Split(screen, "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		if _, ok := promptRest(lines[index], prefix); ok {
+			return !menuCursorRow(lines, index, prefix)
+		}
+	}
+	return false
+}
+
+// promptRest is gc's promptLineRest: what follows prefix on line, and whether
+// the line shows it at all. "" means the bare glyph. One leading box border is
+// skipped, and an empty prefix matches nothing.
+func promptRest(line, prefix string) (string, bool) {
+	if prefix == "" {
+		return "", false
+	}
+	text := strings.ReplaceAll(strings.TrimSpace(line), "\u00a0", " ")
+	prefix = strings.ReplaceAll(prefix, "\u00a0", " ")
+	bare := strings.TrimSpace(prefix)
+	for _, candidate := range []string{text, stripBorder(text)} {
+		if strings.HasPrefix(candidate, prefix) {
+			return strings.TrimLeft(candidate[len(prefix):], " "), true
+		}
+		if bare != "" && candidate == bare {
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// menuCursorRow is gc's isMenuCursorRow: a line whose rest reads "N. " is a
+// numbered menu's cursor row when the nearest non-blank line above or below it
+// is option N-1 or N+1 (unselected options carry no glyph).
+func menuCursorRow(lines []string, index int, prefix string) bool {
+	rest, ok := promptRest(lines[index], prefix)
+	if !ok {
+		return false
+	}
+	number, ok := optionNumber(rest)
+	if !ok {
+		return false
+	}
+	for _, step := range []int{-1, 1} {
+		if n, ok := neighbourOption(lines, index, step); ok && (n == number-1 || n == number+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// neighbourOption is the option number of the nearest non-blank line from
+// index in direction step, if that line is a numbered option.
+func neighbourOption(lines []string, index, step int) (int, bool) {
+	for at := index + step; at >= 0 && at < len(lines); at += step {
+		row := stripBorder(strings.ReplaceAll(strings.TrimSpace(lines[at]), "\u00a0", " "))
+		if row != "" {
+			return optionNumber(row)
+		}
+	}
+	return 0, false
+}
+
+// optionNumber is gc's menuOptionNumber: N for text starting with ASCII digits
+// followed by ". ".
+func optionNumber(text string) (int, bool) {
+	digits := 0
+	for digits < len(text) && text[digits] >= '0' && text[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || !strings.HasPrefix(text[digits:], ". ") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(text[:digits])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// stripBorder removes one leading box border and the blanks around it, matching
+// gc's stripLeadingBoxBorder (gc v1.5.1 internal/runtime/tmux/tmux.go:4204-4213).
+func stripBorder(text string) string {
+	text = strings.TrimLeft(text, " \t")
+	for _, border := range []string{"│", "┃"} {
+		if strings.HasPrefix(text, border) {
+			return strings.TrimLeft(text[len(border):], " \t")
+		}
+	}
+	return text
 }

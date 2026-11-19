@@ -543,11 +543,10 @@ Phase 0 also confirms the plan's decisions against the live surface:
   against the live `gc:<city>` session keeps a dead city's record from
   answering as running. With no pin an identical name in two live cities
   resolves in read-set order; a pinned caller never reads siblings.
-- **Remaining start-config hooks are not applied (open, GCREX-5).** The
-  dispatcher ignores the start config's `session_setup`,
+- **Remaining start-config hooks (resolved for the hook/staging fields, GCREX-5/GCREX-56).** The
+  dispatcher once ignored the start config's `session_setup`,
   `session_setup_script`, `session_live`, `copy_files` and `overlay_dir`.
   Rex launch options carry no `env` option of their own.
-  Phase 5 must close the remaining hooks before a real fleet runs.
   **Resolved (GCREX-10):** the `env` map is applied. The dispatcher decodes
   `env` from the start config and wraps the launch argv with `env K=V ...`
   (sorted keys) at the command boundary, so a launched pane's process sees
@@ -574,9 +573,14 @@ Phase 0 also confirms the plan's decisions against the live surface:
   provider stages each `pack_overlay_dirs` entry's `per-provider/<GC_PROVIDER>/`
   subtree into the work dir, later entries winning. This is what lets a pack's
   per-provider Pi hook override replace a managed hook the controller's
-  preserve predicate would keep. The remaining hooks (`session_setup`,
-  `session_setup_script`, `session_live`, `copy_files`, `overlay_dir`) are
-  still unimplemented.
+  preserve predicate would keep.
+  **Resolved (GCREX-56):** `copy_files` and `overlay_dir` are staged before
+  `pre_start` (a `copy_files` destination that leaves the work dir is refused
+  with a warning); `session_setup`/`session_setup_script` run after the launch
+  as warnings only; `session_live` warns `SESSION_LIVE_SKIPPED`; `fresh_only`
+  refuses a held name with exit 73; and `ready_prompt_prefix`/`ready_delay_ms`
+  gate the startup-readiness wait. `process_names` remains unimplemented
+  (no Rex process-appeared signal).
 - **Rig-tab growth (resolved, GCREX-6).** Always splitting the first pane
   halved it each time (14 splits: 1/2 ... 1/16384). The provider now splits
   the largest-area pane along its longer axis, side `after`, 50%, reading

@@ -67,15 +67,28 @@ func liveDeps() deps {
 	return deps{newClient: func() rex.Client { return &cli.Client{Bin: os.Getenv("GC_REX_BIN")} }}
 }
 
-// startConfig is the start op's stdin JSON. Other fields gc sends are ignored.
+// startConfig is the start op's stdin JSON. Unknown fields are ignored. The
+// field set mirrors gc v1.5.1's inner startConfig
+// (internal/runtime/exec/json.go:26-42): every field gc sends except
+// process_names, which needs a Rex process-appeared signal this provider does
+// not have, plus fresh_only, which the pack sends and gc v1.5.1 never does.
+// work_dir_exclude is pack-only as well.
 type startConfig struct {
-	WorkDir         string            `json:"work_dir"`
-	Command         string            `json:"command"`
-	Env             map[string]string `json:"env"`
-	PreStart        []string          `json:"pre_start"`
-	Nudge           string            `json:"nudge"`
-	Lifecycle       string            `json:"lifecycle"`
-	PackOverlayDirs []string          `json:"pack_overlay_dirs"`
+	WorkDir            string              `json:"work_dir"`
+	Command            string              `json:"command"`
+	Env                map[string]string   `json:"env"`
+	PreStart           []string            `json:"pre_start"`
+	Nudge              string              `json:"nudge"`
+	Lifecycle          string              `json:"lifecycle"`
+	PackOverlayDirs    []string            `json:"pack_overlay_dirs"`
+	SessionSetup       []string            `json:"session_setup"`
+	SessionSetupScript string              `json:"session_setup_script"`
+	SessionLive        []string            `json:"session_live"`
+	OverlayDir         string              `json:"overlay_dir"`
+	CopyFiles          []provider.CopyFile `json:"copy_files"`
+	FreshOnly          bool                `json:"fresh_only"`
+	ReadyPromptPrefix  string              `json:"ready_prompt_prefix"`
+	ReadyDelayMS       int                 `json:"ready_delay_ms"`
 }
 
 // opSpec describes a known op: how many positional args it requires after the
@@ -122,13 +135,6 @@ var ops = map[string]opSpec{
 	"remove-meta":       {2, "remove-meta <name> <key>", opRemoveMeta},
 }
 
-// run dispatches one RPP op with a background context and returns the process
-// exit code. It is the entry point for callers that do not carry a signal
-// context, such as tests.
-func run(args []string, stdin io.Reader, stdout, stderr io.Writer, d deps) int {
-	return runWithContext(context.Background(), args, stdin, stdout, stderr, d)
-}
-
 // runWithContext dispatches one RPP op and returns the process exit code.
 // Failures write nothing to stdout; the op's output is buffered and flushed
 // only on success. ctx is the op's parent: its cancellation (a SIGTERM caught
@@ -171,7 +177,7 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
 		return exitFail
 	}
-	prov := provider.New(city, d.newClient(), provider.WithNamespace(ns))
+	prov := provider.New(city, d.newClient(), provider.WithNamespace(ns), provider.WithWarnings(stderr))
 
 	var out bytes.Buffer
 	if err := spec.handle(ctx, prov, rest, stdin, &out); err != nil {
@@ -183,6 +189,11 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		if errors.As(err, &outcome) {
 			return writeInputOutcome(stdout, stderr, outcome.Outcome, outcome.Detail)
 		}
+		var coded *exitError
+		if errors.As(err, &coded) {
+			fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, coded.err)
+			return coded.code
+		}
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, err)
 		return exitFail
 	}
@@ -192,6 +203,21 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 	}
 	return exitOK
 }
+
+// exitError carries a non-default RPP exit code for an op failure. It is how a
+// handler asks for a code the dispatcher does not assign itself, such as
+// herdr-core's exit 73 for a fresh_only name collision.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
+
+// exitFreshCollision is herdr-core's FRESH_COLLISION code (rpp/exitcodes.py:24
+// at pack 0f07496): `fresh_only` refused a name any record holds.
+const exitFreshCollision = 73
 
 // writeInputOutcome answers an RPP input-outcome: one
 // {"outcome":...,"detail":...} line on stdout and "<outcome>: <detail>" on
@@ -242,14 +268,25 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 		return fmt.Errorf("parse config: %w", err)
 	}
 	err = p.StartNew(ctx, name, provider.Config{
-		Argv:            launch.CommandArgv(cfg.Command),
-		WorkDir:         cfg.WorkDir,
-		Env:             cfg.Env,
-		PreStart:        cfg.PreStart,
-		Nudge:           cfg.Nudge,
-		Lifecycle:       cfg.Lifecycle,
-		PackOverlayDirs: cfg.PackOverlayDirs,
+		Argv:               launch.CommandArgv(cfg.Command),
+		WorkDir:            cfg.WorkDir,
+		Env:                cfg.Env,
+		PreStart:           cfg.PreStart,
+		Nudge:              cfg.Nudge,
+		Lifecycle:          cfg.Lifecycle,
+		PackOverlayDirs:    cfg.PackOverlayDirs,
+		SessionSetup:       cfg.SessionSetup,
+		SessionSetupScript: cfg.SessionSetupScript,
+		SessionLive:        cfg.SessionLive,
+		OverlayDir:         cfg.OverlayDir,
+		CopyFiles:          cfg.CopyFiles,
+		FreshOnly:          cfg.FreshOnly,
+		ReadyPromptPrefix:  cfg.ReadyPromptPrefix,
+		ReadyDelayMS:       cfg.ReadyDelayMS,
 	})
+	if errors.Is(err, provider.ErrFreshCollision) {
+		return &exitError{code: exitFreshCollision, err: fmt.Errorf("session %q already exists (fresh_only)", name)}
+	}
 	if errors.Is(err, provider.ErrAlreadyRunning) {
 		// gc's exec proxy recognizes "already running" as a start collision.
 		return fmt.Errorf("session %q already running", name)
