@@ -107,3 +107,23 @@ func TestResolveFreshRediscoversPaneUnderRigLabel(t *testing.T) {
 		t.Errorf("rediscovered binding = %+v, want tab \"Rig: Indigo\" and block:dog-1", got)
 	}
 }
+
+// TestLegacyTabLabelFor pins the pre-GCREX-72 precedence: GC_RIG beats the
+// town fallback, so a short pool name is looked for in its rig tab.
+func TestLegacyTabLabelFor(t *testing.T) {
+	for _, tc := range []struct {
+		name SessionName
+		rig  string
+		want string
+	}{
+		{"dog-1", "Indigo", "Indigo"},
+		{"dog-1", "", legacyTownTab},
+		{"mayor", "", legacyTownTab},
+		{"Indigo--dog-1", "", "Indigo"},
+		{"Indigo--dog-1", "other-rig", "other-rig"},
+	} {
+		if got := legacyTabLabelFor(tc.name, map[string]string{"GC_RIG": tc.rig}); got != tc.want {
+			t.Errorf("legacyTabLabelFor(%q, GC_RIG=%q) = %q, want %q", tc.name, tc.rig, got, tc.want)
+		}
+	}
+}

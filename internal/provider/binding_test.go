@@ -236,7 +236,8 @@ func TestScanFindsLegacyWindowLabel(t *testing.T) {
 				req.Hint = Binding{Name: SessionName(tc.name), TabLabel: tc.hint, PaneLabel: tc.blockLabel}
 			}
 			if tc.legacyTab != "" {
-				req.LegacyTabs = []string{tc.legacyTab}
+				// Derive the candidate the way Start does, not by hand.
+				req.LegacyTabs = []string{legacyTabLabelFor(SessionName(tc.name), map[string]string{"GC_RIG": tc.legacyTab})}
 			}
 			got, ok, err := b.Resolve(context.Background(), req)
 			if err != nil || !ok || got.BlockID != "block:old" || got.TabLabel != tc.windowLabel {
