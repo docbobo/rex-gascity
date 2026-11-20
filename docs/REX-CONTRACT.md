@@ -504,61 +504,100 @@ Phase 0 also confirms the plan's decisions against the live surface:
   until the next `Stop` in that city (no pane-exit watcher; gc v1.5.1 has no such
   caller). §10 still asserts the op's contract from the schema instead of
   executing it.
-- **Empty city session (GCREX-65).** Live record, 2026-11-20, rex
-  0.1.0-preview.21, scratch label `gc:gcrex65-scratch` (no real city touched;
-  `gc:my-city` and `rex-gas-city` were left alone). The Rex app was not
-  attached to the scratch session. Verbatim, trimmed to the lines that matter:
+- **Empty city session (GCREX-65).** Live record, 2026-11-20 07:09 UTC, rex
+  0.1.0-preview.21 CLI against the running server `0.1.0-preview.20` (rev 16),
+  scratch label `gc:gcrex65-scratch` (no real city touched; `gc:my-city` and
+  `rex-gas-city` were left alone). One Rex app client (the local Mac app) is
+  attached to the server, so it lists on the scratch session too. Every command
+  below was actually run in one shell; `$SID` was the shell variable set from
+  the create reply:
 
   ```text
-  $ rex api call session.create '{"label":"gc:gcrex65-scratch"}'
-  {"session_id":"session:01a1f629-3bb1-73e4-87d8-a5422df2eb56"}
+  $ SID=$(rex api call session.create '{"label":"gc:gcrex65-scratch"}' \
+          | sed -E 's/.*"session_id":"([^"]+)".*/\1/'); echo $SID
+  session:01a1f793-09fb-70bb-9052-13c8f6ab2273
   $ rex window new -s $SID --focus=false scratch -- sleep 2
-  window:01a1f629-49a8-7b3b-ab8b-4cf533939953
+  window:01a1f793-0a19-747c-99d5-115100841808
   # BEFORE (pane running)
-  $ rex session inspect $SID
-  label: gc:gcrex65-scratch
-  windows: 1
-  $ rex api call session.list_clients "{session_id:$SID}"
-  {"clients":[{"client_id":"client:01a1f629-49f2-...","info":{"kind":"cli","name":"rex",...},...}]}
-  # AFTER (pane exited, ~5s)
   $ rex session ls
-  gc:gcrex65-scratch  f2eb56            <- still listed
+  LABEL               ID
+  rex-gas-city        ae020c
+  gc:my-city          3f6ccc
+  gc:gcrex65-scratch  ab2273
   $ rex session inspect $SID
+  session: session:01a1f793-09fb-70bb-9052-13c8f6ab2273
+  label: gc:gcrex65-scratch
+  active-window: window:01a1f793-0a19-747c-99d5-115100841808
+  windows: 1
+  clients:
+    uid 501 over unix  0s ago  client:01a1f779-7ec2-7518-8f01-351a1750a804
+    uid 501 over unix  0s ago  client:01a1f793-0a3b-7148-9569-906e16411447
+
+  WINDOW                                       LABEL    ACTIVE  FOCUSED BLOCK                               BLOCKS
+  window:01a1f793-0a19-747c-99d5-115100841808  scratch  true    block:01a1f793-0a0e-73ef-bd73-c04bf3ae2d4a  1
+  $ rex api call session.list_clients "{\"session_id\":\"$SID\"}"
+  {"clients":[{"client_id":"client:01a1f779-7ec2-7518-8f01-351a1750a804","info":{"kind":"app",...}},{"client_id":"client:01a1f793-0a4d-721b-9323-0f5702eb2712","info":{"kind":"cli",...}}]}
+  # AFTER (pane exited, ~5s): the session is still listed, with zero windows
+  $ rex session ls
+  LABEL               ID
+  rex-gas-city        ae020c
+  gc:my-city          3f6ccc
+  gc:gcrex65-scratch  ab2273
+  $ rex session inspect $SID
+  session: session:01a1f793-09fb-70bb-9052-13c8f6ab2273
+  label: gc:gcrex65-scratch
   active-window: -
   windows: 0
-  $ rex api call session.view "{session_id:$SID}"
-  {"revision":3,"session_id":"session:01a1f629-3bb1-73e4-87d8-a5422df2eb56","label":"gc:gcrex65-scratch"}
-  $ rex api call session.list_clients "{session_id:$SID}"
-  {"clients":[{"client_id":"client:01a1f629-5dce-...","info":{"kind":"cli","name":"rex",...},...}]}
-  $ rex api call session.destroy "{session_id:$SID}"; echo exit=$?
+  clients:
+    uid 501 over unix  5s ago  client:01a1f779-7ec2-7518-8f01-351a1750a804
+    uid 501 over unix  0s ago  client:01a1f793-207d-7a41-9775-b801f1551008
+  $ rex api call session.list_clients "{\"session_id\":\"$SID\"}"
+  {"clients":[{"client_id":"client:01a1f779-7ec2-7518-8f01-351a1750a804","info":{"kind":"app",...}},{"client_id":"client:01a1f793-208f-7d27-b0ac-15dbd8778141","info":{"kind":"cli",...}}]}
+  $ rex api call session.view "{\"session_id\":\"$SID\"}"
+  {"revision":3,"session_id":"session:01a1f793-09fb-70bb-9052-13c8f6ab2273","label":"gc:gcrex65-scratch"}
+  $ rex api call session.destroy "{\"session_id\":\"$SID\"}"; echo exit=$?
   {}
   exit=0
-  $ rex api call session.destroy "{session_id:$SID}"; echo exit=$?    # again
-  Error: stream response "control-1" failed: session session:01a1f629-... not found (status=404 code=session_not_found)
+  $ rex api call session.destroy "{\"session_id\":\"$SID\"}"; echo exit=$?    # again
+  Error: stream response "control-1" failed: session session:01a1f793-09fb-70bb-9052-13c8f6ab2273 not found (status=404 code=session_not_found)
   exit=3
-  $ REX_SERVER=unix:///tmp/nonexistent-rex.sock rex api call session.destroy "{session_id:$SID}"; echo exit=$?
-  Error: no Rex server is running at /tmp/nonexistent-rex.sock. ...
-  exit=4
-  $ rex session ls                       # after destroy
+  $ rex session ls                       # after destroy: scratch gone
+  LABEL         ID
   rex-gas-city  ae020c
   gc:my-city    3f6ccc
+  ```
+
+  The `...` elisions inside `session.list_clients` JSON replace the principal,
+  version and connection-timestamp fields only; `kind` is shown as returned.
+  `session.view` of a still-populated session does include `windows` and
+  `active_window_id`; on the empty session both are omitted, so a fresh view
+  is the emptiness read. The scratch cleanup is complete: `rex session ls`
+  above lists only the two real city sessions.
+  `rex session ls` shows short ids (the tail of the session id). The
+  unavailable-server branch is recorded from a separate run against a dead
+  socket:
+
+  ```text
+  $ rex --server unix:///tmp/nonexistent-rex.sock api call session.destroy '{"session_id":"session:01a1f793-09fb-70bb-9052-13c8f6ab2273"}'; echo exit=$?
+  Error: no Rex server is running at /tmp/nonexistent-rex.sock. ...
+  exit=4
   ```
 
   Findings: (1) when its last pane exits the session is **not** removed; it stays
   listed with zero windows. (2) An empty `session.view` **omits** `windows`
   (not `"windows":[]`); the CLI decoder sees a nil slice, so `len == 0` is the
-  emptiness check. (3) `session.destroy` through a plain `rex api call`
+  emptiness check on the `session.view` JSON. (3) `session.destroy` through a plain `rex api call`
   returned exit 0 with no `session.attach` and no `conflict`, so the provider
   needs no attach step. (4) A second destroy exits **3**
   (`session_not_found`, maps to `rex.ErrNotFound`); an unreachable server exits
-  **4** (`rex.ErrUnavailable`). No new exit-code mapping is needed. (5) On the
-  unattended empty session `session.list_clients` lists only the CLI's own
-  `kind:"cli"` connection and **no** `kind:"app"` client, so `kind == "app"`
-  is the human-attached signal and the destroy branch stays open (it is not
-  the skip branch). `session.destroy` has no revision precondition, so a human
-  attaching between the emptiness check and the destroy cannot be detected;
-  the window is the lookup, `session.view`, `session.list_clients` and
-  `session.destroy` run back to back under the state flock, and is accepted.
+  **4** (`rex.ErrUnavailable`). No new exit-code mapping is needed. (5) An
+  attached app client is observed on the session both before and after the pane
+  exits, so `kind == "app"` is the human-attached signal; the provider's own
+  connection is the `kind:"cli"` client. (6) `session.destroy` has no revision
+  precondition, so a human attaching between the emptiness check and the
+  destroy cannot be detected; the window is the lookup, `session.view`,
+  `session.list_clients` and `session.destroy` run back to back under the state
+  flock, and is accepted.
 - **Attachment signals.** `session.view` has no `clients` field; attached
   clients come from `session.list_clients`. That is where the D1 risk lands: any
   app client attached to the city session makes every agent in it read as

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -386,6 +385,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	}
 
 	// AC #5: Stop removes the pane and destroys the empty owned city session (GCREX-65).
+	appAttached := e2eAppAttached(ctx, t, b1.SessionID)
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if out, err := p.Peek(ctx, name); err != nil || out != "" {
 		t.Errorf("Peek after Stop = %q, %v; want empty, nil", out, err)
 	}
-	e2eExpectSessionAfterStop(ctx, t, b1.SessionID, city)
+	e2eExpectSessionAfterStop(ctx, t, b1.SessionID, city, appAttached)
 }
 
 // e2eP3WriteStale overwrites name's sidecar binding with bogus window and
@@ -424,25 +424,47 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 // e2eExpectSessionAfterStop checks the GCREX-65 teardown rule after the last
 // agent of a city is stopped: the empty canonical session is destroyed, and the
 // destroy is skipped only while a Rex app client is attached to it.
-func e2eExpectSessionAfterStop(ctx context.Context, t *testing.T, sid rex.SessionID, city string) {
+//
+// appAttached is sampled BEFORE Stop: sampling it after would let an unsafe
+// destroy pass as "unattached", because the destroyed session no longer lists
+// the app client that was attached when Stop ran (SPEC-1).
+func e2eExpectSessionAfterStop(ctx context.Context, t *testing.T, sid rex.SessionID, city string, appAttached bool) {
 	t.Helper()
-	clients, err := cli.New().ListClients(ctx, sid)
-	if err != nil && !errors.Is(err, rex.ErrNotFound) {
-		t.Fatalf("ListClients: %v", err)
+	sessions, err := cli.New().ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
 	}
-	appAttached := false
-	for _, c := range clients {
-		appAttached = appAttached || c.Kind == "app"
+	var surviving *rex.Session
+	for i := range sessions {
+		if sessions[i].Label == "gc:"+city {
+			surviving = &sessions[i]
+		}
 	}
-	has := e2eHasSession(ctx, t, "gc:"+city)
 	switch {
-	case appAttached && !has:
-		t.Errorf("session gc:%s destroyed while a Rex app is attached", city)
+	case appAttached && surviving == nil:
+		t.Errorf("session gc:%s (%s) destroyed while a Rex app is attached", city, sid)
+	case appAttached && surviving.ID != sid:
+		t.Errorf("session gc:%s survives as %s, want the attached original %s; Stop destroyed and Start recreated it", city, surviving.ID, sid)
 	case appAttached:
-		t.Logf("Rex app attached: session gc:%s kept by the attachment guard", city)
-	case has:
+		t.Logf("Rex app attached: original session gc:%s (%s) kept by the attachment guard", city, sid)
+	case surviving != nil:
 		t.Errorf("session gc:%s still listed after Stop; the empty owned session must be destroyed", city)
 	}
+}
+
+// e2eAppAttached reports whether a Rex app client is attached to sid right now.
+func e2eAppAttached(ctx context.Context, t *testing.T, sid rex.SessionID) bool {
+	t.Helper()
+	clients, err := cli.New().ListClients(ctx, sid)
+	if err != nil {
+		t.Fatalf("ListClients: %v", err)
+	}
+	for _, c := range clients {
+		if c.Kind == "app" {
+			return true
+		}
+	}
+	return false
 }
 
 // e2eHasSession reports whether a Rex session labelled label exists.
@@ -554,10 +576,11 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 		t.Errorf("tab Indigo still present after its last pane closed: %+v", left)
 	}
 
+	appAttached := e2eAppAttached(ctx, t, b.SessionID)
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	e2eExpectSessionAfterStop(ctx, t, b.SessionID, city)
+	e2eExpectSessionAfterStop(ctx, t, b.SessionID, city, appAttached)
 }
 
 // TestE2EParallelStarts starts four agents in one rig concurrently, as gc
@@ -634,10 +657,11 @@ func TestE2EParallelStarts(t *testing.T) {
 		}
 	}
 
+	appAttached := e2eAppAttached(ctx, t, first.SessionID)
 	for _, name := range names {
 		if err := p.Stop(ctx, name); err != nil {
 			t.Errorf("Stop %s: %v", name, err)
 		}
 	}
-	e2eExpectSessionAfterStop(ctx, t, first.SessionID, city)
+	e2eExpectSessionAfterStop(ctx, t, first.SessionID, city, appAttached)
 }
