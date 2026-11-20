@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
 func TestPaneLabelFor(t *testing.T) {
@@ -169,4 +172,61 @@ func TestPaneLabelForClamp(t *testing.T) {
 			t.Fatalf("paneLabelFor = %q, want %q", got, want)
 		}
 	})
+}
+
+// TestPaneLabelRediscovery is the GCREX-5qel section 3 agreement proof: for one
+// start-config env the hint paneLabelFor produces is the label record() stores,
+// and a resumed start finds the live block under that label both from the
+// stored sidecar record and, with the record lost, from the env-derived hint
+// (provider.go:458).
+func TestPaneLabelRediscovery(t *testing.T) {
+	ctx := context.Background()
+	const (
+		start   = "pi-mc-wisp-fvwrce"
+		session = "gc__implementation-worker-mc-wisp-fvwrce"
+		want    = "mc-wisp-fvwrce (" + session + ")"
+	)
+	env := map[string]string{
+		"GC_RIG":          "rex-gascity",
+		"GC_AGENT":        "mc-wisp-fvwrce",
+		"GC_SESSION_NAME": session,
+	}
+
+	fake := faketest.New()
+	p := New("acme", fake)
+	if err := p.Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	stored, ok := p.Binding(start)
+	if !ok {
+		t.Fatal("Binding(start) = false after Start")
+	}
+	if hint := paneLabelFor(start, env); hint != stored.PaneLabel {
+		t.Fatalf("hint label = %q, recorded label = %q", hint, stored.PaneLabel)
+	}
+	if got := fake.CreatedWindows[0].Spec.Label; got != want {
+		t.Fatalf("launched pane label = %q, want %q", got, want)
+	}
+
+	// Sidecar record present: a resumed start keeps the live block.
+	if err := p.Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start with record present: %v", err)
+	}
+	if len(fake.CreatedWindows) != 1 || len(fake.CreatedSplits) != 0 {
+		t.Fatalf("record-present resume relaunched a pane: windows=%d splits=%d",
+			len(fake.CreatedWindows), len(fake.CreatedSplits))
+	}
+
+	// Sidecar record lost: a fresh provider sees only Rex, so the env-derived
+	// hint must find the block under the same label instead of launching again.
+	rebuilt := faketest.New()
+	rebuilt.Sessions = fake.Sessions
+	rebuilt.View = fake.View
+	if err := New("acme", rebuilt).Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start with record lost: %v", err)
+	}
+	if len(rebuilt.CreatedWindows) != 0 || len(rebuilt.CreatedSplits) != 0 {
+		t.Fatalf("lost-record resume relaunched a pane: windows=%d splits=%d",
+			len(rebuilt.CreatedWindows), len(rebuilt.CreatedSplits))
+	}
 }
