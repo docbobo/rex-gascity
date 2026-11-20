@@ -391,12 +391,14 @@ func TestRecordlessCrossTabDiscovery(t *testing.T) {
 	})
 }
 
-// TestRecordlessDiscoveryBareSessionFallback is the GCREX-5qel round-2 fix for
-// a session name long enough that "<agent> (<session>)" cannot fit: the label
-// falls back to the bare session name, which a recordless resolve must accept.
-// Lengths 125-128 are the range where the suffix stops fitting but the name is
-// still within Rex's limit.
-func TestRecordlessDiscoveryBareSessionFallback(t *testing.T) {
+// TestRecordlessBareLabelNotAdoptedGlobally is the round-3 fix for the
+// CodeRabbit Major thread on binding.go: a bare label (the fallback when
+// "<agent> (<session>)" cannot fit) does not identify which session created
+// the pane, so the global fallback must not bind it. Another session's pane
+// can carry the same bare label (a rigless "other--worker" is labelled
+// "worker"). Lengths 125-128 are the range where the suffix stops fitting but
+// the name is still within Rex's limit.
+func TestRecordlessBareLabelNotAdoptedGlobally(t *testing.T) {
 	ctx := context.Background()
 	for _, n := range []int{125, 126, 127, 128} {
 		session := strings.Repeat("s", n)
@@ -421,15 +423,18 @@ func TestRecordlessDiscoveryBareSessionFallback(t *testing.T) {
 
 		t.Run(fmt.Sprintf("len=%d", n), func(t *testing.T) {
 			running, err := New("acme", newFake()).IsRunning(ctx, session)
-			if err != nil || !running {
-				t.Fatalf("IsRunning = %v, %v; want true, nil", running, err)
+			if err != nil {
+				t.Fatalf("IsRunning: %v", err)
+			}
+			if running {
+				t.Fatalf("IsRunning = true; bare label %q in another tab must not be adopted", label)
 			}
 			fake := newFake()
 			if err := New("acme", fake).Stop(ctx, session); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
-			if !slices.Contains(fake.ClosedBlocks, block) {
-				t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+			if slices.Contains(fake.ClosedBlocks, block) {
+				t.Fatalf("Stop closed %s; a bare label must not be adopted", block)
 			}
 		})
 	}

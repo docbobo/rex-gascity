@@ -476,8 +476,11 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	// bare session name — still belongs to name even though the agent prefix
 	// is unknown here.
 	identity := " (" + string(name) + ")"
+	suffixMatch := func(label string) bool {
+		return strings.HasSuffix(label, identity)
+	}
 	identityMatch := func(label string) bool {
-		return label == string(name) || strings.HasSuffix(label, identity)
+		return label == string(name) || suffixMatch(label)
 	}
 	paneMatches := func(label string) bool {
 		return label == pane || identityMatch(label)
@@ -516,13 +519,16 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	}
 	// A recordless resolve has no start env and so no tab to scope the search:
 	// a no-"--" session started with GC_RIG lives in a "Rig: <rig>" tab the
-	// name cannot derive. The session name is unique per city, so an identity
-	// match in any tab is that session's pane. The stored-record/hint path
-	// stays tab-scoped above.
+	// name cannot derive. The session name is unique per city, so a suffix
+	// match in any tab is that session's pane. A bare label equal to the
+	// session name is NOT accepted here: another session's pane can carry the
+	// same bare label (a rigless "other--worker" is labelled "worker"), so a
+	// bare label only counts where a tab or record supplies attribution. The
+	// stored-record/hint path stays tab-scoped above.
 	if hint.TabLabel == "" {
 		for _, w := range view.Windows {
 			for _, blk := range w.Blocks {
-				if identityMatch(blk.Label) {
+				if suffixMatch(blk.Label) {
 					return accept(w.Label, w, blk)
 				}
 			}
