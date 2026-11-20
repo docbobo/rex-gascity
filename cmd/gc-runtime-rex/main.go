@@ -46,7 +46,12 @@ const (
 // (nudge, peek, send-keys, interrupt, clear-scrollback) instead of exec, and
 // input-outcome says the four driving ops answer exit 80 with one typed
 // outcome line (GCREX-70). gc reads the typed word only when both are
-// declared (internal/runtime/exec/outcome.go:193).
+// declared (internal/runtime/exec/outcome.go:193). A live pool-claim refusal
+// on nudge answers `busy`, so gc's stalled-claim backstop refunds the
+// reservation rather than spending one of idleClaimNudgeMaxAttempts
+// (GCREX-69). gc 1.5.1 has no input-outcome vocabulary and ignores the
+// token, so 80 stays a plain error there — the same answer it gives an
+// undeclared pack.
 const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
 
 // buildVersion is the version the `version` op reports. A pack build may set

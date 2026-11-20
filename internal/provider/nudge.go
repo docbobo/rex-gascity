@@ -101,11 +101,12 @@ func WithNudgeConfirmation(window, interval time.Duration) Option {
 }
 
 // ErrNudgeClaimHeld reports that gc's fallback pool-claim nudge was not typed
-// because the target session already holds a live claim. Nothing was typed and
-// nothing was submitted, so gc's retry cannot duplicate input; the backstop
-// re-delivers after its backoff if the claim has closed by then. gc spends a
-// delivery attempt on the refusal and drains the slot at 3/3 on gc edge
-// (GCREX-67); docs/rex-provider.md records the residual risk.
+// because the target session already holds a live claim. It is answered as the
+// RPP "busy" input outcome (exit 80): the seat is live, not idle, so gc's
+// stalled-claim backstop refunds it as a busy deferral and retries, and gc
+// treats the liveness claim's bead as in progress. A failed-delivery outcome
+// would instead let the backstop re-dispatch the seat's claim and abandon the
+// in-flight work (GCREX-69).
 var ErrNudgeClaimHeld = errors.New("provider: session holds a live claim")
 
 // defaultNudgeSubmitBudget bounds the write and the submit together when the
@@ -352,7 +353,8 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	// `gc hook --claim` to abandon its in-flight work (GCREX-33).
 	if isPoolClaimNudge(text) {
 		if claim, err := p.nudge.claimProbe(ctx, binding); err == nil && claim != "" {
-			return NudgeReport{}, fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
+			err := fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
+			return NudgeReport{}, &InputOutcomeError{Outcome: "busy", Detail: err.Error(), Err: err}
 		}
 	}
 	baseline, _ := p.programStatusSnapshot(ctx, binding)

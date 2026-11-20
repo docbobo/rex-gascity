@@ -138,6 +138,9 @@ func TestNudgePoolClaimGuardFollowsClaimLiveness(t *testing.T) {
 				if !errors.Is(err, provider.ErrNudgeClaimHeld) {
 					t.Fatalf("Nudge error = %v, want ErrNudgeClaimHeld", err)
 				}
+				// The refusal is a busy deferral on the wire, not a failed
+				// delivery: gc's backstop only refunds exit-80 busy.
+				needOutcome(t, err, "busy")
 				if typed {
 					t.Errorf("block ops = %v, want no input while a claim is held", got)
 				}
@@ -416,6 +419,43 @@ func TestNudgeWriteIsBoundedByTheSubmitBudget(t *testing.T) {
 	}
 	if len(base.SentKeys) != 0 {
 		t.Errorf("send-keys calls = %d, want 0 after a failed write", len(base.SentKeys))
+	}
+}
+
+// TestNudgePoolClaimRefusalsStayRefundable pins GCREX-69 AC #2: gc's
+// stalled-claim backstop refunds a reservation only for a delivery error it
+// can classify — runtime.ErrSessionBusy from the nudge's exit-80 busy word
+// (cmd/gc/nudge_backstop.go at edge-20261118, refund branch). Every other
+// error is logged with the attempt spent, and
+// idleClaimNudgeMaxAttempts = 3 (cmd/gc/idle_nudge.go) ends in the backstop
+// draining the seat. Repeated refusals of a live-held pool-claim nudge must
+// therefore all answer busy, never an untyped or not_sent failure.
+func TestNudgePoolClaimRefusalsStayRefundable(t *testing.T) {
+	const poolClaim = "Run gc hook --claim --drain-ack --json now; if it returns work, execute it immediately."
+	workDir := t.TempDir()
+	t.Setenv("GC_BIN", "/fake/bin/gc")
+	fake := faketest.New()
+	gc := &provider.FakeRunner{Handle: func(_ context.Context, c provider.RunCall) (string, error) {
+		switch strings.Join(c.Args[:2], " ") {
+		case "hook current":
+			return "mc-claim-live\n", nil
+		case "bd list":
+			return `[{"status":"in_progress","assignee":"seat-a","metadata":{"gc.session_id":"mc-session-live"}}]`, nil
+		}
+		return "", errors.New("exit status 1")
+	}}
+	p := provider.New("acme", fake,
+		provider.WithNudgeConfirmation(20*time.Millisecond, time.Millisecond),
+		provider.WithRunner(gc))
+	if err := p.Start(context.Background(), activityName, provider.Config{
+		Argv:    []string{"claude"},
+		WorkDir: workDir,
+		Env:     map[string]string{"GC_SESSION_ID": "mc-session-live"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for range 4 { // one past gc's idleClaimNudgeMaxAttempts = 3
+		needOutcome(t, p.Nudge(context.Background(), activityName, poolClaim), "busy")
 	}
 }
 
