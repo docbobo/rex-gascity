@@ -472,11 +472,35 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	}
 	// IsRunning and Stop resolve without a start env, so the fallback scan
 	// must recognise the session identity alone: a pane labelled
-	// "<agent> (<GC_SESSION_NAME>)" still belongs to name even though the
-	// agent prefix is unknown here.
+	// "<agent> (<GC_SESSION_NAME>)" — or, when that suffix does not fit, the
+	// bare session name — still belongs to name even though the agent prefix
+	// is unknown here.
 	identity := " (" + string(name) + ")"
+	identityMatch := func(label string) bool {
+		return label == string(name) || strings.HasSuffix(label, identity)
+	}
 	paneMatches := func(label string) bool {
-		return label == pane || strings.HasSuffix(label, identity)
+		return label == pane || identityMatch(label)
+	}
+	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool, error) {
+		bd := Binding{
+			Name:         name,
+			SessionID:    sid,
+			SessionLabel: view.Label,
+			WindowID:     w.ID,
+			BlockID:      blk.ID,
+			TabLabel:     tab,
+			PaneLabel:    blk.Label,
+			Aliases:      hint.Aliases,
+			// Launch details the labels do not carry: dropping them
+			// would silently disable the Stop-time drain diagnostic.
+			LaunchMode: hint.LaunchMode,
+			CreatedAt:  hint.CreatedAt,
+			GCBin:      hint.GCBin,
+			WorkDir:    hint.WorkDir,
+		}
+		_ = b.store.Write(bd.Name, bd)
+		return bd, true, nil
 	}
 	for _, tab := range tabs {
 		for _, w := range view.Windows {
@@ -485,24 +509,21 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 			}
 			for _, blk := range w.Blocks {
 				if paneMatches(blk.Label) {
-					bd := Binding{
-						Name:         name,
-						SessionID:    sid,
-						SessionLabel: view.Label,
-						WindowID:     w.ID,
-						BlockID:      blk.ID,
-						TabLabel:     tab,
-						PaneLabel:    blk.Label,
-						Aliases:      hint.Aliases,
-						// Launch details the labels do not carry: dropping them
-						// would silently disable the Stop-time drain diagnostic.
-						LaunchMode: hint.LaunchMode,
-						CreatedAt:  hint.CreatedAt,
-						GCBin:      hint.GCBin,
-						WorkDir:    hint.WorkDir,
-					}
-					_ = b.store.Write(bd.Name, bd)
-					return bd, true, nil
+					return accept(tab, w, blk)
+				}
+			}
+		}
+	}
+	// A recordless resolve has no start env and so no tab to scope the search:
+	// a no-"--" session started with GC_RIG lives in a "Rig: <rig>" tab the
+	// name cannot derive. The session name is unique per city, so an identity
+	// match in any tab is that session's pane. The stored-record/hint path
+	// stays tab-scoped above.
+	if hint.TabLabel == "" {
+		for _, w := range view.Windows {
+			for _, blk := range w.Blocks {
+				if identityMatch(blk.Label) {
+					return accept(w.Label, w, blk)
 				}
 			}
 		}

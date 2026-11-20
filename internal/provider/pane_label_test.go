@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -345,4 +346,91 @@ func TestRecordlessDiscoveryBySessionSuffix(t *testing.T) {
 			t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
 		}
 	})
+}
+
+// TestRecordlessCrossTabDiscovery is the GCREX-5qel round-2 fix for a no-`--`
+// session started with GC_RIG: it lives in a "Rig: <rig>" tab the name cannot
+// derive, so a recordless resolve must find it by session identity across every
+// tab instead of scanning the town tab only.
+func TestRecordlessCrossTabDiscovery(t *testing.T) {
+	ctx := context.Background()
+	const (
+		name  = "pi-mc-wisp-ybq1"
+		label = "pi-agent (pi-mc-wisp-ybq1)"
+		block = rex.BlockID("block:" + label)
+	)
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:my-project",
+			Label:  "Rig: my-project",
+			Blocks: []rex.Block{{ID: block, Label: label}},
+		}}}
+		f.Processes = map[rex.BlockID]rex.ProcessInfo{
+			block: {Foreground: &rex.Process{PID: 42, Name: "pi"}},
+		}
+		return f
+	}
+
+	t.Run("IsRunning", func(t *testing.T) {
+		running, err := New("acme", newFake()).IsRunning(ctx, name)
+		if err != nil || !running {
+			t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", name, running, err)
+		}
+	})
+
+	t.Run("Stop", func(t *testing.T) {
+		fake := newFake()
+		if err := New("acme", fake).Stop(ctx, name); err != nil {
+			t.Fatalf("Stop(%s): %v", name, err)
+		}
+		if !slices.Contains(fake.ClosedBlocks, block) {
+			t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+		}
+	})
+}
+
+// TestRecordlessDiscoveryBareSessionFallback is the GCREX-5qel round-2 fix for
+// a session name long enough that "<agent> (<session>)" cannot fit: the label
+// falls back to the bare session name, which a recordless resolve must accept.
+// Lengths 125-128 are the range where the suffix stops fitting but the name is
+// still within Rex's limit.
+func TestRecordlessDiscoveryBareSessionFallback(t *testing.T) {
+	ctx := context.Background()
+	for _, n := range []int{125, 126, 127, 128} {
+		session := strings.Repeat("s", n)
+		label := clampRexLabel(session)
+		if label != session {
+			t.Fatalf("session of %d runes clamps to %q, want itself", n, label)
+		}
+		block := rex.BlockID("block:" + label)
+		newFake := func() *faketest.Fake {
+			f := faketest.New()
+			f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+			f.View = rex.SessionView{Windows: []rex.Window{{
+				ID:     "window:rig",
+				Label:  "Rig: my-project",
+				Blocks: []rex.Block{{ID: block, Label: label}},
+			}}}
+			f.Processes = map[rex.BlockID]rex.ProcessInfo{
+				block: {Foreground: &rex.Process{PID: 42, Name: "pi"}},
+			}
+			return f
+		}
+
+		t.Run(fmt.Sprintf("len=%d", n), func(t *testing.T) {
+			running, err := New("acme", newFake()).IsRunning(ctx, session)
+			if err != nil || !running {
+				t.Fatalf("IsRunning = %v, %v; want true, nil", running, err)
+			}
+			fake := newFake()
+			if err := New("acme", fake).Stop(ctx, session); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if !slices.Contains(fake.ClosedBlocks, block) {
+				t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+			}
+		})
+	}
 }
