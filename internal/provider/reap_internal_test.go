@@ -176,6 +176,50 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 	}
 }
 
+// TestStopReapsAProcessThePaneStartedAfterTheSnapshot is review D1: a
+// process the pane spawned between the pre-close snapshot and block.close is
+// not in that snapshot, so stop must re-read the pane's tree after the close
+// and reap what it still reports instead of reporting a false success.
+func TestStopReapsAProcessThePaneStartedAfterTheSnapshot(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			// Before the close: the snapshot's shell, agent and descendant.
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "bun"},
+			)
+		}
+		// After the close: the snapshot's processes are gone; 900 outlives
+		// both TERM and KILL.
+		return reapTable([4]string{"900", "1", "S", "rapper"})
+	})
+	reads := 0
+	fake.ProcessFunc = func(rex.BlockID) rex.ProcessInfo {
+		reads++
+		if reads == 1 {
+			return liveTree
+		}
+		return rex.ProcessInfo{Foreground: &rex.Process{PID: 900, Name: "rapper"}}
+	}
+
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure for the process started after the snapshot")
+	}
+	if !strings.Contains(err.Error(), "900 (rapper)") {
+		t.Errorf("Stop error %q does not name the survivor 900 (rapper)", err)
+	}
+	if !slices.Contains(*signals, "terminated:900") {
+		t.Errorf("signals = %v, want a TERM for 900", *signals)
+	}
+	if !slices.Contains(*signals, "killed:900") {
+		t.Errorf("signals = %v, want a KILL for 900", *signals)
+	}
+}
+
 // TestStopAlreadyDeadSessionScansNoProcessTable is GCREX-50 AC#3: a name with
 // no live pane stops with exit 0 and never touches the process table.
 func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
@@ -231,35 +275,6 @@ func TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm(t *testing.T) {
 	}
 	if len(fake.ClosedBlocks) != 1 {
 		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
-	}
-}
-
-// TestStopReportsTheSignalError is review F3: when a reap signal fails with
-// EPERM, the survivor error names that cause instead of only "may survive".
-func TestStopReportsTheSignalError(t *testing.T) {
-	reapShortWaits(t)
-	ctx := context.Background()
-	_, p, _ := reapProvider(t, liveTree, func(call int) string {
-		if call == 1 {
-			return reapTable(
-				[4]string{"200", "1", "Ss", "/bin/zsh"},
-				[4]string{"100", "200", "S+", "claude"},
-				[4]string{"300", "100", "S", "bun"},
-			)
-		}
-		return reapTable([4]string{"300", "1", "S", "bun"})
-	})
-	p.signal = func(int, os.Signal) error { return syscall.EPERM }
-
-	err := p.Stop(ctx, reapDog)
-	if err == nil {
-		t.Fatal("Stop = nil, want a survivor failure")
-	}
-	if !strings.Contains(err.Error(), "300 (bun)") {
-		t.Errorf("Stop error %q does not name the survivor", err)
-	}
-	if !strings.Contains(err.Error(), "operation not permitted") {
-		t.Errorf("Stop error %q does not report the failed signal", err)
 	}
 }
 

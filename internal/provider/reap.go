@@ -239,6 +239,22 @@ func (p *Provider) living(ctx context.Context, tree []paneProc) []paneProc {
 	return out
 }
 
+// unionProcs appends the processes whose pid is not already in tree, so a
+// second pane read can extend, never shrink, what the first captured.
+func unionProcs(tree, extra []paneProc) []paneProc {
+	seen := make(map[int]bool, len(tree))
+	for _, proc := range tree {
+		seen[proc.pid] = true
+	}
+	for _, proc := range extra {
+		if !seen[proc.pid] {
+			seen[proc.pid] = true
+			tree = append(tree, proc)
+		}
+	}
+	return tree
+}
+
 // sameProgram reports whether the table row still names the captured process,
 // so a recycled pid is never signalled.
 func sameProgram(name, comm string) bool {

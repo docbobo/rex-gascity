@@ -782,9 +782,19 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
 		return closeErr
 	}
+	// The close is not proof that the tree is gone either: a process the pane
+	// spawned after the snapshot, or one Rex only reports now, would otherwise
+	// pass unreaped. Re-read the pane and union what it still reports. A closed
+	// pane answers ErrNotFound (paneSubtree maps that to no tree) and a failed
+	// re-read leaves the pre-close snapshot authoritative, so neither fails the
+	// stop (review D1).
+	if after, readErr := p.paneSubtree(ctx, binding); readErr == nil {
+		tree = unionProcs(tree, after)
+	}
 	// Reap what the pane left behind and refuse to report success while any of
 	// it survives; the binding, meta and activity stay for a retry, as
-	// herdr-core keeps the box (parity doc ### stop row 2).
+	// herdr-core keeps the box (parity doc ### stop row 2). A signal error with
+	// nothing left is a success: everything died anyway.
 	if left, signalErr := p.reap(ctx, tree); len(left) > 0 {
 		return &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
 	}
