@@ -37,10 +37,13 @@ single outcome line (`internal/runtime/exec/outcome.go`, `outcomesRead` and
 The decision and its evidence are in `docs/REX-CONTRACT.md` §Outcome
 vocabulary and `docs/provider-herdr-parity.md` §Failures: the capability path is
 read each time, not just the sentinel projection. The install-time caveat is
-restated against the pinned builds: gc 1.5.1 ignores both tokens and reads exit
-80 as a plain error (the pre-GCREX-70 behaviour); the graph.v2 pin
-`e7d4e2354` also predates `internal/runtime/exec/outcome.go`; the installed
-`edge-20261118` build has the carrier machinery.
+restated against the pinned builds: gc 1.5.1 has neither token and reads exit
+80 as a plain error, so the declaration takes effect only on the installed
+`edge-20261118`; the graph.v2 pin `e7d4e2354` also predates
+`internal/runtime/exec/outcome.go`. The declaration does not make 1.5.1 read
+the word; the change beside it (dropping the best-effort wrapper) turns a
+gone-pane answer on 1.5.1 from exit 0 into exit 80, which 1.5.1 reads as an
+ordinary failure.
 
 With the declaration in place the best-effort wrapper is gone:
 `bestEffort` and the `inputOutcomeDeclared` seam were deleted, `opInterrupt`
@@ -60,8 +63,14 @@ classification in `runWithContext`.
   keys is no input.
 - `clear-scrollback` keeps its provider-typed `gone` (`ClearScrollback` already
   returned an `*InputOutcomeError`); its other failure words remain exit 1.
-- gc 1.5.1 (no carrier) sees the same exit 80 as an ordinary failure, so the
-  declaration does not change behavior on that baseline.
+- gc 1.5.1 has neither token and reads exit 80 as an ordinary failure. There a
+  missing or dead pane on `nudge`, `interrupt` or `send-keys` was exit 0
+  through the old `bestEffort` wrapper and is now exit 80, so on 1.5.1 this is
+  a behavior change and a regression against its contract line "Best-effort
+  interrupt/nudge: Return 0 even if the session doesn't exist"
+  (`docs/reference/exec-session-provider.md:370` in gc v1.5.1).
+  `clear-scrollback` is unaffected in practice because gc discards its result
+  at both reconciler call sites.
 
 ## Changed Files
 
@@ -82,6 +91,14 @@ classification in `runWithContext`.
 - `docs/provider-herdr-method-deviations.md`,
   `docs/provider-method-audit/{interrupt,nudge,protocol,send-keys}.md` — stale
   best-effort and two-token claims corrected.
+- Review rework (docs and comments only, no behavior change): the summary's
+  1.5.1 claim, `docs/herdr-extensions.md` (`input-outcome` moved from `defer` to
+  `implement`, the `idle-boundary`/`carrier.ops` activation stated),
+  `docs/provider-herdr-parity.md` (nudge/send-keys/interrupt gone rows now
+  `matches`, remaining `bestEffort` prose removed),
+  `docs/provider-herdr-method-deviations.md` (clear-scrollback gone row now
+  exit 80), `docs/provider-method-audit/send-keys.md` (race exits 1) and the
+  `nudgeLookupOutcome` comment in `internal/provider/nudge.go:319-323`.
 
 ## Verification
 
@@ -133,13 +150,30 @@ path), REQ-002 = AC #2 (handshake adds `input-outcome` with `carrier.ops`, and
 the exit-80 ops keep their classification), REQ-003 = AC #3 (named tests prove
 the refusal class), REQ-004 = AC #4 (contract and parity docs restated).
 
+Rework verification (docs and comments only, no behavior change):
+`go build ./...`, `go vet ./...` and `go test ./...` pass;
+`validate_build_artifact.py --schema gc.build.implementation-summary.v1`
+returns `ok`; the 1.5.1 claims were re-checked against gc tag `v1.5.1`
+(`docs/reference/exec-session-provider.md:370`).
+`TestInputOpsOnMissingSessionAnswerGone` and `TestSendKeysGoneExits80` pin the
+edge read (exit 80 `gone`); no test drives a 1.5.1 handshake because gc picks
+the read from the declared token, so the 1.5.1 read is covered by the doc claim
+above, not by a test.
+
 ## Remaining Risks
 
 - `busy`/`blocked` live probes are gated behind `conformance-faults`, which we
   do not declare; their classification is pinned by gc's lane/queue test and
   our provider test, not by an end-to-end conformance run.
-- gc 1.5.1 reads exit 80 as a plain error, so on that baseline a refusal is
-  still an untyped failure (unchanged, pre-existing).
+- gc 1.5.1 reads exit 80 as a plain error, so on that baseline a gone pane is
+  a hard error on `nudge`/`interrupt`/`send-keys` instead of the old exit 0;
+  typed refusal classes need an input-outcome-aware gc.
+- Declaring `carrier.ops` also activates `idle-boundary` on a carrier.ops-aware
+  gc: `idleBoundaryDeclared` needs `report-activity`, `report-attachment`,
+  `carrier.ops` (or `proc.exec`) and `idle-boundary`
+  (`internal/runtime/exec/idle.go:36-40`), so WaitForIdle, ready-prompt
+  recovery, the idle-proof budget and full idle sleep are live on edge. No
+  end-to-end idle run covers this yet.
 - gc pin `e7d4e2354` predates the carrier machinery; the installed
   `edge-20261118` build is where the declaration takes effect.
 - The pre-existing RPP-OBSERVE-017 conformance failure (missing `observe.v1`)

@@ -318,9 +318,9 @@ func claimRecordHeld(out string, sessionID string) bool {
 
 // nudgeLookupOutcome classifies a pre-send lookup failure into an RPP input
 // outcome. An unreachable server is unavailable. A missing or dead session
-// keeps ErrSessionNotFound, so the dispatcher's best-effort rule still exits 0;
-// any other lookup failure stays a plain error (exit 1), matching the pack's
-// untyped list failure.
+// keeps ErrSessionNotFound, which the dispatcher types as exit 80 gone for a
+// driving op (GCREX-70); any other lookup failure stays a plain error (exit 1),
+// matching the pack's untyped list failure.
 func nudgeLookupOutcome(err error) error {
 	if errors.Is(err, rex.ErrUnavailable) {
 		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}

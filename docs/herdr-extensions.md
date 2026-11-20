@@ -87,12 +87,12 @@ only when the behavior it declares is implemented (Fact 2).
 | Token | Gated by / selects | Verdict | Reason | gc-side trigger that changes this |
 |---|---|---|---|---|
 | `observe.v1` | reconciler-v2 profile (`observe`, `inventory`, `kill-object`) | **implement** | The profile token, not an `observe`-only gate. Declaring it obliges `observe`, `inventory`, `kill-object`, `fresh_only` starts, strict exits, identity consistency and `peek` of a dead box, and (with `report-attachment`) makes Rex v2-ready. Move it off the §9 do-not-declare list only in the change that carries the whole profile. | accepted now as the profile |
-| `carrier.ops` | carrier selector | **implement** | Declares that gc drives the box only through the pack's own `nudge`, `peek`, `send-keys`, `interrupt` and `clear-scrollback` (`handshake.py:6-8`). Not an inventory marker. At the v1.5.1 pin gc ignores it; gc's working tree implements it (`internal/runtime/protocol.go:35-41`): all five driving ops required, exit 2 from any one becomes a failure, input fencing none, start welded. | a gc that consumes `carrier.ops`; re-check the five driving ops and their exit-2 paths before relying on the declaration |
+| `carrier.ops` | carrier selector | **implement** | Declares that gc drives the box only through the pack's own `nudge`, `peek`, `send-keys`, `interrupt` and `clear-scrollback` (`handshake.py:6-8`). Not an inventory marker. gc v1.5.1 ignores it; a gc that consumes it (`internal/runtime/protocol.go:35-41`, the installed edge build) requires all five driving ops, turns exit 2 from any one into a failure, fences no input and welds start. Declared since GCREX-70. | re-check the five driving ops and their exit-2 paths before relying on a newer gc |
 | `server-lifecycle` | `server-stop` | reject | Follows the `server-stop` rejection; D3 keeps the shared server alive. | only if Rex gains an owned, city-scoped server (GCREX-30) — a model change |
 | `city-scoped` | server model | reject | False for Rex: one user-scoped server serves every city. Declaring it would misrepresent the model; revisit only with GCREX-30. | only if GCREX-30 changes the server model to city-owned |
 | `fs.host` | host filesystem | reject | Rex exposes no host-fs op and the token needs a newer gc (`handshake.py` docstring cites gastownhall/gascity#9032/#9129). No Rex behavior to gate. | only if a newer gc consumes `fs.host` and Rex gains a host-fs op — a model change |
-| `input-outcome` | input exit codes | defer | gc 1.5.1 has no `input-outcome` and treats exit 80 as failure, so tmux-style best-effort stays correct. | gc consumes outcome-bearing input responses |
-| `idle-boundary` | activity | **implement** | gc's working tree consumes it as the idle-observation gate (`internal/runtime/protocol.go:60`), but no `SnapshotIdle` is implemented for the exec backend (`internal/runtime/exec/cutover.go:46-48`), so a Rex city's `snapshotHoldFor` returns "" (`cmd/gc/execution_backstop.go:493`). GCREX-63 adds the `idle` snapshot op under this token. It is inert until a carrier op is declared too. | GCREX-63 implements the reading |
+| `input-outcome` | input exit codes | **implement** | Declares that the four driving ops answer exit 80 with one typed outcome line (GCREX-70). gc reads the word only with `carrier.ops` and the dedicated ops (`internal/runtime/exec/outcome.go:186-193`); v1.5.1 has neither token and reads exit 80 as a plain error, so typed refusals need the installed edge build. | a newer gc that changes the outcome vocabulary or the carrier gating |
+| `idle-boundary` | activity | **implement** | gc's working tree consumes it as the idle-observation gate (`internal/runtime/protocol.go:60`), but no `SnapshotIdle` is implemented for the exec backend (`internal/runtime/exec/cutover.go:46-48`), so a Rex city's `snapshotHoldFor` returns "" (`cmd/gc/execution_backstop.go:493`). GCREX-63 adds the `idle` snapshot op under this token. Since GCREX-70 also declares `carrier.ops`, `idleBoundaryDeclared` is satisfied on a carrier.ops-aware gc (`internal/runtime/exec/idle.go:36-40`), so WaitForIdle, ready-prompt recovery, the idle-proof budget and full idle sleep are live on the installed edge build; gc v1.5.1 ignores the token. GCREX-63 implements the `idle` snapshot reading. | GCREX-63 implements the reading |
 | `conformance-faults` | diagnostics | defer | herdr-internal diagnostics with no gc 1.5.1 consumer. | gc declares/consumes it (e.g. inside `gc runtime check`) |
 
 ## Designs for accepted extensions
@@ -102,9 +102,11 @@ The accepted set is the `observe.v1` profile — `observe`, `inventory` and
 are reads; `kill-object` is a targeted kill. `observe` and `kill-object` are
 gated by `observe.v1`; `inventory` needs no token. At the v1.5.1 pin gc
 ignores the non-baseline tokens, so declaring `observe.v1` and `carrier.ops`
-cannot change baseline behavior (GCREX-28.2 AC 2); a consuming gc reads
-`observe.v1` as the reconciler-v2 profile (Fact 3), so GCREX-28.2 carries the
-profile's remaining obligations, not just the three ops.
+does not change how v1.5.1 drives the box (GCREX-28.2 AC 2). It is not inert on
+a consuming gc: `carrier.ops` selects the driving ops and, with
+`idle-boundary`, activates idle observation (GCREX-70), and a consuming gc
+reads `observe.v1` as the reconciler-v2 profile (Fact 3), so GCREX-28.2 carries
+the profile's remaining obligations, not just the three ops.
 
 ### `idle` (point-in-time idle snapshot)
 
@@ -123,9 +125,9 @@ profile's remaining obligations, not just the three ops.
   returns `""` (`cmd/gc/execution_backstop.go:493`) and the activity clock
   decides alone. The token is the idle-observation gate; `idle` is the reading
   it selects. Declaring `idle-boundary` alone is inert: `idleBoundaryDeclared`
-  also needs `carrier.ops` or `proc.exec` (`internal/runtime/exec/idle.go:36`),
-  neither of which this change declares, and gc 1.5.1 has no such token at all
-  and ignores it.
+  also needs `carrier.ops` or `proc.exec` (`internal/runtime/exec/idle.go:36-40`).
+  GCREX-70 declares `carrier.ops`, so idle observation is live on a
+  carrier.ops-aware gc; gc 1.5.1 has no such token and ignores it.
 - **Deadline class.** *default* (30 s, set by gc): the op sets no per-op
   deadline, so, like every other op in `cmd/gc-runtime-rex/main.go`, it uses
   gc's exec default. The read is one local program-status read plus, at most,

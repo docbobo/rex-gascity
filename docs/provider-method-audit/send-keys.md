@@ -27,4 +27,4 @@ Audited against `docs/provider-herdr-method-io.md` (`## send-keys` and `## Share
 ## Unverified
 
 - **Rex `rex send-key` atomicity & key support** (`internal/rex/cli/cli.go:363-370`): whether the external `rex` CLI rejects an entire multi-key call atomically if one key is invalid, and how it handles `shift+<letter>` or unknown names, cannot be settled from this repo's Go code.
-- **Race between `livePane` and `rex send-key`** (`internal/provider/provider.go:722-732`, `internal/rex/cli/cli.go:50-55`): if the pane closes between `livePane` and `rex send-key`, `Client.run` returns `rex.ErrNotFound`, which `Provider.SendKeys` wraps without mapping to `provider.ErrSessionNotFound` (so `bestEffort` would exit 1 rather than 0).
+- **Race between `livePane` and `rex send-key`** (`internal/provider/provider.go:722-732`, `internal/rex/cli/cli.go:50-55`): if the pane closes between `livePane` and `rex send-key`, `Client.run` returns `rex.ErrNotFound`, which `Provider.SendKeys` wraps without mapping to `provider.ErrSessionNotFound`, so the race exits 1 instead of the typed `gone`.

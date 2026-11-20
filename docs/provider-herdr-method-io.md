@@ -3280,9 +3280,8 @@ word on stdout (`rg` over both found no match).
   "Signaling (best-effort)" `internal/runtime/runtimetest/conformance.go:591`).
   The pack disagrees: it exits 80, which gc reads as an error
   (`internal/runtime/exec/exec.go:153-170`). Parity §send-keys deviation 4 records
-  this as `intentional` ("Exit 80 is `input-outcome`, not in gc 1.5.1"), and the
-  parity Verdict says "best-effort exit 0 matches the v0 baseline" for the Rex
-  provider only. The parity doc does not cite
+  this as `matches` after GCREX-70 declared `input-outcome`; gc 1.5.1 reads the
+  same exit 80 as a plain error. The parity doc does not cite
   `internal/runtime/runtimetest/conformance.go`. In gc v1.5.1, neither CLI suite
   runs `SendKeys_MissingSession`: `cmd/gc/cmd_runtime_check.go:60-64` invokes
   `rppcheck` and `cmd/gc/cmd_runtime_conformance.go:53` invokes
@@ -3436,23 +3435,23 @@ test uses 3000 ms).
 ### Conflicts
 
 1. **Nonexistent or dead session** – the pack exits 80 plus a `gone` line; the gc
-   v1.5.1 contract says return 0. The Rex provider does not declare
-   `input-outcome`, so it follows the gc line and answers a missing or dead pane
-   with exit 0 and empty output (`bestEffort` in `cmd/gc-runtime-rex/main.go:326-328,246-252`); the typed `gone` stays a
-   provider-layer classification for GCREX-70.
-   (`docs/reference/exec-session-provider.md:370`). gc 1.5.1 has no
+   v1.5.1 contract says return 0. The Rex provider declares `input-outcome`
+   with `carrier.ops` (GCREX-70), so `runWithContext` answers a missing or dead
+   pane with exit 80 `gone` (`cmd/gc-runtime-rex/main.go:278-281`); a gc that
+   reads the capability projects it to `ErrSessionNotFound`, and gc 1.5.1 reads
+   the same exit 80 as a plain error, regressing the contract line
+   `docs/reference/exec-session-provider.md:370`. gc 1.5.1 has no
    `input-outcome` (no hits for `input-outcome` or `carrier.ops` in
    `internal/runtime/` or the docs; `idle-boundary` appears only in comments at
    `internal/runtime/hybrid/hybrid.go:113`, `internal/runtime/auto/auto.go:280`).
    Its exit table is 0/1/2 (`docs/reference/exec-session-provider.md:71-77`), so
    exit 80 is an ordinary failure: `exec provider <script> interrupt <name>:
    interrupt: gone: …` (`internal/runtime/exec/exec.go:153-181`). Parity row 3
-   records this as `intentional` (`docs/provider-herdr-parity.md:750`, summary
-   table `docs/provider-herdr-parity.md:174` `no live program | exit 0 vs exit
-   80`) – and the matching line 174 row compares against the *Rex provider*, not
-   against gc. **Conflict: the pack deviates from the gc v1.5.1 best-effort line;
-   a gc at or beyond the `input-outcome` version reads 80 as typed.** Which gc
-   release adds it is unverified here.
+   records `matches` against herdr-core (`docs/provider-herdr-parity.md`
+   §interrupt). The conflict that remains is with gc v1.5.1's best-effort
+   contract line above: that baseline has no synthetic input-outcome type to
+   project exit 80 into, so the deviation is gc-version dependent rather than
+   hidden.
 2. Unknown capability strings are ignored by gc
    (`internal/runtime/protocol.go:16`;
    `docs/reference/exec-session-provider.md:183`), so declaring `input-outcome`
@@ -3599,8 +3598,8 @@ prefixed with the op name on stderr (`rpp/outcome.py:96-100,114-115`;
 - The pack answers with `input-outcome` exit 80; gc v1.5.1 does not know the token
   (`handshake.py:43`, parity §protocol row 1) and treats any non-0, non-2 exit as
   an error (`internal/runtime/exec/exec.go:159-171`). Result:
-  `gone`/`unavailable`/`not_sent` surface to gc as an error, where a missing or
-  dead session would be best-effort success on Rex. gc discards the error at both
+  `gone`/`unavailable`/`not_sent` surface to gc as an error, where before
+  GCREX-70 a missing or dead session was exit 0. gc discards the error at both
   call sites (`cmd/gc/session_reconciler.go:3739`, `cmd/gc/session_reconciler.go:3894`), so there is no
   behaviour change. Matches parity rows 2–4 (intentional).
 - No-op: the pack clears nothing; gc's own carrier form is `tmux clear-history`

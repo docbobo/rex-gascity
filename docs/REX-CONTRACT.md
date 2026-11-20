@@ -246,7 +246,16 @@ one-to-one to runtime sentinels (gc `internal/runtime/protocol.go:110-175`). The
 gc `1.5.1` baseline has neither token and reads exit `80` as a plain error, so
 there a gone-pane refusal surfaces as a failure instead of the old best-effort
 exit `0`; the installed edge build (`edge-20261118`, source `890a58a3e`) reads
-it typed. `gc runtime check` reports `capability carrier.ops: interrupt: typed
+it typed. Rex therefore needs an input-outcome-aware gc for typed refusals; on
+`1.5.1` a gone-pane `nudge`, `interrupt` or `send-keys` is a hard error, not the
+old exit `0` (gc 1.5.1 `docs/reference/exec-session-provider.md:370`), and
+`clear-scrollback` is unaffected in practice because gc discards its result at
+both reconciler call sites. Declaring `carrier.ops` also activates
+`idle-boundary` on edge: gc's `idleBoundaryDeclared` needs `report-activity`,
+`report-attachment`, `carrier.ops` (or `proc.exec`) and `idle-boundary`
+(`internal/runtime/exec/idle.go:36-40`), so `WaitForIdle`, ready-prompt
+recovery, the idle-proof budget and full idle sleep are live there.
+`gc runtime check` reports `capability carrier.ops: interrupt: typed
 outcome gone` and `capability input-outcome: nudge to an absent name: exit 80
 gone`, and `gc runtime conformance` passes the input group (RPP-INPUT-001/002/
 003/004/008/010/012).
