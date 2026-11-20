@@ -103,7 +103,9 @@ func WithNudgeConfirmation(window, interval time.Duration) Option {
 // ErrNudgeClaimHeld reports that gc's fallback pool-claim nudge was not typed
 // because the target session already holds a live claim. Nothing was typed and
 // nothing was submitted, so gc's retry cannot duplicate input; the backstop
-// re-delivers after its backoff if the claim has closed by then.
+// re-delivers after its backoff if the claim has closed by then. gc spends a
+// delivery attempt on the refusal and drains the slot at 3/3 on gc edge
+// (GCREX-67); docs/rex-provider.md records the residual risk.
 var ErrNudgeClaimHeld = errors.New("provider: session holds a live claim")
 
 // defaultNudgeSubmitBudget bounds the write and the submit together when the

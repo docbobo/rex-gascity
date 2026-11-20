@@ -8,11 +8,10 @@ so does adding an overlay directory itself.
 
 An overlay is a patched copy of a file someone else owns. The runtime stages it
 over its managed file, it drifts as that managed file changes, and it can defeat
-the runtime's own preserve/upgrade predicate:
-`pack/overlay/per-provider/pi/.pi/extensions/gc-hooks.js` pins
-`GC_PI_HOOK_VERSION = 100` precisely to keep gc from reverting it. So an overlay
-is a managed exception, not a normal edit. The default answer is an upstream fix
-in the owner's repo; an overlay needs a reason that fix cannot wait.
+the runtime's own preserve/upgrade predicate: a pinned version marker in the
+overlay is what keeps the runtime from reverting it. So an overlay is a managed
+exception, not a normal edit. The default answer is an upstream fix in the
+owner's repo; an overlay needs a reason that fix cannot wait.
 
 Present the change to Boris with the diff, the managed file it overrides, and
 why upstream cannot carry it. Record the approval in the task notes and the

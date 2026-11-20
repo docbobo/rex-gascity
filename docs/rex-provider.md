@@ -44,54 +44,41 @@ protocol = 0
 
 `command = "gc-runtime-rex"` has no path separator, so `gc` resolves it via `PATH` at run time and the pack carries no platform-specific binary.
 
-### Pi hook overlay (claim guard)
+### Pool-claim nudge and live claims (GCREX-67 residual risk)
 
-The core pack installs `gc`'s managed Pi hook at
-`.pi/extensions/gc-hooks.js`; the rex pack overrides it with
-`pack/overlay/per-provider/pi/.pi/extensions/gc-hooks.js`. `gc` stages
-`overlay/per-provider/<provider>/` trees into the session work directory and a
-later pack's copy wins on a fresh workdir (gc `internal/runtime/staging.go`
-`StageProviderOverlayDir`; `cmd/gc/build_desired_state_overlay_preserve_test.go`
-`TestPrepareTemplateResolution_LaterOverlayLayerOverridesManagedHook`). That
-path alone does not replace an existing current managed hook: the controller's
-`hooks.PreserveManagedFile` predicate keeps it (gc 1.5.1
-`internal/hooks/preserve.go`; the sibling test
-`TestPrepareTemplateResolution_PreservesCurrentManagedHook`). The predicate
-reads the marker of the file already on the destination, not the desired
-overlay's marker, so gc's staging never selects the rex copy over a current
-managed one. The provider therefore stages the start config's
-`pack_overlay_dirs` per-provider subtree itself, after `pre_start`, so the rex
-override replaces a managed v9 hook even in a shared checkout. The override
-carries `GC_PI_HOOK_VERSION = 100`, well above gc 1.5.1's 9 and gc HEAD's 10;
-once staged, that marker is what makes the preserve predicate keep the override
-on later ticks. The provider's writer does not compare versions, so if a future
-gc ships a managed hook above 100, re-bump the marker.
+The pack carries no Pi hook override. The core pack's managed
+`.pi/extensions/gc-hooks.js` is the only hook, and the runtime pack stages only
+the per-provider overlays a city configures through `pack_overlay_dirs`
+(`internal/provider/overlay.go` `stagePackOverlays`, pinned by
+`TestStagePackOverlaysStagesConfiguredSubtree`). The claim guard against
+GCREX-33 now lives only in the provider's `Nudge`.
 
-The behavioral difference this override adds is a claim guard in
-`before_agent_start`. `gc`'s
-stalled-claim backstop re-queues the fallback pool-claim nudge (`Run gc hook
---claim --drain-ack --json now; …`) for a pool slot whose routed trigger bead
-still reads open (gc `cmd/gc/idle_nudge.go`, `defaultPoolClaimNudge`; 90 s grace,
-`docs/reference/config.md`). The managed hook drains and injects every queued
-nudge unconditionally, so a seat that already held a claim received that text
-mid-task, ran the hook again with `--drain-ack`, handed the claim back and
-abandoned the task (GCREX-33; my-city events 2026-11-18 06:47–06:53, seat
-`mc-wisp-gwble`). The overlay reads the stamped claim with `gc hook current
---id-only` unconditionally; `$GC_BEAD_ID` belongs to the controller's dispatch
-environment, not the session shell. A non-empty stamp alone is not liveness:
-gc does not clear `current_claim_bead_id` when the claimed work bead closes
-(gc 1.5.1 `internal/session/store.go` `CurrentClaimBeadID`), so the overlay
-re-reads the stamped bead through `gc bd list --id <claim> --all --json` and
-mirrors gc's `claimedWorkStillHeldBy` predicate (gc 1.5.1
-`cmd/gc/session_ownership.go`): a closed, released (open and unassigned), or
-foreign-owned (`gc.session_id` names another session) claim is not held. While
-the claim reads held the overlay leaves the nudge queue undrained: nothing is
-injected mid-claim and nothing is acked or lost, and the next turn after the
-claim stops being held drains and delivers what was queued. This defers the
-whole queue, not only the pool-claim prompt. The provider's `Nudge` refusal
-uses the same liveness predicate (`internal/provider/nudge.go`
-`probeLiveClaim`), so the fallback pool-claim text is delivered once the claim
-is no longer held instead of being suppressed indefinitely.
+`gc`'s stalled-claim backstop re-queues the fallback pool-claim nudge (`Run gc
+hook --claim --drain-ack --json now; …`) for a pool slot whose routed trigger
+bead still reads open (gc v1.5.1 `cmd/gc/idle_nudge.go` `defaultPoolClaimNudge`;
+90 s grace, `docs/reference/config.md`). `Nudge` refuses to type that prompt
+while the session still holds a live claim (`internal/provider/nudge.go`
+`ErrNudgeClaimHeld`, via the `probeLiveClaim` liveness predicate, which mirrors
+gc v1.5.1 `cmd/gc/session_ownership.go` `claimedWorkStillHeldBy`: a closed,
+released, or foreign-owned claim is not held). Nothing is typed, so a working
+seat is not sent back through `gc hook --claim`.
+
+Residual risk until GCREX-67 lands. The refusal exits 1. gc reserves the
+delivery attempt before calling the provider and does not refund a refused
+nudge (gc v1.5.1 `cmd/gc/nudge_backstop.go`: `reserve` precedes `sp.Nudge`;
+only gc edge refunds `ErrSessionBusy`/pending-interaction). At the cap
+(`idleClaimNudgeMaxAttempts = 3`, gc v1.5.1 `cmd/gc/idle_nudge.go:54`) v1.5.1
+only gives up and logs (`poolClaimBackstop.exhausted` is a no-op at the pin),
+but gc edge drains and recycles the slot (`cmd/gc/idle_nudge.go`
+`poolClaimBackstop.exhausted`, working tree). A seat that stays on one live
+claim across three backstop ticks can therefore be drained on gc edge.
+
+Already-staged work directories. gc's `hooks.PreserveManagedFile` predicate
+decides from the marker already on the destination (gc v1.5.1
+`internal/hooks/preserve.go:29`), so a worktree or shared checkout that the
+removed overlay already staged keeps its `GC_PI_HOOK_VERSION = 100`
+`.pi/extensions/gc-hooks.js` and its old claim guard. Remove that file by hand
+from each such work directory to fall back to gc's managed hook.
 
 Include the pack in your city's `city.toml` (paths in `includes` resolve relative to `city.toml`):
 

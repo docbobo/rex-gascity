@@ -19,12 +19,11 @@ const perProviderDir = "per-provider"
 
 // stagePackOverlays copies each pack's per-provider overlay subtree into the
 // session work directory. gc stages pack overlays itself, but its managed-file
-// preserve predicate keeps an existing current hook and can skip the rex
+// preserve predicate keeps an existing current file and can skip the pack's
 // override. The provider writes the per-provider subtree after pre_start and
-// after the work_dir check, so a managed v9 hook is replaced by the pack's v100
-// override on every start. The writer does not compare versions; if a future
-// managed hook exceeds v100, re-bump the override's marker. Later pack
-// directories win on the same path.
+// after the work_dir check, so a city-configured override replaces a current
+// managed file on every start. The writer does not compare versions. Later
+// pack directories win on the same path.
 func stagePackOverlays(workDir string, dirs []string, providerName string) error {
 	if workDir == "" || providerName == "" {
 		return nil
