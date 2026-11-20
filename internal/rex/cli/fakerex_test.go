@@ -49,6 +49,7 @@ if [ "$key" = "block.method" ]; then
     *'"method":"process"'*) key=process ;;
     *'"method":"write"'*) key=write ;;
     *'"method":"clear"'*) key=clear ;;
+    *'"method":"size"'*) key=size ;;
     *'"method":"program_status"'*) key=program_status ;;
   esac
 fi

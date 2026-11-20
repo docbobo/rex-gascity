@@ -185,7 +185,7 @@ func TestSessionViewFlattensLayers(t *testing.T) {
 	fake.respond(t, "session.view", `{
 		"session_id":"session:a","label":"gc:acme","active_window_id":"window:Indigo","revision":4,
 		"windows":[{"window_id":"window:Indigo","label":"Indigo","focused_block_id":"block:dog-1",
-			"layers":[{"blocks":[{"block_id":"block:dog-1","label":"dog-1"}]}]}]}`)
+			"layers":[{"blocks":[{"block_id":"block:dog-1","label":"dog-1","owner":"client:a"}]}]}]}`)
 	c := &cli.Client{Bin: fake.bin}
 
 	view, err := c.SessionView(context.Background(), "session:a")
@@ -204,6 +204,9 @@ func TestSessionViewFlattensLayers(t *testing.T) {
 	}
 	if len(win.Blocks) != 1 || win.Blocks[0].ID != "block:dog-1" {
 		t.Errorf("blocks = %+v", win.Blocks)
+	}
+	if win.Blocks[0].Owner != "client:a" {
+		t.Errorf("block owner = %q, want client:a", win.Blocks[0].Owner)
 	}
 }
 

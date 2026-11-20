@@ -415,6 +415,7 @@ func TestIsAttached(t *testing.T) {
 		t.Errorf("is-attached without clients = %q", got)
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "app"}}
+	fake.View.Windows[0].Blocks[0].Owner = "c1"
 	fake.View.ActiveWindowID = fake.View.Windows[0].ID
 	if got := h.must("", "is-attached", dog).stdout; got != "true\n" {
 		t.Errorf("is-attached with app client = %q", got)
@@ -423,6 +424,8 @@ func TestIsAttached(t *testing.T) {
 	if got := h.must("", "is-attached", dog).stdout; got != "true\n" {
 		t.Errorf("is-attached with unclassifiable client kind = %q, want true", got)
 	}
+	fake.SessionViewErr = errors.New("boom")
+	assertFailure(t, h.run("", "is-attached", dog), exitFail)
 }
 
 // downRex fails the read calls attach might use, modeling an unreachable Rex

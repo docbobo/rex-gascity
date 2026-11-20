@@ -208,6 +208,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 				Blocks []struct {
 					ID    string `json:"block_id"`
 					Label string `json:"label"`
+					Owner string `json:"owner"`
 				} `json:"blocks"`
 			} `json:"layers"`
 		} `json:"windows"`
@@ -228,10 +229,13 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 			FocusedBlockID: rex.BlockID(w.FocusedBlockID),
 		}
 		index := map[rex.BlockID]int{}
-		add := func(id rex.BlockID, label string, rect [4]float64) {
+		add := func(id rex.BlockID, label, owner string, rect [4]float64) {
 			if i, ok := index[id]; ok {
 				if label != "" && win.Blocks[i].Label == "" {
 					win.Blocks[i].Label = label
+				}
+				if owner != "" && win.Blocks[i].Owner == "" {
+					win.Blocks[i].Owner = owner
 				}
 				if win.Blocks[i].Rect == ([4]float64{}) {
 					win.Blocks[i].Rect = rect
@@ -239,13 +243,13 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 				return
 			}
 			index[id] = len(win.Blocks)
-			win.Blocks = append(win.Blocks, rex.Block{ID: id, Label: label, Rect: rect})
+			win.Blocks = append(win.Blocks, rex.Block{ID: id, Label: label, Owner: owner, Rect: rect})
 		}
 		for _, layer := range w.Layers {
 			rects := layer.Layout.blockRects()
 			for _, b := range layer.Blocks {
 				id := rex.BlockID(b.ID)
-				add(id, b.Label, rects[id])
+				add(id, b.Label, b.Owner, rects[id])
 				delete(rects, id)
 			}
 			// Blocks only the layout tree knows about, in a stable order.
@@ -255,7 +259,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 			}
 			slices.Sort(rest)
 			for _, id := range rest {
-				add(id, "", rects[id])
+				add(id, "", "", rects[id])
 			}
 		}
 		view.Windows = append(view.Windows, win)
