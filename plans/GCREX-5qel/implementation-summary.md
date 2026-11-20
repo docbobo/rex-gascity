@@ -68,6 +68,37 @@ name-derived label, town-level panes are unchanged, and the label is clamped to
   `launch.NewPlan`/`blockLayout` (`internal/launch/launch.go:40-52`,
   `:258-274`), fed by `Config.Label` from the provider.
 
+## Review fixes
+
+CodeRabbit's CHANGES_REQUESTED review on PR #5 (`gcrex-2zd2`, commit on top of
+`852dbbe`):
+
+1. **Record-less discovery** — `Binder.scan` also matches a block label ending
+   in `" (<GC_SESSION_NAME>)"` and records the live label, so `IsRunning` and
+   `Stop` find a `<agent> (<session>)` pane with no sidecar record and no start
+   env (`internal/provider/binding.go`).
+2. **Launch label from the projected env** — `launch.Project(env)` exposes the
+   pool-routing projection; `start` derives the launch label from it, so the
+   launch label, the discovery hint and the recorded label always agree
+   (`internal/launch/launch.go`, `internal/provider/provider.go`).
+3. **Clamp must not collide** — the over-long branch truncates only the agent
+   prefix and falls back to the bare clamped session name when the suffix alone
+   cannot fit, instead of cutting the session identity
+   (`internal/provider/sessionname.go`).
+
+Declined as instructed: retrying the legacy name-derived label during
+rediscovery (pre-change pane adoption). Re-attach compatibility with existing
+pane labels stays out of scope; GCREX-72 legacy handling is unchanged.
+
+Tests: `TestRecordlessDiscoveryBySessionSuffix`,
+`TestStartPaneLabelFromProjectedEnv`, and the new `TestPaneLabelForClamp`
+subtests; each fails on `852dbbe`. Detail:
+`implementation-summary-gcrex-2zd2.md`.
+
+Identity past 128 runes still cannot be represented, so the fallback clamps the
+bare session name; two sessions differing only beyond the limit collide. 128-rune
+labels cannot avoid that.
+
 ## Not done here
 
 - REQ-011 live check (pool seat and mayor pane after a city restart) is

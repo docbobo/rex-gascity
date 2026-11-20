@@ -793,8 +793,12 @@ Pane labels are display-only and outside the durable contract (GCREX-5qel):
 agent `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR` segment after the first `/`.
 A blank session name or agent keeps the name-derived label, town-level panes
 keep theirs, and an over-long label is clamped to 128 runes without cutting the
-parenthesised session name. Discovery re-derives the same label, so resolution
-never depends on the human-readable prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
+parenthesised session name. The launch label, the discovery hint and the
+recorded label all derive from the pool-routing-projected env (`launch.Project`),
+so routing a rewrite of `BEADS_ACTOR` cannot make them disagree. Discovery
+re-derives the same label, and a record-less scan with no start env matches the
+parenthesised session name on its own, so resolution never depends on the
+human-readable prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
 stay incidental: they only feed this display string.
 
 | Variable | Meaning | When set | Role |

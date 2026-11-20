@@ -123,9 +123,14 @@ func paneLabelFor(n SessionName, env map[string]string) string {
 	if utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 		return label
 	}
+	// Truncate only the agent: the parenthesised session name is the
+	// discovery identity (Binder.scan), so cutting it would make two long
+	// sessions differing at the tail share a label. When the suffix alone
+	// cannot fit, fall back to the bare session name; identity past 128
+	// runes cannot be represented at all.
 	suffix := " (" + session + ")"
 	if len([]rune(suffix)) >= maxPaneLabelRunes {
-		return string([]rune(label)[:maxPaneLabelRunes])
+		return clampRexLabel(session)
 	}
 	return string([]rune(agent)[:maxPaneLabelRunes-len([]rune(suffix))]) + suffix
 }

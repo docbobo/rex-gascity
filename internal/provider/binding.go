@@ -470,13 +470,21 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	if pane == "" {
 		pane = name.PaneLabel()
 	}
+	// IsRunning and Stop resolve without a start env, so the fallback scan
+	// must recognise the session identity alone: a pane labelled
+	// "<agent> (<GC_SESSION_NAME>)" still belongs to name even though the
+	// agent prefix is unknown here.
+	identity := " (" + string(name) + ")"
+	paneMatches := func(label string) bool {
+		return label == pane || strings.HasSuffix(label, identity)
+	}
 	for _, tab := range tabs {
 		for _, w := range view.Windows {
 			if w.Label != tab {
 				continue
 			}
 			for _, blk := range w.Blocks {
-				if blk.Label == pane {
+				if paneMatches(blk.Label) {
 					bd := Binding{
 						Name:         name,
 						SessionID:    sid,
@@ -484,7 +492,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 						WindowID:     w.ID,
 						BlockID:      blk.ID,
 						TabLabel:     tab,
-						PaneLabel:    pane,
+						PaneLabel:    blk.Label,
 						Aliases:      hint.Aliases,
 						// Launch details the labels do not carry: dropping them
 						// would silently disable the Stop-time drain diagnostic.

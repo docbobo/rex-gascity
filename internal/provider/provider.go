@@ -437,12 +437,15 @@ type startResult struct {
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
 	n := SessionName(name)
 	// Build the one launch plan up front: it projects pool routing for every
-	// later step and owns the Rex block layout.
+	// later step and owns the Rex block layout. The launch label must come
+	// from the same projected env as the hint and the record, or pool
+	// routing makes them disagree and a restart launches a duplicate pane.
+	env := launch.Project(cfg.Env)
 	plan := launch.NewPlan(launch.Config{
 		Argv:    cfg.Argv,
-		Env:     cfg.Env,
+		Env:     env,
 		WorkDir: cfg.WorkDir,
-		Label:   paneLabelFor(n, cfg.Env),
+		Label:   paneLabelFor(n, env),
 	})
 	cfg.Env = plan.Env
 	seeded := false
