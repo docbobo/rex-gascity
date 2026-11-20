@@ -118,7 +118,9 @@ func splitProcessRow(line string) (pid, ppid, stat, comm string, ok bool) {
 // paneSubtree captures what the pane could leave behind: the foreground Rex
 // reports and every host process below it. Ancestors are reported too, but
 // they are the pane's shell and its parents, so a sibling under one of them is
-// not the pane's process and must not be signalled. It must run before
+// not the pane's process and must not be signalled. A captured name is the
+// host table's comm, not Rex's Name (which differs from it on Darwin, U1), so
+// living compares like with like. It must run before
 // block.close: a detached descendant is reparented to init when the pane dies
 // and can then no longer be attributed to this session. An unreadable process
 // listing is returned so stop can leave the pane open (GCREX-50). A pane that
@@ -175,9 +177,14 @@ func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, erro
 	}
 	out := make([]paneProc, 0, len(below))
 	for pid := range below {
-		name := reported[pid]
-		if name == "" {
-			name = filepath.Base(table[pid].name)
+		// Name the process from this ps snapshot whenever it is there: living
+		// compares against the same field, and Rex disagrees with it — Rex
+		// reports the executable (`node`) while Darwin's comm is argv0 (`pi`),
+		// so a process named from Rex would never match its live row (U1).
+		// Rex's name is only the fallback for a reported pid the table lacks.
+		name := filepath.Base(table[pid].name)
+		if name == "" || name == "." {
+			name = reported[pid]
 		}
 		if name == "" || name == "." {
 			name = "?"

@@ -220,6 +220,40 @@ func TestStopReapsAProcessThePaneStartedAfterTheSnapshot(t *testing.T) {
 	}
 }
 
+// TestStopMatchesTheProcessTableNameNotRexsName is review U1, recorded from a
+// live run (macOS 25.6, BSD ps): Rex reports the executable's name (`node`),
+// while `ps -o comm=` prints argv0 (`pi`) because a Rex pane runs its command
+// as the default shell with argv0 set to it. A captured name taken from Rex
+// never matches that live row, so living drops the survivor as gone and the
+// stop reports a false success. The snapshot takes each name from the same ps
+// table living compares against.
+func TestStopMatchesTheProcessTableNameNotRexsName(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	_, p, signals := reapProvider(t, rex.ProcessInfo{
+		Foreground: &rex.Process{PID: 300, Name: "node"},
+		Ancestors:  []rex.Process{{PID: 200, Name: "fish"}},
+	}, func(call int) string {
+		if call == 1 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "-fish"},
+				[4]string{"300", "200", "+", "pi"},
+			)
+		}
+		return reapTable([4]string{"300", "1", "S", "pi"})
+	})
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure for the live 300 that Rex calls \"node\" and ps calls \"pi\"")
+	}
+	if !strings.Contains(err.Error(), "300 (pi)") {
+		t.Errorf("Stop error %q does not name the live survivor 300 (pi)", err)
+	}
+	if !slices.Contains(*signals, "terminated:300") {
+		t.Errorf("signals = %v, want a TERM for 300", *signals)
+	}
+}
+
 // TestStopAlreadyDeadSessionScansNoProcessTable is GCREX-50 AC#3: a name with
 // no live pane stops with exit 0 and never touches the process table.
 func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
