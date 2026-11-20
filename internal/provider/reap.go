@@ -277,6 +277,51 @@ func (p *Provider) signalAll(procs []paneProc, sig syscall.Signal) error {
 	return first
 }
 
+// descendants extends procs with the host processes that descend from them: a
+// process recorded by an earlier stop can spawn a child after the pane closed,
+// and a closed pane reports no tree. Identity is pid plus lstart, so a recycled
+// pid is never followed. An unreadable table leaves procs as the caller gave it.
+func (p *Provider) descendants(ctx context.Context, procs []paneProc) []paneProc {
+	if len(procs) == 0 {
+		return procs
+	}
+	table, err := p.processTable(ctx)
+	if err != nil {
+		return procs
+	}
+	children := make(map[int][]int, len(table))
+	for pid, row := range table {
+		children[row.ppid] = append(children[row.ppid], pid)
+	}
+	seen := make(map[int]bool, len(procs))
+	var queue []int
+	for _, proc := range procs {
+		row, ok := table[proc.pid]
+		if !ok || row.zombie || !sameProcess(proc, row) {
+			continue
+		}
+		seen[proc.pid] = true
+		queue = append(queue, proc.pid)
+	}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		for _, child := range children[pid] {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			queue = append(queue, child)
+			row := table[child]
+			if row.zombie {
+				continue
+			}
+			procs = append(procs, paneProc{pid: child, name: filepath.Base(row.name), start: row.start})
+		}
+	}
+	return procs
+}
+
 // living returns the captured processes still running. A zombie counts as
 // gone, and so does a pid the host reused: identity is the pid plus the lstart
 // captured in the same snapshot, so a renamed descendant still counts (review

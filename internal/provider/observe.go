@@ -116,6 +116,9 @@ func (p *Provider) observeIdentity(n SessionName) map[string]string {
 func (p *Provider) Observe(ctx context.Context, name string, _ []string) (ObserveAnswer, error) {
 	n := SessionName(name)
 	bd, ok := p.Binding(name)
+	// fromRecord is false for the read-only scan below: a pane this provider
+	// did not start has no gc identity to read from its sidecar.
+	fromRecord := ok
 	if !ok {
 		// No cached record: scan for a live pane under the name's labels
 		// without adopting it. Observe is a read, so a discovered pane must
@@ -151,7 +154,7 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 	// Identity is the started incarnation's start config. A pane that took the
 	// name without Start has no gc identity of its own: an empty set, which gc
 	// reads as operator-made, never nil, which it reads as "not yet readable".
-	if holder.BlockID == bd.BlockID && !bd.Adopted {
+	if fromRecord && holder.BlockID == bd.BlockID && !bd.Adopted {
 		ans.Identity = p.observeIdentity(idName)
 	} else {
 		ans.Identity = map[string]string{}
@@ -254,7 +257,7 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 			State:  state,
 			Object: &obj,
 		}
-		if holder.BlockID == bd.BlockID {
+		if holder.BlockID == bd.BlockID && !bd.Adopted {
 			e.Identity = p.observeIdentity(bd.Name)
 		} else {
 			e.Identity = map[string]string{}
@@ -379,7 +382,15 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 		// kill-object could not complete (closed the block, then failed
 		// cleanup): a retry must not answer `gone` over stale meta/activity.
 		if state == ObserveAbsent {
-			if _, err := p.withSameBinding(ctx, name, bd, func() error { return p.retireStale(bd) }); err != nil {
+			// A previous stop may have recorded survivors it could not reap
+			// before the pane vanished, so the record is their only name: reap
+			// them before retiring it, or a retry answers gone over live pids.
+			if _, err := p.withSameBinding(ctx, name, bd, func() error {
+				if err := p.reapSurvivors(ctx, bd, survivorProcs(bd.Survivors)); err != nil {
+					return err
+				}
+				return p.retireStale(bd)
+			}); err != nil {
 				return "", err
 			}
 		}

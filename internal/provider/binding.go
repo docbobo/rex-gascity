@@ -575,7 +575,7 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 			WorkDir:    hint.WorkDir,
 		}
 		if save {
-			if hint.BlockID != "" && hint.BlockID != blk.ID {
+			if hint.BlockID != blk.ID {
 				// Adopted: a pane this provider did not start. The retired
 				// record's creation time and identity are not its, so keep the
 				// creation time unknown and mark it adopted; a later Observe
@@ -630,8 +630,10 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 	return Binding{}, false
 }
 
-// Record stores binding, replacing any earlier one for the same name.
-func (b *Binder) Record(binding Binding) { _ = b.store.Write(binding.Name, binding) }
+// Record stores binding, replacing any earlier one for the same name. The
+// caller must handle the error: an unsaved record leaves a pane or a survivor
+// set no later stop can name.
+func (b *Binder) Record(binding Binding) error { return b.store.Write(binding.Name, binding) }
 
 // Forget drops the stored binding that answers to name, clearing the whole
 // primary record including its aliases. An alias drops the primary it names.

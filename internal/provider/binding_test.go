@@ -55,7 +55,12 @@ func TestResolveScanFallback(t *testing.T) {
 	b, store, _ := newTestBinder(t, indigoWindow())
 
 	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
-	if err != nil || !ok || !reflect.DeepEqual(got, indigoBinding()) {
+	// No record and no hint labels: this provider cannot prove it started the
+	// pane, so the rebuilt binding is an adoption (unknown creation, no gc
+	// identity), the same answer Observe gives a recordless pane.
+	want := indigoBinding()
+	want.Adopted = true
+	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
 	if saved, ok := store.Load("Indigo--dog-1"); !ok || !reflect.DeepEqual(saved, got) {
