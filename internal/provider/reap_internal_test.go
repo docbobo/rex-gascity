@@ -321,6 +321,21 @@ func TestStopDoesNotSignalAReusedPid(t *testing.T) {
 	}
 }
 
+// TestUnionProcsKeepsBothStartsOfAReusedPid is review round 4: the second pane
+// read may name a pid the first read saw with another lstart (the pid was
+// reused mid-teardown). Both are real, so neither may be dropped.
+func TestUnionProcsKeepsBothStartsOfAReusedPid(t *testing.T) {
+	tree := []paneProc{{pid: 300, name: "sh", start: "A"}}
+	union := unionProcs(tree, []paneProc{
+		{pid: 300, name: "bun", start: "A"}, // same process and start: deduped
+		{pid: 300, name: "bun", start: "B"}, // reused pid: a second process
+		{pid: 400, name: "sh", start: "A"},  // unseen pid
+	})
+	if len(union) != 3 {
+		t.Fatalf("union = %v, want 3 entries", union)
+	}
+}
+
 // TestStopAlreadyDeadSessionScansNoProcessTable is GCREX-50 AC#3: a name with
 // no live pane stops with exit 0 and never touches the process table.
 func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {

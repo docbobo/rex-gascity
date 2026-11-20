@@ -281,16 +281,22 @@ func sameProcess(proc paneProc, row processRow) bool {
 	return sameProgram(proc.name, row.name)
 }
 
-// unionProcs appends the processes whose pid is not already in tree, so a
-// second pane read can extend, never shrink, what the first captured.
+// unionProcs appends the processes not already in tree, so a second pane read
+// can extend, never shrink, what the first captured. Identity is pid plus
+// lstart (review round 4): the same pid with a different start is a different
+// process, and dropping one of the two would lose a real survivor.
 func unionProcs(tree, extra []paneProc) []paneProc {
-	seen := make(map[int]bool, len(tree))
+	// paneProc is comparable; the name is not part of identity, so zero it.
+	seen := make(map[paneProc]bool, len(tree))
 	for _, proc := range tree {
-		seen[proc.pid] = true
+		proc.name = ""
+		seen[proc] = true
 	}
 	for _, proc := range extra {
-		if !seen[proc.pid] {
-			seen[proc.pid] = true
+		key := proc
+		key.name = ""
+		if !seen[key] {
+			seen[key] = true
 			tree = append(tree, proc)
 		}
 	}
