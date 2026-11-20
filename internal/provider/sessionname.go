@@ -167,10 +167,18 @@ func paneLabelForAgent(n SessionName, env map[string]string, agent string) strin
 	return clampRexLabel(session)
 }
 
+// paneLabelShortened ends an agent that fitPaneLabel had to cut. The label has
+// to carry the cut: without a marker a shortened agent reads like a short one,
+// so identityMatch cannot tell "this agent was cut" from "this is the whole
+// agent", and would rebuild a name that belongs to another session. Agents are
+// rig and agent names; none of them end in this rune.
+const paneLabelShortened = "…"
+
 // fitPaneLabel renders "<agent> (<suffix>)" at or under Rex's limit. Only the
 // agent is shortened: the parenthesised suffix is the discovery identity
 // (Binder.scan), so cutting it would make two sessions differing at the tail
-// share a label. ok is false when not even the agent and the suffix fit — no
+// share a label. A shortened agent is marked (paneLabelShortened) and names no
+// session; ok is false when not even the marked agent and the suffix fit — no
 // label within the limit can then name the session.
 func fitPaneLabel(agent, suffix string) (string, bool) {
 	tail := " (" + suffix + ")"
@@ -179,10 +187,13 @@ func fitPaneLabel(agent, suffix string) (string, bool) {
 		return "", false
 	}
 	r := []rune(agent)
-	if len(r) > budget {
-		r = r[:budget]
+	if len(r) <= budget {
+		return string(r) + tail, true
 	}
-	return string(r) + tail, true
+	if budget < 2 {
+		return "", false
+	}
+	return string(r[:budget-1]) + paneLabelShortened + tail, true
 }
 
 // paneLabelAgent is the display agent: the agent part of GC_TEMPLATE (the
@@ -225,7 +236,16 @@ func identityMatch(name SessionName, label string) bool {
 	if agent == "" || suffix == "" {
 		return false
 	}
-	return suffix == string(name) || sanitizeQualified(agent)+"-"+suffix == string(name)
+	if suffix == string(name) {
+		return true
+	}
+	// A shortened agent is only a prefix of the real one, so the name rebuilt
+	// from it belongs to whichever session happens to be that short. The long
+	// form still matches above: its suffix is the whole name.
+	if strings.HasSuffix(agent, paneLabelShortened) {
+		return false
+	}
+	return sanitizeQualified(agent)+"-"+suffix == string(name)
 }
 
 // paneAgent resolves the display agent: GC_ALIAS, then GC_AGENT, then the

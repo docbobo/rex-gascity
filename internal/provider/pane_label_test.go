@@ -323,7 +323,21 @@ func TestRecordlessClampedShortFormIsNotAnIdentity(t *testing.T) {
 	}
 	label := paneLabelFor(SessionName(session), env)
 	block := rex.BlockID("block:" + label)
-	for _, name := range []string{session, agent + "-extra-" + bead} {
+	// The shortened agent is marked, so the label itself shows that it lost
+	// the tail instead of reading like a short agent.
+	if !strings.HasSuffix(label, " ("+bead+")") || !strings.Contains(label, paneLabelShortened) {
+		t.Fatalf("label %q does not mark its shortened agent", label)
+	}
+	// Names built from the visible agent text are exactly what must not match.
+	short := label[:strings.LastIndex(label, " (")]
+	short = strings.TrimSuffix(short, paneLabelShortened)
+	names := []string{
+		session,
+		agent + "-extra-" + bead,
+		short + "-" + bead,
+		short + paneLabelShortened + "-" + bead,
+	}
+	for _, name := range names {
 		running, err := New("acme", fake).IsRunning(ctx, name)
 		if err != nil || running {
 			t.Fatalf("IsRunning(%s) = %v, %v; want false, nil", name, running, err)
@@ -886,6 +900,12 @@ func TestIdentityMatch(t *testing.T) {
 		// session.
 		{"128-rune label, exact name", strings.Repeat("a", 123) + "-id", strings.Repeat("a", 123) + " (id)", true},
 		{"128-rune label, longer name with the same ends", strings.Repeat("a", 123) + "-extra-id", strings.Repeat("a", 123) + " (id)", false},
+		// A shortened agent is marked, so neither the visible prefix nor the
+		// marker text can be turned back into a name.
+		{"shortened label, name from its agent text", strings.Repeat("a", 84) + "-bid", strings.Repeat("a", 84) + paneLabelShortened + " (bid)", false},
+		{"shortened label, name including the marker", strings.Repeat("a", 84) + paneLabelShortened + "-bid", strings.Repeat("a", 84) + paneLabelShortened + " (bid)", false},
+		// The long form still names its session when only the agent was cut.
+		{"shortened long form", "gc__s", strings.Repeat("a", 50) + paneLabelShortened + " (gc__s)", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

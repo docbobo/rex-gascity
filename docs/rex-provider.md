@@ -240,9 +240,11 @@ Gas City sessions map onto the three-level Rex hierarchy:
 
   A blank session name or agent keeps the name-derived label, and an
   over-long label is clamped to 128 runes without truncating the suffix.
-  Shortening the agent costs the short form its identity: a visible agent
-  prefix plus the bead id fits more than one name, so discovery refuses that
-  label instead of guessing which pane it means. The long form is unaffected —
+  A shortened agent ends in `…` (`paneLabelShortened`), so the cut is visible
+  in the label and discovery can tell it from a whole short agent. Shortening
+  the agent costs the short form its identity: a visible agent prefix plus the
+  bead id fits more than one name, so discovery refuses that label instead of
+  guessing which pane it means. The long form is unaffected —
   its suffix is the whole session name. Only a suffix that cannot fit at all
   falls back to the bare session name.
 - How a short label is verified: gc's pool runtime name is
@@ -258,7 +260,7 @@ Gas City sessions map onto the three-level Rex hierarchy:
   Discovery applies the same rule (`identityMatch`): a label names session `n`
   when its parenthesised suffix is `n`, or `n` is exactly
   `Sanitize(agent)+"-"+suffix` with no shortening; a bare label, a
-  prefix-only match or a shortened agent never counts.
+  prefix-only match or an agent ending in `…` never counts.
 - The launch label, the discovery hint and the recorded label all come from the same pool-routing-projected env (`launch.Project`), the one the pane itself runs with. Deriving the launch label from the pre-projection env would disagree with the hint whenever routing rewrites `BEADS_ACTOR`, and a restart with the sidecar record lost would launch a duplicate pane.
 - With no sidecar record and no start env (`is-running`, `stop`), the fallback scan accepts a pane label whose parenthesised suffix names the session — the long `(<GC_SESSION_NAME>)` form, or the verified pool short form `Sanitize(agent)+"-"+bead id == name` — as well as the exact name-derived label, so a live pane is found without any start env. A shortened short form names nobody: such a pane is left alone rather than risking another session's stop.
 - A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
