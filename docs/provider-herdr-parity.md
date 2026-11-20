@@ -76,9 +76,9 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `set-meta` | implemented | 5 | intentional |
 | `get-meta` | implemented | 3 | intentional |
 | `remove-meta` | implemented | 5 | intentional |
-| `observe` | not implemented | 1 | not-implemented |
-| `inventory` | not implemented | 2 | not-implemented |
-| `kill-object` | not implemented | 1 | not-implemented |
+| `observe` | implemented, gated by `GCREX_OBSERVE_V1=1` | 1 | partial |
+| `inventory` | implemented, gated by `GCREX_OBSERVE_V1=1` | 2 | partial |
+| `kill-object` | implemented, gated by `GCREX_OBSERVE_V1=1` | 1 | partial |
 | `server-stop` | not implemented | 1 | intentional |
 | `copy-to` | not implemented | 1 | not-implemented |
 
@@ -203,10 +203,10 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `remove-meta` | unknown/foreign session | always OK, no existence check | unknown OK; foreign terminal errors | intentional | Name-keyed meta independent of Rex. |
 | `remove-meta` | absent key | no-op, writes nothing | rewrites meta file, may create it | intentional | Both exit 0; fewer side effects. |
 | `remove-meta` | provider-owned key guard | none for GC_READY_PROMPT_PREFIX | none | intentional | Matches reference. |
-| `observe` | op presence | exits 2, unknown op | JSON state answer, 4 s probe deadline | not-implemented | Not in RPP v0; gc 1.5.1 never sends it. |
-| `inventory` | op presence | exit 2, unknown op | returns complete flag plus per-session records | not-implemented | Not in RPP v0; gc 1.5.1 never sends it. |
-| `inventory` | bulk state read | `list-running` prints names only | one call returns state, attachment, activity and identity per session | not-implemented | gc 1.5.1 uses the per-session ops instead. |
-| `kill-object` | op presence | exit 2 unknown op; no handler | stdin-driven box kill, corpse/zombie modes | not-implemented | Outside RPP v0; gc 1.5.1 never sends it. |
+| `observe` | op presence | implemented behind the `GCREX_OBSERVE_V1=1` switch (GCREX-101): JSON state answer, no probe deadline of its own | JSON state answer, 4 s probe deadline | partial | Not in RPP v0 and gc 1.5.1 never sends it; the op and its `observe.v1` token appear only under the switch. Agent liveness (RPP-OBSERVE-006) and `last_activity` (RPP-OBSERVE-015) stay declared failing, so `agent` degrades rather than lies. |
+| `inventory` | op presence | implemented behind the `GCREX_OBSERVE_V1=1` switch (GCREX-101): `{complete, sessions[]}` | returns complete flag plus per-session records | partial | Same switch. Entries carry state and identity; attachment, activity and restart flags are absent (RPP-OBSERVE-007/-015 stay failing). |
+| `inventory` | bulk state read | gated: one call returns state and identity per session, from one Rex liveness probe and one sidecar snapshot per session | one call returns state, attachment, activity and identity per session | partial | gc 1.5.1 uses the per-session ops instead. Completeness is claimed only when the binding store is listable and no city pane names an unlisted session. |
+| `kill-object` | op presence | implemented behind the `GCREX_OBSERVE_V1=1` switch (GCREX-101): stdin-driven, `corpse` kills a dead box and answers `live` on a running one; `zombie` answers `changed` | stdin-driven box kill, corpse/zombie modes | partial | Outside RPP v0; gc 1.5.1 never sends it. Zombie-mode killing needs the agent check (RPP-OBSERVE-006), so that mode never kills yet. |
 | `server-stop` | op presence | absent; exit 2 unknown op | implemented; stops the city core and its sessions | intentional | No wire op in gc; teardown is a tmux-only Go interface. |
 | `copy-to` | op presence | No entry, exit 2 unknown op (`main.go:115-122`) | Copies src into work dir, exit 0/1 (`screen.py:47-64`) | not-implemented | No gc 1.5.1 caller; staging is `copy_files` in start. |
 ## Confirmed mistakes
@@ -963,9 +963,11 @@ docs/REX-CONTRACT.md §9 — remove-meta op row
 
 ### observe
 
-**Status** — not implemented
+**Status** — implemented, gated by `GCREX_OBSERVE_V1=1` (GCREX-101)
 
-**Our implementation.** `observe` is not in the `ops` map (`cmd/gc-runtime-rex/main.go:81-97`) and not in the `unimplemented` set (`main.go:74-79`, which lists only exec, provision, attach, watch-startup). `run` hits the `!known` branch and prints `unknown operation "observe"` to stderr, returning `exitUnknown` = 2 (`main.go:116-123`). No stdin is read and no state is touched. There is no partial substitute: `is-running`, `process-alive`, `list-running`, `get-last-activity` and `is-attached` are separate ops (`main.go:83-95`), and the handshake declares no `observe.v1` (`docs/REX-CONTRACT.md:255-258`).
+**Our implementation.** `observe` is in the `ops` map as `opObserve` (`cmd/gc-runtime-rex/main.go`), and the handshake declares `observe.v1` only when `GCREX_OBSERVE_V1=1` (`TestObserveV1HandshakeGated`). Without the switch the op is still unknown: `run` hits the `!known` branch and exits 2 (`exitUnknown`), which is the RPP v0 answer. `opObserve` drains a bounded stdin of process names and calls `Provider.Observe` (`internal/provider/observe.go`): no stored binding answers `absent`; a stored binding whose liveness Rex reports as unavailable (`rex.ErrUnavailable`) answers `unknown`, not `absent` (`TestObserveAbsentForUnknownName`); a dead pane answers `dead`; a live one answers `running` with the stored object and the start-config identity (`TestObserveRunningCarriesObjectAndIdentity`). The object is derived from the binding alone, so `observe` takes no name lock and reads fresh.
+
+Agent liveness is not implemented (RPP-OBSERVE-006): `agent`/`agent_pid` are the degraded values the profile declares failing, never a guess, and `last_activity` (RPP-OBSERVE-015) is absent. A `dead` answer that races a `Stop` can carry no identity, because `Stop` clears the start identity (`clearStartIdentity`, `internal/provider/identity.go`) and gc reads an absent identity as "not yet readable" (rule 5), so the answer is safe and short-lived (F3).
 
 **herdr-core.** `ops_table.py:72` registers `observe` with `stdin=True`, `deadline="probe"` and `cap=OBSERVE_STDOUT_CAP`. The probe deadline is 4 s (`rpp/ops.py:23-27`) and the stdout cap is 1 MiB (`rpp/ops.py:30`). stdin is a list of agent process names, one per line (`reads.py:62-64`, `op_observe` at `reads.py:131`). It takes a shared name lock and lists the city's records for that session (`reads.py:134-137`). It prints one JSON `ObserveAnswer` (`rpp/wire.py:162-182`): `absent` (no record, or city stopped), `unknown` (lock timeout or core unreachable), `dead` (box not intact), or `running` with box object, agent state, agent pid and identity (`reads.py:138-158`). It always exits 0 with an answer. It belongs to the `observe.v1` capability, which the handshake declares (`handshake.py:3`). The comment at `rpp/ops.py:28-30` cites a gc `exec/observe.go` probe timeout; no such file exists in gc 1.5.1, so the 4 s is herdr-local. Verified in gc 1.5.1: `observe` is never sent, and its own `Observe` is a Go-side fold of `get-last-activity`, `process-alive` and `is-attached` (`exec/seams.go:229-236`).
 
@@ -973,9 +975,9 @@ docs/REX-CONTRACT.md §9 — remove-meta op row
 
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
-| 1 | op presence | `observe` exits 2 (unknown op) | `observe` returns a JSON state answer | not-implemented | `observe.v1` is outside the RPP v0 baseline; we declare no such capability. |
+| 1 | op presence | under `GCREX_OBSERVE_V1=1`, `observe` returns a JSON state answer; otherwise exit 2 (unknown op) | `observe` returns a JSON state answer | partial | `observe.v1` is outside the RPP v0 baseline, so the token and the op are gated until GCREX-111 retires the switch. |
 
-**Verdict.** not-implemented. `observe` is not one of the 17 RPP v0 rows, so exit 2 (treated as success, forward compatible) is correct and the op is optional. `docs/REX-CONTRACT.md:255-258` states `observe.v1` does not appear in gc 1.5.1 source, so gc 1.5.1 never sends it; exit 2 is never reached in practice. A newer gc that adds an `observe.v1` capability would be the trigger to revisit.
+**Verdict.** partial. `observe` is not one of the 17 RPP v0 rows, so at the default exit 2 (treated as success, forward compatible) stays correct; `docs/REX-CONTRACT.md:255-258` states `observe.v1` does not appear in gc 1.5.1 source, so the default path never reaches it. Under `GCREX_OBSERVE_V1=1` the op answers the edge source (`docs/reference/exec-session-provider.md`, observe.v1 rules 1-13) for `absent`/`unknown`/`dead`/`running` and the identity; agent liveness and `last_activity` remain declared failures.
 
 **Cross-references.**
 GCREX-8 — resolved the capability-naming issue; `observe.v1` is not in the baseline (`docs/REX-CONTRACT.md:438-442`)
@@ -988,9 +990,13 @@ GCREX-19.10 — get-last-activity comparison
 
 ### inventory
 
-**Status** — not implemented
+**Status** — implemented, gated by `GCREX_OBSERVE_V1=1` (GCREX-101)
 
-**Our implementation.** `inventory` is not in the `ops` map (`cmd/gc-runtime-rex/main.go:78-94`) or the `unimplemented` list (`main.go:74-79`). It falls to the unknown-op branch, which prints `unknown operation "inventory"` to stderr and returns `exitUnknown` (2) (`main.go:114-122`). The closest op is `list-running [prefix]` (`main.go:91`, `opListRunning` at `main.go:260-273`), which prints one session name per line and nothing else. It gives no state, agent, attachment, activity, restart flag or identity. It also has no completeness signal.
+**Our implementation.** `inventory` is in the `ops` map under the switch; without it the op is unknown and exits 2, as RPP v0 requires. `Provider.Inventory` (`internal/provider/observe.go`) lists the binding store and returns `{complete, sessions[]}`. Each entry carries the stored object, the state (`running`/`dead` from one Rex liveness probe per session) and the start-config identity read from one sidecar snapshot per session. `dead` entries report `agent:"dead"`, a known fact rather than the running agent state the profile wants. Attachment, activity and restart flags are absent; `last_activity` (RPP-OBSERVE-015) stays declared failing.
+
+`complete` is `true` only when the binding store is a `Lister` and no city pane names a session no binding lists; a pane whose liveness cannot be read (or a pane listing that fails) makes it `false`, and a non-listable store answers `false` with an empty list. That is rule 7: `complete:true` needs proof nothing else holds a name, and the pane label is the only evidence Rex gives.
+
+The closest ungated op stays `list-running [prefix]` (`cmd/gc-runtime-rex/main.go`, `opListRunning`), which prints one session name per line and nothing else.
 
 **herdr-core.** `inventory` is registered with `INVENTORY_STDOUT_CAP` (`ops_table.py:73`), which is 8 MiB (`rpp/ops.py:34`). `op_inventory` (`herdrcore/reads.py:197-224`) lists the city's records and returns `{"complete": bool, "sessions": [...]}` (`rpp/wire.py:247-256`). Each entry has `name`, `state` (running or dead), `box`, `agent`, `attached`, `last_activity`, `restart_requested` and `identity` (`reads.py:227-258`, `rpp/wire.py:200-210`). It reads screens for agents that never reported OSC 7501 (`reads.py:159-195`), and it garbage-collects stale metadata (`reads.py:162-168, 220-223`). A stopped city returns complete and empty. An unreachable core returns incomplete and empty. Unreadable names set `complete=false` (`reads.py:203-218`). `list-running` in herdr uses the same cap and returns only names of intact sessions (`ops_table.py:76`, `reads.py:307-319`).
 
@@ -998,10 +1004,10 @@ GCREX-19.10 — get-last-activity comparison
 
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
-| 1 | op presence | `inventory` exits 2 (`main.go:114-122`) | Returns `{complete, sessions[]}` records (`reads.py:197`) | not-implemented | Not one of the RPP v0 17 rows. Exit 2 is the correct answer for an unknown op. |
-| 2 | bulk state read | `list-running` prints names only (`main.go:260`) | One call returns state, attachment, activity and identity per session | not-implemented | gc 1.5.1 uses per-session `is-attached`, `get-last-activity`, `process-alive` and `get-meta` instead (`exec/seams.go:229-236`). |
+| 1 | op presence | under `GCREX_OBSERVE_V1=1`, returns `{complete, sessions[]}`; otherwise exit 2 | Returns `{complete, sessions[]}` records (`reads.py:197`) | partial | Not one of the RPP v0 17 rows; the token and the op are gated behind `GCREX_OBSERVE_V1=1` until GCREX-111. |
+| 2 | bulk state read | gated: one call returns state and identity per session; no attachment, activity or restart flag | One call returns state, attachment, activity and identity per session | partial | gc 1.5.1 uses per-session `is-attached`, `get-last-activity`, `process-alive` and `get-meta` instead (`exec/seams.go:229-236`). Attachment and activity are RPP-OBSERVE-007/-015. |
 
-**Verdict.** `not-implemented`. `inventory` is an optional extension in the `exec:` provider operation list (`docs/research/rex-session-provider.md:129-133`) and is not in RPP v0 or the 1.5.1 baseline (`docs/REX-CONTRACT.md` §9). herdr-core's handshake advertises `observe.v1` and `carrier.ops` (`handshake.py:34-41`), and `inventory` belongs to that set. Verified in gc 1.5.1: `inventory` is never sent, and there is no capability token for it. gc's "runtime inventory" in `gc stop` is `list-running` with completeness inferred from the error (`cmd/gc/cmd_stop.go:627-646`), and per-session state comes from `is-attached`, `get-last-activity`, `process-alive` and `get-meta` (`exec/seams.go`). Exit 2 is moot.
+**Verdict.** partial. `inventory` is an optional extension in the `exec:` provider operation list (`docs/research/rex-session-provider.md:129-133`) and is not in RPP v0 or the 1.5.1 baseline (`docs/REX-CONTRACT.md` §9). herdr-core's handshake advertises `observe.v1` and `carrier.ops` (`handshake.py:34-41`), and `inventory` belongs to that set. Verified in gc 1.5.1: `inventory` is never sent, and there is no capability token for it. gc's "runtime inventory" in `gc stop` is `list-running` with completeness inferred from the error (`cmd/gc/cmd_stop.go:627-646`), and per-session state comes from `is-attached`, `get-last-activity`, `process-alive` and `get-meta` (`exec/seams.go`). Exit 2 is moot.
 
 **Cross-references.**
 
@@ -1010,15 +1016,20 @@ GCREX-19.1 — handshake; without `observe.v1` gc should not expect `inventory`
 
 **Follow-ups.**
 
-- No action: gc 1.5.1 never sends `inventory` (verified).
-- Keep exit 2. Revisit only if a future gc version needs it and the contract adds a capability for it. (gap)
+- Default path: no action: gc 1.5.1 never sends `inventory` (verified), so exit 2 stays.
+- Gated by `GCREX_OBSERVE_V1=1` (GCREX-101). RPP-OBSERVE-007 (completeness at scale) and -015 (`last_activity`) stay declared failing.
+
+**Cross-references (implementation).**
+GCREX-101 — the gated tracer: handshake token, `observe`, `inventory`, `kill-object`
 
 
 ### kill-object
 
-**Status** — not implemented
+**Status** — implemented, gated by `GCREX_OBSERVE_V1=1` (GCREX-101)
 
-**Our implementation.** No `kill-object` entry in the `ops` map (`cmd/gc-runtime-rex/main.go:81-97`) and no entry in `unimplemented` (`cmd/gc-runtime-rex/main.go:74-79`). Any unrecognized op exits 2 (`main.go:72-73`, `main.go:120`), and per RPP v0 exit 2 means unknown operation, treated as success by gc for non-start ops. Nothing is read from stdin and nothing is killed. Closest offering is `stop` (`internal/provider/provider.go:380-405`, `stop` at `:387-405`), which closes the agent's pane via `p.client.CloseBlock` and clears start identity. It does not kill the process tree and does not take a stdin object.
+**Our implementation.** `kill-object` is in the `ops` map under the switch; without it the op is unknown and exits 2, and per RPP v0 gc treats that as success. `opKillObject` decodes `{object:{id,created}, mode}` and calls `Provider.KillObject` (`internal/provider/observe.go`). It rejects a missing object id or created, and any `mode` other than `corpse` or `zombie`. The whole check-then-kill runs under the name lock. It never kills by name: no binding, or an id/created mismatch, answers `gone`. `corpse` mode kills only a box nothing runs in and answers `live` when the pane is alive, so gc's believe-dead-then-recheck kill cannot destroy a box that came back. `zombie` mode takes the same re-check but answers `changed` without killing, because the agent-revival check it needs is RPP-OBSERVE-006 and not implemented. A killed box is removed with the same close `stop` uses (`p.stop` under the state lock), so the binding, meta and identity are cleared and the record does not linger for gc's recycle loop.
+
+Rex has no process-tree kill, so the kill is the pane close `stop` performs (the `stop` row's survivor handling applies).
 
 **herdr-core.** `op_kill_object` (`/tmp/gascity-packs/runtime-herdr-core/assets/gc_runtime_herdr_core/herdrcore/lifecycle.py:542-557`) is registered in `ops_table.py:71` with `stdin=True`. It parses stdin via `parse_kill_object_request` (`rpp/wire.py:276-287`) into `{"object": {"id", "created"}, "mode": "corpse"|"zombie", "agent_pid"?}`; invalid input is an op error. Under `ctx.name_lock(name, shared=False)` it calls `_kill_object` (`lifecycle.py:560-592`), which re-checks that the box still exists with the same `created` and session label, then: in `corpse` mode it refuses if the box is intact or attached (`"live"`); in `zombie` mode it kills only on a definite `dead` state and refuses if intact, attached or unreadable (`"changed"`). Kill is `kill_incarnation` (TERM then KILL over the whole process tree, `lifecycle.py:67-80` module doc), then `forget`. Answers are `KillOutcome` scalars `killed|gone|renamed|live|changed` (`rpp/wire.py:138`). Documented in `README.md:188` (`kill-object corpse` removes a dead box) and `README.md:356`. Tests: `tests/unit/test_herdrcore_lifecycle.py`, `test_herdrcore_treekill.py`.
 
@@ -1026,9 +1037,9 @@ GCREX-19.1 — handshake; without `observe.v1` gc should not expect `inventory`
 
 | # | Aspect | Rex provider | herdr-core | Verdict | Rationale |
 |---|---|---|---|---|---|
-| 1 | op presence | exit 2, unknown op (`main.go:120`) | implemented, stdin-driven (`ops_table.py:71`) | not-implemented | Not one of the 17 RPP v0 rows; herdr-core extra. |
+| 1 | op presence | under `GCREX_OBSERVE_V1=1`, implemented and stdin-driven; otherwise exit 2 | implemented, stdin-driven (`ops_table.py:71`) | partial | Not one of the 17 RPP v0 rows; extra. `zombie` mode never kills until RPP-OBSERVE-006 (agent liveness) exists. |
 
-**Verdict.** `not-implemented`. Exit 2 is the correct RPP v0 response for an op outside the baseline table, so no contract breach. Verified in gc 1.5.1: no `kill-object` op, method or capability appears anywhere in the tree (whole-tree search, zero hits), so the gap is inert. The only mention in our repo is the escape-hatch list in `docs/research/rex-session-provider.md:129-133`.
+**Verdict.** partial. At the default, exit 2 is the correct RPP v0 response for an op outside the baseline table, so no contract breach. Verified in gc 1.5.1: no `kill-object` op, method or capability appears anywhere in the tree (whole-tree search, zero hits), so the gap is inert. The only mention in our repo is the escape-hatch list in `docs/research/rex-session-provider.md:129-133`.
 
 **Cross-references.**
 GCREX-2 — stop semantics, the closest offered behavior (`stop`).
@@ -1036,7 +1047,9 @@ GCREX-2 — stop semantics, the closest offered behavior (`stop`).
 `docs/research/rex-session-provider.md:133` — lists `kill-object` among exec operations.
 
 **Follow-ups.**
-- No action: gc 1.5.1 never sends `kill-object` (verified). Revisit only if a future gc adds it.
+- Default path: no action: gc 1.5.1 never sends `kill-object` (verified).
+- Gated by `GCREX_OBSERVE_V1=1` (GCREX-101). `zombie`-mode killing waits on RPP-OBSERVE-006.
+- Note: the implementation summary's RPP-OBSERVE-010 row stays failing; corpse mode now kills a dead box rather than answering `gone`.
 
 
 ### server-stop

@@ -134,3 +134,35 @@ func TestSetMetaReturnsWriteError(t *testing.T) {
 		t.Error("SetMeta = nil, want write error")
 	}
 }
+
+// TestFileMetaSnapshotReadsEveryKey proves the file store's one-pass identity
+// read returns every key of one session and no other session's.
+func TestFileMetaSnapshotReadsEveryKey(t *testing.T) {
+	ctx := context.Background()
+	file := filepath.Join(t.TempDir(), "meta")
+	bs := provider.NewMemoryStore()
+	for _, n := range []string{"a", "b"} {
+		bs.Save(provider.Binding{Name: provider.SessionName(n), SessionID: "session:stale", BlockID: "block:stale"})
+	}
+	p := provider.New("acme", faketest.New(), provider.WithBindingStore(bs),
+		provider.WithMetaStore(provider.NewFileMetaStore(file)))
+	for key, value := range map[string]string{"GC_SESSION_ID": "sid-a", "GC_INSTANCE_TOKEN": "tok-a"} {
+		if err := p.SetMeta(ctx, "a", key, value); err != nil {
+			t.Fatalf("SetMeta %s: %v", key, err)
+		}
+	}
+	if err := p.SetMeta(ctx, "b", "GC_SESSION_ID", "sid-b"); err != nil {
+		t.Fatalf("SetMeta b: %v", err)
+	}
+
+	snap := provider.NewFileMetaStore(file).Snapshot("a")
+	want := map[string]string{"GC_SESSION_ID": "sid-a", "GC_INSTANCE_TOKEN": "tok-a"}
+	if len(snap) != len(want) {
+		t.Fatalf("snapshot = %v, want exactly %v", snap, want)
+	}
+	for key, value := range want {
+		if snap[key] != value {
+			t.Errorf("snapshot[%s] = %q, want %q", key, snap[key], value)
+		}
+	}
+}

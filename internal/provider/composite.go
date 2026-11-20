@@ -98,6 +98,24 @@ func newCompositeActivityStore(stores ...Store[SessionName, ActivityRecord]) *co
 	return newCompositeStore(stores...)
 }
 
+// Snapshot merges every namespace that can snapshot, canonical first so the
+// first hit wins, as Read does.
+func (c *compositeMetaStore) Snapshot(name SessionName) map[string]string {
+	out := map[string]string{}
+	for _, s := range c.stores {
+		snap, ok := s.(snapshotter)
+		if !ok {
+			continue
+		}
+		for k, v := range snap.Snapshot(name) {
+			if _, seen := out[k]; !seen {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}
+
 // Clear removes every key for name from every namespace.
 func (c *compositeMetaStore) Clear(name SessionName) error {
 	var errs []error

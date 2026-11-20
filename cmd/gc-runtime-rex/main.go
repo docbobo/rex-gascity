@@ -404,7 +404,9 @@ func opStop(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 // names; the provider reads the name's own process list, so the input is
 // drained and ignored.
 func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
-	if _, err := io.Copy(io.Discard, stdin); err != nil {
+	// gc writes a few process names and closes the pipe; the bound only stops a
+	// runaway writer from holding the op open.
+	if _, err := io.Copy(io.Discard, io.LimitReader(stdin, 64<<10)); err != nil {
 		return fmt.Errorf("read process names: %w", err)
 	}
 	ans, err := p.Observe(ctx, args[0], nil)

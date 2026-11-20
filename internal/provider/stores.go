@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -51,6 +52,14 @@ type Lister[V any] interface {
 // every key of one session in one call.
 type clearer interface {
 	Clear(name SessionName) error
+}
+
+// snapshotter is the optional per-session bulk read of the metadata store: it
+// returns every key of one session in one pass. The file store keeps one file
+// per key under the session's directory, so a snapshot is one directory listing
+// instead of one read per key.
+type snapshotter interface {
+	Snapshot(name SessionName) map[string]string
 }
 
 // memTable is the one in-memory table behind every memory store: a mutex
@@ -260,6 +269,19 @@ func (s *memoryMetaStore) Clear(name SessionName) error {
 	return nil
 }
 
+// Snapshot returns every key stored for name.
+func (s *memoryMetaStore) Snapshot(name SessionName) map[string]string {
+	out := map[string]string{}
+	s.t.mu.RLock()
+	defer s.t.mu.RUnlock()
+	for k, v := range s.t.m {
+		if k.name == name {
+			out[k.key] = v
+		}
+	}
+	return out
+}
+
 // metaEntry is the on-disk shape of one metadata key.
 type metaEntry struct {
 	Key string `json:"key"`
@@ -328,4 +350,25 @@ func (s *fileMetaStore) Delete(name SessionName, key string) error {
 // file, so removing it drops the whole sidecar. A missing directory is success.
 func (s *fileMetaStore) Clear(name SessionName) error {
 	return s.t.removeAll(filepath.Join(s.t.dir, nameKey(name)))
+}
+
+// Snapshot reads every key file of name in one directory pass. Unreadable or
+// corrupt entries are skipped, as a per-key read would report them.
+func (s *fileMetaStore) Snapshot(name SessionName) map[string]string {
+	dir := filepath.Join(s.t.dir, nameKey(name))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, entry := range entries {
+		var r metaEntry
+		if ok, err := readJSON(filepath.Join(dir, entry.Name()), &r); err != nil || !ok || r.ValueB64 == nil {
+			continue
+		}
+		if v, err := decodeMetaEntry(r); err == nil {
+			out[r.Key] = v
+		}
+	}
+	return out
 }

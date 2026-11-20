@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -84,11 +85,23 @@ func observeCreated(t time.Time) string {
 }
 
 // observeIdentity reads the start-config identity the provider seeded into the
-// meta sidecar before the launch. It returns nil when the sidecar has none.
+// meta sidecar before the launch. It returns nil when the sidecar has none. The
+// sidecar holds one file per key, so the whole identity is one snapshot of the
+// session's sidecar rather than one read per key.
 func (p *Provider) observeIdentity(n SessionName) map[string]string {
+	all := map[string]string{}
+	if snap, ok := p.meta.(snapshotter); ok {
+		all = snap.Snapshot(n)
+	} else {
+		for _, key := range startIdentityMetaKeys {
+			if v, ok, _ := p.metaGet(n, key); ok {
+				all[key] = v
+			}
+		}
+	}
 	var id map[string]string
 	for _, key := range startIdentityMetaKeys {
-		if v, ok, _ := p.metaGet(n, key); ok && v != "" {
+		if v := all[key]; v != "" {
 			if id == nil {
 				id = map[string]string{}
 			}
@@ -137,33 +150,135 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 }
 
 // Inventory snapshots every session the provider tracks for the city. It is a
-// read: no meta is written and no session changes. A session whose attributes
-// cannot be read carries only its name.
-func (p *Provider) Inventory(_ context.Context) (InventoryAnswer, error) {
+// read: no meta is written and no session changes. Each entry carries the state
+// and identity observe would report for it, so gc need not observe every box.
+//
+// A box whose liveness cannot be read is listed with no state and the answer
+// claims no completeness, because a backend fault proves nothing absent. So
+// does a pane under a city label that names a session no binding holds.
+//
+// ponytail: one Rex block-process call per session, since Rex has no bulk
+// liveness query. Move to a bulk query (or a trusted last_exit cache) if a city
+// grows past the inventory call's time budget.
+func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 	lister, ok := p.bindings.(Lister[Binding])
 	if !ok {
-		return InventoryAnswer{Complete: true, Sessions: []InventoryEntry{}}, nil
+		return InventoryAnswer{Complete: false, Sessions: []InventoryEntry{}}, nil
 	}
 	bds := lister.List()
+	complete := true
+	listed := make(map[SessionName]bool, len(bds))
 	sessions := make([]InventoryEntry, 0, len(bds))
 	for _, bd := range bds {
 		obj := observeObjectFor(bd)
-		sessions = append(sessions, InventoryEntry{
+		e := InventoryEntry{
 			Name:     string(bd.Name),
 			Object:   &obj,
 			Identity: p.observeIdentity(bd.Name),
-		})
+		}
+		alive, err := p.paneAlive(ctx, bd)
+		switch {
+		case errors.Is(err, rex.ErrUnavailable):
+			complete = false
+		case err != nil:
+			return InventoryAnswer{}, err
+		case alive:
+			e.State = ObserveRunning
+		default:
+			e.State = ObserveDead
+			e.Agent = "dead"
+		}
+		listed[bd.Name] = true
+		sessions = append(sessions, e)
 	}
-	return InventoryAnswer{Complete: true, Sessions: sessions}, nil
+	panes, err := p.cityPanes(ctx)
+	if err != nil {
+		complete = false
+	}
+	for name := range panes {
+		if !listed[name] {
+			complete = false
+		}
+	}
+	return InventoryAnswer{Complete: complete, Sessions: sessions}, nil
+}
+
+// cityPanes returns the session names this city's panes name in their Rex
+// labels, so Inventory can tell a pane no binding lists from the boxes it
+// enumerates. A label without the "<agent> (<name>)" suffix names no session
+// and is left to whatever else shares the city session (an operator's shell).
+func (p *Provider) cityPanes(ctx context.Context) (map[SessionName]bool, error) {
+	sessions, err := p.client.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := map[SessionName]bool{}
+	for _, s := range sessions {
+		if !p.binder.acceptsLabel(s.Label) {
+			continue
+		}
+		view, err := p.client.SessionView(ctx, s.ID)
+		if errors.Is(err, rex.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range view.Windows {
+			for _, blk := range w.Blocks {
+				if n, ok := paneSessionName(blk.Label); ok {
+					names[n] = true
+				}
+			}
+		}
+	}
+	return names, nil
+}
+
+// paneSessionName recovers the session name from a "<agent> (<name>)" pane
+// label. A label without that suffix names no session.
+func paneSessionName(label string) (SessionName, bool) {
+	i := strings.LastIndex(label, " (")
+	if i < 0 || !strings.HasSuffix(label, ")") {
+		return "", false
+	}
+	name := strings.TrimSpace(label[i+2 : len(label)-1])
+	if name == "" {
+		return "", false
+	}
+	return SessionName(name), true
 }
 
 // KillObject re-checks that the exact object still holds the name and, if so,
 // kills it. It never kills by name: an object that names no box, or whose id
 // or creation time does not match the stored binding, answers `gone`.
+//
+// The whole check-then-kill runs under the name lock, so a start cannot slip a
+// new box under the name between the re-check and the close. Corpse mode kills
+// only a box nothing runs in and answers `live` otherwise. Zombie mode needs
+// the agent check RPP-OBSERVE-006 does not implement yet, so it never kills and
+// answers `changed`.
 func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRequest) (string, error) {
 	if strings.TrimSpace(req.Object.ID) == "" || strings.TrimSpace(req.Object.Created) == "" {
 		return "", errors.New("kill-object: object id and created are required")
 	}
+	if req.Mode != "corpse" && req.Mode != "zombie" {
+		return "", fmt.Errorf("kill-object: mode %q, want corpse or zombie", req.Mode)
+	}
+	var res string
+	err := p.withNameLock(ctx, SessionName(name), func() error {
+		var err error
+		res, err = p.killObjectLocked(ctx, name, req)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return res, nil
+}
+
+// killObjectLocked is KillObject's re-check and kill, run under the name lock.
+func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillObjectRequest) (string, error) {
 	bd, ok := p.Binding(name)
 	if !ok {
 		return "gone", nil
@@ -172,17 +287,19 @@ func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRe
 	if req.Object.ID != obj.ID || req.Object.Created != obj.Created {
 		return "gone", nil
 	}
+	if req.Mode == "zombie" {
+		return "changed", nil
+	}
 	alive, err := p.paneAlive(ctx, bd)
 	if err != nil {
-		if errors.Is(err, rex.ErrUnavailable) {
-			return "", err
-		}
 		return "", err
 	}
-	if !alive {
-		return "gone", nil
+	if alive {
+		return "live", nil
 	}
-	if err := p.Stop(ctx, name); err != nil {
+	// Same locking as Stop, which this close is: the name lock is already
+	// held, so only the city-wide state lock is taken here.
+	if err := p.withStateLock(ctx, func() error { return p.stop(ctx, name) }); err != nil {
 		return "", err
 	}
 	return "killed", nil
