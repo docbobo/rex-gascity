@@ -645,8 +645,10 @@ under a supervisor stays open; server-restart recovery was not exercised live
 - **Liveness is `last_exit`, deliberately (GCREX-4).** A live probe showed Rex runs a launched command as the default shell with `argv0` set to the command (`/bin/sh` arrives as `name: bash`, `path: /bin/bash`, `argv0: /bin/sh`), so argv0/process-name heuristics misclassify live panes and made a live input test fail as "agent exited". v1 therefore treats `last_exit` as the liveness truth for `IsRunning` and the input ops, and exposes `ProcessAlive(names)` (strict foreground/ancestor matching, empty => alive) for the RPP `process-alive` op where gc supplies authoritative names.
 - **Shared server.** Hard rule: never `server.stop`. Provider teardown closes
   city-owned blocks (`block.close`) and leaves the city session even when empty
-  (GCREX-65, `docs/REX-CONTRACT.md` §12). In the pilot, `gc stop` removed the
-  city's Rex session through an unidentified path; the server was never restarted.
+  (GCREX-65, `docs/REX-CONTRACT.md` §12). This is the provider-level guarantee
+  only: in the pilot, `gc stop` removed the city's Rex session through a path we
+  did not identify, so treat `gc stop`'s session behaviour as unresolved until
+  that path is found and tested.
 
 ---
 

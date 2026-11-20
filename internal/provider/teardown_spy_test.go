@@ -9,24 +9,13 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
-// spyFake records any destroy Stop attempts, so the SPEC-3 regression can
-// assert zero DestroySession calls rather than only that the fake's session
-// list is unchanged.
-type spyFake struct {
-	*faketest.Fake
-	destroyed []rex.SessionID
-}
-
-func (s *spyFake) DestroySession(ctx context.Context, sid rex.SessionID) error {
-	s.destroyed = append(s.destroyed, sid)
-	return nil
-}
-
-// TestStopCallsNoDestroy is the SPEC-3 regression: the live probe
+// TestStopKeepsCitySession is the SPEC-3 regression: the live probe
 // (docs/REX-CONTRACT.md §12) lists a server-wide Rex app client on every
-// session, so the approved skip branch applies and neither Stop path may call
-// session.destroy. Red on both paths when the calls are restored.
-func TestStopCallsNoDestroy(t *testing.T) {
+// session, so the approved skip branch applies and neither Stop path may
+// destroy the city session. rex.Client has no session-destroy op, so the
+// observable boundary is the post-condition: the session Start created is
+// still listed with the same ID after Stop, with and without a pane.
+func TestStopKeepsCitySession(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		kind   string
@@ -39,8 +28,7 @@ func TestStopCallsNoDestroy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := faketest.New()
-			spy := &spyFake{Fake: fake}
-			p := provider.New("acme", spy)
+			p := provider.New("acme", fake)
 			teardownStart(t, p, teardownDog)
 			fake.Clients = []rex.ClientInfo{{ID: "client:1", Kind: tc.kind}}
 			if tc.noPane {
@@ -49,9 +37,12 @@ func TestStopCallsNoDestroy(t *testing.T) {
 			if err := p.Stop(context.Background(), teardownDog); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
-			if len(spy.destroyed) != 0 {
-				t.Errorf("destroyed = %v, want zero DestroySession calls", spy.destroyed)
+			for _, s := range fake.Sessions {
+				if s.ID == "session:gc:acme" {
+					return
+				}
 			}
+			t.Errorf("sessions = %v, want gc:acme left in place after Stop", fake.Sessions)
 		})
 	}
 }
