@@ -34,6 +34,10 @@ type Binding struct {
 	LaunchMode string
 	// CreatedAt is when the pane was started; zero when unknown.
 	CreatedAt time.Time
+	// Adopted marks a record whose pane this provider did not start: a
+	// restored or operator-made pane that answered to the name. Its sidecar
+	// identity belongs to a retired incarnation, so Observe answers {} for it.
+	Adopted bool
 	// GCBin is the basename of the GC_BIN binary the agent was launched with,
 	// when the start config carried one. gc's configured process_names hint for
 	// the control dispatcher is "gc", but a wrapped gc runs as e.g.
@@ -457,14 +461,49 @@ func (b *Binder) find(ctx context.Context, name SessionName, hint Binding, legac
 }
 
 func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string, save bool) (Binding, bool, error) {
-	sid, ok, err := b.FindSession(ctx)
-	if err != nil || !ok {
-		return Binding{}, false, err
-	}
-	view, err := b.client.SessionView(ctx, sid)
+	// Search every accepted namespace, canonical first: a pane that exists only
+	// in a legacy session must still be found, and the canonical session not
+	// holding it is not evidence the city does not (CodeRabbit fix).
+	sessions, err := b.acceptedSessions(ctx)
 	if err != nil {
 		return Binding{}, false, err
 	}
+	for _, sess := range sessions {
+		view, err := b.client.SessionView(ctx, sess.ID)
+		if errors.Is(err, rex.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return Binding{}, false, err
+		}
+		if bd, ok := b.scanView(name, hint, legacy, legacyPanes, save, sess.ID, view); ok {
+			return bd, true, nil
+		}
+	}
+	return Binding{}, false, nil
+}
+
+// acceptedSessions lists the city's sessions in preference order: canonical
+// first, then every other accepted namespace.
+func (b *Binder) acceptedSessions(ctx context.Context) ([]rex.Session, error) {
+	sessions, err := b.client.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []rex.Session
+	for _, label := range b.sessionLabels {
+		for _, s := range sessions {
+			if s.Label == label {
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// scanView is scanWith's search of one session's view.
+func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []string, save bool, sid rex.SessionID, view rex.SessionView) (Binding, bool) {
 	primary := hint.TabLabel
 	if primary == "" {
 		primary = tabLabel(name, nil, b.townTab)
@@ -508,7 +547,7 @@ func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, l
 		}
 		return false
 	}
-	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool, error) {
+	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool) {
 		bd := Binding{
 			Name:         name,
 			SessionID:    sid,
@@ -525,10 +564,20 @@ func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, l
 			WorkDir:    hint.WorkDir,
 		}
 		if save {
-			bd.CreatedAt = hint.CreatedAt
+			if hint.BlockID != "" && hint.BlockID != blk.ID {
+				// Adopted: a pane this provider did not start. The retired
+				// record's creation time and identity are not its, so keep the
+				// creation time unknown and mark it adopted; a later Observe
+				// then reports the same `created` the read-only scan did.
+				bd.CreatedAt = time.Time{}
+				bd.Adopted = true
+			} else {
+				bd.CreatedAt = hint.CreatedAt
+				bd.Adopted = hint.Adopted
+			}
 			_ = b.store.Write(bd.Name, bd)
 		}
-		return bd, true, nil
+		return bd, true
 	}
 	// Most specific first, so scan order never decides which pane a tab
 	// yields: a suffix-labelled pane names this session outright, while a
@@ -567,7 +616,7 @@ func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, l
 			}
 		}
 	}
-	return Binding{}, false, nil
+	return Binding{}, false
 }
 
 // Record stores binding, replacing any earlier one for the same name.

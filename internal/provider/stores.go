@@ -366,6 +366,11 @@ func (s *fileMetaStore) Snapshot(name SessionName) map[string]string {
 		if ok, err := readJSON(filepath.Join(dir, entry.Name()), &r); err != nil || !ok || r.ValueB64 == nil {
 			continue
 		}
+		// Only the file Get reads for this key counts: a `.tmp-*` residue from
+		// a crashed writeJSON is not the key's entry, and Get would not see it.
+		if filepath.Base(s.path(name, r.Key)) != entry.Name() {
+			continue
+		}
 		if v, err := decodeMetaEntry(r); err == nil {
 			out[r.Key] = v
 		}

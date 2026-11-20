@@ -98,20 +98,28 @@ func newCompositeActivityStore(stores ...Store[SessionName, ActivityRecord]) *co
 	return newCompositeStore(stores...)
 }
 
-// Snapshot merges every namespace that can snapshot, canonical first so the
-// first hit wins, as Read does.
+// Snapshot lists the keys every namespace that can snapshot holds, then reads
+// each through Read. That keeps Read's rule — an unreadable canonical entry is
+// an error, not an absence — so a legacy namespace's old value can never be
+// substituted for the primary's corrupt one.
 func (c *compositeMetaStore) Snapshot(name SessionName) map[string]string {
-	out := map[string]string{}
+	keys := map[string]bool{}
 	for _, s := range c.stores {
 		snap, ok := s.(snapshotter)
 		if !ok {
 			continue
 		}
-		for k, v := range snap.Snapshot(name) {
-			if _, seen := out[k]; !seen {
-				out[k] = v
-			}
+		for k := range snap.Snapshot(name) {
+			keys[k] = true
 		}
+	}
+	out := map[string]string{}
+	for k := range keys {
+		v, ok, err := c.Read(metaKey{name, k})
+		if err != nil || !ok {
+			continue
+		}
+		out[k] = v
 	}
 	return out
 }

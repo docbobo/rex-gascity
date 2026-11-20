@@ -781,8 +781,19 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		// the identity seed a failed or rolled-back start may have written.
 		return p.clearIncarnations(n, stored.Name)
 	}
-	return p.stopBinding(ctx, n, binding)
+	err = p.stopBinding(ctx, n, binding)
+	if errors.Is(err, errBlockGone) {
+		// Stop stays idempotent: the pane was already closed by another client,
+		// and the cleanup above has finished the retirement.
+		return nil
+	}
+	return err
 }
+
+// errBlockGone reports that the exact block was already closed when the close
+// was attempted. stopBinding returns it after finishing the retirement, so Stop
+// can stay idempotent while kill-object answers `gone` instead of `killed`.
+var errBlockGone = errors.New("block already closed")
 
 // stopBinding closes one exact binding: the drain diagnostic, the close, the
 // re-read, the reap and the record cleanup. stop resolves a name to a binding
@@ -804,6 +815,7 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
 		return closeErr
 	}
+	alreadyClosed := errors.Is(closeErr, rex.ErrNotFound)
 	// The close is not proof that the tree is gone either: a process the pane
 	// spawned after the snapshot, or one Rex only reports now, would otherwise
 	// pass unreaped. Re-read the pane and union what it still reports. A closed
@@ -824,6 +836,9 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 		return err
 	}
 	p.binder.Forget(binding.Name)
+	if alreadyClosed {
+		return errBlockGone
+	}
 	return nil
 }
 

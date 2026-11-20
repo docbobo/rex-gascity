@@ -812,3 +812,35 @@ func readStartupTiming(t *testing.T, stateDir, name string) map[string]any {
 	}
 	return got
 }
+
+// TestStartGatesProcessNamesOnObserveV1 is the CodeRabbit fix for identity.go:
+// GT_PROCESS_NAMES is observe.v1 metadata, so flag-off Start must leave it
+// unset (and cleanup must not have to delete it) while flag-on still seeds it.
+func TestStartGatesProcessNamesOnObserveV1(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		flag string
+		want string
+	}{
+		{flag: "", want: ""},
+		{flag: "1", want: "pi|node"},
+	} {
+		t.Run("flag="+tc.flag, func(t *testing.T) {
+			t.Setenv("GCREX_OBSERVE_V1", tc.flag)
+			p := provider.New("acme", faketest.New())
+			env := identityEnv()
+			env["GT_PROCESS_NAMES"] = "pi|node"
+			const name = "pi-mc-wisp-abc"
+			if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			got, err := p.GetMeta(ctx, name, "GT_PROCESS_NAMES")
+			if err != nil {
+				t.Fatalf("GetMeta: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("GT_PROCESS_NAMES = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

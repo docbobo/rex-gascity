@@ -61,13 +61,15 @@ func (p *Provider) attached(ctx context.Context, binding Binding) (bool, error) 
 	if err != nil {
 		return false, err
 	}
+	// The pane may have moved since the binding recorded its window; attachment
+	// is about where the block is shown now, so read the live location.
+	window, present := blockWindow(view, binding.BlockID)
+	if !present {
+		return false, nil
+	}
 	owner := blockOwner(view, binding.BlockID)
 	if owner == "" {
 		return false, nil
-	}
-	clients, err := p.client.ListClients(ctx, binding.SessionID)
-	if err != nil {
-		return false, err
 	}
 	kind, found := "", false
 	for _, c := range clients {
@@ -85,7 +87,17 @@ func (p *Provider) attached(ctx context.Context, binding Binding) (bool, error) 
 	default:
 		return true, nil
 	}
-	return watchesAgent(view, binding), nil
+	return window == view.ActiveWindowID, nil
+}
+
+// blockWindow returns the window currently holding blockID.
+func blockWindow(view rex.SessionView, blockID rex.BlockID) (rex.WindowID, bool) {
+	for _, w := range view.Windows {
+		if slices.ContainsFunc(w.Blocks, func(b rex.Block) bool { return b.ID == blockID }) {
+			return w.ID, true
+		}
+	}
+	return "", false
 }
 
 // blockOwner returns the client the block is displayed for, empty when the view

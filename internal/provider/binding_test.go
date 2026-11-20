@@ -347,8 +347,14 @@ func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
 	if got.WorkDir != stale.WorkDir || got.GCBin != stale.GCBin ||
-		got.LaunchMode != stale.LaunchMode || !got.CreatedAt.Equal(stale.CreatedAt) {
+		got.LaunchMode != stale.LaunchMode {
 		t.Errorf("rebuilt binding lost hint fields: %+v", got)
+	}
+	// The stale record's creation time is not the replacement pane's: an
+	// adopted pane reports its own (unknown) creation, so Observe keeps
+	// answering the same `created` a read-only scan did (CodeRabbit fix).
+	if !got.CreatedAt.IsZero() || !got.Adopted {
+		t.Errorf("rebuilt binding kept the retired box's creation: %+v", got)
 	}
 	if saved, _ := store.Load("Indigo--dog-1"); saved.WorkDir != stale.WorkDir {
 		t.Errorf("saved WorkDir = %q, want %q", saved.WorkDir, stale.WorkDir)
@@ -515,5 +521,28 @@ func TestBinderLiveSkipsOtherNameRecord(t *testing.T) {
 
 	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || err != nil {
 		t.Fatalf("Live = %v, %v", ok, err)
+	}
+}
+
+// TestScanFindsPaneInLegacySession is the CodeRabbit fix for binding.go: the
+// canonical session exists, but the replacement pane lives only in a legacy
+// accepted session. Absence from the canonical session is not absence.
+func TestScanFindsPaneInLegacySession(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{
+		{ID: "session:acme", Label: testLabel},
+		{ID: "session:legacy", Label: "gc:legacy"},
+	}
+	fake.Views = map[rex.SessionID]rex.SessionView{
+		"session:acme":   {Label: testLabel},
+		"session:legacy": {Label: "gc:legacy", Windows: []rex.Window{indigoWindow()}},
+	}
+	b := NewBinderWithLabels(fake, NewMemoryStore(), []string{testLabel, "gc:legacy"}, testTown)
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
+	if err != nil || !ok {
+		t.Fatalf("Resolve = %+v, %v, %v; want the legacy session's pane", got, ok, err)
+	}
+	if got.BlockID != "block:dog-1" || got.SessionID != "session:legacy" {
+		t.Errorf("Resolve = %+v, want block:dog-1 in session:legacy", got)
 	}
 }

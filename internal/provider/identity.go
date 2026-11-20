@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -24,7 +25,20 @@ var startIdentityMetaKeys = []string{
 	"GC_TEMPLATE",
 	"GC_ALIAS",
 	"GC_PROVIDER",
-	"GT_PROCESS_NAMES",
+}
+
+// observeV1Enabled mirrors the dispatcher's GCREX_OBSERVE_V1 switch. Flag-off
+// Start must leave observe.v1's own metadata unset, as it did before the profile.
+func observeV1Enabled() bool { return os.Getenv("GCREX_OBSERVE_V1") == "1" }
+
+// startMetaKeys is the identity set this process seeds and clears.
+// GT_PROCESS_NAMES only exists for observe.v1's process classification, so it
+// is gated: flag-off Start must not add it or have cleanup delete it.
+func startMetaKeys() []string {
+	if !observeV1Enabled() {
+		return startIdentityMetaKeys
+	}
+	return append(append([]string{}, startIdentityMetaKeys...), "GT_PROCESS_NAMES")
 }
 
 // clearStartIdentity removes the identity keys seeded for a start. It is used
@@ -32,7 +46,7 @@ var startIdentityMetaKeys = []string{
 // GC_SESSION_ID/GC_INSTANCE_TOKEN cannot be read as the current one.
 func (p *Provider) clearStartIdentity(n SessionName) error {
 	var errs []error
-	for _, key := range startIdentityMetaKeys {
+	for _, key := range startMetaKeys() {
 		if err := p.metaDelete(n, key); err != nil {
 			errs = append(errs, err)
 		}
@@ -48,7 +62,7 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 	if err := p.clearStartIdentity(n); err != nil {
 		return err
 	}
-	for _, key := range startIdentityMetaKeys {
+	for _, key := range startMetaKeys() {
 		if v := env[key]; v != "" {
 			if err := p.metaSet(n, key, v); err != nil {
 				return err

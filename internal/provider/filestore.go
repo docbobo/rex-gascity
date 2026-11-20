@@ -209,6 +209,8 @@ type bindingRecord struct {
 	Aliases    []SessionName `json:"aliases,omitempty"`
 	LaunchMode string        `json:"launch_mode"`
 	CreatedAt  time.Time     `json:"created_at"`
+	// Adopted was added after the first records.
+	Adopted bool `json:"adopted,omitempty"`
 	// GCBin, WorkDir and ClaimSessionID were added after the first records.
 	GCBin          string `json:"gc_bin,omitempty"`
 	WorkDir        string `json:"work_dir,omitempty"`

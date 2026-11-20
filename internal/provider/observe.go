@@ -124,9 +124,11 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 	n := SessionName(name)
 	bd, ok := p.Binding(name)
 	if !ok {
-		// No cached record: scan for a live pane under the name's labels.
+		// No cached record: scan for a live pane under the name's labels
+		// without adopting it. Observe is a read, so a discovered pane must
+		// not gain a binding (or inherit a sidecar identity) from an answer.
 		var err error
-		bd, ok, err = p.binder.Resolve(ctx, ResolveRequest{Name: n, Mode: ResolveLive})
+		bd, ok, err = p.binder.find(ctx, n, Binding{}, nil)
 		if err != nil {
 			if errors.Is(err, rex.ErrUnavailable) {
 				return ObserveAnswer{State: ObserveUnknown}, nil
@@ -156,7 +158,7 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 	// Identity is the started incarnation's start config. A pane that took the
 	// name without Start has no gc identity of its own: an empty set, which gc
 	// reads as operator-made, never nil, which it reads as "not yet readable".
-	if holder.BlockID == bd.BlockID {
+	if holder.BlockID == bd.BlockID && !bd.Adopted {
 		ans.Identity = p.observeIdentity(idName)
 	} else {
 		ans.Identity = map[string]string{}
@@ -165,6 +167,18 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 		ans.Agent = "dead"
 	}
 	return ans, nil
+}
+
+// retireStale finishes the cleanup of a record whose block is already gone: the
+// meta sidecar and activity of that incarnation, then the record itself. It
+// never touches Rex, so it cannot disturb a replacement; the caller checked the
+// record still describes the object that was asked about.
+func (p *Provider) retireStale(bd Binding) error {
+	if err := p.clearIncarnations(bd.Name); err != nil {
+		return err
+	}
+	p.binder.Forget(bd.Name)
+	return nil
 }
 
 // boxState reports what holds the name a binding records. Rex proving the
@@ -366,7 +380,15 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	}
 	if state != ObserveDead {
 		// The recorded block is gone or a new box holds the name: the object
-		// names no box, and the exact-binding close has nothing to close.
+		// names no box, and the exact-binding close has nothing to close. If
+		// this record is still ours, finish the retirement a previous
+		// kill-object could not complete (closed the block, then failed
+		// cleanup): a retry must not answer `gone` over stale meta/activity.
+		if state == ObserveAbsent {
+			if err := p.withStateLock(ctx, func() error { return p.retireStale(bd) }); err != nil {
+				return "", err
+			}
+		}
 		return "gone", nil
 	}
 	if holder.BlockID != bd.BlockID || holder.WindowID != bd.WindowID {
@@ -384,7 +406,13 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	// resolve could close a pane that took the name's labels after this one
 	// vanished. Same locking as Stop, which this close is: the name lock is
 	// already held, so only the city-wide state lock is taken here.
-	if err := p.withStateLock(ctx, func() error { return p.stopBinding(ctx, SessionName(name), bd) }); err != nil {
+	err = p.withStateLock(ctx, func() error { return p.stopBinding(ctx, SessionName(name), bd) })
+	if errors.Is(err, errBlockGone) {
+		// Another client closed the pane between the corpse check and the
+		// close; the retirement finished, so this object is gone, not killed.
+		return "gone", nil
+	}
+	if err != nil {
 		return "", err
 	}
 	return "killed", nil

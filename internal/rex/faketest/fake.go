@@ -43,6 +43,8 @@ type Fake struct {
 
 	Sessions []rex.Session
 	View     rex.SessionView
+	// Views, when set, supersedes View per session.
+	Views map[rex.SessionID]rex.SessionView
 
 	// Processes is the process state BlockProcess reports, keyed by block.
 	Processes map[rex.BlockID]rex.ProcessInfo
@@ -210,7 +212,10 @@ func (f *Fake) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionVie
 		return rex.SessionView{}, f.SessionViewErr
 	}
 	v := f.View
-	v.Windows = cloneWindows(f.View.Windows)
+	if sv, ok := f.Views[sid]; ok {
+		v = sv
+	}
+	v.Windows = cloneWindows(v.Windows)
 	v.SessionID = sid
 	if v.Label == "" {
 		for _, s := range f.Sessions {
