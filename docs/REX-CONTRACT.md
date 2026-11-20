@@ -222,42 +222,43 @@ Exit codes — the spec has exactly three:
 Beyond the three spec codes there is herdr-core's **extended input-outcome code
 `80`**: the op prints one `{"outcome":"<word>","detail":"…"}` line on stdout
 and `<word>[: detail]` on stderr, with `<word>` in `not_sent`, `rejected`,
-`unavailable`, `gone`, `busy` or `pending_interaction`. Our provider answers
-`send-keys` whose key has no Rex spelling with exit `80` `rejected` (GCREX-43),
-classifies a missing or dead pane as `80` `gone` and an unreachable server or
-another pre-send failure as `80` `unavailable`/`not_sent` (GCREX-42), but keeps
-the best-effort wrapper while the handshake omits `input-outcome`, so a gone box
-still exits `0` at the pinned baseline (GCREX-70 drops the wrapper); `interrupt`
-with `80` `gone` for a missing or dead pane, `unavailable` when the
-Rex server is unreachable, and `not_sent` for another pre-send failure
-(GCREX-44); and `nudge` with `80` `rejected` for non-UTF-8 stdin,
-`pending_interaction` for a blocked pane, `busy` for a working pane,
-`unavailable` when the server is unreachable, and `not_sent` for a write or
-submit that did not land (GCREX-45). A delivered interrupt stays exit `0`; a
-nudge that reached the pane but whose turn start was not observed exits `0`
-with one `delivered_unobserved` line; and an interrupt send failure that may
-have written the request stays exit `1` (outcome unknown). A nudge to a missing
-or dead pane still exits `0` (best effort), and `nudge`'s live-claim guard stays
-a plain exit `1`. The key grammar and the exit-80 words follow
-`docs/provider-herdr-method-io.md` §send-keys, §interrupt and §nudge. gc 1.5.1
-does not
-declare `input-outcome` and reads exit `80` as a plain error, so the typed word
-has no meaning to it. For `interrupt` that matters: the contract asks for a
-best-effort exit `0` on a gone session (gc
-`docs/reference/exec-session-provider.md:370`), so `opInterrupt` keeps the
-`bestEffort` wrapper and answers a missing or dead pane with exit `0` and empty
-output instead of exit `80` `gone`. gc's `RuntimeHandle.Interrupt` propagates a
-non-zero exit unguarded (gc `internal/worker/runtime_handle.go:243-248`), so the
-typed `gone` would surface as an error there. Declaring `input-outcome` and
-answering typed `gone` is the intended follow-up (GCREX-70).
-`docs/provider-herdr-method-io.md` §interrupt Conflicts #1 records the
-deviation. For `nudge` the exit-80 words
-stay inert at the pinned baseline: gc already read the previous `busy`,
-`blocked` and send failures as exit `1` and the unconfirmed delivery as exit
-`0`, so the typed word and the added `delivered_unobserved` line change nothing
-gc acts on; a nudge to a missing or dead pane is still a best-effort exit `0`
-(`gc docs/reference/exec-session-provider.md:370`), and so is a `send-keys` to a
-gone box under the pinned baseline (GCREX-42).
+`unavailable`, `gone`, `busy` or `pending_interaction`. Our provider declares
+`input-outcome` (with `carrier.ops`, see below), so gc reads the word
+(GCREX-70): `send-keys` answers `80` `rejected` for a key with no Rex spelling
+(GCREX-43) and `80` `gone` for a missing or dead pane (GCREX-42); `interrupt`
+answers `80` `gone` for a missing or dead pane, `unavailable` when the Rex
+server is unreachable, and `not_sent` for another pre-send failure (GCREX-44);
+`clear-scrollback` answers `80` `gone` for a missing or dead pane (GCREX-57);
+and `nudge` answers `80` `rejected` for non-UTF-8 stdin, `pending_interaction`
+for a blocked pane, `busy` for a working pane, `unavailable` when the server is
+unreachable, and `not_sent` for a write or submit that did not land (GCREX-45).
+A delivered interrupt stays exit `0`; a nudge that reached the pane but whose
+turn start was not observed exits `0` with one `delivered_unobserved` line; and
+an interrupt send failure that may have written the request stays exit `1`
+(outcome unknown). `nudge`'s live-claim guard stays a plain exit `1`. The key
+grammar and the exit-80 words follow `docs/provider-herdr-method-io.md`
+§send-keys, §interrupt and §nudge.
+
+gc reads the typed word only when the handshake declares `input-outcome` AND
+`carrier.ops`, and the driving ops carry the input (gc
+`internal/runtime/exec/outcome.go:186-193`, `outcomesRead`); the four words map
+one-to-one to runtime sentinels (gc `internal/runtime/protocol.go:110-175`). The
+gc `1.5.1` baseline has neither token and reads exit `80` as a plain error, so
+there a gone-pane refusal surfaces as a failure instead of the old best-effort
+exit `0`; the installed edge build (`edge-20261118`, source `890a58a3e`) reads
+it typed. Rex therefore needs an input-outcome-aware gc for typed refusals; on
+`1.5.1` a gone-pane `nudge`, `interrupt` or `send-keys` is a hard error, not the
+old exit `0` (gc 1.5.1 `docs/reference/exec-session-provider.md:370`), and
+`clear-scrollback` is unaffected in practice because gc discards its result at
+both reconciler call sites. Declaring `carrier.ops` also activates
+`idle-boundary` on edge: gc's `idleBoundaryDeclared` needs `report-activity`,
+`report-attachment`, `carrier.ops` (or `proc.exec`) and `idle-boundary`
+(`internal/runtime/exec/idle.go:36-40`), so `WaitForIdle`, ready-prompt
+recovery, the idle-proof budget and full idle sleep are live there.
+`gc runtime check` reports `capability carrier.ops: interrupt: typed
+outcome gone` and `capability input-outcome: nudge to an absent name: exit 80
+gone`, and `gc runtime conformance` passes the input group (RPP-INPUT-001/002/
+003/004/008/010/012).
 
 Operations — the spec's 17 rows:
 
@@ -299,14 +300,17 @@ request/response `exec` connection cannot carry a stream.
 Handshake (`protocol` op):
 
 ```json
-{"version": 0, "capabilities": ["report-attachment", "report-activity", "idle-boundary"]}
+{"version": 0, "capabilities": ["report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome"]}
 ```
 
 There is **no `locality` field**. A script that does not implement `protocol`
 (exit 2) is version 0 with no optional capabilities. Unknown capability strings
 are ignored (forward compatibility); malformed handshake JSON is an error. Our
-handshake additionally declares `idle-boundary` for the `idle` op (GCREX-63);
-it is outside the 1.5.1 baseline and gc 1.5.1 ignores it.
+handshake additionally declares `idle-boundary` for the `idle` op (GCREX-63),
+`carrier.ops` for the five ops gc drives when it does not use exec, and
+`input-outcome` for the four driving ops' typed exit 80 (GCREX-70). `idle-boundary`
+is outside the 1.5.1 baseline and gc 1.5.1 ignores it; `carrier.ops` and
+`input-outcome` are consumed by the edge build gc is pinned to.
 
 The pinned baseline has exactly **six** capability strings
 (`internal/runtime/protocol.go`):
@@ -322,12 +326,17 @@ The pinned baseline has exactly **six** capability strings
 
 **Not in the pinned baseline — declare only alongside the behavior it gates.**
 The plan (`docs/plans/native-rex-provider.md`) and the research notes use
-capability names that do not exist in gc 1.5.1, so `gc runtime check` would
-ignore them: `fs.host`, `carrier.ops`, `observe.v1`, `input-outcome` appear
-nowhere in the source. `idle-boundary` is not a 1.5.1 token; gc's working tree
-defines it (`internal/runtime/protocol.go`, ahead of the pin) as the
+capability names that do not exist in gc 1.5.1: `fs.host`, `carrier.ops`,
+`observe.v1`, `input-outcome`. `idle-boundary` is not a 1.5.1 token; gc's working
+tree defines it (`internal/runtime/protocol.go`, ahead of the pin) as the
 idle-observation gate, and our provider declares it in the same change that
-adds the `idle` snapshot op it gates (GCREX-63). `server-lifecycle` appears only
+adds the `idle` snapshot op it gates (GCREX-63). `carrier.ops`
+(`protocol.go:41`) selects the five session ops (nudge, peek, send-keys,
+interrupt, clear-scrollback) instead of exec, and `input-outcome`
+(`protocol.go:118`) types their exit 80; our provider declares both in GCREX-70,
+the change that answers typed outcomes (gc reads them only with both,
+`internal/runtime/exec/outcome.go:193`). Both are ignored by gc 1.5.1.
+`server-lifecycle` appears only
 in a release-gate evidence file for a provider interface, not in `protocol.go`.
 Treat all of them as design shorthand. A non-baseline token may be declared only
 in the change that implements the behavior it gates, so it stays inert at the
@@ -651,12 +660,15 @@ Phase 0 also confirms the plan's decisions against the live surface:
   (`cmd/gc-runtime-rex`) is the out-of-tree RPP v0 dispatcher; `pack/pack.toml`
   declares `[runtimes.rex]` with `command = "gc-runtime-rex"` and `protocol = 0`,
   and both `gc runtime check rex` and `gc runtime conformance rex` pass against
-  `testdata/city` (14/14 checks; 6/8 requirements with `exec`/`provision` as
-  optional skips). The handshake declares version 0, `report-attachment`,
-  `report-activity` and `idle-boundary` — the last outside the 1.5.1 baseline
-  and declared only in the same change as the `idle` snapshot op it gates
-  (GCREX-63) — and no `locality` field; `proc.exec`/`proc.provision` are not
-  declared because `exec`/`provision` stay unimplemented (exit 2).
+  `testdata/city` on the pinned edge build (18/18 checks; conformance 27 of 67
+  requirements pass with 39 optional skips and one live-environment failure,
+  RPP-OBSERVE-017, which fails identically at the pre-change baseline because a
+  Rex app client is attached). The handshake declares version 0, `report-attachment`,
+  `report-activity`, `idle-boundary`, `carrier.ops` and `input-outcome` — the
+  last three outside the 1.5.1 baseline, declared only in the same change as
+  the behavior they gate (`idle` in GCREX-63; the five carrier ops and typed
+  exit 80 in GCREX-70) — and no `locality` field; `proc.exec`/`proc.provision`
+  are not declared because `exec`/`provision` stay unimplemented (exit 2).
 - **No city in an RPP invocation (resolved, GCREX-17; pilot GCREX-6).** RPP
   carries only the op and session name, and the exec runtime provider passes the
   caller's environment through unchanged, so `GC_REX_CITY`, `GC_CITY_PATH` and

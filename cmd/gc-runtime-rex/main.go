@@ -41,9 +41,13 @@ const (
 
 // handshake is the protocol op's reply. It declares only what is implemented:
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
-// idle-boundary gates the `idle` snapshot op (GCREX-63). gc 1.5.1 has no such
-// token and ignores it; a gc that consumes it reads the point-in-time reading.
-const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}`
+// idle-boundary gates the `idle` snapshot op (GCREX-63); gc 1.5.1 has no such
+// token and ignores it. carrier.ops says gc drives the five session ops
+// (nudge, peek, send-keys, interrupt, clear-scrollback) instead of exec, and
+// input-outcome says the four driving ops answer exit 80 with one typed
+// outcome line (GCREX-70). gc reads the typed word only when both are
+// declared (internal/runtime/exec/outcome.go:193).
+const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
 
 // buildVersion is the version the `version` op reports. A pack build may set
 // it with -ldflags "-X main.buildVersion=<version>"; a bare `go install`
@@ -193,6 +197,15 @@ var ops = map[string]opSpec{
 	"remove-meta":       {2, "remove-meta <name> <key>", opRemoveMeta},
 }
 
+// inputOutcomeOps are the four driving ops whose failures are typed by
+// input-outcome (gc internal/runtime/exec/outcome.go, inputOutcomeOp).
+var inputOutcomeOps = map[string]bool{
+	"nudge":            true,
+	"send-keys":        true,
+	"interrupt":        true,
+	"clear-scrollback": true,
+}
+
 // runWithContext dispatches one RPP op and returns the process exit code.
 // Failures write nothing to stdout; the op's output is buffered and flushed
 // only on success. ctx is the op's parent: its cancellation (a SIGTERM caught
@@ -262,6 +275,10 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		if errors.As(err, &outcome) {
 			return writeInputOutcome(stdout, stderr, outcome.Outcome, outcome.Detail)
 		}
+		// A driving op's missing or dead pane is RPP's typed `gone`.
+		if inputOutcomeOps[op] && errors.Is(err, provider.ErrSessionNotFound) {
+			return writeInputOutcome(stdout, stderr, "gone", err.Error())
+		}
 		var coded *exitError
 		if errors.As(err, &coded) {
 			fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, coded.err)
@@ -315,15 +332,6 @@ func writeInputOutcome(stdout, stderr io.Writer, outcome, detail string) int {
 		fmt.Fprintln(stderr, outcome)
 	}
 	return exitInputOutcome
-}
-
-// bestEffort maps a missing session to success: input to an agent that is
-// not there is a no-op for gc, not a failure.
-func bestEffort(err error) error {
-	if errors.Is(err, provider.ErrSessionNotFound) {
-		return nil
-	}
-	return err
 }
 
 func printBool(w io.Writer, b bool) {
@@ -400,7 +408,7 @@ func opIsRunning(ctx context.Context, p *provider.Provider, args []string, _ io.
 }
 
 func opInterrupt(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
-	return bestEffort(p.Interrupt(ctx, args[0]))
+	return p.Interrupt(ctx, args[0])
 }
 
 func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
@@ -419,9 +427,7 @@ func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.
 	}
 	report, err := p.NudgeReport(ctx, args[0], string(text), provider.NudgeModeWait)
 	if err != nil {
-		// A missing session stays best effort; a busy, blocked or failed-send
-		// outcome is an *InputOutcomeError and maps to exit 80.
-		return bestEffort(err)
+		return err
 	}
 	if report.Delivered && !report.Confirmed {
 		return writeDeliveredUnobserved(out, args[0])
@@ -452,17 +458,8 @@ func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.R
 	if len(keys) == 0 {
 		return nil
 	}
-	err := p.SendKeys(ctx, args[0], keys...)
-	if inputOutcomeDeclared() {
-		return err
-	}
-	return bestEffort(err)
+	return p.SendKeys(ctx, args[0], keys...)
 }
-
-// inputOutcomeDeclared reports whether the caller's handshake declares
-// input-outcome. gc 1.5.1 does not, so send-keys keeps the best-effort
-// wrapper; GCREX-70 declares the capability and removes this seam.
-var inputOutcomeDeclared = func() bool { return false }
 
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a
 // missing or dead pane is an *provider.InputOutcomeError answered as exit 80
