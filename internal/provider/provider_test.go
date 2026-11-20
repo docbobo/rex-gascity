@@ -2,6 +2,7 @@ package provider_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -243,13 +244,13 @@ func TestPeekReturnsAgentOutput(t *testing.T) {
 	}
 }
 
-func TestPeekEmptyWhenNoPane(t *testing.T) {
+func TestPeekNoScreenWhenNoPane(t *testing.T) {
 	fake := faketest.New()
 	p := provider.New("acme", fake)
 
 	out, err := p.Peek(context.Background(), "Indigo--ghost")
-	if err != nil {
-		t.Fatalf("Peek: %v", err)
+	if !errors.Is(err, provider.ErrNoScreen) {
+		t.Fatalf("Peek err = %v, want ErrNoScreen for a missing pane", err)
 	}
 	if out != "" {
 		t.Errorf("Peek = %q, want empty for a missing pane", out)

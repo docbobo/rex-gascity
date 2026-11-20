@@ -40,8 +40,20 @@ func TestPeekLinesVanishedPane(t *testing.T) {
 	fake, p := teardownStarted(t, teardownDog)
 	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
 	got, err := p.PeekLines(context.Background(), teardownDog, 2)
-	if err != nil || got != "" {
-		t.Errorf("PeekLines after pane vanished = %q, %v; want empty, nil", got, err)
+	if !errors.Is(err, provider.ErrNoScreen) || got != "" {
+		t.Errorf("PeekLines after pane vanished = %q, %v; want empty, ErrNoScreen", got, err)
+	}
+}
+
+func TestPeekLinesNoScreenWhenRexUnavailable(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrUnavailable)
+	if _, err := p.PeekLines(context.Background(), teardownDog, 2); !errors.Is(err, provider.ErrNoScreen) {
+		t.Errorf("PeekLines with Rex unavailable err = %v, want ErrNoScreen", err)
+	}
+	fake.FormatErr = errors.New("boom")
+	if _, err := p.PeekLines(context.Background(), teardownDog, 2); err == nil || errors.Is(err, provider.ErrNoScreen) {
+		t.Errorf("PeekLines with unrelated error err = %v, want a plain error", err)
 	}
 }
 

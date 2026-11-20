@@ -2,6 +2,7 @@ package provider_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -374,9 +375,9 @@ func TestUnpinnedLookupDiscoversPinnedCity(t *testing.T) {
 		t.Errorf("ListRunning = %v, %v; want [%s]", names, err, name)
 	}
 
-	// AC #5: a genuinely absent session still answers empty, not an error.
-	if got, err := p.Peek(ctx, "Indigo--absent"); err != nil || got != "" {
-		t.Errorf("Peek(absent) = %q, %v; want empty, nil", got, err)
+	// AC #5: a genuinely absent session has no screen (exit 66 at the CLI).
+	if got, err := p.Peek(ctx, "Indigo--absent"); !errors.Is(err, provider.ErrNoScreen) || got != "" {
+		t.Errorf("Peek(absent) = %q, %v; want empty, ErrNoScreen", got, err)
 	}
 
 	// set-meta resolves the pinned name; writes stay in the canonical store.
