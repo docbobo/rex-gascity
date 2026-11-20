@@ -77,7 +77,10 @@ only gc edge refunds `ErrSessionBusy`/pending-interaction). At the cap
 only gives up and logs (`poolClaimBackstop.exhausted` is a no-op at the pin),
 but gc edge drains and recycles the slot (`cmd/gc/idle_nudge.go`
 `poolClaimBackstop.exhausted`, working tree). A seat that stays on one live
-claim across three backstop ticks can therefore be drained on a gc at the pin.
+claim across three backstop ticks can therefore be drained on gc edge. On a gc
+edge at `544beb8d6` (#9137, post-`v1.5.1`) the `busy` refusal is refunded, so
+the drain risk remains only for a gc edge that predates that commit, or for a
+non-`busy` failure.
 
 Already-staged work directories. gc's `hooks.PreserveManagedFile` predicate
 decides from the marker already on the destination (gc v1.5.1
