@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -191,5 +193,139 @@ func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
 	}
 	if len(*signals) != 0 {
 		t.Errorf("signals = %v, want none", *signals)
+	}
+}
+
+// TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm is review F1: a ps row
+// whose comm is empty or contains runs of spaces must still be captured, so it
+// is reaped and reported instead of silently passing the stop.
+func TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			// Before the close: an empty comm and a comm with repeated spaces.
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", ""},
+				[4]string{"400", "100", "S", "Google  Chrome  Helper"},
+			)
+		}
+		return reapTable(
+			[4]string{"300", "1", "S", ""},
+			[4]string{"400", "1", "S", "Google  Chrome  Helper"},
+		)
+	})
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure for the dropped rows")
+	}
+	for _, want := range []string{"300 (?)", "400 (Google  Chrome  Helper)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Stop error %q does not name %q", err, want)
+		}
+	}
+	if len(*signals) != 4 {
+		t.Errorf("signals = %v, want TERM then KILL for both survivors", *signals)
+	}
+	if len(fake.ClosedBlocks) != 1 {
+		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
+	}
+}
+
+// TestStopReportsTheSignalError is review F3: when a reap signal fails with
+// EPERM, the survivor error names that cause instead of only "may survive".
+func TestStopReportsTheSignalError(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	_, p, _ := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "bun"},
+			)
+		}
+		return reapTable([4]string{"300", "1", "S", "bun"})
+	})
+	p.signal = func(int, os.Signal) error { return syscall.EPERM }
+
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure")
+	}
+	if !strings.Contains(err.Error(), "300 (bun)") {
+		t.Errorf("Stop error %q does not name the survivor", err)
+	}
+	if !strings.Contains(err.Error(), "operation not permitted") {
+		t.Errorf("Stop error %q does not report the failed signal", err)
+	}
+}
+
+// TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead is review F5: a tree that
+// cannot be inspected must fail before block.close, never close the pane and
+// then blame descendants that were never observed.
+func TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	fake, p, signals := reapProvider(t, liveTree, func(int) string { return "" })
+	fake.ProcessErr = errors.New("process: unavailable")
+	if err := p.SetMeta(ctx, reapDog, "suspended", "yes"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want the inspection failure")
+	}
+	if !strings.Contains(err.Error(), "could not inspect the pane's process tree") {
+		t.Errorf("Stop error %q does not say the tree could not be inspected", err)
+	}
+	if !strings.Contains(err.Error(), "process: unavailable") {
+		t.Errorf("Stop error %q does not carry the cause", err)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed = %v, want the pane left open", fake.ClosedBlocks)
+	}
+	if len(*signals) != 0 {
+		t.Errorf("signals = %v, want none without an observed tree", *signals)
+	}
+	if _, ok := p.Binding(reapDog); !ok {
+		t.Error("binding forgotten although the pane was never closed")
+	}
+	if got, _ := p.GetMeta(ctx, reapDog, "suspended"); got != "yes" {
+		t.Errorf("meta suspended = %q, want it kept for the retry", got)
+	}
+}
+
+// TestPaneSubtreeSkipsAncestorsSiblings is review F4: a sibling under the
+// pane's shell (a reported ancestor) is not a pane process and must not be
+// captured or signalled.
+func TestPaneSubtreeSkipsAncestorsSiblings(t *testing.T) {
+	ctx := context.Background()
+	_, p, _ := reapProvider(t, liveTree, func(int) string {
+		return reapTable(
+			[4]string{"200", "1", "Ss", "/bin/zsh"},
+			[4]string{"100", "200", "S+", "claude"},
+			[4]string{"300", "100", "S", "bun"},
+			[4]string{"400", "300", "S", "node"},
+			[4]string{"500", "200", "S", "ssh-agent"},
+		)
+	})
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(reapDog), Mode: ResolveFresh})
+	if err != nil || !ok {
+		t.Fatalf("Resolve = %v, %v", ok, err)
+	}
+	tree, err := p.paneSubtree(ctx, binding)
+	if err != nil {
+		t.Fatalf("paneSubtree: %v", err)
+	}
+	var pids []int
+	for _, proc := range tree {
+		pids = append(pids, proc.pid)
+	}
+	if want := []int{100, 300, 400}; !slices.Equal(pids, want) {
+		t.Errorf("captured pids = %v, want %v (no ancestor 200, no sibling 500)", pids, want)
 	}
 }

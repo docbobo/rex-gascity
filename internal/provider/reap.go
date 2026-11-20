@@ -48,6 +48,9 @@ func (e *survivorError) Error() string {
 			names[i] = fmt.Sprintf("%d (%s)", s.pid, s.name)
 		}
 		reason = strings.Join(names, ", ")
+		if e.reason != nil {
+			reason += ": " + e.reason.Error()
+		}
 	}
 	return fmt.Sprintf("stopped '%s', but descendants may survive (the pane stays for a retry): %s", e.name, reason)
 }
@@ -70,30 +73,52 @@ func (p *Provider) processTable(ctx context.Context) (map[int]processRow, error)
 	}
 	rows := make(map[int]processRow)
 	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		pidStr, ppidStr, stat, name, ok := splitProcessRow(line)
+		if !ok {
 			continue
 		}
-		pid, pidErr := strconv.Atoi(fields[0])
-		ppid, ppidErr := strconv.Atoi(fields[1])
+		pid, pidErr := strconv.Atoi(pidStr)
+		ppid, ppidErr := strconv.Atoi(ppidStr)
 		if pidErr != nil || ppidErr != nil || pid <= 0 {
 			continue
 		}
 		rows[pid] = processRow{
 			ppid:   ppid,
-			zombie: strings.HasPrefix(fields[2], "Z"),
-			name:   strings.Join(fields[3:], " "),
+			zombie: strings.HasPrefix(stat, "Z"),
+			name:   name,
 		}
 	}
 	return rows, nil
 }
 
-// paneSubtree captures what the pane could leave behind: its own process tree
-// (foreground plus ancestors) and every process below those in the host table.
-// It must run before block.close: a descendant detached from the pane is
-// reparented to init when the pane dies and can then no longer be attributed
-// to this session. An unreadable process listing is returned so stop can
-// refuse to report success without proof (GCREX-50).
+// splitProcessRow splits one ps row into its three fixed columns and the rest
+// of the line, which is the command name. The name may be empty or contain
+// spaces, so it must not be field-split like the pid and ppid.
+func splitProcessRow(line string) (pid, ppid, stat, comm string, ok bool) {
+	var col [3]string
+	rest := strings.TrimRight(line, "\r\n")
+	for i := range col {
+		rest = strings.TrimLeft(rest, " \t")
+		if rest == "" {
+			return "", "", "", "", false
+		}
+		end := strings.IndexAny(rest, " \t")
+		if end < 0 {
+			col[i], rest = rest, ""
+			continue
+		}
+		col[i], rest = rest[:end], rest[end:]
+	}
+	return col[0], col[1], col[2], strings.TrimSpace(rest), true
+}
+
+// paneSubtree captures what the pane could leave behind: the foreground Rex
+// reports and every host process below it. Ancestors are reported too, but
+// they are the pane's shell and its parents, so a sibling under one of them is
+// not the pane's process and must not be signalled. It must run before
+// block.close: a detached descendant is reparented to init when the pane dies
+// and can then no longer be attributed to this session. An unreadable process
+// listing is returned so stop can leave the pane open (GCREX-50).
 func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, error) {
 	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
 	if err != nil {
@@ -117,14 +142,18 @@ func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, erro
 	if err != nil {
 		return nil, err
 	}
-	// The subtree root is the reported process with no reported ancestor, so
-	// the walk does not depend on Rex's ancestors order.
+	// The walk starts at the foreground. Without one, fall back to the
+	// reported process with no reported ancestor, so it does not depend on
+	// Rex's ancestors order.
 	below := make(map[int]bool, len(reported))
-	for pid := range reported {
-		if hasReportedAncestor(pid, reported, table) {
-			continue
+	if fg := info.Foreground; fg != nil && fg.PID > 0 {
+		below[fg.PID] = true
+	} else {
+		for pid := range reported {
+			if !hasReportedAncestor(pid, reported, table) {
+				below[pid] = true
+			}
 		}
-		below[pid] = true
 	}
 	// Add every process whose parent is already in the set, until it settles.
 	for changed := true; changed; {
@@ -168,13 +197,18 @@ func hasReportedAncestor(pid int, reported map[int]string, table map[int]process
 	return false
 }
 
-func (p *Provider) signalAll(procs []paneProc, sig syscall.Signal) {
+// signalAll delivers sig to every captured process and returns the first
+// failure, so a reap that could not signal can say why a process survived.
+func (p *Provider) signalAll(procs []paneProc, sig syscall.Signal) error {
 	for _, proc := range procs {
 		if proc.pid <= 1 || proc.pid == os.Getpid() {
 			continue
 		}
-		_ = p.signal(proc.pid, sig)
+		if err := p.signal(proc.pid, sig); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // living returns the captured processes still running. A zombie counts as
@@ -221,20 +255,22 @@ func (p *Provider) waitGone(ctx context.Context, tree []paneProc, wait time.Dura
 	}
 }
 
-// reap gives the pane subtree TERM, waits, then KILL, waits and rescans. It
-// returns the processes that are still alive; an empty result proves the tree
-// is gone.
-func (p *Provider) reap(ctx context.Context, tree []paneProc) []paneProc {
+// reap gives the pane's reported process tree TERM, waits, then KILL, waits
+// and rescans. It returns the processes that are still alive, plus the first
+// signal failure when there was one; an empty result proves the tree is gone.
+func (p *Provider) reap(ctx context.Context, tree []paneProc) ([]paneProc, error) {
 	left := p.living(ctx, tree)
 	if len(left) == 0 {
-		return nil
+		return nil, nil
 	}
-	p.signalAll(left, syscall.SIGTERM)
+	termErr := p.signalAll(left, syscall.SIGTERM)
 	if left = p.waitGone(ctx, tree, reapTermWait); len(left) == 0 {
-		return nil
+		return nil, termErr
 	}
-	p.signalAll(left, syscall.SIGKILL)
-	return p.waitGone(ctx, tree, reapKillWait)
+	if killErr := p.signalAll(left, syscall.SIGKILL); termErr == nil {
+		termErr = killErr
+	}
+	return p.waitGone(ctx, tree, reapKillWait), termErr
 }
 
 // osSignal delivers sig to pid. The pane's descendants run on this host, so a

@@ -769,10 +769,15 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	}
 	// Sample the work tree before the pane closes, while the worker is alive.
 	p.writeDrainDiagnostic(ctx, binding)
-	// Capture the pane's subtree too: a close is not proof that the tree is
-	// gone, and a detached descendant can no longer be attributed to the pane
-	// once it has been reparented (GCREX-50).
-	tree, treeErr := p.paneSubtree(ctx, binding)
+	// Capture the pane's reported process tree too: a close is not proof that
+	// the tree is gone, and a detached descendant can no longer be attributed
+	// to the pane once it has been reparented (GCREX-50). A tree we cannot
+	// read is not a tree we can clear, so leave the pane open for the retry
+	// instead of closing it blind.
+	tree, err := p.paneSubtree(ctx, binding)
+	if err != nil {
+		return fmt.Errorf("could not inspect the pane's process tree, leaving it open: %w", err)
+	}
 	closeErr := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID)
 	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
 		return closeErr
@@ -780,8 +785,8 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	// Reap what the pane left behind and refuse to report success while any of
 	// it survives; the binding, meta and activity stay for a retry, as
 	// herdr-core keeps the box (parity doc ### stop row 2).
-	if left := p.reap(ctx, tree); treeErr != nil || len(left) > 0 {
-		return &survivorError{name: string(binding.Name), survivors: left, reason: treeErr}
+	if left, signalErr := p.reap(ctx, tree); len(left) > 0 {
+		return &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
 	}
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
