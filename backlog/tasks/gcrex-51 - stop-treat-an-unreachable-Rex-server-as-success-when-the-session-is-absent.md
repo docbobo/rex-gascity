@@ -46,7 +46,7 @@ The document (## stop § Success output, § Failure cases) exits 0 when the core
 
 <!-- SECTION:NOTES:BEGIN -->
 
-Why a binding present keeps exit 1: with Rex down, `stop` cannot close the pane, and a stored binding is the only evidence a pane may still be live. Exit 0 there would hide a possible leak; herdr-core covers that case with a pid/token sweep. Rex has no equivalent, so the error is returned and the binding, meta and activity stay intact. "Binding present" is `Binder.lookup` (`internal/provider/binding.go:197`: exact name or alias, local stores only), read before `Resolve` so a record `resolveFresh` would drop still counts.
+Why a binding present keeps exit 1: with Rex down, `stop` cannot close the pane, and a stored binding is the only evidence a pane may still be live. Exit 0 there would hide a possible leak; herdr-core covers that case with a pid/token sweep. Rex has no equivalent, so the error is returned and the binding, meta and activity stay intact. "Binding present" is `Binder.lookup` (`internal/provider/binding.go:197`: exact name or alias, local stores only), read before `Resolve` so a record `resolveFresh` would drop still counts. `resolveFresh` also drops stale records only after its label scan succeeds, so a scan that fails with `rex.ErrUnavailable` keeps the binding for the retry (`TestResolveScanUnavailableKeepsStaleBinding`).
 
 Proving tests (slices gcrex-3nz3 and gcrex-d7uh):
 

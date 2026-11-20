@@ -377,9 +377,6 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 			hint = bd
 		}
 	}
-	for _, bd := range stale {
-		_ = b.store.Drop(bd.Name)
-	}
 	// Re-scan under the labels the caller knows (a lost record) or the stale
 	// record used, so a pane recreated with the same env-derived labels is
 	// rediscovered; otherwise scan by the requested name.
@@ -389,7 +386,18 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 			scanName, scanHint = hint.Name, hint
 		}
 	}
-	return b.scan(ctx, scanName, scanHint)
+	got, ok, err := b.scan(ctx, scanName, scanHint)
+	if err != nil {
+		// Rex could not answer the scan: keep the stale records so a retry
+		// still sees that a binding existed.
+		return Binding{}, false, err
+	}
+	for _, bd := range stale {
+		if !ok || bd.Name != got.Name { // scan already rewrote got.Name
+			_ = b.store.Drop(bd.Name)
+		}
+	}
+	return got, ok, nil
 }
 
 // stillBound reports whether view still holds the binding's block under its
