@@ -437,12 +437,15 @@ type startResult struct {
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
 	n := SessionName(name)
 	// Build the one launch plan up front: it projects pool routing for every
-	// later step and owns the Rex block layout.
+	// later step and owns the Rex block layout. The launch label must come
+	// from the same projected env as the hint and the record, or pool
+	// routing makes them disagree and a restart launches a duplicate pane.
+	env := launch.Project(cfg.Env)
 	plan := launch.NewPlan(launch.Config{
 		Argv:    cfg.Argv,
-		Env:     cfg.Env,
+		Env:     env,
 		WorkDir: cfg.WorkDir,
-		Label:   n.PaneLabel(),
+		Label:   paneLabelFor(n, env),
 	})
 	cfg.Env = plan.Env
 	seeded := false
@@ -461,7 +464,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// cannot place the pane in its rig tab).
 	hint := Binding{
 		TabLabel:  tabLabel(n, cfg.Env, p.townTab),
-		PaneLabel: n.PaneLabel(),
+		PaneLabel: paneLabelFor(n, cfg.Env),
 		Aliases:   aliasesFor(n, cfg.Env),
 	}
 
@@ -706,7 +709,7 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		WindowID:       wid,
 		BlockID:        block,
 		TabLabel:       tabLabel(n, cfg.Env, p.townTab),
-		PaneLabel:      n.PaneLabel(),
+		PaneLabel:      paneLabelFor(n, cfg.Env),
 		Aliases:        aliasesFor(n, cfg.Env),
 		LaunchMode:     mode,
 		CreatedAt:      time.Now(),

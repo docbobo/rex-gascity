@@ -39,7 +39,7 @@ type Plan struct {
 // plan. It projects pool routing first, so the env it returns is the env every
 // later step (identity seed, pre_start, the command) sees.
 func NewPlan(cfg Config) Plan {
-	env := projectPoolRouting(cfg.Env)
+	env := Project(cfg.Env)
 	return Plan{
 		Spec: rex.LaunchSpec{
 			Command: command(cfg.Argv, env),
@@ -49,6 +49,13 @@ func NewPlan(cfg Config) Plan {
 		},
 		Env: env,
 	}
+}
+
+// Project returns the env NewPlan launches with: the pool-routing projection
+// applied. A caller that derives a label from the env must use this, not the
+// pre-projection map, or the label disagrees with what the pane runs as.
+func Project(env map[string]string) map[string]string {
+	return projectPoolRouting(env)
 }
 
 // MergedEnv merges the plan's projected env over base, so a pre_start hook

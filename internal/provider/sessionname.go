@@ -1,6 +1,9 @@
 package provider
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // nameSep separates the rig from the agent in a gc session name.
 const nameSep = "--"
@@ -53,18 +56,19 @@ func townTabLabel(pin string) string {
 	return pin
 }
 
-// tabLabel derives the Rex tab label for a started session: the town label for
-// a town-level name, otherwise "Rig: <rig>" with GC_RIG preferred over the
-// name split. Every result is clamped to maxRexLabel.
+// tabLabel derives the Rex tab label for a started session: "Rig: <GC_RIG>"
+// whenever GC_RIG is non-empty, even for a town-style name with no "--" (a wisp
+// instance name). Only with no GC_RIG does the name shape decide: the town label
+// for a town-level name, otherwise "Rig: " plus the name split. Every result is
+// clamped to maxRexLabel.
 func tabLabel(name SessionName, env map[string]string, town string) string {
+	if rig := env["GC_RIG"]; rig != "" {
+		return clampRexLabel("Rig: " + rig)
+	}
 	if name.IsTown() {
 		return clampRexLabel(town)
 	}
-	rig := env["GC_RIG"]
-	if rig == "" {
-		rig = name.Rig()
-	}
-	return clampRexLabel("Rig: " + rig)
+	return clampRexLabel("Rig: " + name.Rig())
 }
 
 // legacyTabLabel is the tab label gc wrote before GCREX-72: "__town" for a
@@ -100,6 +104,53 @@ func clampRexLabel(s string) string {
 
 // PaneLabel is the Rex pane label: the agent.
 func (n SessionName) PaneLabel() string { return n.Agent() }
+
+// maxPaneLabelRunes is Rex's label limit for session.set_block_label.
+const maxPaneLabelRunes = 128
+
+// paneLabelFor returns the Rex pane label for a started session:
+// "<agent> (<GC_SESSION_NAME>)" for rig-scoped sessions, else the
+// name-derived label.
+func paneLabelFor(n SessionName, env map[string]string) string {
+	if env["GC_RIG"] == "" && n.IsTown() {
+		return n.PaneLabel()
+	}
+	session := strings.TrimSpace(env["GC_SESSION_NAME"])
+	agent := paneAgent(env)
+	if session == "" || agent == "" {
+		return n.PaneLabel()
+	}
+	label := agent + " (" + session + ")"
+	if utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+		return label
+	}
+	// Truncate only the agent: the parenthesised session name is the
+	// discovery identity (Binder.scan), so cutting it would make two long
+	// sessions differing at the tail share a label. When the suffix alone
+	// cannot fit, fall back to the bare session name; identity past 128
+	// runes cannot be represented at all.
+	suffix := " (" + session + ")"
+	if len([]rune(suffix)) >= maxPaneLabelRunes {
+		return clampRexLabel(session)
+	}
+	return string([]rune(agent)[:maxPaneLabelRunes-len([]rune(suffix))]) + suffix
+}
+
+// paneAgent resolves the display agent: GC_ALIAS, then GC_AGENT, then the
+// BEADS_ACTOR segment after the first "/"; empty when none resolves.
+func paneAgent(env map[string]string) string {
+	if v := strings.TrimSpace(env["GC_ALIAS"]); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(env["GC_AGENT"]); v != "" {
+		return v
+	}
+	actor := strings.TrimSpace(env["BEADS_ACTOR"])
+	if i := strings.Index(actor, "/"); i >= 0 {
+		actor = strings.TrimSpace(actor[i+1:])
+	}
+	return actor
+}
 
 // String returns the original gc session name.
 func (n SessionName) String() string { return string(n) }
