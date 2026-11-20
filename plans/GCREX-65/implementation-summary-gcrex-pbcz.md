@@ -18,6 +18,12 @@ trace:
 
 # Implementation Summary: GCREX-65 W4 — docs, e2e assertion, GCREX-30 note
 
+> **Historical, superseded:** The guarded destroy described below was removed
+> in GCREX-65 attempt 3 (`f1bd04c`). `Stop` now leaves the city session in
+> place even when empty, regardless of attached clients, and a later `Start`
+> reuses it. See `docs/REX-CONTRACT.md` §12 and `TestStopCallsNoDestroy`.
+> The behavior, tests and verification below record W4, not the current state.
+
 ## Summary
 
 Plan step 7. D3 is restated as an ownership rule in `docs/REX-CONTRACT.md`
@@ -31,7 +37,7 @@ interim. W2 (`c5f8b1b`), W3 (`66132e0`, here `5ffe1b1`) and W1 (`917d73e`, here
 `origin/main` and they are not on it; the docs cite code that exists only with
 them.
 
-## Intended Behavior
+## Intended Behavior at W4 (superseded)
 
 - The docs state: never destroy what we did not create (shared server, other or
   legacy-labelled sessions, human panes, `server.stop`); do destroy our panes and
@@ -58,7 +64,7 @@ them.
 - `internal/provider/e2e_test.go` — `e2eExpectSessionAfterStop`; three e2e tests updated.
 - `backlog/tasks/gcrex-30 - Investigate-...md` — GCREX-65 note.
 
-## Verification
+## W4 Verification (historical)
 
 - First verification command: `REX_E2E=1 go test ./internal/provider -run TestE2EAgentExitLiveness`
   with `provider.go` reverted to `2de7a6e` (no destroy): FAIL ("session
@@ -72,7 +78,7 @@ them.
   returns nothing (exit 1).
 - Final proof: `make test` PASS (all packages ok); `golangci-lint run ./...`: 0 issues.
 
-## Remaining Risks
+## W4 Remaining Risks (historical)
 
 - The e2e tests run only with `REX_E2E=1` against a live server. With a Rex app
   attached the destroy is skipped and the tests only log that branch.

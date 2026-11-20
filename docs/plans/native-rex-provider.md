@@ -118,7 +118,7 @@ removes several of herdr's bridges:
 | Exit status | `child_exited` event (`exit_code`), `process.last_exit` | herdr via process-info — parity |
 | Activity | `process_changed.generation`, `session.view.revision` (v1 does not consume `rex events`; it polls) | herdr had **no** timestamp → tracker bridge |
 | Attachment | `session.list_clients` (`session.view` has no `clients` field) | herdr best-effort → now first-class |
-| Create / destroy | `session.create`, `session.new_window`, `block.close` (the provider calls `session.destroy` only on its own empty canonical session, GCREX-65; it is otherwise forbidden by D3) | herdr workspace/tab/pane — parity |
+| Create / destroy | `session.create`, `session.new_window`, `block.close` (the provider never calls `session.destroy`, including for an empty city session; GCREX-65, `docs/REX-CONTRACT.md` §12) | herdr workspace/tab/pane — parity |
 
 Terminal methods available: `blob_read, clear, clipboard_read,
 download_begin, format, input_mode, list_dir, modes, process, program_status,
@@ -643,11 +643,10 @@ under a supervisor stays open; server-restart recovery was not exercised live
   the source in force; an empty or missing status is never reported as a false
   idle/busy.
 - **Liveness is `last_exit`, deliberately (GCREX-4).** A live probe showed Rex runs a launched command as the default shell with `argv0` set to the command (`/bin/sh` arrives as `name: bash`, `path: /bin/bash`, `argv0: /bin/sh`), so argv0/process-name heuristics misclassify live panes and made a live input test fail as "agent exited". v1 therefore treats `last_exit` as the liveness truth for `IsRunning` and the input ops, and exposes `ProcessAlive(names)` (strict foreground/ancestor matching, empty => alive) for the RPP `process-alive` op where gc supplies authoritative names.
-- **Shared server.** Hard rule: never `server.stop`. Confirm teardown only
-  closes city-owned blocks (`block.close`) and destroys only its own empty
-  canonical city session (GCREX-65), never another session. Pilot note: `gc stop` still removed the
-  city's Rex session; the gc-side path is not identified and is accepted
-  (gc owns its sessions). The server was never restarted.
+- **Shared server.** Hard rule: never `server.stop`. Provider teardown closes
+  city-owned blocks (`block.close`) and leaves the city session even when empty
+  (GCREX-65, `docs/REX-CONTRACT.md` §12). In the pilot, `gc stop` removed the
+  city's Rex session through an unidentified path; the server was never restarted.
 
 ---
 
