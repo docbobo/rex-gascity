@@ -87,6 +87,51 @@ func TestStartDerivesTabFromGCRig(t *testing.T) {
 	}
 }
 
+// TestStartDerivesPaneLabelFromEnv is the GCREX-5qel item 2 wiring proof: a
+// start with a session name in the env launches and records the derived
+// "<agent> (<GC_SESSION_NAME>)" pane label, and a lost record is rediscovered
+// under that same label.
+func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
+	ctx := context.Background()
+	const session = "gc__implementation-worker-mc-wisp-fvwrce"
+	want := "mc-wisp-ybq1 (" + session + ")"
+	env := wispEnv()
+	env["GC_SESSION_NAME"] = session
+
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	if err := p.Start(ctx, wispStart, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := fake.CreatedWindows[0].Spec.Label; got != want {
+		t.Errorf("pane label = %q, want %q", got, want)
+	}
+	b, ok := p.Binding(wispStart)
+	if !ok {
+		t.Fatal("Binding(start name) = false")
+	}
+	if b.PaneLabel != want {
+		t.Errorf("binding pane label = %q, want %q", b.PaneLabel, want)
+	}
+
+	// A restarted provider with no stored record rediscovers the live pane
+	// from the env-derived hint instead of launching a second one.
+	rebuilt := faketest.New()
+	rebuilt.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	rebuilt.View = rex.SessionView{Windows: []rex.Window{{
+		ID:     wispWindowID,
+		Label:  aliasRig,
+		Blocks: []rex.Block{{ID: wispPaneBlock, Label: want}},
+	}}}
+	reader := provider.New("acme", rebuilt)
+	if err := reader.Start(ctx, wispStart, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start after restart: %v", err)
+	}
+	if len(rebuilt.CreatedWindows) != 0 || len(rebuilt.CreatedSplits) != 0 {
+		t.Errorf("relaunched a live pane: windows=%d splits=%d", len(rebuilt.CreatedWindows), len(rebuilt.CreatedSplits))
+	}
+}
+
 func TestStartDerivesTabFromNameWithoutRig(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()

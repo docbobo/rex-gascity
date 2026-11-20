@@ -20,8 +20,10 @@ type Binding struct {
 	// TabLabel is the Rex window (tab) label the pane opened under. Empty on
 	// legacy records, which fall back to Name.TabLabel().
 	TabLabel string
-	// PaneLabel is the Rex block (pane) label the pane opened under. Empty on
-	// legacy records, which fall back to Name.PaneLabel().
+	// PaneLabel is the Rex block (pane) label the pane opened under: the
+	// env-derived "<agent> (<GC_SESSION_NAME>)" for rig-scoped starts, else
+	// the name-derived label. Empty on legacy records, which fall back to
+	// Name.PaneLabel().
 	PaneLabel string
 	// Aliases are the extra gc session names this pane answers to. gc 1.5.1
 	// stops putting the rig in pool/wisp session names and instead probes the
@@ -73,8 +75,9 @@ func (b Binding) acceptsTabLabel(label, town string) bool {
 	return b.TabLabel == "" && label == legacyTabLabel(b.Name)
 }
 
-// paneLabel returns the Rex pane label for the pane: the stored label when
-// present, otherwise the name-derived label for legacy records.
+// paneLabel returns the Rex pane label for the pane: the stored env-derived
+// label when present, otherwise the name-only label for legacy records, which
+// carry no start-config env to derive from.
 func (b Binding) paneLabel() string {
 	if b.PaneLabel != "" {
 		return b.PaneLabel
