@@ -478,12 +478,8 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	// that label ("rig--rig--worker" is labelled "rig--worker" and sits in
 	// "Rig: rig"), so a bare label is only accepted as the expected pane label
 	// from the hint or record above.
-	identity := " (" + string(name) + ")"
-	suffixMatch := func(label string) bool {
-		return strings.HasSuffix(label, identity)
-	}
 	paneMatches := func(label string) bool {
-		return label == pane || suffixMatch(label)
+		return label == pane || identityMatch(name, label)
 	}
 	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool, error) {
 		bd := Binding{
@@ -514,7 +510,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 				continue
 			}
 			for _, blk := range w.Blocks {
-				if suffixMatch(blk.Label) {
+				if identityMatch(name, blk.Label) {
 					return accept(tab, w, blk)
 				}
 			}
@@ -536,7 +532,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	if hint.TabLabel == "" {
 		for _, w := range view.Windows {
 			for _, blk := range w.Blocks {
-				if suffixMatch(blk.Label) {
+				if identityMatch(name, blk.Label) {
 					return accept(w.Label, w, blk)
 				}
 			}

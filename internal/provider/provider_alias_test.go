@@ -89,11 +89,12 @@ func TestStartDerivesTabFromGCRig(t *testing.T) {
 // TestStartDerivesPaneLabelFromEnv is the GCREX-5qel item 2 wiring proof: a
 // start with a session name in the env launches and records the derived
 // "<agent> (<GC_SESSION_NAME>)" pane label, and a lost record is rediscovered
-// under that same label.
+// under that same label. The agent prefix is the agent part of GC_TEMPLATE
+// (gcrex-7n06r), not GC_AGENT's session bead id.
 func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
 	ctx := context.Background()
 	const session = "gc__implementation-worker-mc-wisp-fvwrce"
-	want := "mc-wisp-ybq1 (" + session + ")"
+	want := "pi (" + session + ")"
 	env := wispEnv()
 	env["GC_SESSION_NAME"] = session
 

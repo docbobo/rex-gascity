@@ -274,9 +274,9 @@ func TestStartPaneLabelFromProjectedEnv(t *testing.T) {
 		"BEADS_ACTOR":     "legacy",
 		"GC_SESSION_NAME": start,
 	}
-	if pre := paneLabelFor(start, env); pre == want {
-		t.Fatalf("test env does not exercise projection: pre-projection label is already %q", pre)
-	}
+	// Pool routing rewrites BEADS_ACTOR to GC_TEMPLATE for this env. The
+	// derived label must agree with the name alone (GCREX-7n06r), so it is
+	// unchanged by projection.
 
 	fake := faketest.New()
 	p := New("acme", fake)
@@ -584,4 +584,229 @@ func TestTabScopedScanPrefersSuffixLabel(t *testing.T) {
 			t.Fatalf("Stop did not close the bare-label pane %s; closed %v", bare, fake.ClosedBlocks)
 		}
 	})
+}
+
+// TestPaneLabelForPoolShortForm is the live-case table for GCREX-...
+// (gcrex-7n06r): an unaliased pool seat's label is
+// "<GC_TEMPLATE basename> (<session bead id>)", verifiable against the runtime
+// session name alone (gc cmd/gc/pool_session_name.go PoolSessionName).
+func TestPaneLabelForPoolShortForm(t *testing.T) {
+	tests := []struct {
+		name string
+		sess string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "implementation worker pool seat",
+			sess: "gc__implementation-worker-mc-wisp-kvqib",
+			env: map[string]string{
+				"GC_RIG":          "rex-gascity",
+				"GC_TEMPLATE":     "rex-gascity/gc.implementation-worker",
+				"GC_AGENT":        "mc-wisp-kvqib",
+				"GC_ALIAS":        "",
+				"BEADS_ACTOR":     "rex-gascity/gc.implementation-worker",
+				"GC_SESSION_ID":   "mc-wisp-kvqib",
+				"GC_SESSION_NAME": "gc__implementation-worker-mc-wisp-kvqib",
+			},
+			want: "gc.implementation-worker (mc-wisp-kvqib)",
+		},
+		{
+			name: "second seat from the same template",
+			sess: "gc__implementation-worker-mc-wisp-1e4r8",
+			env: map[string]string{
+				"GC_RIG":          "rex-gascity",
+				"GC_TEMPLATE":     "rex-gascity/gc.implementation-worker",
+				"GC_AGENT":        "mc-wisp-1e4r8",
+				"GC_ALIAS":        "",
+				"BEADS_ACTOR":     "rex-gascity/gc.implementation-worker",
+				"GC_SESSION_ID":   "mc-wisp-1e4r8",
+				"GC_SESSION_NAME": "gc__implementation-worker-mc-wisp-1e4r8",
+			},
+			want: "gc.implementation-worker (mc-wisp-1e4r8)",
+		},
+		{
+			name: "run operator seat",
+			sess: "gc__run-operator-mc-wisp-jwlvf",
+			env: map[string]string{
+				"GC_RIG":          "rex-gascity",
+				"GC_TEMPLATE":     "rex-gascity/gc.run-operator",
+				"GC_AGENT":        "mc-wisp-jwlvf",
+				"GC_ALIAS":        "",
+				"BEADS_ACTOR":     "rex-gascity/gc.run-operator",
+				"GC_SESSION_ID":   "mc-wisp-jwlvf",
+				"GC_SESSION_NAME": "gc__run-operator-mc-wisp-jwlvf",
+			},
+			want: "gc.run-operator (mc-wisp-jwlvf)",
+		},
+		{
+			name: "aliased control dispatcher keeps the whole session name",
+			sess: "core__control-dispatcher-mc-wisp-vmecx",
+			env: map[string]string{
+				"GC_RIG":          "rex-gascity",
+				"GC_TEMPLATE":     "rex-gascity/core.control-dispatcher",
+				"GC_ALIAS":        "rex-gascity/core.control-dispatcher",
+				"GC_AGENT":        "mc-wisp-vmecx",
+				"BEADS_ACTOR":     "rex-gascity/core.control-dispatcher",
+				"GC_SESSION_NAME": "core__control-dispatcher-mc-wisp-vmecx",
+			},
+			want: "core.control-dispatcher (core__control-dispatcher-mc-wisp-vmecx)",
+		},
+		{
+			name: "town-level unchanged",
+			sess: "mayor",
+			env: map[string]string{
+				"GC_TEMPLATE":     "mayor",
+				"GC_SESSION_NAME": "mayor",
+			},
+			want: "mayor",
+		},
+		{
+			name: "no gc env leaves the name-derived label",
+			sess: "gc__implementation-worker-mc-wisp-kvqib",
+			env:  map[string]string{},
+			want: "gc__implementation-worker-mc-wisp-kvqib",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := paneLabelFor(SessionName(tt.sess), tt.env); got != tt.want {
+				t.Fatalf("paneLabelFor(%q, %v) = %q, want %q", tt.sess, tt.env, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPaneLabelForInvariantFallback pins the safety guard: when the start env
+// does not satisfy Sanitize(prefix)+"-"+suffix == GC_SESSION_NAME, the label
+// degrades to the old "<agent> (<GC_SESSION_NAME>)" shape instead of guessing.
+func TestPaneLabelForInvariantFallback(t *testing.T) {
+	env := map[string]string{
+		"GC_RIG":          "rex-gascity",
+		"GC_TEMPLATE":     "rex-gascity/worker",
+		"GC_AGENT":        "mc-wisp-aaa",
+		"BEADS_ACTOR":     "rex-gascity/worker",
+		"GC_SESSION_NAME": "gc__other-mc-wisp-aaa",
+	}
+	const want = "worker (gc__other-mc-wisp-aaa)"
+	if got := paneLabelFor("gc__other-mc-wisp-aaa", env); got != want {
+		t.Fatalf("paneLabelFor = %q, want the long fallback %q", got, want)
+	}
+
+	// The long fallback stays resolvable recordlessly: the suffix is the
+	// session name, so Stop and IsRunning find the pane without any env.
+	ctx := context.Background()
+	const block = rex.BlockID("block:fallback")
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:rig",
+			Label:  "Rig: rex-gascity",
+			Blocks: []rex.Block{{ID: block, Label: want}},
+		}}}
+		return f
+	}
+	running, err := New("acme", newFake()).IsRunning(ctx, "gc__other-mc-wisp-aaa")
+	if err != nil || !running {
+		t.Fatalf("IsRunning(long fallback) = %v, %v; want true, nil", running, err)
+	}
+	fake := newFake()
+	if err := New("acme", fake).Stop(ctx, "gc__other-mc-wisp-aaa"); err != nil {
+		t.Fatalf("Stop(long fallback): %v", err)
+	}
+	if !slices.Contains(fake.ClosedBlocks, block) {
+		t.Fatalf("Stop did not close the long-fallback pane %s; closed %v", block, fake.ClosedBlocks)
+	}
+}
+
+// TestIdentityMatch pins the discovery rule that replaces the bare suffix
+// match: a label names session n when its parenthesised suffix is n (legacy
+// and named labels) or n is exactly Sanitize(agent)+"-"+suffix (pool short
+// form). Prefix-only matching is never accepted.
+func TestIdentityMatch(t *testing.T) {
+	tests := []struct {
+		name  string
+		sess  string
+		label string
+		want  bool
+	}{
+		{"legacy long form", "rex-gascity--worker", "worker (rex-gascity--worker)", true},
+		{"named form", "core__control-dispatcher-mc-wisp-vmecx", "core.control-dispatcher (core__control-dispatcher-mc-wisp-vmecx)", true},
+		{"pool short form", "gc__implementation-worker-mc-wisp-kvqib", "gc.implementation-worker (mc-wisp-kvqib)", true},
+		{"another session's bead id same tab", "gc__implementation-worker-mc-wisp-1e4r8", "gc.implementation-worker (mc-wisp-kvqib)", false},
+		{"bare label", "rex-gascity--worker", "worker", false},
+		{"suffix satisfies neither branch", "gc__implementation-worker-mc-wisp-1e4r8", "other.agent (mc-wisp-1e4r8)", false},
+		{"empty suffix", "rex-gascity--worker", "worker ()", false},
+		{"prefix only", "rex-gascity--worker", "worker (nonsense)", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := identityMatch(SessionName(tt.sess), tt.label); got != tt.want {
+				t.Fatalf("identityMatch(%q, %q) = %v, want %v", tt.sess, tt.label, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSanitizeQualifiedContract pins gc's separator contract
+// (internal/agent/session_name.go at v1.5.1: '/' -> '--', '.' -> '__'; the
+// encoded forms never collapse back onto each other).
+func TestSanitizeQualifiedContract(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"gc/implementation-worker", "gc--implementation-worker"},
+		{"core.control-dispatcher", "core__control-dispatcher"},
+		{"rex-gascity/core.control-dispatcher", "rex-gascity--core__control-dispatcher"},
+		{"a--b", "a--b"},
+		{"a__b", "a__b"},
+		{"", ""},
+	} {
+		if got := sanitizeQualified(tt.in); got != tt.want {
+			t.Fatalf("sanitizeQualified(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRecordlessDiscoveryByPoolIdentity is the discovery half of the short
+// label: with no sidecar record and no start env, the pool label
+// "<agent> (<bead id>)" is verified against the runtime name alone.
+func TestRecordlessDiscoveryByPoolIdentity(t *testing.T) {
+	ctx := context.Background()
+	const (
+		name  = "gc__implementation-worker-mc-wisp-kvqib"
+		label = "gc.implementation-worker (mc-wisp-kvqib)"
+		block = rex.BlockID("block:pool")
+	)
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:rig",
+			Label:  "Rig: rex-gascity",
+			Blocks: []rex.Block{{ID: block, Label: label}},
+		}}}
+		return f
+	}
+
+	running, err := New("acme", newFake()).IsRunning(ctx, name)
+	if err != nil || !running {
+		t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", name, running, err)
+	}
+	fake := newFake()
+	if err := New("acme", fake).Stop(ctx, name); err != nil {
+		t.Fatalf("Stop(%s): %v", name, err)
+	}
+	if !slices.Contains(fake.ClosedBlocks, block) {
+		t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+	}
+
+	// A sibling seat's short label must not be adopted.
+	sibling := "gc__implementation-worker-mc-wisp-1e4r8"
+	running, err = New("acme", newFake()).IsRunning(ctx, sibling)
+	if err != nil {
+		t.Fatalf("IsRunning(%s): %v", sibling, err)
+	}
+	if running {
+		t.Fatalf("IsRunning(%s) = true; adopted the sibling seat's pane", sibling)
+	}
 }

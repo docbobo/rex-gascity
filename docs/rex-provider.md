@@ -218,13 +218,37 @@ Gas City sessions map onto the three-level Rex hierarchy:
 |---|---|---|
 | City | Session | `gc:<city>` (one Rex session per city namespace) |
 | Rig | Tab (window) | `Rig: <GC_RIG>` whenever `GC_RIG` is non-empty; otherwise `Rig: <rig>` for `<rig>--<agent>`, or the city pin for town-level names with no `--` (`Gas City` when no pin is set). The pane label never decides the tab |
-| Agent | Pane (block) | `<agent> (<GC_SESSION_NAME>)`; the agent is `GC_ALIAS`, else `GC_AGENT`, else the `BEADS_ACTOR` segment after the first `/`. Town-level agents and sessions with no agent identity keep `<agent>` |
+| Agent | Pane (block) | `<agent> (<suffix>)`; the agent is the agent part of `GC_TEMPLATE` (else `GC_ALIAS`, then `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`). An unaliased pool seat gets the short `(<session bead id>)` suffix; named/aliased sessions and names the env cannot verify keep `(<GC_SESSION_NAME>)`. Town-level agents and sessions with no agent identity keep `<agent>` |
 
 - Starting the first agent in a rig creates a new Rex tab labeled `Rig: <rig>`; a start whose env carries `GC_RIG` joins `Rig: <GC_RIG>` even when its runtime name has no `--` (a wisp instance such as `gc__implementation-worker-mc-wisp-s5gax5`). A start with no `GC_RIG` and a town-level name opens a tab labeled with the city pin (`my-city`), or `Gas City` when the process has no pin.
 - Session names and the `gc:<city>` session label are unchanged. A pane label is display-only (see below).
-- The pane label is `"<agent> (<GC_SESSION_NAME>)"` (GCREX-5qel): agent resolution is `GC_ALIAS`, then `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`; a blank session name or agent keeps the name-derived label, and an over-long label is clamped to 128 runes without truncating the parenthesised session name. Pool seats from one template differ only in that suffix, so re-attach discovery and resolution compare the derived label, never the displayed string. Town-level panes keep their name-derived label.
+- The pane label is `"<agent> (<suffix>)"` (GCREX-5qel, gcrex-7n06r):
+  - R1 town-level start (no `GC_RIG`) keeps the bare agent (`mayor`);
+  - R2 rig-scoped agent prefix is the agent part of `GC_TEMPLATE`
+    (`path.Base`): `gc.implementation-worker`, `core.control-dispatcher`.
+    When `GC_TEMPLATE` is absent it falls back to `GC_ALIAS`, then
+    `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`;
+  - R3 suffix: a named/aliased session (`GC_ALIAS` non-empty) uses the whole
+    `GC_SESSION_NAME`; an unaliased pool/ephemeral seat uses its session bead
+    id (`GC_AGENT`, else `GC_SESSION_ID`, else the `BEADS_ACTOR` segment), so
+    a pool seat reads `gc.implementation-worker (mc-wisp-kvqib)`;
+  - R4 a pane with no gc env (started by hand, `shell`) is never relabelled.
+
+  A blank session name or agent keeps the name-derived label, and an
+  over-long label is clamped to 128 runes without truncating the suffix.
+- How a short label is verified: gc's pool runtime name is
+  `Sanitize(path.Base(GC_TEMPLATE)) + "-" + beadID` (`PoolSessionName`,
+  `cmd/gc/pool_session_name.go` at v1.5.1), with `Sanitize` mapping `/` to
+  `--` and `.` to `__` (`internal/agent/session_name.go`). Before emitting the
+  short form the provider asserts `Sanitize(agent)+"-"+suffix ==
+  GC_SESSION_NAME`; when that fails (gc has changed its name shape before) it
+  emits the long `"<agent> (<GC_SESSION_NAME>)"` form rather than a guess.
+  Discovery applies the same rule (`identityMatch`): a label names session `n`
+  when its parenthesised suffix is `n`, or `n` is exactly
+  `Sanitize(agent)+"-"+suffix`; a bare label or a prefix-only match never
+  counts.
 - The launch label, the discovery hint and the recorded label all come from the same pool-routing-projected env (`launch.Project`), the one the pane itself runs with. Deriving the launch label from the pre-projection env would disagree with the hint whenever routing rewrites `BEADS_ACTOR`, and a restart with the sidecar record lost would launch a duplicate pane.
-- With no sidecar record and no start env (`is-running`, `stop`), the fallback scan matches the parenthesised session name `(<GC_SESSION_NAME>)` as well as the exact name-derived label, so a live `<agent> (<session>)` pane is found without any start env.
+- With no sidecar record and no start env (`is-running`, `stop`), the fallback scan accepts a pane label whose parenthesised suffix names the session — the long `(<GC_SESSION_NAME>)` form, or the verified pool short form `Sanitize(agent)+"-"+bead id == name` — as well as the exact name-derived label, so a live pane is found without any start env.
 - A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `gc:<city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
@@ -245,11 +269,14 @@ therefore derives the Rex tab label as:
 
 Every generated label is clamped to Rex's 128-character limit.
 
-The pane label is `<agent> (<GC_SESSION_NAME>)` for a rig-scoped session, with the
-agent resolved `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR` segment after the
-first `/`. A blank session name or agent keeps the name-derived label, and an
-over-long label is clamped to 128 runes without truncating the parenthesised
-session name. `GC_SESSION_NAME` is therefore load-bearing for the label.
+The pane label is `<agent> (<suffix>)` for a rig-scoped session, with the agent
+resolved from `GC_TEMPLATE` (agent part) → `GC_ALIAS` → `GC_AGENT` → the
+`BEADS_ACTOR` segment after the first `/`. An unaliased pool seat whose name
+verifies as `Sanitize(agent)+"-"+bead id` gets the short `<agent> (<bead id>)`
+suffix; every other session keeps `(<GC_SESSION_NAME>)`. A blank session name
+or agent keeps the name-derived label, and an over-long label is clamped to 128
+runes without truncating the suffix. `GC_SESSION_NAME` is therefore load-bearing
+for the long label.
 
 At `start` the provider records the pane's binding under the runtime name it
 was started with, plus rig-qualified aliases derived from the start config
