@@ -31,8 +31,8 @@ func TestStartCreatesCitySessionRigTabAndAgentPane(t *testing.T) {
 		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
 	}
 	w := fake.CreatedWindows[0]
-	if w.Label != "Indigo" {
-		t.Errorf("tab label = %q, want %q", w.Label, "Indigo")
+	if w.Label != "Rig: Indigo" {
+		t.Errorf("tab label = %q, want %q", w.Label, "Rig: Indigo")
 	}
 	if w.Spec.Label != "dog-1" {
 		t.Errorf("pane label = %q, want %q", w.Spec.Label, "dog-1")
@@ -90,7 +90,7 @@ func TestStartJoinsExistingRigTab(t *testing.T) {
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{{
 			ID:     "window:Indigo",
-			Label:  "Indigo",
+			Label:  "Rig: Indigo",
 			Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}},
 		}},
 	}
@@ -127,7 +127,7 @@ func TestStopClosesOnlyTheAgentPane(t *testing.T) {
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{
-			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+			{ID: "window:Indigo", Label: "Rig: Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
 			{ID: "window:Saffron", Label: "Saffron", Blocks: []rex.Block{{ID: "block:dog-3", Label: "dog-3"}}},
 		},
 	}
@@ -147,7 +147,7 @@ func TestStopIsIdempotentForUnknownSession(t *testing.T) {
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{
-			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+			{ID: "window:Indigo", Label: "Rig: Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
 		},
 	}
 	p := provider.New("acme", fake)
@@ -165,7 +165,7 @@ func TestIsRunningTrueWhileProgramRuns(t *testing.T) {
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{
-			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+			{ID: "window:Indigo", Label: "Rig: Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
 		},
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
@@ -187,7 +187,7 @@ func TestIsRunningFalseWhenProgramExited(t *testing.T) {
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{
-			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+			{ID: "window:Indigo", Label: "Rig: Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
 		},
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
@@ -222,7 +222,7 @@ func TestPeekReturnsAgentOutput(t *testing.T) {
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{
-			{ID: "window:Indigo", Label: "Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
+			{ID: "window:Indigo", Label: "Rig: Indigo", Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}},
 		},
 	}
 	fake.Formats = map[rex.BlockID]string{"block:dog-1": "hello from dog-1\n"}

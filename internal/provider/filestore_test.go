@@ -44,8 +44,8 @@ func TestFileStoreLegacyRecordFallsBackToNameLabels(t *testing.T) {
 	if got.TabLabel != "" || got.PaneLabel != "" || got.Aliases != nil {
 		t.Errorf("legacy record decoded new fields = %q/%q/%v, want empty", got.TabLabel, got.PaneLabel, got.Aliases)
 	}
-	if got.tabLabel() != "Indigo" || got.paneLabel() != "dog-1" {
-		t.Errorf("legacy labels = %q/%q, want Indigo/dog-1", got.tabLabel(), got.paneLabel())
+	if got.tabLabel("Acme") != "Rig: Indigo" || got.paneLabel() != "dog-1" {
+		t.Errorf("legacy labels = %q/%q, want \"Rig: Indigo\"/dog-1", got.tabLabel("Acme"), got.paneLabel())
 	}
 }
 

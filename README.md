@@ -9,10 +9,10 @@ The binary is `gc-runtime-rex`. Gas City launches it as a short-lived process pe
 | Gas City | Rex | Label |
 |---|---|---|
 | City | Session | `gc:<city>` |
-| Rig | Tab (window) | `<rig>`, or `__town` for town-level agents |
+| Rig | Tab (window) | `Rig: <rig>`, or the city pin (else `Gas City`) for town-level agents |
 | Agent | Pane (block) | `<agent>`, or the full session name for town-level agents |
 
-The first agent in a rig creates a tab. Later agents in the same rig split panes into that tab: each new pane splits the largest-area pane along its longer axis at 50%, so panes stay balanced. `stop` closes only the agent's block; when the last pane in a tab closes, Rex removes the tab. Teardown leaves the `gc:<city>` session in place even when empty and never stops the shared Rex server. A later `start` reuses the session.
+The first agent in a rig creates a `Rig: <rig>` tab; a town-level agent uses the city pin, or `Gas City` when no pin is set. Later agents in the same rig split panes into that tab: each new pane splits the largest-area pane along its longer axis at 50%, so panes stay balanced. `stop` closes only the agent's block; when the last pane in a tab closes, Rex removes the tab. Teardown leaves the `gc:<city>` session in place even when empty and never stops the shared Rex server. A later `start` reuses the session.
 
 ## Prerequisites
 

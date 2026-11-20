@@ -63,7 +63,7 @@ func TestIsRunningTreatsVanishedPaneAsStopped(t *testing.T) {
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{{
 			ID:     "window:Indigo",
-			Label:  "Indigo",
+			Label:  "Rig: Indigo",
 			Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}},
 		}},
 	}

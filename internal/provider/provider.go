@@ -155,6 +155,11 @@ type Provider struct {
 	client rex.Client
 	binder *Binder
 
+	// townTab is the town-level tab label, resolved once from the process
+	// city pin at construction so every start and record agrees even when the
+	// caller passes a different city.
+	townTab string
+
 	bindings Store[SessionName, Binding]
 	activity Store[SessionName, ActivityRecord]
 	meta     Store[metaKey, string]
@@ -299,6 +304,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		warn:                os.Stderr,
 	}
 	p.nudge.claimProbe = p.probeLiveClaim
+	p.townTab = townTabLabel(cityPin())
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -306,7 +312,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	if len(labels) == 0 {
 		labels = []string{rexSessionLabel(city)}
 	}
-	p.binder = NewBinderWithLabels(client, p.bindings, labels)
+	p.binder = NewBinderWithLabels(client, p.bindings, labels, p.townTab)
 	return p
 }
 
@@ -454,12 +460,17 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
 	// cannot place the pane in its rig tab).
 	hint := Binding{
-		TabLabel:  tabLabelFor(n, cfg.Env),
+		TabLabel:  tabLabel(n, cfg.Env, p.townTab),
 		PaneLabel: n.PaneLabel(),
 		Aliases:   aliasesFor(n, cfg.Env),
 	}
 
-	old, found, err := p.binder.Resolve(ctx, ResolveRequest{Name: n, Hint: hint, Mode: ResolveFresh})
+	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
+		Name: n, Hint: hint, Mode: ResolveFresh,
+		// A window started before GCREX-72 carries the bare GC_RIG, which
+		// the name alone cannot derive for short pool names.
+		LegacyTabs: []string{legacyTabLabelFor(n, cfg.Env)},
+	})
 	if err != nil {
 		return startResult{}, err
 	}
@@ -694,7 +705,7 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		SessionLabel:   rexSessionLabel(p.city),
 		WindowID:       wid,
 		BlockID:        block,
-		TabLabel:       tabLabelFor(n, cfg.Env),
+		TabLabel:       tabLabel(n, cfg.Env, p.townTab),
 		PaneLabel:      n.PaneLabel(),
 		Aliases:        aliasesFor(n, cfg.Env),
 		LaunchMode:     mode,

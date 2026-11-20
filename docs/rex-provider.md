@@ -221,10 +221,12 @@ Gas City sessions map onto the three-level Rex hierarchy:
 | Gas City | Rex | Label / Rule |
 |---|---|---|
 | City | Session | `gc:<city>` (one Rex session per city namespace) |
-| Rig | Tab (window) | `<rig>` for `<rig>--<agent>`, or `__town` for town-level names with no `--` |
+| Rig | Tab (window) | `Rig: <rig>` for `<rig>--<agent>`, or the city pin for town-level names with no `--` (`Gas City` when no pin is set) |
 | Agent | Pane (block) | `<agent>` for `<rig>--<agent>`, or the full session name for town-level agents |
 
-- Starting the first agent in a rig creates a new Rex tab labeled `<rig>` (or `__town`).
+- Starting the first agent in a rig creates a new Rex tab labeled `Rig: <rig>`; a town-level agent opens a tab labeled with the city pin (`my-city`), or `Gas City` when the process has no pin.
+- Session names, pane (block) labels, and the `gc:<city>` session label are unchanged.
+- A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `gc:<city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 
@@ -235,9 +237,12 @@ gc 1.5.1 starts pool and wisp instances under a runtime name that carries no
 arrives out of band in the start config `env` as `GC_RIG`. The provider
 therefore derives the Rex tab label as:
 
-- `GC_RIG` when it is non-empty; else
-- `SessionName(name).Rig()` (the name split, for older names and town-level
-  sessions).
+- a town-level name (no `--`) ignores `GC_RIG` and uses the town label: the
+  city pin, or `Gas City` when no pin is set;
+- a rig name (`<rig>--<agent>`) uses `Rig: ` plus `GC_RIG` when it is
+  non-empty, else `Rig: ` plus `SessionName(name).Rig()` (the name split).
+
+Every generated label is clamped to Rex's 128-character limit.
 
 The pane label stays `SessionName(name).PaneLabel()`.
 
@@ -269,7 +274,9 @@ gc's adoption barrier and dead-session reconciler treat every name returned by
 phantom orphan session bead.
 
 Bindings written before this change (or without a start-config env) carry no
-stored aliases and keep resolving by the name-derived tab and pane labels.
+stored aliases and keep resolving by the derived tab label (the town label for
+town-level names, `Rig: <rig>` from the name split otherwise) and the pane
+label.
 
 ## Sidecar State and Environment Variables
 

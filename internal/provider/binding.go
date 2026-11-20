@@ -53,12 +53,24 @@ type Binding struct {
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the
-// record has one, otherwise the name-derived label for legacy records.
-func (b Binding) tabLabel() string {
+// record has one, otherwise the label the name derives with town as the town
+// label (a legacy record has no start env, so the rig comes from the name
+// split).
+func (b Binding) tabLabel(town string) string {
 	if b.TabLabel != "" {
 		return b.TabLabel
 	}
-	return b.Name.TabLabel()
+	return tabLabel(b.Name, nil, town)
+}
+
+// acceptsTabLabel reports whether label is the binding's tab label: its stored
+// or derived label, or — for a record that has no stored label — the label gc
+// wrote before GCREX-72, which a window started by an older build still has.
+func (b Binding) acceptsTabLabel(label, town string) bool {
+	if label == b.tabLabel(town) {
+		return true
+	}
+	return b.TabLabel == "" && label == legacyTabLabel(b.Name)
 }
 
 // paneLabel returns the Rex pane label for the pane: the stored label when
@@ -76,16 +88,6 @@ func (b Binding) paneLabel() string {
 func sanitizeQualified(name string) string {
 	name = strings.ReplaceAll(name, "/", nameSep)
 	return strings.ReplaceAll(name, ".", "__")
-}
-
-// tabLabelFor returns the Rex tab label for a started session: GC_RIG when the
-// start config carries a non-empty rig (gc 1.5.1 does not put the rig in pool
-// names), otherwise the name-derived rig.
-func tabLabelFor(name SessionName, env map[string]string) string {
-	if rig := env["GC_RIG"]; rig != "" {
-		return rig
-	}
-	return name.TabLabel()
 }
 
 // aliasesFor lists the extra gc session names a started pane answers to,
@@ -129,18 +131,21 @@ type Binder struct {
 	// and a fresh record use the first; a legacy record under another
 	// candidate label still revalidates.
 	sessionLabels []string
+	// townTab is the town-level tab label, used to derive the tab label for
+	// a legacy record or a discovery scan that has no stored start env.
+	townTab string
 }
 
 // NewBinder builds a Binder that looks for the Rex session labelled
 // sessionLabel and caches bindings in store.
-func NewBinder(client rex.Client, store Store[SessionName, Binding], sessionLabel string) *Binder {
-	return NewBinderWithLabels(client, store, []string{sessionLabel})
+func NewBinder(client rex.Client, store Store[SessionName, Binding], sessionLabel, town string) *Binder {
+	return NewBinderWithLabels(client, store, []string{sessionLabel}, town)
 }
 
 // NewBinderWithLabels builds a Binder that accepts any of labels (canonical
 // first, duplicates and empty entries dropped) and caches bindings in store.
-func NewBinderWithLabels(client rex.Client, store Store[SessionName, Binding], labels []string) *Binder {
-	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels)}
+func NewBinderWithLabels(client rex.Client, store Store[SessionName, Binding], labels []string, town string) *Binder {
+	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels), townTab: town}
 }
 
 // normalizeSessionLabels trims, dedupes and drops empty labels, preserving
@@ -240,6 +245,11 @@ type ResolveRequest struct {
 	// used, so the fresh scan can rediscover a live pane started under a short
 	// pool name with no rig.
 	Hint Binding
+	// LegacyTabs are the pre-GCREX-72 tab labels the caller's start env
+	// implies (a non-empty GC_RIG, or the name-derived rig). They are tried
+	// after the hint and name-derived labels so an upgrade finds the pane
+	// instead of opening a second tab.
+	LegacyTabs []string
 	// Mode selects the resolution behavior. The zero value is ResolveCached.
 	Mode ResolveMode
 }
@@ -252,7 +262,7 @@ func (b *Binder) Resolve(ctx context.Context, req ResolveRequest) (Binding, bool
 	case ResolveLive:
 		return b.resolveLive(ctx, req.Name)
 	case ResolveFresh:
-		return b.resolveFresh(ctx, req.Name, req.Hint)
+		return b.resolveFresh(ctx, req.Name, req.Hint, req.LegacyTabs)
 	default:
 		cands := b.lookup(req.Name)
 		if len(cands) == 0 {
@@ -270,7 +280,7 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 	cands := b.lookup(name)
 	if len(cands) == 0 {
 		// Nothing cached: fall back to the label scan a fresh resolve performs.
-		bd, ok, err := b.resolveFresh(ctx, name, Binding{})
+		bd, ok, err := b.resolveFresh(ctx, name, Binding{}, nil)
 		if err != nil || !ok {
 			return Binding{}, false, err
 		}
@@ -287,7 +297,7 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 		if !ok {
 			// The stored address is stale; rediscover the pane under the
 			// labels it had, so a recreated instance still counts as alive.
-			if got, ok, err = b.scan(ctx, bd.Name, bd); err != nil {
+			if got, ok, err = b.scan(ctx, bd.Name, bd, nil); err != nil {
 				return Binding{}, false, err
 			}
 		}
@@ -341,7 +351,7 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 		return Binding{}, false, nil
 	case err != nil:
 		return Binding{}, false, err
-	case stillBound(view, bd):
+	case stillBound(view, bd, b.townTab):
 		return bd, true, nil
 	default:
 		return Binding{}, false, nil
@@ -355,7 +365,7 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 // its stored (or name-derived) labels. Any other view error is returned as is
 // and leaves the stored binding alone. A name with no pane is reported as false
 // with a nil error.
-func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding) (Binding, bool, error) {
+func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding, legacy []string) (Binding, bool, error) {
 	var stale []Binding
 	var hint Binding
 	for _, bd := range b.lookup(name) {
@@ -386,7 +396,7 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 			scanName, scanHint = hint.Name, hint
 		}
 	}
-	got, ok, err := b.scan(ctx, scanName, scanHint)
+	got, ok, err := b.scan(ctx, scanName, scanHint, legacy)
 	if err != nil {
 		// Rex could not answer the scan: keep the stale records so a retry
 		// still sees that a binding existed.
@@ -403,12 +413,12 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 // stillBound reports whether view still holds the binding's block under its
 // stored tab and pane labels (falling back to the name-derived labels for
 // legacy records).
-func stillBound(view rex.SessionView, bd Binding) bool {
+func stillBound(view rex.SessionView, bd Binding, town string) bool {
 	if view.Label != bd.SessionLabel {
 		return false
 	}
 	for _, w := range view.Windows {
-		if w.ID != bd.WindowID || w.Label != bd.tabLabel() {
+		if w.ID != bd.WindowID || !bd.acceptsTabLabel(w.Label, town) {
 			continue
 		}
 		for _, blk := range w.Blocks {
@@ -424,7 +434,7 @@ func stillBound(view rex.SessionView, bd Binding) bool {
 // hint supplies the labels an earlier record used, so a pane recreated under
 // env-derived labels is found again; empty fields fall back to the labels the
 // name implies.
-func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Binding, bool, error) {
+func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legacy []string) (Binding, bool, error) {
 	sid, ok, err := b.FindSession(ctx)
 	if err != nil || !ok {
 		return Binding{}, false, err
@@ -433,38 +443,56 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 	if err != nil {
 		return Binding{}, false, err
 	}
-	tab := hint.TabLabel
-	if tab == "" {
-		tab = name.TabLabel()
+	primary := hint.TabLabel
+	if primary == "" {
+		primary = tabLabel(name, nil, b.townTab)
+	}
+	// A window started by a build before GCREX-72 still carries the old
+	// label; find it rather than start a second tab. Start always supplies
+	// a hint label, so this cannot be limited to the empty-hint path.
+	tabs := []string{primary}
+	addTab := func(label string) {
+		for _, seen := range tabs {
+			if seen == label {
+				return
+			}
+		}
+		tabs = append(tabs, label)
+	}
+	addTab(legacyTabLabelFor(name, nil))
+	for _, label := range legacy {
+		addTab(label)
 	}
 	pane := hint.PaneLabel
 	if pane == "" {
 		pane = name.PaneLabel()
 	}
-	for _, w := range view.Windows {
-		if w.Label != tab {
-			continue
-		}
-		for _, blk := range w.Blocks {
-			if blk.Label == pane {
-				bd := Binding{
-					Name:         name,
-					SessionID:    sid,
-					SessionLabel: view.Label,
-					WindowID:     w.ID,
-					BlockID:      blk.ID,
-					TabLabel:     tab,
-					PaneLabel:    pane,
-					Aliases:      hint.Aliases,
-					// Launch details the labels do not carry: dropping them
-					// would silently disable the Stop-time drain diagnostic.
-					LaunchMode: hint.LaunchMode,
-					CreatedAt:  hint.CreatedAt,
-					GCBin:      hint.GCBin,
-					WorkDir:    hint.WorkDir,
+	for _, tab := range tabs {
+		for _, w := range view.Windows {
+			if w.Label != tab {
+				continue
+			}
+			for _, blk := range w.Blocks {
+				if blk.Label == pane {
+					bd := Binding{
+						Name:         name,
+						SessionID:    sid,
+						SessionLabel: view.Label,
+						WindowID:     w.ID,
+						BlockID:      blk.ID,
+						TabLabel:     tab,
+						PaneLabel:    pane,
+						Aliases:      hint.Aliases,
+						// Launch details the labels do not carry: dropping them
+						// would silently disable the Stop-time drain diagnostic.
+						LaunchMode: hint.LaunchMode,
+						CreatedAt:  hint.CreatedAt,
+						GCBin:      hint.GCBin,
+						WorkDir:    hint.WorkDir,
+					}
+					_ = b.store.Write(bd.Name, bd)
+					return bd, true, nil
 				}
-				_ = b.store.Write(bd.Name, bd)
-				return bd, true, nil
 			}
 		}
 	}

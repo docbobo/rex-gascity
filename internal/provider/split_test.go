@@ -94,7 +94,7 @@ func TestStartSplitsTheLargestPaneAlongItsLongerAxis(t *testing.T) {
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{{
 			ID:    "window:Indigo",
-			Label: "Indigo",
+			Label: "Rig: Indigo",
 			Blocks: []rex.Block{
 				{ID: "block:dog-1", Label: "dog-1", Rect: [4]float64{0, 0, 0.25, 1}},
 				{ID: "block:dog-2", Label: "dog-2", Rect: [4]float64{0.25, 0, 0.75, 0.25}},
