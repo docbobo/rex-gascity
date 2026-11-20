@@ -289,8 +289,9 @@ resolved from `GC_TEMPLATE` (agent part) → `GC_ALIAS` → `GC_AGENT` → the
 verifies as `Sanitize(agent)+"-"+bead id` gets the short `<agent> (<bead id>)`
 suffix; every other session keeps `(<GC_SESSION_NAME>)`. A blank session name
 or agent keeps the name-derived label, and an over-long label is clamped to 128
-runes without truncating the suffix. `GC_SESSION_NAME` is therefore load-bearing
-for the long label.
+runes without truncating the suffix. A shortened agent ends in `…`, and that
+marked label names no session. `GC_SESSION_NAME` is load-bearing for the long
+label.
 
 At `start` the provider records the pane's binding under the runtime name it
 was started with, plus rig-qualified aliases derived from the start config
