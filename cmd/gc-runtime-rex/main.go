@@ -43,7 +43,14 @@ const (
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
 // idle-boundary gates the `idle` snapshot op (GCREX-63). gc 1.5.1 has no such
 // token and ignores it; a gc that consumes it reads the point-in-time reading.
-const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}`
+// input-outcome makes gc read the exit-80 word on a driving op instead of
+// treating 80 as a plain error; gc refuses a nudge with `busy` here so its
+// stalled-claim backstop refunds the reservation rather than spending one of
+// idleClaimNudgeMaxAttempts (GCREX-69). gc 1.5.1 has no input-outcome
+// vocabulary and ignores the token, so 80 stays a plain error there — the
+// same answer it gives an undeclared pack. GCREX-70 removes the remaining
+// bestEffort seams on send-keys and interrupt.
+const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","input-outcome"]}`
 
 // buildVersion is the version the `version` op reports. A pack build may set
 // it with -ldflags "-X main.buildVersion=<version>"; a bare `go install`
@@ -453,16 +460,17 @@ func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.R
 		return nil
 	}
 	err := p.SendKeys(ctx, args[0], keys...)
-	if inputOutcomeDeclared() {
+	if sendKeysTypedGone() {
 		return err
 	}
 	return bestEffort(err)
 }
 
-// inputOutcomeDeclared reports whether the caller's handshake declares
-// input-outcome. gc 1.5.1 does not, so send-keys keeps the best-effort
-// wrapper; GCREX-70 declares the capability and removes this seam.
-var inputOutcomeDeclared = func() bool { return false }
+// sendKeysTypedGone answers a missing or dead pane with exit 80 `gone`. It
+// stays off (GCREX-70 turns it on): the contract asks exit 0 for a gone
+// session and the typed word only matters to a gc that consumes input-outcome,
+// which the handshake now declares (GCREX-69).
+var sendKeysTypedGone = func() bool { return false }
 
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a
 // missing or dead pane is an *provider.InputOutcomeError answered as exit 80

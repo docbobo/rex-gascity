@@ -132,7 +132,7 @@ Bindings, activity observations and metadata are stored per city under `<state d
 ### RPP capabilities
 
 ```json
-{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}
+{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","input-outcome"]}
 ```
 
 Implemented operations: `protocol`, `start`, `stop`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.

@@ -81,7 +81,7 @@ const dog = "Indigo--dog-1"
 func TestProtocolHandshake(t *testing.T) {
 	h, _ := newHarness(t)
 	r := h.must("", "protocol")
-	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}` + "\n"
+	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","input-outcome"]}` + "\n"
 	if r.stdout != want {
 		t.Fatalf("stdout = %q, want %q", r.stdout, want)
 	}
@@ -99,7 +99,7 @@ func TestProtocolHandshake(t *testing.T) {
 	for _, c := range hs["capabilities"].([]any) {
 		caps = append(caps, c.(string))
 	}
-	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary"}) {
+	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary", "input-outcome"}) {
 		t.Errorf("capabilities = %v", caps)
 	}
 }
@@ -484,13 +484,13 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 	}
 }
 
-// TestSendKeysOutcomeDeclaredGoneExits80 pins AC-2: once the caller declares
-// input-outcome, send-keys answers a missing pane with exit 80 and one
-// {"outcome":"gone",...} stdout line instead of the baseline best-effort exit 0.
+// TestSendKeysOutcomeDeclaredGoneExits80 pins AC-2: once GCREX-70 types the
+// gone answer, send-keys answers a missing pane with exit 80 and one
+// {"outcome":"gone",...} stdout line instead of today's best-effort exit 0.
 func TestSendKeysOutcomeDeclaredGoneExits80(t *testing.T) {
-	restore := inputOutcomeDeclared
-	inputOutcomeDeclared = func() bool { return true }
-	t.Cleanup(func() { inputOutcomeDeclared = restore })
+	restore := sendKeysTypedGone
+	sendKeysTypedGone = func() bool { return true }
+	t.Cleanup(func() { sendKeysTypedGone = restore })
 
 	h, _ := newHarness(t)
 	r := h.run("", "send-keys", "ghost", "C-c", "Enter")
@@ -582,9 +582,8 @@ func TestClearScrollbackDeliveredExitsZero(t *testing.T) {
 
 // TestInterruptReturnsInputOutcomes pins the typed exit-80 words interrupt
 // answers for a down server and a pre-send failure. A missing or dead pane is
-// best-effort: the handshake does not declare input-outcome, so gc v1.5.1 asks
-// for exit 0 there (docs/reference/exec-session-provider.md "Best-effort
-// interrupt/nudge"), and bestEffort answers it.
+// best-effort: the contract asks exit 0 there (docs/reference/exec-session-
+// provider.md "Best-effort interrupt/nudge"), and bestEffort answers it.
 func TestInterruptReturnsInputOutcomes(t *testing.T) {
 	for _, c := range []struct {
 		name    string

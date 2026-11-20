@@ -61,17 +61,23 @@ while the session still holds a live claim (`internal/provider/nudge.go`
 `ErrNudgeClaimHeld`, via the `probeLiveClaim` liveness predicate, which mirrors
 gc v1.5.1 `cmd/gc/session_ownership.go` `claimedWorkStillHeldBy`: a closed,
 released, or foreign-owned claim is not held). Nothing is typed, so a working
-seat is not sent back through `gc hook --claim`.
+seat is not sent back through `gc hook --claim`. The refusal answers exit 80 as
+the RPP `busy` input outcome. gc `v1.5.1` has no `input-outcome` vocabulary, so
+80 is a plain error there and the delivery attempt is spent, the same cost as
+the old exit 1. A gc at `890a58a3e` / `544beb8d6` (#9137 only, not in `v1.5.1`;
+inert at the pin) maps the word to `runtime.ErrSessionBusy`, and the
+stalled-claim backstop refunds the reservation instead of spending it
+(GCREX-69).
 
-Residual risk until GCREX-67 lands. The refusal exits 1. gc reserves the
-delivery attempt before calling the provider and does not refund a refused
-nudge (gc v1.5.1 `cmd/gc/nudge_backstop.go`: `reserve` precedes `sp.Nudge`;
+Residual risk at the `v1.5.1` pin. gc reserves the delivery attempt before
+calling the provider and does not refund a refused nudge whose word it cannot
+classify (gc v1.5.1 `cmd/gc/nudge_backstop.go`: `reserve` precedes `sp.Nudge`;
 only gc edge refunds `ErrSessionBusy`/pending-interaction). At the cap
 (`idleClaimNudgeMaxAttempts = 3`, gc v1.5.1 `cmd/gc/idle_nudge.go:54`) v1.5.1
 only gives up and logs (`poolClaimBackstop.exhausted` is a no-op at the pin),
 but gc edge drains and recycles the slot (`cmd/gc/idle_nudge.go`
 `poolClaimBackstop.exhausted`, working tree). A seat that stays on one live
-claim across three backstop ticks can therefore be drained on gc edge.
+claim across three backstop ticks can therefore be drained on a gc at the pin.
 
 Already-staged work directories. gc's `hooks.PreserveManagedFile` predicate
 decides from the marker already on the destination (gc v1.5.1
@@ -193,10 +199,10 @@ compares that `version` against the `[pack] version` in
 `gc-runtime-rex protocol` returns the RPP v0 handshake:
 
 ```json
-{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}
+{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","input-outcome"]}
 ```
 
-- **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`), `idle-boundary` (`idle`).
+- **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`), `idle-boundary` (`idle`), `input-outcome` (the typed exit-80 words on driving ops; gc 1.5.1 ignores it, a consuming gc reads the word and refunds a `busy` nudge).
 - **Capabilities not declared**: `proc.exec`, `proc.provision`, `proc.stream`, `tty.attach` (and no locality capability).
 
 Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.
