@@ -362,11 +362,21 @@ func TestObserveAbsentWhenPaneVanished(t *testing.T) {
 // or an operator can leave another pane under the same labels, and observe
 // must answer for that box instead of absent.
 func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
-	fake, p := started(t)
+	fake := faketest.New()
+	p := provider.New("acme", fake)
 	name := "Indigo--dog-1"
+	if err := p.Start(context.Background(), name, provider.Config{
+		Argv: []string{"sleep", "300"},
+		Env:  map[string]string{"GC_SESSION_ID": "sid-1"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	first, err := p.Observe(context.Background(), name, nil)
 	if err != nil || first.Object == nil {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
+	}
+	if first.Identity["GC_SESSION_ID"] != "sid-1" {
+		t.Fatalf("identity = %v, want the started incarnation's", first.Identity)
 	}
 	// A restore puts a different pane under the same tab and pane labels.
 	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
@@ -381,6 +391,42 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 	}
 	if ans.Object == nil || ans.Object.ID != "block:dog-1-restored" {
 		t.Errorf("object = %+v, want the restored pane's", ans.Object)
+	}
+	// Observe is a read: the restored pane answers, but the recorded binding is
+	// left for Start or Stop to replace, and the retired box's created and
+	// identity are not reported for a pane the provider did not start.
+	if bd, ok := p.Binding(name); !ok || bd.BlockID != rex.BlockID(first.Object.ID) {
+		t.Errorf("binding after observe = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
+	}
+	if ans.Object != nil && ans.Object.Created == first.Object.Created {
+		t.Errorf("created = %q, want the retired box's %q not reported", ans.Object.Created, first.Object.Created)
+	}
+	if ans.Identity != nil {
+		t.Errorf("identity = %v, want none for a pane the provider did not start", ans.Identity)
+	}
+}
+
+// TestInventoryRestoredPaneLeavesBindingAlone proves inventory, like observe,
+// answers for a restored pane without adopting it into the binding store.
+func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
+	fake, p := started(t)
+	name := "Indigo--dog-1"
+	first, err := p.Observe(context.Background(), name, nil)
+	if err != nil || first.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
+	}
+	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
+	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
+
+	inv, err := p.Inventory(context.Background())
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if len(inv.Sessions) != 1 || inv.Sessions[0].Object == nil || inv.Sessions[0].Object.ID != "block:dog-1-restored" {
+		t.Fatalf("sessions = %+v, want the restored pane running", inv.Sessions)
+	}
+	if bd, ok := p.Binding(name); !ok || bd.BlockID != rex.BlockID(first.Object.ID) {
+		t.Errorf("binding after inventory = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 }
 

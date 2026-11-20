@@ -442,6 +442,21 @@ func stillBound(view rex.SessionView, bd Binding, town string) bool {
 // env-derived labels is found again; empty fields fall back to the labels the
 // name implies.
 func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string) (Binding, bool, error) {
+	return b.scanWith(ctx, name, hint, legacy, legacyPanes, true)
+}
+
+// find is scan without the save: it returns the pane a scan would adopt but
+// leaves the binding store untouched, so a read op can answer for a restored
+// pane without replacing the record. The returned binding carries no CreatedAt:
+// the pane was not started by this provider, so the retired record's time is
+// not its.
+func (b *Binder) find(ctx context.Context, name SessionName, hint Binding, legacy []string) (Binding, bool, error) {
+	// A read op has no start env, so it cannot derive the pre-GC_TEMPLATE
+	// pane labels: it recognises only the labels the record and name imply.
+	return b.scanWith(ctx, name, hint, legacy, nil, false)
+}
+
+func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string, save bool) (Binding, bool, error) {
 	sid, ok, err := b.FindSession(ctx)
 	if err != nil || !ok {
 		return Binding{}, false, err
@@ -506,11 +521,13 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 			// Launch details the labels do not carry: dropping them
 			// would silently disable the Stop-time drain diagnostic.
 			LaunchMode: hint.LaunchMode,
-			CreatedAt:  hint.CreatedAt,
 			GCBin:      hint.GCBin,
 			WorkDir:    hint.WorkDir,
 		}
-		_ = b.store.Write(bd.Name, bd)
+		if save {
+			bd.CreatedAt = hint.CreatedAt
+			_ = b.store.Write(bd.Name, bd)
+		}
 		return bd, true, nil
 	}
 	// Most specific first, so scan order never decides which pane a tab

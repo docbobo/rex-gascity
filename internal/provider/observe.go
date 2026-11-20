@@ -147,7 +147,12 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 		idName = n
 	}
 	obj := observeObjectFor(holder)
-	ans := ObserveAnswer{State: state, Object: &obj, Identity: p.observeIdentity(idName)}
+	ans := ObserveAnswer{State: state, Object: &obj}
+	// Identity is the started incarnation's start config; a pane that took the
+	// name without Start has none of its own.
+	if holder.BlockID == bd.BlockID {
+		ans.Identity = p.observeIdentity(idName)
+	}
 	if state == ObserveDead {
 		ans.Agent = "dead"
 	}
@@ -164,10 +169,10 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
 	switch {
 	case errors.Is(err, rex.ErrNotFound):
-		// Scan for a live pane under the record's labels, without ResolveLive's
-		// stale-record drop: Observe is a read, and only Start or Stop replaces
-		// the record.
-		live, ok, err := p.binder.scan(ctx, bd.Name, bd, nil)
+		// Find a live pane under the record's labels, without ResolveLive's
+		// stale-record drop or its save: Observe is a read, and only Start or
+		// Stop replaces the record.
+		live, ok, err := p.binder.find(ctx, bd.Name, bd, nil)
 		if err != nil {
 			return "", Binding{}, err
 		}
@@ -230,10 +235,12 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 		}
 		obj := observeObjectFor(holder)
 		e := InventoryEntry{
-			Name:     string(bd.Name),
-			State:    state,
-			Object:   &obj,
-			Identity: p.observeIdentity(bd.Name),
+			Name:   string(bd.Name),
+			State:  state,
+			Object: &obj,
+		}
+		if holder.BlockID == bd.BlockID {
+			e.Identity = p.observeIdentity(bd.Name)
 		}
 		if state == ObserveDead {
 			e.Agent = "dead"
