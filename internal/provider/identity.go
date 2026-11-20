@@ -24,6 +24,7 @@ var startIdentityMetaKeys = []string{
 	"GC_TEMPLATE",
 	"GC_ALIAS",
 	"GC_PROVIDER",
+	"GT_PROCESS_NAMES",
 }
 
 // clearStartIdentity removes the identity keys seeded for a start. It is used

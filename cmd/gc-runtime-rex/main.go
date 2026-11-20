@@ -41,6 +41,8 @@ const (
 
 // handshake is the protocol op's reply. It declares only what is implemented:
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
+// observe.v1 is a switch: GCREX_OBSERVE_V1=1 declares it until GCREX-111
+// retires the switch.
 // idle-boundary gates the `idle` snapshot op (GCREX-63); gc 1.5.1 has no such
 // token and ignores it. carrier.ops says gc drives the five session ops
 // (nudge, peek, send-keys, interrupt, clear-scrollback) instead of exec, and
@@ -52,7 +54,13 @@ const (
 // rather than spending one of idleClaimNudgeMaxAttempts (GCREX-69). gc 1.5.1
 // has no input-outcome vocabulary and ignores the token, so 80 stays a plain
 // error there — the same answer it gives an undeclared pack.
-const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
+func handshake() string {
+	const base = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
+	if os.Getenv("GCREX_OBSERVE_V1") != "1" {
+		return base
+	}
+	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1"]}`
+}
 
 // buildVersion is the version the `version` op reports. A pack build may set
 // it with -ldflags "-X main.buildVersion=<version>"; a bare `go install`
@@ -201,6 +209,9 @@ var ops = map[string]opSpec{
 	"set-meta":          {2, "set-meta <name> <key>", opSetMeta},
 	"get-meta":          {2, "get-meta <name> <key>", opGetMeta},
 	"remove-meta":       {2, "remove-meta <name> <key>", opRemoveMeta},
+	"observe":           {1, "observe <name>", opObserve},
+	"inventory":         {0, "inventory", opInventory},
+	"kill-object":       {1, "kill-object <name>", opKillObject},
 }
 
 // inputOutcomeOps are the four driving ops whose failures are typed by
@@ -224,7 +235,7 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 	op, rest := args[0], args[1:]
 
 	if op == "protocol" {
-		if _, err := fmt.Fprintln(stdout, handshake); err != nil {
+		if _, err := fmt.Fprintln(stdout, handshake()); err != nil {
 			fmt.Fprintf(stderr, "gc-runtime-rex: protocol: write output: %v\n", err)
 			return exitFail
 		}
@@ -387,6 +398,55 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 
 func opStop(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.Stop(ctx, args[0])
+}
+
+// opObserve answers `observe <name>`. Its stdin is newline-separated process
+// names; the provider reads the name's own process list, so the input is
+// drained and ignored.
+func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
+	if _, err := io.Copy(io.Discard, stdin); err != nil {
+		return fmt.Errorf("read process names: %w", err)
+	}
+	ans, err := p.Observe(ctx, args[0], nil)
+	if err != nil {
+		return err
+	}
+	line, err := json.Marshal(ans)
+	if err != nil {
+		return fmt.Errorf("encode observe answer: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(line))
+	return err
+}
+
+func opInventory(ctx context.Context, p *provider.Provider, _ []string, _ io.Reader, out io.Writer) error {
+	ans, err := p.Inventory(ctx)
+	if err != nil {
+		return err
+	}
+	line, err := json.Marshal(ans)
+	if err != nil {
+		return fmt.Errorf("encode inventory answer: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(line))
+	return err
+}
+
+func opKillObject(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
+	raw, err := io.ReadAll(stdin)
+	if err != nil {
+		return fmt.Errorf("read kill-object request: %w", err)
+	}
+	var req provider.KillObjectRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return fmt.Errorf("parse kill-object request: %w", err)
+	}
+	res, err := p.KillObject(ctx, args[0], req)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, res)
+	return err
 }
 
 // opAttach answers gc's attach call with a hint instead of a pty passthrough.

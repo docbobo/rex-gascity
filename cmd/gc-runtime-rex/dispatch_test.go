@@ -81,6 +81,7 @@ func assertFailure(t *testing.T, r result, code int) {
 const dog = "Indigo--dog-1"
 
 func TestProtocolHandshake(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "")
 	h, _ := newHarness(t)
 	r := h.must("", "protocol")
 	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}` + "\n"
@@ -103,6 +104,79 @@ func TestProtocolHandshake(t *testing.T) {
 	}
 	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome"}) {
 		t.Errorf("capabilities = %v", caps)
+	}
+}
+
+// TestObserveV1HandshakeGated proves the token is a switch: the handshake
+// declares observe.v1 only when GCREX_OBSERVE_V1=1.
+func TestObserveV1HandshakeGated(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "")
+	h, _ := newHarness(t)
+	r := h.must("", "protocol")
+	if strings.Contains(r.stdout, "observe.v1") {
+		t.Errorf("handshake declares observe.v1 without GCREX_OBSERVE_V1=1: %q", r.stdout)
+	}
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	r = h.must("", "protocol")
+	if !strings.Contains(r.stdout, `"observe.v1"`) {
+		t.Errorf("handshake does not declare observe.v1 with GCREX_OBSERVE_V1=1: %q", r.stdout)
+	}
+}
+
+// TestObserveInventoryKillObjectOps proves the observe.v1 ops answer:
+// absent for a never-started name (RPP-OBSERVE-002), running with its object
+// and the start env's identity for a started box (RPP-OBSERVE-003), a
+// truthful inventory, and gone for an object that names no box.
+func TestObserveInventoryKillObjectOps(t *testing.T) {
+	h, _ := newHarness(t)
+
+	type object struct {
+		ID      string `json:"id"`
+		Created string `json:"created"`
+	}
+	type observe struct {
+		State    string            `json:"state"`
+		Object   *object           `json:"object"`
+		Identity map[string]string `json:"identity"`
+	}
+
+	var obs observe
+	if err := json.Unmarshal([]byte(h.must("", "observe", dog).stdout), &obs); err != nil {
+		t.Fatalf("observe absent: %v", err)
+	}
+	if obs.State != "absent" {
+		t.Errorf("observe never-started = %q, want absent", obs.State)
+	}
+
+	h.must(`{"command":"sleep 300","env":{"GC_SESSION_ID":"sid-1","GC_INSTANCE_TOKEN":"tok-1","GC_RUNTIME_EPOCH":"1","GT_PROCESS_NAMES":"sleep"}}`, "start", dog)
+	if err := json.Unmarshal([]byte(h.must("sleep\n", "observe", dog).stdout), &obs); err != nil {
+		t.Fatalf("observe running: %v", err)
+	}
+	if obs.State != "running" {
+		t.Errorf("observe started = %q, want running", obs.State)
+	}
+	if obs.Object == nil || obs.Object.ID == "" || obs.Object.Created == "" {
+		t.Errorf("observe object = %+v, want a non-empty id and created", obs.Object)
+	}
+	if obs.Identity["GC_SESSION_ID"] != "sid-1" || obs.Identity["GC_INSTANCE_TOKEN"] != "tok-1" {
+		t.Errorf("observe identity = %v, want the start env's", obs.Identity)
+	}
+
+	var inv struct {
+		Complete bool `json:"complete"`
+		Sessions []struct {
+			Name string `json:"name"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(h.must("", "inventory").stdout), &inv); err != nil {
+		t.Fatalf("inventory: %v", err)
+	}
+	if !inv.Complete || len(inv.Sessions) != 1 || inv.Sessions[0].Name != dog {
+		t.Errorf("inventory = %+v, want complete and just %q", inv, dog)
+	}
+
+	if got := strings.TrimSpace(h.must(`{"object":{"id":"not-the-object","created":"1970-01-01T00:00:00Z"},"mode":"corpse"}`, "kill-object", dog).stdout); got != "gone" {
+		t.Errorf("kill-object mismatched object = %q, want gone", got)
 	}
 }
 
