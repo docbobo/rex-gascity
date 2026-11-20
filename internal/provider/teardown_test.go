@@ -245,8 +245,10 @@ func TestProcessAliveTransientProcessErrorIsUnknown(t *testing.T) {
 }
 
 // TestStopUnreachableWithoutBindingSucceeds pins GCREX-51 REQ-001: with Rex
-// unreachable and no binding answering to the name, stop has nothing to close
-// and succeeds, as herdr-core does with the core down and nothing running.
+// unreachable and no stored binding answering to the name, stop succeeds, as
+// herdr-core does for an absent name with the core down. This is the
+// stored-binding policy, not proof that no process is alive (parity stop
+// deviation 8).
 func TestStopUnreachableWithoutBindingSucceeds(t *testing.T) {
 	fake := faketest.New()
 	fake.ListSessionsErr = rex.ErrUnavailable
