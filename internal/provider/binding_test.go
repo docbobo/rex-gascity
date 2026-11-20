@@ -216,11 +216,16 @@ func TestScanFindsLegacyWindowLabel(t *testing.T) {
 		// hint is the env-derived label Start supplies; the legacy window
 		// label must still be found when it is set.
 		hint string
+		// legacyTab is the pre-GCREX-72 GC_RIG label Start supplies, which
+		// the name alone cannot derive for a short pool name.
+		legacyTab string
 	}{
-		{"Indigo--dog-1", "Indigo", "dog-1", ""},
-		{"mayor", legacyTownTab, "mayor", ""},
-		{"Indigo--dog-1", "Indigo", "dog-1", "Rig: Indigo"},
-		{"mayor", legacyTownTab, "mayor", "my-city"},
+		{"Indigo--dog-1", "Indigo", "dog-1", "", ""},
+		{"mayor", legacyTownTab, "mayor", "", ""},
+		{"Indigo--dog-1", "Indigo", "dog-1", "Rig: Indigo", ""},
+		{"mayor", legacyTownTab, "mayor", "my-city", ""},
+		{"dog-1", "Indigo", "dog-1", "Rig: Indigo", "Indigo"},
+		{"Indigo--dog-1", "other-rig", "dog-1", "Rig: other-rig", "other-rig"},
 	} {
 		t.Run(tc.name+"/hint="+tc.hint, func(t *testing.T) {
 			b, _, _ := newTestBinder(t, rex.Window{ID: "window:old", Label: tc.windowLabel,
@@ -229,6 +234,9 @@ func TestScanFindsLegacyWindowLabel(t *testing.T) {
 			req := ResolveRequest{Name: SessionName(tc.name), Mode: ResolveFresh}
 			if tc.hint != "" {
 				req.Hint = Binding{Name: SessionName(tc.name), TabLabel: tc.hint, PaneLabel: tc.blockLabel}
+			}
+			if tc.legacyTab != "" {
+				req.LegacyTabs = []string{tc.legacyTab}
 			}
 			got, ok, err := b.Resolve(context.Background(), req)
 			if err != nil || !ok || got.BlockID != "block:old" || got.TabLabel != tc.windowLabel {

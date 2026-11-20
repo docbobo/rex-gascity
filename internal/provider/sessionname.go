@@ -71,11 +71,20 @@ func tabLabel(name SessionName, env map[string]string, town string) string {
 // town-level name, otherwise the bare rig. A record with no stored TabLabel or
 // a window that predates the upgrade still carries it, so resolution accepts it
 // as well as the derived label.
-func legacyTabLabel(n SessionName) string {
+func legacyTabLabel(n SessionName) string { return legacyTabLabelFor(n, nil) }
+
+// legacyTabLabelFor is the label the pre-GCREX-72 provider wrote for n: the
+// town label for a town-level name, otherwise the start env's GC_RIG (which gc
+// 1.5.1 only supplied once the rig was known) or the name-derived rig.
+func legacyTabLabelFor(n SessionName, env map[string]string) string {
 	if n.IsTown() {
 		return legacyTownTab
 	}
-	return n.Rig()
+	rig := env["GC_RIG"]
+	if rig == "" {
+		rig = n.Rig()
+	}
+	return rig
 }
 
 // clampRexLabel truncates s to maxRexLabel runes, replacing the tail with "…"
