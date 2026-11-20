@@ -15,3 +15,6 @@ bin/
 
 # bv (b9s) local config and caches
 .bv/
+
+# Per-bead worktrees (gc staged workflow)
+/worktrees/
