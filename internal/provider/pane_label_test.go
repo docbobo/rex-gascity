@@ -439,3 +439,93 @@ func TestRecordlessBareLabelNotAdoptedGlobally(t *testing.T) {
 		})
 	}
 }
+
+// TestTabScopedBareLabelNotAdopted guards the CodeRabbit concern retained on
+// binding.go: the tab-scoped scan also accepted a bare label equal to the
+// session name. A legacy pane for "rig--rig--worker" is labelled "rig--worker"
+// and sits in "Rig: rig" — exactly the tab a recordless resolve for
+// "rig--worker" scans — so the scan adopted that other session's pane. Only the
+// expected pane label (the hint/stored PaneLabel or the name-derived one) is
+// accepted in the candidate tabs now.
+func TestTabScopedBareLabelNotAdopted(t *testing.T) {
+	ctx := context.Background()
+	const (
+		name  = "rig--worker"
+		label = "rig--worker" // legacy pane of rig--rig--worker
+		block = rex.BlockID("block:legacy")
+	)
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:rig",
+			Label:  "Rig: rig",
+			Blocks: []rex.Block{{ID: block, Label: label}},
+		}}}
+		f.Processes = map[rex.BlockID]rex.ProcessInfo{
+			block: {Foreground: &rex.Process{PID: 42, Name: "pi"}},
+		}
+		return f
+	}
+
+	running, err := New("acme", newFake()).IsRunning(ctx, name)
+	if err != nil {
+		t.Fatalf("IsRunning: %v", err)
+	}
+	if running {
+		t.Fatalf("IsRunning = true; tab-scoped bare label %q of another session must not be adopted", label)
+	}
+	fake := newFake()
+	if err := New("acme", fake).Stop(ctx, name); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if slices.Contains(fake.ClosedBlocks, block) {
+		t.Fatalf("Stop closed %s; a tab-scoped bare label must not be adopted", block)
+	}
+}
+
+// TestBareLabelPaneFoundWithAttribution is the counterpart proof: a 125-128
+// rune town-level session name yields a bare session label, and Start still
+// finds its own pane both through the hint it passes and through the stored
+// record.
+func TestBareLabelPaneFoundWithAttribution(t *testing.T) {
+	ctx := context.Background()
+	for _, n := range []int{125, 126, 127, 128} {
+		session := strings.Repeat("s", n)
+		env := map[string]string{"GC_SESSION_NAME": session}
+
+		fake := faketest.New()
+		p := New("acme", fake)
+		if err := p.Start(ctx, session, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+			t.Fatalf("len=%d: Start: %v", n, err)
+		}
+		if got := fake.CreatedWindows[0].Spec.Label; got != session {
+			t.Fatalf("len=%d: launched pane label = %q, want the bare session label", n, got)
+		}
+		if _, ok := p.Binding(session); !ok {
+			t.Fatalf("len=%d: Binding = false after Start", n)
+		}
+
+		// Record present: a resumed start keeps the live block.
+		if err := p.Start(ctx, session, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+			t.Fatalf("len=%d: Start with record present: %v", n, err)
+		}
+		if len(fake.CreatedWindows) != 1 || len(fake.CreatedSplits) != 0 {
+			t.Fatalf("len=%d: record-present resume relaunched a pane: windows=%d splits=%d",
+				n, len(fake.CreatedWindows), len(fake.CreatedSplits))
+		}
+
+		// Record lost: the env-derived hint carries the bare label, so a fresh
+		// provider finds the live block instead of launching again.
+		rebuilt := faketest.New()
+		rebuilt.Sessions = fake.Sessions
+		rebuilt.View = fake.View
+		if err := New("acme", rebuilt).Start(ctx, session, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+			t.Fatalf("len=%d: Start with record lost: %v", n, err)
+		}
+		if len(rebuilt.CreatedWindows) != 0 || len(rebuilt.CreatedSplits) != 0 {
+			t.Fatalf("len=%d: lost-record resume relaunched a pane: windows=%d splits=%d",
+				n, len(rebuilt.CreatedWindows), len(rebuilt.CreatedSplits))
+		}
+	}
+}
