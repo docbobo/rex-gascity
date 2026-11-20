@@ -788,14 +788,23 @@ derive the Rex tab and to record rig-qualified aliases. Every other `GC_*` is
 incidental to the provider: present in the start config, but not part of the
 provider contract.
 
+Pane labels are display-only and outside the durable contract (GCREX-5qel):
+`start` labels a rig-scoped pane `<agent> (<GC_SESSION_NAME>)`, resolving the
+agent `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR` segment after the first `/`.
+A blank session name or agent keeps the name-derived label, town-level panes
+keep theirs, and an over-long label is clamped to 128 runes without cutting the
+parenthesised session name. Discovery re-derives the same label, so resolution
+never depends on the human-readable prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
+stay incidental: they only feed this display string.
+
 | Variable | Meaning | When set | Role |
 |---|---|---|---|
 | `GC_RIG` | rig name (`my-project`); empty for town-level sessions | rig-scoped sessions (empty otherwise) | **Durable**: tab label (`Rig: <rig>`), alias |
 | `GC_TEMPLATE` | qualified template (`my-project/pi`, `my-project/core.control-dispatcher`, `mayor`) | when `Info.Template` is non-empty | **Durable**: alias `Sanitize(GC_TEMPLATE)` |
-| `GC_ALIAS` | public routing/display alias (`mayor`, `my-project/core.control-dispatcher`; empty for an unaliased pool instance) | always (explicit empty clears a stale default) | **Durable**: alias `Sanitize(GC_ALIAS)` |
-| `GC_AGENT` | durable ownership identity (`mayor`, `mc-wisp-ybq1`, `my-project/core.control-dispatcher`) | when the assignee identity is non-empty | **Durable**: alias `Sanitize(GC_AGENT)` when qualified |
+| `GC_ALIAS` | public routing/display alias (`mayor`, `my-project/core.control-dispatcher`; empty for an unaliased pool instance) | always (explicit empty clears a stale default) | **Durable**: alias `Sanitize(GC_ALIAS)`; first choice for the pane label |
+| `GC_AGENT` | durable ownership identity (`mayor`, `mc-wisp-ybq1`, `my-project/core.control-dispatcher`) | when the assignee identity is non-empty | **Durable**: alias `Sanitize(GC_AGENT)` when qualified; pane-label fallback |
 | `GC_SESSION_ID` | session/incarnation id (`mc-wisp-ybq1`) | always | incidental |
-| `GC_SESSION_NAME` | runtime session name (`pi-mc-wisp-ybq1`) | always | incidental (same value as the `start` argv name) |
+| `GC_SESSION_NAME` | runtime session name (`pi-mc-wisp-ybq1`) | always | incidental: same value as the `start` argv name, displayed in the pane label |
 | `GC_SESSION_ORIGIN` | `named`, `ephemeral`, … | when `Info.SessionOrigin` is non-empty | incidental |
 | `GC_INSTANCE_TOKEN` | fence token against stale incarnations | always; secret, may be empty in the env | incidental |
 | `GC_CONTINUATION_EPOCH` | conversation identity epoch | always | incidental |
