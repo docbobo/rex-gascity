@@ -131,16 +131,22 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 			return ObserveAnswer{State: ObserveAbsent}, nil
 		}
 	}
-	alive, err := p.paneAlive(ctx, bd)
-	if err != nil {
-		if errors.Is(err, rex.ErrUnavailable) {
-			return ObserveAnswer{State: ObserveUnknown}, nil
-		}
+	// Read liveness directly rather than through paneAlive: a block Rex no
+	// longer knows proves nothing holds the name, which is absent (rule 7), not
+	// a dead box with a stale object.
+	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
+	switch {
+	case errors.Is(err, rex.ErrNotFound):
+		p.binder.Forget(bd.Name)
+		return ObserveAnswer{State: ObserveAbsent}, nil
+	case errors.Is(err, rex.ErrUnavailable):
+		return ObserveAnswer{State: ObserveUnknown}, nil
+	case err != nil:
 		return ObserveAnswer{}, err
 	}
 	obj := observeObjectFor(bd)
 	ans := ObserveAnswer{Object: &obj, Identity: p.observeIdentity(bd.Name)}
-	if alive {
+	if info.LastExit == nil {
 		ans.State = ObserveRunning
 	} else {
 		ans.State = ObserveDead
@@ -255,9 +261,9 @@ func paneSessionName(label string) (SessionName, bool) {
 //
 // The whole check-then-kill runs under the name lock, so a start cannot slip a
 // new box under the name between the re-check and the close. Corpse mode kills
-// only a box nothing runs in and answers `live` otherwise. Zombie mode needs
-// the agent check RPP-OBSERVE-006 does not implement yet, so it never kills and
-// answers `changed`.
+// only a box nothing runs in and no client has open, and answers `live`
+// otherwise. Zombie mode needs the agent check RPP-OBSERVE-006 does not
+// implement yet, so it never kills and answers `changed`.
 func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRequest) (string, error) {
 	if strings.TrimSpace(req.Object.ID) == "" || strings.TrimSpace(req.Object.Created) == "" {
 		return "", errors.New("kill-object: object id and created are required")
@@ -297,9 +303,19 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	if alive {
 		return "live", nil
 	}
-	// Same locking as Stop, which this close is: the name lock is already
-	// held, so only the city-wide state lock is taken here.
-	if err := p.withStateLock(ctx, func() error { return p.stop(ctx, name) }); err != nil {
+	attached, err := p.attached(ctx, bd)
+	if err != nil {
+		// An unreadable attachment is not proof nobody is watching.
+		return "", err
+	}
+	if attached {
+		return "live", nil
+	}
+	// Close exactly the object that was re-checked, never by name: a fresh
+	// resolve could close a pane that took the name's labels after this one
+	// vanished. Same locking as Stop, which this close is: the name lock is
+	// already held, so only the city-wide state lock is taken here.
+	if err := p.withStateLock(ctx, func() error { return p.stopBinding(ctx, SessionName(name), bd) }); err != nil {
 		return "", err
 	}
 	return "killed", nil

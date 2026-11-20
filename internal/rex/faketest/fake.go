@@ -52,6 +52,10 @@ type Fake struct {
 	// a pane whose program exits between calls.
 	ProcessFunc func(rex.BlockID) rex.ProcessInfo
 
+	// VanishedBlocks lists blocks whose BlockProcess returns rex.ErrNotFound,
+	// as Rex does for a pane whose program exited and closed its block.
+	VanishedBlocks map[rex.BlockID]bool
+
 	// Formats is the rendered output BlockFormat reports, keyed by block.
 	Formats map[rex.BlockID]string
 
@@ -234,6 +238,9 @@ func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.Bloc
 	f.record(sid, block, "process")
 	if f.ProcessErr != nil {
 		return rex.ProcessInfo{}, f.ProcessErr
+	}
+	if f.VanishedBlocks[block] {
+		return rex.ProcessInfo{}, rex.ErrNotFound
 	}
 	if f.ProcessFunc != nil {
 		return f.ProcessFunc(block), nil

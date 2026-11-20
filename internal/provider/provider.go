@@ -781,6 +781,14 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		// the identity seed a failed or rolled-back start may have written.
 		return p.clearIncarnations(n, stored.Name)
 	}
+	return p.stopBinding(ctx, n, binding)
+}
+
+// stopBinding closes one exact binding: the drain diagnostic, the close, the
+// re-read, the reap and the record cleanup. stop resolves a name to a binding
+// first; kill-object passes the object it re-checked, so its close never
+// follows a fresh resolve onto a different pane.
+func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Binding) error {
 	// Sample the work tree before the pane closes, while the worker is alive.
 	p.writeDrainDiagnostic(ctx, binding)
 	// Capture the pane's reported process tree too: a close is not proof that

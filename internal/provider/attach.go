@@ -28,6 +28,35 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	return p.attached(ctx, binding)
+}
+
+// attached reports whether a human is watching one exact binding's pane. It is
+// IsAttached without the resolve, so kill-object can check the object it has
+// already identified instead of whichever box a fresh resolve would return.
+func (p *Provider) attached(ctx context.Context, binding Binding) (bool, error) {
+	clients, err := p.client.ListClients(ctx, binding.SessionID)
+	if err != nil {
+		return false, err
+	}
+	hasApp := false
+	for _, c := range clients {
+		switch c.Kind {
+		case "app":
+			hasApp = true
+		case "cli", "peer":
+		default:
+			// We cannot classify this client, so we cannot tell whether a
+			// human is watching. gc reads any is-attached error as "not
+			// attached" (fail-open) and then lets config-drift restart,
+			// progress-stall recycle and the drain-ack escalation kill
+			// proceed, so answer true instead.
+			return true, nil
+		}
+	}
+	if !hasApp {
+		return false, nil
+	}
 	view, err := p.client.SessionView(ctx, binding.SessionID)
 	if err != nil {
 		return false, err
