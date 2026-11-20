@@ -52,7 +52,7 @@ func TestTabLabel(t *testing.T) {
 		{"pin default is not special", town, nil, townTabLabel("default"), "default"},
 		{"rig from GC_RIG", rig, map[string]string{"GC_RIG": "Other"}, townTabLabel("my-city"), "Rig: Other"},
 		{"rig from name split", rig, nil, townTabLabel("my-city"), "Rig: Indigo"},
-		{"stray GC_RIG on a town name", town, map[string]string{"GC_RIG": "Other"}, townTabLabel("my-city"), "my-city"},
+		{"GC_RIG on a town name groups by rig", town, map[string]string{"GC_RIG": "Other"}, townTabLabel("my-city"), "Rig: Other"},
 		{"over-long pin clamps", town, nil, townTabLabel(long), string([]rune(long)[:maxRexLabel-1]) + "…"},
 		{"over-long rig keeps prefix", rig, map[string]string{"GC_RIG": longRig}, "", "Rig: " + string([]rune(longRig)[:maxRexLabel-6]) + "…"},
 	}

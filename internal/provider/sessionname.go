@@ -56,18 +56,19 @@ func townTabLabel(pin string) string {
 	return pin
 }
 
-// tabLabel derives the Rex tab label for a started session: the town label for
-// a town-level name, otherwise "Rig: <rig>" with GC_RIG preferred over the
-// name split. Every result is clamped to maxRexLabel.
+// tabLabel derives the Rex tab label for a started session: "Rig: <GC_RIG>"
+// whenever GC_RIG is non-empty, even for a town-style name with no "--" (a wisp
+// instance name). Only with no GC_RIG does the name shape decide: the town label
+// for a town-level name, otherwise "Rig: " plus the name split. Every result is
+// clamped to maxRexLabel.
 func tabLabel(name SessionName, env map[string]string, town string) string {
+	if rig := env["GC_RIG"]; rig != "" {
+		return clampRexLabel("Rig: " + rig)
+	}
 	if name.IsTown() {
 		return clampRexLabel(town)
 	}
-	rig := env["GC_RIG"]
-	if rig == "" {
-		rig = name.Rig()
-	}
-	return clampRexLabel("Rig: " + rig)
+	return clampRexLabel("Rig: " + name.Rig())
 }
 
 // legacyTabLabel is the tab label gc wrote before GCREX-72: "__town" for a
