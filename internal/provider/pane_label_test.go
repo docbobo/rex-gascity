@@ -186,6 +186,50 @@ func TestPaneLabelForClamp(t *testing.T) {
 		}
 	})
 
+	// A verified short form is the session's identity, so an over-long one is
+	// clamped on the agent and keeps its parenthesised bead id instead of
+	// falling through to the long form (which cannot fit either).
+	t.Run("verified short form over the limit keeps the bead id", func(t *testing.T) {
+		agent := strings.Repeat("a", 60)
+		bead := strings.Repeat("9", 78)
+		session := agent + "-" + bead
+		env := map[string]string{
+			"GC_RIG":          "rex-gascity",
+			"GC_TEMPLATE":     "rex-gascity/" + agent,
+			"GC_AGENT":        bead,
+			"GC_SESSION_NAME": session,
+		}
+		if short := agent + " (" + bead + ")"; utf8.RuneCountInString(short) <= maxPaneLabelRunes {
+			t.Fatalf("fixture short form is %d runes, want over %d", utf8.RuneCountInString(short), maxPaneLabelRunes)
+		}
+		got := paneLabelFor(SessionName(session), env)
+		if n := utf8.RuneCountInString(got); n > maxPaneLabelRunes {
+			t.Fatalf("label has %d runes, want <= %d: %q", n, maxPaneLabelRunes, got)
+		}
+		if !strings.HasSuffix(got, " ("+bead+")") {
+			t.Fatalf("label %q lost the parenthesised bead id %q", got, bead)
+		}
+		if again := paneLabelFor(SessionName(session), env); again != got {
+			t.Fatalf("label is not deterministic: %q != %q", got, again)
+		}
+	})
+
+	t.Run("verified short form with a suffix that cannot fit falls back", func(t *testing.T) {
+		agent := strings.Repeat("a", 60)
+		bead := strings.Repeat("9", 200)
+		session := agent + "-" + bead
+		env := map[string]string{
+			"GC_RIG":          "rex-gascity",
+			"GC_TEMPLATE":     "rex-gascity/" + agent,
+			"GC_AGENT":        bead,
+			"GC_SESSION_NAME": session,
+		}
+		got := paneLabelFor(SessionName(session), env)
+		if want := clampRexLabel(session); got != want {
+			t.Fatalf("label = %q, want the bare clamped session name %q", got, want)
+		}
+	})
+
 	t.Run("short label unchanged", func(t *testing.T) {
 		env := map[string]string{
 			"GC_RIG":          "rex-gascity",
@@ -244,58 +288,6 @@ func TestPaneLabelRediscovery(t *testing.T) {
 
 	// Sidecar record lost: a fresh provider sees only Rex, so the env-derived
 	// hint must find the block under the same label instead of launching again.
-	rebuilt := faketest.New()
-	rebuilt.Sessions = fake.Sessions
-	rebuilt.View = fake.View
-	if err := New("acme", rebuilt).Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
-		t.Fatalf("Start with record lost: %v", err)
-	}
-	if len(rebuilt.CreatedWindows) != 0 || len(rebuilt.CreatedSplits) != 0 {
-		t.Fatalf("lost-record resume relaunched a pane: windows=%d splits=%d",
-			len(rebuilt.CreatedWindows), len(rebuilt.CreatedSplits))
-	}
-}
-
-// TestStartPaneLabelFromProjectedEnv is the GCREX-5qel review fix for the
-// launch label: pool routing rewrites BEADS_ACTOR, so the launch label, the
-// discovery hint and the recorded label must all come from the projected env.
-// Before the fix the launch used the pre-projection agent and a restart with
-// the record lost launched a duplicate pane.
-func TestStartPaneLabelFromProjectedEnv(t *testing.T) {
-	ctx := context.Background()
-	const start = "rex-gascity--worker"
-	want := "worker (" + start + ")"
-	env := map[string]string{
-		"GC_RIG":          "rex-gascity",
-		"GC_TEMPLATE":     "rex-gascity/worker",
-		"GC_ALIAS":        "",
-		"GC_AGENT":        "",
-		"GC_SESSION_ID":   "mc-wisp-projected",
-		"BEADS_ACTOR":     "legacy",
-		"GC_SESSION_NAME": start,
-	}
-	// Pool routing rewrites BEADS_ACTOR to GC_TEMPLATE for this env. The
-	// derived label must agree with the name alone (GCREX-7n06r), so it is
-	// unchanged by projection.
-
-	fake := faketest.New()
-	p := New("acme", fake)
-	if err := p.Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if got := fake.CreatedWindows[0].Spec.Label; got != want {
-		t.Fatalf("launched pane label = %q, want the projected-env label %q", got, want)
-	}
-	stored, ok := p.Binding(start)
-	if !ok {
-		t.Fatal("Binding(start) = false after Start")
-	}
-	if stored.PaneLabel != want {
-		t.Fatalf("recorded pane label = %q, want %q", stored.PaneLabel, want)
-	}
-
-	// The record is lost and the same start runs again: the hint from the
-	// projected env finds the live pane, so no second pane is launched.
 	rebuilt := faketest.New()
 	rebuilt.Sessions = fake.Sessions
 	rebuilt.View = fake.View
@@ -734,6 +726,11 @@ func TestIdentityMatch(t *testing.T) {
 		{"legacy long form", "rex-gascity--worker", "worker (rex-gascity--worker)", true},
 		{"named form", "core__control-dispatcher-mc-wisp-vmecx", "core.control-dispatcher (core__control-dispatcher-mc-wisp-vmecx)", true},
 		{"pool short form", "gc__implementation-worker-mc-wisp-kvqib", "gc.implementation-worker (mc-wisp-kvqib)", true},
+		// The second branch is the concatenation, not the literal suffix: a
+		// long-form-shaped label names a session only when Sanitize(agent)+"-"+
+		// suffix is the whole name.
+		{"long-form-shaped label matched by concatenation", "legacy-agent-a--b-1", "legacy-agent (a--b-1)", true},
+		{"concat branch does not accept a different agent", "other-agent-a--b-1", "legacy-agent (a--b-1)", false},
 		{"another session's bead id same tab", "gc__implementation-worker-mc-wisp-1e4r8", "gc.implementation-worker (mc-wisp-kvqib)", false},
 		{"bare label", "rex-gascity--worker", "worker", false},
 		{"suffix satisfies neither branch", "gc__implementation-worker-mc-wisp-1e4r8", "other.agent (mc-wisp-1e4r8)", false},

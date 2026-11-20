@@ -114,7 +114,9 @@ const maxPaneLabelRunes = 128
 // GC_SESSION_NAME, gc's PoolSessionName shape) gets the short
 // "<agent> (<bead id>)" form; every other rig-scoped session keeps
 // "<agent> (<GC_SESSION_NAME>)", and a town-level session keeps the
-// name-derived label.
+// name-derived label. Both forms shorten only the agent. A verified short form
+// is the identity even when it is over the limit, so it is clamped keeping the
+// bead id rather than falling through to the always-longer long form.
 func paneLabelFor(n SessionName, env map[string]string) string {
 	if env["GC_RIG"] == "" && n.IsTown() {
 		return n.PaneLabel()
@@ -129,25 +131,34 @@ func paneLabelFor(n SessionName, env map[string]string) string {
 	// long form rather than to a guess.
 	if env["GC_ALIAS"] == "" {
 		if suffix := panePoolSuffix(env); suffix != "" && sanitizeQualified(agent)+"-"+suffix == session {
-			if short := agent + " (" + suffix + ")"; utf8.RuneCountInString(short) <= maxPaneLabelRunes {
-				return short
+			if label, ok := fitPaneLabel(agent, suffix); ok {
+				return label
 			}
+			return clampRexLabel(session)
 		}
 	}
-	label := agent + " (" + session + ")"
-	if utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+	if label, ok := fitPaneLabel(agent, session); ok {
 		return label
 	}
-	// Truncate only the agent: the parenthesised session name is the
-	// discovery identity (Binder.scan), so cutting it would make two long
-	// sessions differing at the tail share a label. When the suffix alone
-	// cannot fit, fall back to the bare session name; identity past 128
-	// runes cannot be represented at all.
-	suffix := " (" + session + ")"
-	if len([]rune(suffix)) >= maxPaneLabelRunes {
-		return clampRexLabel(session)
+	return clampRexLabel(session)
+}
+
+// fitPaneLabel renders "<agent> (<suffix>)" at or under Rex's limit. Only the
+// agent is shortened: the parenthesised suffix is the discovery identity
+// (Binder.scan), so cutting it would make two sessions differing at the tail
+// share a label. ok is false when not even the agent and the suffix fit — no
+// label within the limit can then name the session.
+func fitPaneLabel(agent, suffix string) (string, bool) {
+	tail := " (" + suffix + ")"
+	budget := maxPaneLabelRunes - utf8.RuneCountInString(tail)
+	if budget < 1 {
+		return "", false
 	}
-	return string([]rune(agent)[:maxPaneLabelRunes-len([]rune(suffix))]) + suffix
+	r := []rune(agent)
+	if len(r) > budget {
+		r = r[:budget]
+	}
+	return string(r) + tail, true
 }
 
 // paneLabelAgent is the display agent: the agent part of GC_TEMPLATE (the
@@ -163,7 +174,8 @@ func paneLabelAgent(env map[string]string) string {
 // panePoolSuffix is the unaliased pool session's bead id: GC_AGENT (the session
 // bead id AssigneeIdentifier stamps), else GC_SESSION_ID, else the BEADS_ACTOR
 // segment after the first "/". GC_AGENT comes first because pool routing
-// rewrites BEADS_ACTOR to GC_TEMPLATE.
+// rewrites BEADS_ACTOR to GC_TEMPLATE. A qualified GC_AGENT (containing "/" or
+// ".") is an alias/configured identity, never a bead id, so it is skipped.
 func panePoolSuffix(env map[string]string) string {
 	if v := strings.TrimSpace(env["GC_AGENT"]); v != "" && !strings.ContainsAny(v, "/.") {
 		return v

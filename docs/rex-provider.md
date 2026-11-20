@@ -230,19 +230,29 @@ Gas City sessions map onto the three-level Rex hierarchy:
     `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`;
   - R3 suffix: a named/aliased session (`GC_ALIAS` non-empty) uses the whole
     `GC_SESSION_NAME`; an unaliased pool/ephemeral seat uses its session bead
-    id (`GC_AGENT`, else `GC_SESSION_ID`, else the `BEADS_ACTOR` segment), so
-    a pool seat reads `gc.implementation-worker (mc-wisp-kvqib)`;
+    id — `GC_AGENT` (a value containing `/` or `.` is a qualified agent, never
+    a bead id), else `GC_SESSION_ID` — so a pool seat reads
+    `gc.implementation-worker (mc-wisp-kvqib)`. The bead id is *tried* against
+    the name, never assumed: a seat with neither `GC_AGENT` nor
+    `GC_SESSION_ID` falls back to the template's agent part as the candidate
+    suffix, the verification below fails, and the long form is emitted;
   - R4 a pane with no gc env (started by hand, `shell`) is never relabelled.
 
   A blank session name or agent keeps the name-derived label, and an
-  over-long label is clamped to 128 runes without truncating the suffix.
+  over-long label is clamped to 128 runes without truncating the suffix —
+  the short form included, since its bead id is the identity even when the
+  agent has to be shortened to fit; only a suffix that cannot fit at all
+  falls back to the bare session name.
 - How a short label is verified: gc's pool runtime name is
   `Sanitize(path.Base(GC_TEMPLATE)) + "-" + beadID` (`PoolSessionName`,
   `cmd/gc/pool_session_name.go` at v1.5.1), with `Sanitize` mapping `/` to
   `--` and `.` to `__` (`internal/agent/session_name.go`). Before emitting the
   short form the provider asserts `Sanitize(agent)+"-"+suffix ==
   GC_SESSION_NAME`; when that fails (gc has changed its name shape before) it
-  emits the long `"<agent> (<GC_SESSION_NAME>)"` form rather than a guess.
+  emits the long `"<agent> (<GC_SESSION_NAME>)"` form rather than a guess. The
+  candidate suffix is only tried: without `GC_AGENT` and `GC_SESSION_ID` the
+  fallback candidate is the template's agent part, so the check fails and the
+  long form is emitted.
   Discovery applies the same rule (`identityMatch`): a label names session `n`
   when its parenthesised suffix is `n`, or `n` is exactly
   `Sanitize(agent)+"-"+suffix`; a bare label or a prefix-only match never

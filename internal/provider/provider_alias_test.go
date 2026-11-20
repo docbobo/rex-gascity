@@ -86,49 +86,102 @@ func TestStartDerivesTabFromGCRig(t *testing.T) {
 	}
 }
 
-// TestStartDerivesPaneLabelFromEnv is the GCREX-5qel item 2 wiring proof: a
-// start with a session name in the env launches and records the derived
-// "<agent> (<GC_SESSION_NAME>)" pane label, and a lost record is rediscovered
-// under that same label. The agent prefix is the agent part of GC_TEMPLATE
-// (gcrex-7n06r), not GC_AGENT's session bead id.
+// withSessionName adds the runtime session name to a start env.
+func withSessionName(env map[string]string, name string) map[string]string {
+	env["GC_SESSION_NAME"] = name
+	return env
+}
+
+// TestStartDerivesPaneLabelFromEnv is the Start-threaded pane-label proof
+// (GCREX-5qel item 2, gcrex-7n06r): one table over the four start-env shapes
+// runs the same body — launched label, recorded binding, liveness, and
+// record-lost rediscovery — so the label derivation is proven where Start
+// wires it, not only at paneLabelFor. The pool row fails on main: main has no
+// short form, so it launches "pi (<whole session name>)" there.
 func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
-	ctx := context.Background()
-	const session = "gc__implementation-worker-mc-wisp-fvwrce"
-	want := "pi (" + session + ")"
-	env := wispEnv()
-	env["GC_SESSION_NAME"] = session
+	const (
+		sessName = "gc__implementation-worker-mc-wisp-fvwrce"
+		projName = "rex-gascity--worker"
+	)
+	tests := []struct {
+		name  string
+		start string
+		env   map[string]string
+		want  string
+	}{
+		{
+			name:  "verified pool seat short form",
+			start: wispStart,
+			env:   withSessionName(wispEnv(), wispStart),
+			want:  "pi (mc-wisp-ybq1)",
+		},
+		{
+			name:  "aliased named session keeps the whole name",
+			start: cdStart,
+			env:   withSessionName(cdEnv(), cdStart),
+			want:  "core.control-dispatcher (" + cdStart + ")",
+		},
+		{
+			// Pool routing rewrites BEADS_ACTOR to GC_TEMPLATE before the
+			// label is derived; the env proves no short form here.
+			name:  "pool-routed projected env",
+			start: projName,
+			env: map[string]string{
+				"GC_RIG":          "rex-gascity",
+				"GC_TEMPLATE":     "rex-gascity/worker",
+				"GC_ALIAS":        "",
+				"GC_AGENT":        "",
+				"GC_SESSION_ID":   "mc-wisp-projected",
+				"BEADS_ACTOR":     "legacy",
+				"GC_SESSION_NAME": projName,
+			},
+			want: "worker (" + projName + ")",
+		},
+		{
+			name:  "no agent identity keeps the name-derived label",
+			start: sessName,
+			env:   map[string]string{"GC_RIG": aliasRig, "GC_SESSION_NAME": sessName},
+			want:  sessName,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			fake := faketest.New()
+			cfg := provider.Config{Argv: []string{"pi"}, Env: tt.env}
+			p := provider.New("acme", fake)
+			if err := p.Start(ctx, tt.start, cfg); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if len(fake.CreatedWindows) != 1 {
+				t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
+			}
+			if got := fake.CreatedWindows[0].Spec.Label; got != tt.want {
+				t.Fatalf("pane label = %q, want %q", got, tt.want)
+			}
+			b, ok := p.Binding(tt.start)
+			if !ok {
+				t.Fatal("Binding(start) = false after Start")
+			}
+			if b.PaneLabel != tt.want {
+				t.Fatalf("binding pane label = %q, want %q", b.PaneLabel, tt.want)
+			}
+			if running, err := p.IsRunning(ctx, tt.start); err != nil || !running {
+				t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", tt.start, running, err)
+			}
 
-	fake := faketest.New()
-	p := provider.New("acme", fake)
-	if err := p.Start(ctx, wispStart, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if got := fake.CreatedWindows[0].Spec.Label; got != want {
-		t.Errorf("pane label = %q, want %q", got, want)
-	}
-	b, ok := p.Binding(wispStart)
-	if !ok {
-		t.Fatal("Binding(start name) = false")
-	}
-	if b.PaneLabel != want {
-		t.Errorf("binding pane label = %q, want %q", b.PaneLabel, want)
-	}
-
-	// A restarted provider with no stored record rediscovers the live pane
-	// from the env-derived hint instead of launching a second one.
-	rebuilt := faketest.New()
-	rebuilt.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
-	rebuilt.View = rex.SessionView{Windows: []rex.Window{{
-		ID:     wispWindowID,
-		Label:  aliasRig,
-		Blocks: []rex.Block{{ID: wispPaneBlock, Label: want}},
-	}}}
-	reader := provider.New("acme", rebuilt)
-	if err := reader.Start(ctx, wispStart, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
-		t.Fatalf("Start after restart: %v", err)
-	}
-	if len(rebuilt.CreatedWindows) != 0 || len(rebuilt.CreatedSplits) != 0 {
-		t.Errorf("relaunched a live pane: windows=%d splits=%d", len(rebuilt.CreatedWindows), len(rebuilt.CreatedSplits))
+			// The record is lost and the same start runs again: the env-derived
+			// hint finds the live pane under the same label instead of launching
+			// a second one.
+			rebuilt := provider.New("acme", fake)
+			if err := rebuilt.Start(ctx, tt.start, cfg); err != nil {
+				t.Fatalf("Start with record lost: %v", err)
+			}
+			if len(fake.CreatedWindows) != 1 || len(fake.CreatedSplits) != 0 {
+				t.Fatalf("lost-record resume relaunched a pane: windows=%d splits=%d",
+					len(fake.CreatedWindows), len(fake.CreatedSplits))
+			}
+		})
 	}
 }
 
