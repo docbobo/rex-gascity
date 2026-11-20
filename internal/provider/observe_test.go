@@ -1,7 +1,9 @@
 package provider_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -401,8 +403,15 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 	if ans.Object != nil && ans.Object.Created == first.Object.Created {
 		t.Errorf("created = %q, want the retired box's %q not reported", ans.Object.Created, first.Object.Created)
 	}
-	if ans.Identity != nil {
-		t.Errorf("identity = %v, want none for a pane the provider did not start", ans.Identity)
+	// A box with no gc identity (one an operator made) is `{}` on the wire;
+	// an absent or null identity is "not yet readable" to gc (rule 5), which
+	// would keep an identity read of this pane pending forever.
+	raw, err := json.Marshal(ans)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"identity":{}`)) {
+		t.Errorf("answer = %s, want \"identity\":{} for a pane the provider did not start", raw)
 	}
 }
 
@@ -427,6 +436,51 @@ func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
 	}
 	if bd, ok := p.Binding(name); !ok || bd.BlockID != rex.BlockID(first.Object.ID) {
 		t.Errorf("binding after inventory = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
+	}
+	// Like observe, the restored pane's identity is an empty set, not null: gc
+	// reads null as "not yet readable" (rule 5), but this box has no gc
+	// identity at all.
+	raw, err := json.Marshal(inv.Sessions[0])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"identity":{}`)) {
+		t.Errorf("entry = %s, want \"identity\":{} for a pane the provider did not start", raw)
+	}
+}
+
+// TestKillObjectGoneForRestoredPane pins kill-object's answer for a pane that
+// took a vanished record's name: the exact-object re-check only knows the
+// recorded box, so the restored pane's object answers `gone` and no pane is
+// closed. Killing by name would be the unsafe alternative (rule 7).
+func TestKillObjectGoneForRestoredPane(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	first, err := p.Observe(ctx, name, nil)
+	if err != nil || first.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
+	}
+	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
+	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
+	restored, err := p.Observe(ctx, name, nil)
+	if err != nil || restored.Object == nil || restored.Object.ID != "block:dog-1-restored" {
+		t.Fatalf("Observe = %+v, %v; want the restored pane", restored, err)
+	}
+
+	res, err := p.KillObject(ctx, name, provider.KillObjectRequest{Object: *restored.Object, Mode: "corpse"})
+	if err != nil {
+		t.Fatalf("KillObject: %v", err)
+	}
+	if res != "gone" {
+		t.Errorf("result = %q, want gone: read ops do not adopt a restored pane", res)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed blocks = %v, want none: never close a pane the record does not name", fake.ClosedBlocks)
 	}
 }
 

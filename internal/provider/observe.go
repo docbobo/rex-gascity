@@ -29,24 +29,29 @@ type ObserveObject struct {
 	Created string `json:"created"`
 }
 
-// ObserveAnswer is one `observe` answer. Object and Identity are present only
-// for a box that holds the name (running or dead).
+// ObserveAnswer is one `observe` answer. Object is present only for a box that
+// holds the name (running or dead). Identity has no omitempty because nil and
+// an empty map are different answers: nil marshals as null, "identity not yet
+// readable" to gc (rule 5), and an empty map as {}, gc's "a box with no gc
+// identity (one an operator made)".
 type ObserveAnswer struct {
 	State    string            `json:"state"`
 	Object   *ObserveObject    `json:"object,omitempty"`
 	Agent    string            `json:"agent,omitempty"`
 	AgentPID string            `json:"agent_pid,omitempty"`
-	Identity map[string]string `json:"identity,omitempty"`
+	Identity map[string]string `json:"identity"`
 }
 
 // InventoryEntry is one session in an `inventory` snapshot. A session whose
-// attributes cannot be read carries only its name.
+// attributes cannot be read carries only its name. Identity, like
+// ObserveAnswer's, marshals {} for a box with no gc identity and null for one
+// whose identity is not yet readable.
 type InventoryEntry struct {
 	Name     string            `json:"name"`
 	State    string            `json:"state,omitempty"`
 	Object   *ObserveObject    `json:"object,omitempty"`
 	Agent    string            `json:"agent,omitempty"`
-	Identity map[string]string `json:"identity,omitempty"`
+	Identity map[string]string `json:"identity"`
 }
 
 // InventoryAnswer is the `inventory` wire object.
@@ -148,10 +153,13 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 	}
 	obj := observeObjectFor(holder)
 	ans := ObserveAnswer{State: state, Object: &obj}
-	// Identity is the started incarnation's start config; a pane that took the
-	// name without Start has none of its own.
+	// Identity is the started incarnation's start config. A pane that took the
+	// name without Start has no gc identity of its own: an empty set, which gc
+	// reads as operator-made, never nil, which it reads as "not yet readable".
 	if holder.BlockID == bd.BlockID {
 		ans.Identity = p.observeIdentity(idName)
+	} else {
+		ans.Identity = map[string]string{}
 	}
 	if state == ObserveDead {
 		ans.Agent = "dead"
@@ -241,6 +249,8 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 		}
 		if holder.BlockID == bd.BlockID {
 			e.Identity = p.observeIdentity(bd.Name)
+		} else {
+			e.Identity = map[string]string{}
 		}
 		if state == ObserveDead {
 			e.Agent = "dead"
