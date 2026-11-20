@@ -101,11 +101,14 @@ func WithNudgeConfirmation(window, interval time.Duration) Option {
 }
 
 // ErrNudgeClaimHeld reports that gc's fallback pool-claim nudge was not typed
-// because the target session already holds a live claim. Nothing was typed and
-// nothing was submitted, so gc's retry cannot duplicate input; the backstop
-// re-delivers after its backoff if the claim has closed by then. gc spends a
-// delivery attempt on the refusal and drains the slot at 3/3 on gc edge
-// (GCREX-67); docs/rex-provider.md records the residual risk.
+// because the target session already holds a live claim. It is answered as the
+// RPP "busy" input outcome (exit 80): the seat is live, not idle. At gc
+// `890a58a3e` / `544beb8d6` (#9137 only, not in `v1.5.1`; inert at the pin)
+// that word makes the stalled-claim backstop refund the reservation as a busy
+// deferral and retry; at `v1.5.1` exit 80 is a plain error and the attempt is
+// spent, the same as the old exit 1. A failed-delivery outcome would instead
+// let the backstop re-dispatch the seat's claim and abandon the in-flight work
+// (GCREX-69).
 var ErrNudgeClaimHeld = errors.New("provider: session holds a live claim")
 
 // defaultNudgeSubmitBudget bounds the write and the submit together when the
@@ -223,7 +226,10 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 }
 
 // isPoolClaimNudge reports whether text is gc's fallback pool-claim nudge (or
-// an agent template that configures the same claim instruction).
+// an agent template that configures the same claim instruction). The match is
+// a substring of `poolClaimNudgeSignature`, so any text carrying that
+// instruction matches; a false positive only refuses a nudge as a refundable
+// `busy` while a claim is live.
 func isPoolClaimNudge(text string) bool {
 	t := strings.TrimSpace(text)
 	return t == defaultPoolClaimNudge || strings.Contains(t, poolClaimNudgeSignature)
@@ -318,9 +324,9 @@ func claimRecordHeld(out string, sessionID string) bool {
 
 // nudgeLookupOutcome classifies a pre-send lookup failure into an RPP input
 // outcome. An unreachable server is unavailable. A missing or dead session
-// keeps ErrSessionNotFound, so the dispatcher's best-effort rule still exits 0;
-// any other lookup failure stays a plain error (exit 1), matching the pack's
-// untyped list failure.
+// keeps ErrSessionNotFound, which the dispatcher types as exit 80 gone for a
+// driving op (GCREX-70); any other lookup failure stays a plain error (exit 1),
+// matching the pack's untyped list failure.
 func nudgeLookupOutcome(err error) error {
 	if errors.Is(err, rex.ErrUnavailable) {
 		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
@@ -352,7 +358,8 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	// `gc hook --claim` to abandon its in-flight work (GCREX-33).
 	if isPoolClaimNudge(text) {
 		if claim, err := p.nudge.claimProbe(ctx, binding); err == nil && claim != "" {
-			return NudgeReport{}, fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
+			err := fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
+			return NudgeReport{}, &InputOutcomeError{Outcome: "busy", Detail: err.Error(), Err: err}
 		}
 	}
 	baseline, _ := p.programStatusSnapshot(ctx, binding)

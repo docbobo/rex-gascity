@@ -57,10 +57,10 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 // human watching the rig's tab sees every pane in it. The agent is therefore
 // watched only when its rig tab is the active window and that window still
 // holds the agent's block. The focused block of an inactive tab is not
-// attachment: that pane is not visible. Provider launches use focus=false so
-// starting an agent never makes its tab active; attachment reflects only what
-// the user chose to look at (a brand-new session's first tab is active
-// regardless). A window or block gone from view is false.
+// attachment: that pane is not visible. The provider focuses a brand-new
+// session's tab on create and never moves focus for a re-attach, a relaunch or
+// a split into an existing tab, so attachment reflects what the user is looking
+// at. A window or block gone from view is false.
 func watchesAgent(view rex.SessionView, b Binding) bool {
 	if view.ActiveWindowID != b.WindowID {
 		return false
