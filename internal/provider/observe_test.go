@@ -180,6 +180,28 @@ func TestKillObjectZombieAnswersChanged(t *testing.T) {
 	}
 }
 
+// TestKillObjectZombieGoneWhenBlockVanished proves zombie mode answers gone,
+// not changed, when the object names no box: zombie is a verdict about a box
+// that is still there, and a vanished one is not.
+func TestKillObjectZombieGoneWhenBlockVanished(t *testing.T) {
+	fake, p := started(t)
+	name := "Indigo--dog-1"
+	ans, err := p.Observe(context.Background(), name, nil)
+	if err != nil || ans.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
+	}
+	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(ans.Object.ID): true}
+	fake.View.Windows[0].Blocks = nil
+
+	res, err := p.KillObject(context.Background(), name, provider.KillObjectRequest{Object: *ans.Object, Mode: "zombie"})
+	if err != nil {
+		t.Fatalf("KillObject: %v", err)
+	}
+	if res != "gone" {
+		t.Errorf("result = %q, want gone for a vanished object", res)
+	}
+}
+
 // TestKillObjectRejectsUnknownMode proves gc's two modes are the only ones that
 // act: any other value is an error, not a kill.
 func TestKillObjectRejectsUnknownMode(t *testing.T) {

@@ -368,31 +368,34 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	if req.Object.ID != obj.ID || req.Object.Created != obj.Created {
 		return "gone", nil
 	}
-	if req.Mode == "zombie" {
-		return "changed", nil
-	}
 	state, holder, err := p.boxState(ctx, bd)
 	if err != nil {
 		return "", err
 	}
-	if state == ObserveRunning && holder.BlockID == bd.BlockID && holder.WindowID == bd.WindowID {
+	exact := holder.BlockID == bd.BlockID && holder.WindowID == bd.WindowID
+	if state == ObserveRunning && exact {
+		if req.Mode == "zombie" {
+			return "changed", nil
+		}
 		return "live", nil
 	}
-	if state != ObserveDead {
+	if state != ObserveDead || !exact {
 		// The recorded block is gone or a new box holds the name: the object
 		// names no box, and the exact-binding close has nothing to close. If
 		// this record is still ours, finish the retirement a previous
 		// kill-object could not complete (closed the block, then failed
 		// cleanup): a retry must not answer `gone` over stale meta/activity.
 		if state == ObserveAbsent {
-			if err := p.withStateLock(ctx, func() error { return p.retireStale(bd) }); err != nil {
+			if _, err := p.withSameBinding(ctx, name, bd, func() error { return p.retireStale(bd) }); err != nil {
 				return "", err
 			}
 		}
 		return "gone", nil
 	}
-	if holder.BlockID != bd.BlockID || holder.WindowID != bd.WindowID {
-		return "gone", nil
+	if req.Mode == "zombie" {
+		// The agent check (RPP-OBSERVE-006) is unimplemented, so the pack
+		// cannot prove the agent is dead: answer changed and never kill.
+		return "changed", nil
 	}
 	attached, err := p.attached(ctx, bd)
 	if err != nil {
@@ -404,9 +407,13 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	}
 	// Close exactly the object that was re-checked, never by name: a fresh
 	// resolve could close a pane that took the name's labels after this one
-	// vanished. Same locking as Stop, which this close is: the name lock is
-	// already held, so only the city-wide state lock is taken here.
-	err = p.withStateLock(ctx, func() error { return p.stopBinding(ctx, SessionName(name), bd) })
+	// vanished. The name lock is already held, and withSameBinding re-proves
+	// under the state lock that the record still names this object before the
+	// close, so a stop or start of the canonical name (a different name lock)
+	// cannot swap the binding in between.
+	same, err := p.withSameBinding(ctx, name, bd, func() error {
+		return p.stopBinding(ctx, SessionName(name), bd)
+	})
 	if errors.Is(err, errBlockGone) {
 		// Another client closed the pane between the corpse check and the
 		// close; the retirement finished, so this object is gone, not killed.
@@ -415,5 +422,29 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	if err != nil {
 		return "", err
 	}
+	if !same {
+		// A start took the name after the check: the record is the
+		// replacement's, and it stays untouched.
+		return "gone", nil
+	}
 	return "killed", nil
+}
+
+// withSameBinding runs fn under the state lock only while the name still
+// records bd: same block and window and the same creation time. A start that
+// took the name since the caller's check leaves a different binding, and fn
+// does not run. Start writes its provisional binding under the state lock, so
+// a replacement cannot land between the check and the mutation. It reports
+// whether fn ran.
+func (p *Provider) withSameBinding(ctx context.Context, name string, bd Binding, fn func() error) (bool, error) {
+	same := false
+	err := p.withStateLock(ctx, func() error {
+		got, ok := p.Binding(name)
+		if !ok || got.BlockID != bd.BlockID || got.WindowID != bd.WindowID || !got.CreatedAt.Equal(bd.CreatedAt) {
+			return nil
+		}
+		same = true
+		return fn()
+	})
+	return same, err
 }

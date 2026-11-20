@@ -500,6 +500,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if err := p.client.CloseBlock(ctx, old.SessionID, old.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 			return startResult{}, err
 		}
+		// The retired incarnation's identity goes with it: a start that fails
+		// before seeding (a missing work_dir, a canceled launch) must not leave
+		// a GC_SESSION_ID behind for the next pane under the name to inherit.
+		if err := p.withStateLock(ctx, func() error { return p.clearStartIdentity(n) }); err != nil {
+			return startResult{}, err
+		}
 		p.binder.Forget(n)
 	}
 

@@ -146,6 +146,40 @@ func TestStartClearsStaleIdentityWhenEnvHasEmptyValues(t *testing.T) {
 	}
 }
 
+// TestStartDropsTheRetiredIdentityWhenTheRelaunchFails proves a start that
+// closes a dead pane and then fails before it seeds leaves no identity of the
+// retired incarnation behind: a recordless pane under the name must not report
+// its GC_SESSION_ID as its own.
+func TestStartDropsTheRetiredIdentityWhenTheRelaunchFails(t *testing.T) {
+	const name = "pi-mc-wisp-abc"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: identityEnv()}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	bd, ok := p.Binding(name)
+	if !ok || bd.BlockID == "" {
+		t.Fatal("no binding after the first start")
+	}
+	if got, _ := p.GetMeta(ctx, name, "GC_SESSION_ID"); got == "" {
+		t.Fatal("GC_SESSION_ID not seeded before the relaunch")
+	}
+	// The agent exits and Rex keeps the pane, so the next start recycles it.
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		bd.BlockID: {LastExit: &rex.ExitStatus{ExitCode: 0}},
+	}
+
+	// The relaunch fails after the dead pane is closed and before it seeds.
+	cfg := provider.Config{Argv: []string{"pi"}, Env: identityEnv(), WorkDir: filepath.Join(t.TempDir(), "missing")}
+	if err := p.Start(ctx, name, cfg); err == nil {
+		t.Fatal("Start with a missing work_dir succeeded")
+	}
+	if got, _ := p.GetMeta(ctx, name, "GC_SESSION_ID"); got != "" {
+		t.Errorf("GC_SESSION_ID = %q after a failed relaunch, want empty: the retired identity survived", got)
+	}
+}
+
 func TestStopClearsSeededIdentity(t *testing.T) {
 	const name = "pi-mc-wisp-abc"
 	ctx := context.Background()
