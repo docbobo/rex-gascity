@@ -55,8 +55,9 @@ type LaunchSpec struct {
 	Login       *bool
 	Interactive bool
 	Label       string // the pane label (the gc agent name)
-	// Focus makes the new tab active. Provider launches leave it false so
-	// starting an agent does not steal the user's view.
+	// Focus makes the new tab active. The provider sets it only when it creates
+	// a brand-new session's tab, so the operator lands there; re-attaching or
+	// relaunching an existing session leaves the user's view alone.
 	Focus bool
 	// Layout is the prepared Rex block layout for this launch. internal/launch
 	// builds it; the transport only serializes it.
