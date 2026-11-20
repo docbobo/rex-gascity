@@ -17,11 +17,17 @@ import (
 
 const reapDog = "Indigo--dog-1"
 
-// reapTable renders a ps table from pid/ppid/stat/comm rows.
-func reapTable(rows ...[4]string) string {
+// reapStart is the lstart every reapTable row carries, so the pid identity is
+// stable across the two process-table reads in a test. A test that needs a
+// different start time (pid reuse) uses reapTableAt.
+const reapStart = "Fri Nov 20 18:00:00 2026"
+
+func reapTable(rows ...[4]string) string { return reapTableAt(reapStart, rows...) }
+
+func reapTableAt(start string, rows ...[4]string) string {
 	var b strings.Builder
 	for _, r := range rows {
-		b.WriteString(r[0] + " " + r[1] + " " + r[2] + " " + r[3] + "\n")
+		b.WriteString(r[0] + " " + r[1] + " " + r[2] + " " + r[3] + "   " + start + "\n")
 	}
 	return b.String()
 }
@@ -251,6 +257,67 @@ func TestStopMatchesTheProcessTableNameNotRexsName(t *testing.T) {
 	}
 	if !slices.Contains(*signals, "terminated:300") {
 		t.Errorf("signals = %v, want a TERM for 300", *signals)
+	}
+}
+
+// TestStopKeepsAProcessThatRenamedItself is review round 4: a captured pid
+// that is still running must not be dropped just because it exec'd into a
+// different argv0/comm. Its lstart, captured in the same snapshot, proves it is
+// the same process, so it is reaped instead of reported gone.
+func TestStopKeepsAProcessThatRenamedItself(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	_, p, signals := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "sh"},
+			)
+		}
+		// Same pid and start time, new comm: the shell exec'd into the agent.
+		return reapTable(
+			[4]string{"200", "1", "Ss", "/bin/zsh"},
+			[4]string{"100", "200", "S+", "claude"},
+			[4]string{"300", "1", "S", "bun"},
+		)
+	})
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure for the renamed 300")
+	}
+	if !strings.Contains(err.Error(), "300 (sh)") {
+		t.Errorf("Stop error %q does not name the renamed survivor 300 (sh)", err)
+	}
+	if !slices.Contains(*signals, "terminated:300") {
+		t.Errorf("signals = %v, want a TERM for 300", *signals)
+	}
+}
+
+// TestStopDoesNotSignalAReusedPid is the other half of review round 4: when
+// the pid still exists but its lstart differs, the host reused it, so it is
+// not the captured process and must never be signalled or reported.
+func TestStopDoesNotSignalAReusedPid(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	_, p, signals := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "bun"},
+			)
+		}
+		// 300 is back with the same name but a later start: a reused pid.
+		return reapTableAt("Fri Nov 20 19:00:00 2026",
+			[4]string{"300", "1", "S", "bun"},
+		)
+	})
+	if err := p.Stop(ctx, reapDog); err != nil {
+		t.Fatalf("Stop = %v, want nil: a reused pid is not the captured process", err)
+	}
+	if len(*signals) != 0 {
+		t.Errorf("signals = %v, want none for a reused pid", *signals)
 	}
 }
 

@@ -27,8 +27,9 @@ var (
 // paneProc is one process the pane could leave behind: the pid and the name
 // the pane's own process tree reported for it.
 type paneProc struct {
-	pid  int
-	name string
+	pid   int
+	name  string
+	start string // ps lstart of the snapshot row; identity against pid reuse
 }
 
 // survivorError fails a stop whose pane subtree may still be running. herdr-
@@ -65,18 +66,19 @@ type processRow struct {
 	ppid   int
 	zombie bool
 	name   string
+	start  string
 }
 
 // processTable reads the host process table. Rex panes are local, so a
 // descendant that block.close fails to reap is still visible here.
 func (p *Provider) processTable(ctx context.Context) (map[int]processRow, error) {
-	out, err := p.runner.Run(ctx, "", nil, "ps", "-axo", "pid=,ppid=,stat=,comm=")
+	out, err := p.runner.Run(ctx, "", nil, "ps", "-axo", "pid=,ppid=,stat=,comm=,lstart=")
 	if err != nil {
 		return nil, err
 	}
 	rows := make(map[int]processRow)
 	for _, line := range strings.Split(out, "\n") {
-		pidStr, ppidStr, stat, name, ok := splitProcessRow(line)
+		pidStr, ppidStr, stat, name, start, ok := splitProcessRow(line)
 		if !ok {
 			continue
 		}
@@ -89,21 +91,27 @@ func (p *Provider) processTable(ctx context.Context) (map[int]processRow, error)
 			ppid:   ppid,
 			zombie: strings.HasPrefix(stat, "Z"),
 			name:   name,
+			start:  start,
 		}
 	}
 	return rows, nil
 }
 
+// lstartLen is the width of ps's lstart column, "%a %b %e %H:%M:%S %Y"
+// ("Fri Nov 20 19:44:50 2026"); both BSD and GNU ps print it fixed-width.
+const lstartLen = 24
+
 // splitProcessRow splits one ps row into its three fixed columns and the rest
-// of the line, which is the command name. The name may be empty or contain
-// spaces, so it must not be field-split like the pid and ppid.
-func splitProcessRow(line string) (pid, ppid, stat, comm string, ok bool) {
+// of the line, which is the command name and, when ps printed it, the trailing
+// lstart column. The name may be empty or contain spaces, so it must not be
+// field-split like the pid and ppid.
+func splitProcessRow(line string) (pid, ppid, stat, comm, start string, ok bool) {
 	var col [3]string
 	rest := strings.TrimRight(line, "\r\n")
 	for i := range col {
 		rest = strings.TrimLeft(rest, " \t")
 		if rest == "" {
-			return "", "", "", "", false
+			return "", "", "", "", "", false
 		}
 		end := strings.IndexAny(rest, " \t")
 		if end < 0 {
@@ -112,7 +120,21 @@ func splitProcessRow(line string) (pid, ppid, stat, comm string, ok bool) {
 		}
 		col[i], rest = rest[:end], rest[end:]
 	}
-	return col[0], col[1], col[2], strings.TrimSpace(rest), true
+	comm, start = splitStart(rest)
+	return col[0], col[1], col[2], comm, start, true
+}
+
+// splitStart separates the trailing lstart column from the command name. A
+// row without one (ps called without lstart) keeps the whole rest as the name.
+func splitStart(rest string) (comm, start string) {
+	rest = strings.TrimSpace(rest)
+	if len(rest) >= lstartLen {
+		tail := rest[len(rest)-lstartLen:]
+		if f := strings.Fields(tail); len(f) == 5 && strings.Count(f[3], ":") == 2 {
+			return strings.TrimSpace(rest[:len(rest)-lstartLen]), tail
+		}
+	}
+	return rest, ""
 }
 
 // paneSubtree captures what the pane could leave behind: the foreground Rex
@@ -183,13 +205,15 @@ func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, erro
 		// so a process named from Rex would never match its live row (U1).
 		// Rex's name is only the fallback for a reported pid the table lacks.
 		name := filepath.Base(table[pid].name)
+		start := table[pid].start
 		if name == "" || name == "." {
 			name = reported[pid]
+			start = ""
 		}
 		if name == "" || name == "." {
 			name = "?"
 		}
-		out = append(out, paneProc{pid: pid, name: name})
+		out = append(out, paneProc{pid: pid, name: name, start: start})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].pid < out[j].pid })
 	return out, nil
@@ -229,7 +253,9 @@ func (p *Provider) signalAll(procs []paneProc, sig syscall.Signal) error {
 }
 
 // living returns the captured processes still running. A zombie counts as
-// gone (init reaps it), and a pid whose name changed is not ours any more.
+// gone, and so does a pid the host reused: identity is the pid plus the lstart
+// captured in the same snapshot, so a renamed descendant still counts (review
+// round 4) while a recycled pid is never signalled.
 func (p *Provider) living(ctx context.Context, tree []paneProc) []paneProc {
 	table, err := p.processTable(ctx)
 	if err != nil {
@@ -238,12 +264,21 @@ func (p *Provider) living(ctx context.Context, tree []paneProc) []paneProc {
 	var out []paneProc
 	for _, proc := range tree {
 		row, ok := table[proc.pid]
-		if !ok || row.zombie || !sameProgram(proc.name, row.name) {
+		if !ok || row.zombie || !sameProcess(proc, row) {
 			continue
 		}
 		out = append(out, proc)
 	}
 	return out
+}
+
+// sameProcess reports whether the table row is still the captured process. The
+// start time decides when both reads printed one; without it the name decides.
+func sameProcess(proc paneProc, row processRow) bool {
+	if proc.start != "" && row.start != "" {
+		return proc.start == row.start
+	}
+	return sameProgram(proc.name, row.name)
 }
 
 // unionProcs appends the processes whose pid is not already in tree, so a
