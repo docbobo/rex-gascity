@@ -500,7 +500,11 @@ Phase 0 also confirms the plan's decisions against the live surface:
   later `Stop` leaves the same empty shell (no pane-exit watcher; gc v1.5.1 has
   no such caller). §10 still asserts the op's contract from the schema instead
   of executing it.
-- **Empty city session (GCREX-65).** Live record, 2026-11-20 07:09 CET, rex
+- **Empty city session (GCREX-65).** Live record, 2026-11-20 07:09 CET
+  (the wall-clock time typed from the operator's shell clock, not a UTC stamp;
+  its containing commit `912f392` carries 07:10:44 CET / 06:10:44 UTC, so the
+  reading is one minute ahead of the commit — recorded as observed, no
+  correction invented; STD-A2), rex
   0.1.0-preview.21 CLI against the running server `0.1.0-preview.20` (rev 16),
   scratch label `gc:gcrex65-scratch` (no real city touched; `gc:my-city` and
   `rex-gas-city` were left alone). One Rex app client (the local Mac app) is
