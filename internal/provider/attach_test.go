@@ -29,13 +29,19 @@ func attachStarted(t *testing.T, active rex.WindowID, focused rex.BlockID, clien
 	return p
 }
 
-// attachOwned is attachStarted with the block's size owner set: the client the
+// attachOwned is attachStarted with the block's view owner set: the client the
 // block is displayed for, empty when no client has displayed it.
 func attachOwned(t *testing.T, owner string, active rex.WindowID, focused rex.BlockID, clients ...rex.ClientInfo) (*faketest.Fake, *provider.Provider) {
 	t.Helper()
 	fake, p := started(t)
 	fake.Clients = clients
-	fake.Sizes = map[rex.BlockID]rex.BlockSize{attachBlock: {Owner: owner}}
+	for i := range fake.View.Windows {
+		for j := range fake.View.Windows[i].Blocks {
+			if fake.View.Windows[i].Blocks[j].ID == attachBlock {
+				fake.View.Windows[i].Blocks[j].Owner = owner
+			}
+		}
+	}
 	fake.View.Windows = append(fake.View.Windows, rex.Window{ID: "window:Other", Label: "Other"})
 	fake.View.ActiveWindowID = active
 	fake.View.Windows[0].FocusedBlockID = focused
@@ -133,13 +139,26 @@ func TestIsAttachedListClientsError(t *testing.T) {
 	}
 }
 
-func TestIsAttachedBlockSizeError(t *testing.T) {
+func TestIsAttachedSessionViewError(t *testing.T) {
 	fake, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp)
 	boom := errors.New("rex down")
-	fake.BlockSizeErr = boom
+	fake.SessionViewErr = boom
 	got, err := p.IsAttached(context.Background(), attachName)
 	if !errors.Is(err, boom) || got {
 		t.Errorf("IsAttached = %v, %v; want false and the transport error", got, err)
+	}
+}
+
+// TestIsAttachedReadsOwnerFromView: the pane's owner is already in
+// session.view, so the probe must not spend a second Rex round-trip on the
+// terminal size method.
+func TestIsAttachedReadsOwnerFromView(t *testing.T) {
+	fake, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp)
+	attachWant(t, p, true)
+	for _, c := range fake.BlockCalls {
+		if c.Op == "size" {
+			t.Errorf("is-attached called the size method: %+v", c)
+		}
 	}
 }
 

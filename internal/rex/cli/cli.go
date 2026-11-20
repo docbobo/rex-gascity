@@ -208,6 +208,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 				Blocks []struct {
 					ID    string `json:"block_id"`
 					Label string `json:"label"`
+					Owner string `json:"owner"`
 				} `json:"blocks"`
 			} `json:"layers"`
 		} `json:"windows"`
@@ -228,10 +229,13 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 			FocusedBlockID: rex.BlockID(w.FocusedBlockID),
 		}
 		index := map[rex.BlockID]int{}
-		add := func(id rex.BlockID, label string, rect [4]float64) {
+		add := func(id rex.BlockID, label, owner string, rect [4]float64) {
 			if i, ok := index[id]; ok {
 				if label != "" && win.Blocks[i].Label == "" {
 					win.Blocks[i].Label = label
+				}
+				if owner != "" && win.Blocks[i].Owner == "" {
+					win.Blocks[i].Owner = owner
 				}
 				if win.Blocks[i].Rect == ([4]float64{}) {
 					win.Blocks[i].Rect = rect
@@ -239,13 +243,13 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 				return
 			}
 			index[id] = len(win.Blocks)
-			win.Blocks = append(win.Blocks, rex.Block{ID: id, Label: label, Rect: rect})
+			win.Blocks = append(win.Blocks, rex.Block{ID: id, Label: label, Owner: owner, Rect: rect})
 		}
 		for _, layer := range w.Layers {
 			rects := layer.Layout.blockRects()
 			for _, b := range layer.Blocks {
 				id := rex.BlockID(b.ID)
-				add(id, b.Label, rects[id])
+				add(id, b.Label, b.Owner, rects[id])
 				delete(rects, id)
 			}
 			// Blocks only the layout tree knows about, in a stable order.
@@ -255,7 +259,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 			}
 			slices.Sort(rest)
 			for _, id := range rest {
-				add(id, "", rects[id])
+				add(id, "", "", rects[id])
 			}
 		}
 		view.Windows = append(view.Windows, win)
@@ -389,32 +393,6 @@ func (c *Client) BlockEvent(ctx context.Context, sessionID rex.SessionID, block 
 // BlockClear clears a pane's scrollback.
 func (c *Client) BlockClear(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) error {
 	return c.blockMethod(ctx, sessionID, block, "clear", nil, nil)
-}
-
-// BlockSize returns a pane's size claim. An owner the reply omits is empty: Rex
-// reports null for a block no client has displayed.
-func (c *Client) BlockSize(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (rex.BlockSize, error) {
-	var reply struct {
-		Owner   *string `json:"owner"`
-		Desired []struct {
-			ClientID *string `json:"client_id"`
-		} `json:"desired"`
-	}
-	if err := c.blockMethod(ctx, sessionID, block, "size", nil, &reply); err != nil {
-		return rex.BlockSize{}, err
-	}
-	var size rex.BlockSize
-	if reply.Owner != nil {
-		size.Owner = *reply.Owner
-	}
-	for _, d := range reply.Desired {
-		req := rex.SizeRequest{}
-		if d.ClientID != nil {
-			req.ClientID = *d.ClientID
-		}
-		size.Desired = append(size.Desired, req)
-	}
-	return size, nil
 }
 
 // BlockProgramStatus returns the program-reported status records of a pane.

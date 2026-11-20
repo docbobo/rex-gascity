@@ -68,6 +68,10 @@ type LaunchSpec struct {
 type Block struct {
 	ID    BlockID
 	Label string
+	// Owner is the client the block is displayed for, empty when no client has
+	// displayed it: an app client can be attached to the session while a box it
+	// never showed still has no owner.
+	Owner string
 	// Rect is the pane's normalized position in its window: x, y, width,
 	// height, each in 0..1. It is the zero value when the layout is unknown.
 	Rect [4]float64
@@ -141,20 +145,6 @@ type ProcessInfo struct {
 	Ancestors  []Process
 }
 
-// BlockSize is a terminal block's size claim. Owner is the client whose size
-// the block uses, empty when no client has displayed it: an app client can be
-// attached to the session while a box it never showed still has no owner.
-// Desired is the last size each client requested, newest first.
-type BlockSize struct {
-	Owner   string
-	Desired []SizeRequest
-}
-
-// SizeRequest is one client's last requested terminal size.
-type SizeRequest struct {
-	ClientID string
-}
-
 // Event is a Rex event. Payload is the raw event fields.
 type Event struct {
 	Type    string          `json:"type"`
@@ -184,9 +174,6 @@ type Client interface {
 	SendKeys(ctx context.Context, sessionID SessionID, blockID BlockID, keys ...string) error
 	BlockEvent(ctx context.Context, sessionID SessionID, blockID BlockID, ev Event) error
 	BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
-	// BlockSize returns a pane's size claim, whose Owner tells a box a client
-	// displayed from one it merely knows about.
-	BlockSize(ctx context.Context, sessionID SessionID, blockID BlockID) (BlockSize, error)
 	// BlockProgramStatus returns the program-reported status of a pane.
 	BlockProgramStatus(ctx context.Context, sessionID SessionID, blockID BlockID) (ProgramStatus, error)
 

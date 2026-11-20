@@ -9,9 +9,9 @@ import (
 
 // IsAttached reports whether a human is watching the agent's pane. Attachment
 // has the two halves gc's own model implies. The session half is the block's
-// claim: the size method's owner is the client the block is displayed for, and
-// is empty when the app never showed the box even though the app is attached to
-// the session. The block half is the pane's window being the session's active
+// claim: its view owner is the client the block is displayed for, and is empty
+// when the app never showed the box even though the app is attached to the
+// session. The block half is the pane's window being the session's active
 // window.
 //
 // An app client that does not own the block is not watching it. A client kind we
@@ -28,11 +28,12 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	size, err := p.client.BlockSize(ctx, binding.SessionID, binding.BlockID)
+	view, err := p.client.SessionView(ctx, binding.SessionID)
 	if err != nil {
 		return false, err
 	}
-	if size.Owner == "" {
+	owner := blockOwner(view, binding.BlockID)
+	if owner == "" {
 		return false, nil
 	}
 	clients, err := p.client.ListClients(ctx, binding.SessionID)
@@ -41,7 +42,7 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	}
 	kind, found := "", false
 	for _, c := range clients {
-		if c.ID == size.Owner {
+		if c.ID == owner {
 			kind, found = c.Kind, true
 			break
 		}
@@ -55,11 +56,20 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	default:
 		return true, nil
 	}
-	view, err := p.client.SessionView(ctx, binding.SessionID)
-	if err != nil {
-		return false, err
-	}
 	return watchesAgent(view, binding), nil
+}
+
+// blockOwner returns the client the block is displayed for, empty when the view
+// does not hold the block or no client has displayed it.
+func blockOwner(view rex.SessionView, blockID rex.BlockID) string {
+	for _, w := range view.Windows {
+		for _, b := range w.Blocks {
+			if b.ID == blockID {
+				return b.Owner
+			}
+		}
+	}
+	return ""
 }
 
 // watchesAgent reports whether the agent's rig tab is the active window and
