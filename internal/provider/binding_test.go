@@ -213,15 +213,24 @@ func TestResolveLegacyWindowLabel(t *testing.T) {
 func TestScanFindsLegacyWindowLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name, windowLabel, blockLabel string
+		// hint is the env-derived label Start supplies; the legacy window
+		// label must still be found when it is set.
+		hint string
 	}{
-		{"Indigo--dog-1", "Indigo", "dog-1"},
-		{"mayor", legacyTownTab, "mayor"},
+		{"Indigo--dog-1", "Indigo", "dog-1", ""},
+		{"mayor", legacyTownTab, "mayor", ""},
+		{"Indigo--dog-1", "Indigo", "dog-1", "Rig: Indigo"},
+		{"mayor", legacyTownTab, "mayor", "my-city"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name+"/hint="+tc.hint, func(t *testing.T) {
 			b, _, _ := newTestBinder(t, rex.Window{ID: "window:old", Label: tc.windowLabel,
 				Blocks: []rex.Block{{ID: "block:old", Label: tc.blockLabel}}})
 
-			got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: SessionName(tc.name), Mode: ResolveFresh})
+			req := ResolveRequest{Name: SessionName(tc.name), Mode: ResolveFresh}
+			if tc.hint != "" {
+				req.Hint = Binding{Name: SessionName(tc.name), TabLabel: tc.hint, PaneLabel: tc.blockLabel}
+			}
+			got, ok, err := b.Resolve(context.Background(), req)
 			if err != nil || !ok || got.BlockID != "block:old" || got.TabLabel != tc.windowLabel {
 				t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 			}

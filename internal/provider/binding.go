@@ -438,14 +438,16 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 	if err != nil {
 		return Binding{}, false, err
 	}
-	tabs := []string{hint.TabLabel}
-	if hint.TabLabel == "" {
-		tabs = []string{tabLabel(name, nil, b.townTab)}
-		if legacy := legacyTabLabel(name); legacy != tabs[0] {
-			// A window started by a build before GCREX-72 still carries the
-			// old label; find it rather than start a second tab.
-			tabs = append(tabs, legacy)
-		}
+	primary := hint.TabLabel
+	if primary == "" {
+		primary = tabLabel(name, nil, b.townTab)
+	}
+	// A window started by a build before GCREX-72 still carries the old
+	// label; find it rather than start a second tab. Start always supplies
+	// a hint label, so this cannot be limited to the empty-hint path.
+	tabs := []string{primary}
+	if legacy := legacyTabLabel(name); legacy != primary {
+		tabs = append(tabs, legacy)
 	}
 	pane := hint.PaneLabel
 	if pane == "" {
