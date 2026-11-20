@@ -30,7 +30,7 @@ instead of the pack is recorded in the op's report, not silently dropped.
 |---|---|---|---|---|---|
 | `protocol` | [deviations](provider-method-audit/protocol.md) | 4 | 0 | 4 | 0 |
 | `start` | [deviations](provider-method-audit/start.md) | 10 | 4 | 6 | 0 |
-| `stop` | [deviations](provider-method-audit/stop.md) | 7 | 2 | 5 | 0 |
+| `stop` | [deviations](provider-method-audit/stop.md) | 6 | 0 | 6 | 0 |
 | `kill-object` | [not implemented](provider-method-audit/kill-object.md) | 4 | 0 | 4 | 0 |
 | `observe` | [not implemented](provider-method-audit/observe.md) | 5 | 0 | 3 | 0 |
 | `inventory` | [not implemented](provider-method-audit/inventory.md) | 4 | 0 | 4 | 0 |
@@ -52,7 +52,7 @@ instead of the pack is recorded in the op's report, not silently dropped.
 | `copy-to` | [not implemented](provider-method-audit/copy-to.md) | 3 | 0 | 1 | 0 |
 | `server-stop` | [not implemented](provider-method-audit/server-stop.md) | 5 | 0 | 5 | 0 |
 | `x-kick-core` | [not implemented](provider-method-audit/x-kick-core.md) | 5 | 0 | 5 | 0 |
-| **total** | | **136** | **18** | **104** | **7** |
+| **total** | | **136** | **17** | **105** | **7** |
 
 Seven ops are not implemented at all: `kill-object`, `observe`, `inventory`,
 `watch-startup`, `copy-to`, `server-stop` and `x-kick-core`. Four of
@@ -102,10 +102,10 @@ Full report: [provider-method-audit/start.md](provider-method-audit/start.md)
 
 | Doc claim (`## stop` / `## Shared RPP contract`) | Current implementation | Behavioral impact | Severity |
 |---|---|---|---|
-| **Deadline & `GC_EXEC_DEADLINE_MS`** (`## stop` §Registration; `## Shared RPP contract` §Deadlines): `default` 30 s deadline from start, overridable by `GC_EXEC_DEADLINE_MS`; pre-handler gate fails with exit 1 `no time left before the op's deadline`. | `cmd/gc-runtime-rex/main.go:48-49,128-174,218-220` passes `signal.NotifyContext(context.Background(), ...)` with no timeout and never reads `GC_EXEC_DEADLINE_MS` (`internal/provider/provider.go:176-177`). | Standalone runs have no 30 s op deadline and ignore `GC_EXEC_DEADLINE_MS`. Under `gc` v1.5.1, `gc` still enforces its 30 s timeout externally via SIGTERM. | low |
+| **Deadline & `GC_EXEC_DEADLINE_MS`** (`## stop` §Registration; `## Shared RPP contract` §Deadlines): `default` 30 s deadline from start, overridable by `GC_EXEC_DEADLINE_MS`; pre-handler gate fails with exit 1 `no time left before the op's deadline`. | `cmd/gc-runtime-rex/main.go:48-49,128-174,218-220` passes `signal.NotifyContext(context.Background(), ...)` with no timeout and never reads `GC_EXEC_DEADLINE_MS` (`internal/provider/provider.go:176-177`). A live-pane stop makes two `BlockProcess` round-trips on the critical path (pre-close snapshot at `provider.go:777`, post-close re-read at `:791`). | Standalone runs have no 30 s op deadline and ignore `GC_EXEC_DEADLINE_MS`. Under `gc` v1.5.1, `gc` still enforces its 30 s timeout externally via SIGTERM. | low |
 | **Per-name lock wait bound & error** (`## stop` §Failure cases): waits `min(30, max(0.1, budget(30)))` s and fails with exit 1 `busy: exclusive lock <path> still held after Xs`. | `internal/provider/lock.go:13,62-97` uses `lockTimeout = 60 * time.Second` for both `withNameLock` and `withStateLock` (`provider.go:532-534`), returning `provider: timed out waiting for lock <path>`. | Contended locks wait up to 60 s instead of <=30 s (so `gc`'s 30 s SIGTERM preempts it), and the timeout message differs. | low |
-| **Descendant reaping & survivor check** (`## stop` §Success output, §Failure cases, §Conflicts #1): snapshots subtree + instance token, reaps TERM then KILL (2 s), rescans up to 3x; exits 1 (`stopped 'N', but descendants may survive...`) and keeps record/meta on survivors. | `internal/provider/provider.go:558-564` delegates solely to Rex `block.close` (`internal/rex/cli/cli.go:181-186`). No process-tree snapshot, TERM/KILL reap, rescan, or survivor check. | Detached descendants are not verified dead or reported as exit 1; binding, meta, and activity are cleared whenever `CloseBlock` returns `nil` or `rex.ErrNotFound`. | medium |
-| **Core/server unreachable** (`## stop` §Success output, §Failure cases, §Conflicts #2–3): when core is down, sweeps by stored PID/token without starting core and exits 0 if nothing runs; otherwise exits 1 and kicks core start. | `internal/provider/provider.go:539-543` calls `binder.Resolve`, which always queries Rex (`internal/provider/binding.go:349-357,385-417,438-446`). Any transport/unreachable error returns exit 1; no PID sweep or server start kick. | `stop` fails (exit 1) whenever the Rex server is unreachable, even for an absent or already-dead session. | medium |
+| **Descendant reaping & survivor check** (`## stop` §Success output, §Failure cases, §Conflicts #1): snapshots subtree + instance token, reaps TERM then KILL (2 s), rescans up to 3x; exits 1 (`stopped 'N', but descendants may survive...`) and keeps record/meta on survivors. | `Provider.Stop` snapshots the pane subtree before `block.close`, unions in what the pane still reports from a second `BlockProcess` after the close (`ErrNotFound` and a read error are tolerated), reaps it TERM -> 2 s -> KILL -> 2 s -> rescan (`internal/provider/reap.go:287`, `unionProcs` at `:244`, `provider.go:777,791`) and fails with exit 1 rendering each survivor as pid plus command name, appending the first signal error when one could not be delivered. | Attribution is the pane's reported processes, not a token sweep, so a process reparented away before the snapshot and never reported again is missed (GCREX-50). | low |
+| **Core/server unreachable** (`## stop` §Success output, §Failure cases, §Conflicts #2–3): when core is down, sweeps by stored PID/token without starting core and exits 0 if nothing runs; otherwise exits 1 and kicks core start. | `Provider.stop` asks `Binder.lookup` (local stores only) before `binder.Resolve`; an unreachable Rex with no stored binding clears the name and exits 0, a stored binding returns exit 1 and keeps the record (`internal/provider/provider.go`, `binding.go:197`). | Exit 1 only while a binding for the name is known; a lost binding record with a still-live pane reports success because the label scan needs Rex (GCREX-51). | low |
 | **Stderr redaction** (`## stop` §Failure cases; `## Shared RPP contract` §Failure envelope): redacts sensitive env values and `KEY=value` / `--flag value` patterns on stderr. | `cmd/gc-runtime-rex/main.go:165` writes `gc-runtime-rex: %s: %v\n` verbatim with no redaction. | Any secret text appearing in an underlying error would be emitted unredacted to `gc`. | low |
 | **Stderr prefix & SIGTERM message** (`## stop` §Failure cases; `## Shared RPP contract` §Failure envelope): errors use `<op>: <message>`; SIGTERM `Cancelled` yields `stop: canceled (terminated)`. | `cmd/gc-runtime-rex/main.go:48,165` prefixes errors with `gc-runtime-rex: stop: ...`; SIGTERM cancels `ctx` via `signal.NotifyContext`, surfacing `context canceled`. | Minor stderr text difference; exit code 1 and `gc`'s own cancel reporting are unaffected. | low |
 | **Housekeeping sweep** (`## stop` §Registration; `## Shared RPP contract` §Dispatch #6): runs `sweep_spawn_files` before handler. | `cmd/gc-runtime-rex/main.go:128-174` and `internal/provider/provider.go:531-566` perform no spawn-file sweep. | None – Rex provider does not use spawn files. | low |
@@ -376,7 +376,7 @@ Full report: [provider-method-audit/x-kick-core.md](provider-method-audit/x-kick
 
 ## Tracked fix work
 
-The 18 `medium` deviations are tracked as Backlog tasks, each linked to the op's
+The 17 `medium` deviations are tracked as Backlog tasks, each linked to the op's
 audit report. Every task is labelled `for-gascity` and `tdd`, and its notes
 state the TDD rule: write the failing test that reproduces the deviation first,
 watch it go red, then make the smallest change that turns it green (AGENTS.md;
@@ -394,8 +394,6 @@ the `tdd` skill).
 | GCREX-47 | `process-alive`: interpreter-launched agents do not match (audited `high`) |
 | GCREX-48 | `peek`: missing screen exits 0 instead of 66 |
 | GCREX-49 | `set-meta`: no session-record precondition |
-| GCREX-50 | `stop`: no descendant reap / survivor check |
-| GCREX-51 | `stop`: unreachable Rex fails when the session is absent |
 | GCREX-52 | `start`: empty stdin starts a default shell |
 | GCREX-53 | `start`: no post-launch exit / first-turn check |
 | GCREX-54 | `start`: failing `pre_start` is fatal where gc tolerates it |
@@ -405,6 +403,11 @@ the `tdd` skill).
 
 GCREX-47 is the one `high`-severity deviation; it is tracked here rather than
 left out, because it shares a file and a decision with GCREX-46.
+
+`stop` now carries no `medium` deviation: the descendant reap and survivor
+check (GCREX-50) and the unreachable-Rex behaviour (GCREX-51) are implemented
+and pinned by the tests cited in
+[provider-method-audit/stop.md](provider-method-audit/stop.md).
 
 Fix work is expected to change behaviour only where the task says so; several of
 these deviations are deliberate gc v1.5.1 compatibility choices, and GCREX-42,

@@ -171,10 +171,14 @@ type Provider struct {
 	ns Namespace
 
 	// runner runs the external processes the provider shells out to: the gc
-	// claim probe (nudge.go) and the git drain-diagnostic calls
-	// (drain_diag.go). It is shared, so it lives on Provider rather than in
-	// nudgeConfig.
+	// claim probe (nudge.go), the git drain-diagnostic calls (drain_diag.go)
+	// and the process table of the stop reap (reap.go). It is shared, so it
+	// lives on Provider rather than in nudgeConfig.
 	runner Runner
+
+	// signal delivers a signal to a pane descendant during the stop reap.
+	// Tests replace it so no real process is signalled.
+	signal func(pid int, sig os.Signal) error
 
 	// nudge holds the nudge and startup-delivery tunables (see nudge.go).
 	// It is a named field, not embedded, so the tunables are not promoted
@@ -297,6 +301,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		activity: NewMemoryActivityStore(),
 		meta:     NewMemoryMetaStore(),
 		runner:   ExecRunner{},
+		signal:   osSignal,
 		nudge:    defaultNudgeConfig(),
 
 		startBudget:         defaultStartBudget,
@@ -771,8 +776,34 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	}
 	// Sample the work tree before the pane closes, while the worker is alive.
 	p.writeDrainDiagnostic(ctx, binding)
-	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return err
+	// Capture the pane's reported process tree too: a close is not proof that
+	// the tree is gone, and a detached descendant can no longer be attributed
+	// to the pane once it has been reparented (GCREX-50). A tree we cannot
+	// read is not a tree we can clear, so leave the pane open for the retry
+	// instead of closing it blind.
+	tree, err := p.paneSubtree(ctx, binding)
+	if err != nil {
+		return fmt.Errorf("could not inspect the pane's process tree, leaving it open: %w", err)
+	}
+	closeErr := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID)
+	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
+		return closeErr
+	}
+	// The close is not proof that the tree is gone either: a process the pane
+	// spawned after the snapshot, or one Rex only reports now, would otherwise
+	// pass unreaped. Re-read the pane and union what it still reports. A closed
+	// pane answers ErrNotFound (paneSubtree maps that to no tree) and a failed
+	// re-read leaves the pre-close snapshot authoritative, so neither fails the
+	// stop (review D1).
+	if after, readErr := p.paneSubtree(ctx, binding); readErr == nil {
+		tree = unionProcs(tree, after)
+	}
+	// Reap what the pane left behind and refuse to report success while any of
+	// it survives; the binding, meta and activity stay for a retry, as
+	// herdr-core keeps the box (parity doc ### stop row 2). A signal error with
+	// nothing left is a success: everything died anyway.
+	if left, signalErr := p.reap(ctx, tree); len(left) > 0 {
+		return &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
 	}
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
