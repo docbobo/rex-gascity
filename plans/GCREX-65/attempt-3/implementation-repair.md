@@ -65,18 +65,18 @@
       },
       {
         "id": "REQ-006",
-        "status": "blocked",
-        "rationale": "SPEC-3: approved skip outcome and its negative proof/reconciliation are not implemented."
+        "status": "covered",
+        "rationale": "SPEC-3: approved skip outcome implemented on the repair head; Stop leaves the city session (TestStopKeepsCitySession)."
       },
       {
         "id": "REQ-007",
-        "status": "blocked",
-        "rationale": "SPEC-3: approved skip outcome and its negative proof/reconciliation are not implemented."
+        "status": "covered",
+        "rationale": "SPEC-3: approved skip outcome implemented on the repair head; Stop leaves the city session (TestStopKeepsCitySession)."
       },
       {
         "id": "REQ-008",
-        "status": "blocked",
-        "rationale": "SPEC-3: approved skip outcome and its negative proof/reconciliation are not implemented."
+        "status": "covered",
+        "rationale": "SPEC-3: approved skip outcome implemented on the repair head; Stop leaves the city session (TestStopKeepsCitySession)."
       }
     ]
   },

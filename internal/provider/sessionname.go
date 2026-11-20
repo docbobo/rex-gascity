@@ -8,6 +8,9 @@ const nameSep = "--"
 // townTabFallback labels the town tab when the process has no city pin.
 const townTabFallback = "Gas City"
 
+// legacyTownTab is the tab label town-level sessions had before GCREX-72.
+const legacyTownTab = "__town"
+
 // maxRexLabel is Rex's limit for session/window/block labels.
 const maxRexLabel = 128
 
@@ -62,6 +65,17 @@ func tabLabel(name SessionName, env map[string]string, town string) string {
 		rig = name.Rig()
 	}
 	return clampRexLabel("Rig: " + rig)
+}
+
+// legacyTabLabel is the tab label gc wrote before GCREX-72: "__town" for a
+// town-level name, otherwise the bare rig. A record with no stored TabLabel or
+// a window that predates the upgrade still carries it, so resolution accepts it
+// as well as the derived label.
+func legacyTabLabel(n SessionName) string {
+	if n.IsTown() {
+		return legacyTownTab
+	}
+	return n.Rig()
 }
 
 // clampRexLabel truncates s to maxRexLabel runes, replacing the tail with "…"

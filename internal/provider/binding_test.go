@@ -179,6 +179,56 @@ func TestResolveLegacyBindingUsesNameLabels(t *testing.T) {
 	}
 }
 
+// TestResolveLegacyWindowLabel resolves a record written before TabLabel
+// existed against a window that still carries the pre-GCREX-72 bare rig label,
+// and a town record against a window labelled __town. Neither may lose a live
+// pane, which would make Start open a duplicate tab.
+func TestResolveLegacyWindowLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name, windowLabel, blockLabel, paneLabel string
+	}{
+		{"Indigo--dog-1", "Indigo", "dog-1", "dog-1"},
+		{"mayor", legacyTownTab, "mayor", "mayor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, store, _ := newTestBinder(t, rex.Window{ID: "window:old", Label: tc.windowLabel,
+				Blocks: []rex.Block{{ID: "block:old", Label: tc.blockLabel}}})
+			legacy := Binding{Name: SessionName(tc.name), SessionID: "session:acme", SessionLabel: testLabel,
+				WindowID: "window:old", BlockID: "block:old"}
+			store.Save(legacy)
+
+			got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: legacy.Name, Mode: ResolveFresh})
+			if err != nil || !ok || got.BlockID != "block:old" {
+				t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+			}
+			if got.TabLabel != "" {
+				t.Errorf("TabLabel = %q, want the record left as a legacy record", got.TabLabel)
+			}
+		})
+	}
+}
+
+// TestScanFindsLegacyWindowLabel covers the lost-record path Start takes: no
+// stored binding, a live pane under the pre-GCREX-72 label.
+func TestScanFindsLegacyWindowLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name, windowLabel, blockLabel string
+	}{
+		{"Indigo--dog-1", "Indigo", "dog-1"},
+		{"mayor", legacyTownTab, "mayor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _, _ := newTestBinder(t, rex.Window{ID: "window:old", Label: tc.windowLabel,
+				Blocks: []rex.Block{{ID: "block:old", Label: tc.blockLabel}}})
+
+			got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: SessionName(tc.name), Mode: ResolveFresh})
+			if err != nil || !ok || got.BlockID != "block:old" || got.TabLabel != tc.windowLabel {
+				t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+			}
+		})
+	}
+}
+
 // TestResolveAliasFindsPrimary checks a name stored only as an alias resolves
 // to the primary binding without scanning by the alias's derived labels.
 func TestResolveAliasFindsPrimary(t *testing.T) {

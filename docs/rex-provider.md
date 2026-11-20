@@ -226,6 +226,7 @@ Gas City sessions map onto the three-level Rex hierarchy:
 
 - Starting the first agent in a rig creates a new Rex tab labeled `Rig: <rig>`; a town-level agent opens a tab labeled with the city pin (`my-city`), or `Gas City` when the process has no pin.
 - Session names, pane (block) labels, and the `gc:<city>` session label are unchanged.
+- A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `gc:<city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 

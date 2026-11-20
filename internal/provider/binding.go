@@ -63,6 +63,16 @@ func (b Binding) tabLabel(town string) string {
 	return tabLabel(b.Name, nil, town)
 }
 
+// acceptsTabLabel reports whether label is the binding's tab label: its stored
+// or derived label, or — for a record that has no stored label — the label gc
+// wrote before GCREX-72, which a window started by an older build still has.
+func (b Binding) acceptsTabLabel(label, town string) bool {
+	if label == b.tabLabel(town) {
+		return true
+	}
+	return b.TabLabel == "" && label == legacyTabLabel(b.Name)
+}
+
 // paneLabel returns the Rex pane label for the pane: the stored label when
 // present, otherwise the name-derived label for legacy records.
 func (b Binding) paneLabel() string {
@@ -403,7 +413,7 @@ func stillBound(view rex.SessionView, bd Binding, town string) bool {
 		return false
 	}
 	for _, w := range view.Windows {
-		if w.ID != bd.WindowID || w.Label != bd.tabLabel(town) {
+		if w.ID != bd.WindowID || !bd.acceptsTabLabel(w.Label, town) {
 			continue
 		}
 		for _, blk := range w.Blocks {
@@ -428,38 +438,45 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 	if err != nil {
 		return Binding{}, false, err
 	}
-	tab := hint.TabLabel
-	if tab == "" {
-		tab = tabLabel(name, nil, b.townTab)
+	tabs := []string{hint.TabLabel}
+	if hint.TabLabel == "" {
+		tabs = []string{tabLabel(name, nil, b.townTab)}
+		if legacy := legacyTabLabel(name); legacy != tabs[0] {
+			// A window started by a build before GCREX-72 still carries the
+			// old label; find it rather than start a second tab.
+			tabs = append(tabs, legacy)
+		}
 	}
 	pane := hint.PaneLabel
 	if pane == "" {
 		pane = name.PaneLabel()
 	}
-	for _, w := range view.Windows {
-		if w.Label != tab {
-			continue
-		}
-		for _, blk := range w.Blocks {
-			if blk.Label == pane {
-				bd := Binding{
-					Name:         name,
-					SessionID:    sid,
-					SessionLabel: view.Label,
-					WindowID:     w.ID,
-					BlockID:      blk.ID,
-					TabLabel:     tab,
-					PaneLabel:    pane,
-					Aliases:      hint.Aliases,
-					// Launch details the labels do not carry: dropping them
-					// would silently disable the Stop-time drain diagnostic.
-					LaunchMode: hint.LaunchMode,
-					CreatedAt:  hint.CreatedAt,
-					GCBin:      hint.GCBin,
-					WorkDir:    hint.WorkDir,
+	for _, tab := range tabs {
+		for _, w := range view.Windows {
+			if w.Label != tab {
+				continue
+			}
+			for _, blk := range w.Blocks {
+				if blk.Label == pane {
+					bd := Binding{
+						Name:         name,
+						SessionID:    sid,
+						SessionLabel: view.Label,
+						WindowID:     w.ID,
+						BlockID:      blk.ID,
+						TabLabel:     tab,
+						PaneLabel:    pane,
+						Aliases:      hint.Aliases,
+						// Launch details the labels do not carry: dropping them
+						// would silently disable the Stop-time drain diagnostic.
+						LaunchMode: hint.LaunchMode,
+						CreatedAt:  hint.CreatedAt,
+						GCBin:      hint.GCBin,
+						WorkDir:    hint.WorkDir,
+					}
+					_ = b.store.Write(bd.Name, bd)
+					return bd, true, nil
 				}
-				_ = b.store.Write(bd.Name, bd)
-				return bd, true, nil
 			}
 		}
 	}
