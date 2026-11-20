@@ -112,8 +112,9 @@ func (p *Provider) observeIdentity(n SessionName) map[string]string {
 }
 
 // Observe answers `observe <name>`: absent when nothing holds the name,
-// running or dead for a recorded box, unknown when Rex cannot be reached. It
-// is a read and never mutates the session.
+// running or dead for the box that holds it, unknown when Rex cannot be
+// reached. It is a read and never mutates the session; a vanished record is
+// left for the next Start or Stop to replace.
 func (p *Provider) Observe(ctx context.Context, name string, _ []string) (ObserveAnswer, error) {
 	n := SessionName(name)
 	bd, ok := p.Binding(name)
@@ -131,28 +132,66 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 			return ObserveAnswer{State: ObserveAbsent}, nil
 		}
 	}
-	// Read liveness directly rather than through paneAlive: a block Rex no
-	// longer knows proves nothing holds the name, which is absent (rule 7), not
-	// a dead box with a stale object.
-	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
-	switch {
-	case errors.Is(err, rex.ErrNotFound):
-		p.binder.Forget(bd.Name)
-		return ObserveAnswer{State: ObserveAbsent}, nil
-	case errors.Is(err, rex.ErrUnavailable):
-		return ObserveAnswer{State: ObserveUnknown}, nil
-	case err != nil:
+	state, holder, err := p.boxState(ctx, bd)
+	if err != nil {
+		if errors.Is(err, rex.ErrUnavailable) {
+			return ObserveAnswer{State: ObserveUnknown}, nil
+		}
 		return ObserveAnswer{}, err
 	}
-	obj := observeObjectFor(bd)
-	ans := ObserveAnswer{Object: &obj, Identity: p.observeIdentity(bd.Name)}
-	if info.LastExit == nil {
-		ans.State = ObserveRunning
-	} else {
-		ans.State = ObserveDead
+	if state == ObserveAbsent {
+		return ObserveAnswer{State: ObserveAbsent}, nil
+	}
+	idName := holder.Name
+	if idName == "" {
+		idName = n
+	}
+	obj := observeObjectFor(holder)
+	ans := ObserveAnswer{State: state, Object: &obj, Identity: p.observeIdentity(idName)}
+	if state == ObserveDead {
 		ans.Agent = "dead"
 	}
 	return ans, nil
+}
+
+// boxState reports what holds the name a binding records. Rex proving the
+// recorded block gone does not prove the name is free (observe.v1 rule 7): a
+// restore or an operator can put another pane under the same labels, so the
+// live scan decides. It claims no state of its own; unknown is the caller's
+// answer for an unreadable backend. It is a read: a vanished record is left for
+// the next Start or Stop to replace.
+func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, error) {
+	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
+	switch {
+	case errors.Is(err, rex.ErrNotFound):
+		// Scan for a live pane under the record's labels, without ResolveLive's
+		// stale-record drop: Observe is a read, and only Start or Stop replaces
+		// the record.
+		live, ok, err := p.binder.scan(ctx, bd.Name, bd, nil)
+		if err != nil {
+			return "", Binding{}, err
+		}
+		if !ok {
+			return ObserveAbsent, Binding{}, nil
+		}
+		info, err := p.client.BlockProcess(ctx, live.SessionID, live.BlockID)
+		if errors.Is(err, rex.ErrNotFound) {
+			return ObserveAbsent, Binding{}, nil
+		}
+		if err != nil {
+			return "", Binding{}, err
+		}
+		if info.LastExit != nil {
+			return ObserveDead, live, nil
+		}
+		return ObserveRunning, live, nil
+	case err != nil:
+		return "", Binding{}, err
+	case info.LastExit != nil:
+		return ObserveDead, bd, nil
+	default:
+		return ObserveRunning, bd, nil
+	}
 }
 
 // Inventory snapshots every session the provider tracks for the city. It is a
@@ -176,22 +215,27 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 	listed := make(map[SessionName]bool, len(bds))
 	sessions := make([]InventoryEntry, 0, len(bds))
 	for _, bd := range bds {
-		obj := observeObjectFor(bd)
-		e := InventoryEntry{
-			Name:     string(bd.Name),
-			Object:   &obj,
-			Identity: p.observeIdentity(bd.Name),
-		}
-		alive, err := p.paneAlive(ctx, bd)
+		state, holder, err := p.boxState(ctx, bd)
 		switch {
 		case errors.Is(err, rex.ErrUnavailable):
 			complete = false
+			// The entry still carries the binding's object; only its state is
+			// unknown.
+			holder = bd
 		case err != nil:
 			return InventoryAnswer{}, err
-		case alive:
-			e.State = ObserveRunning
-		default:
-			e.State = ObserveDead
+		case state == ObserveAbsent:
+			// Rex proved nothing holds the name: omit it, as rule 7 allows.
+			continue
+		}
+		obj := observeObjectFor(holder)
+		e := InventoryEntry{
+			Name:     string(bd.Name),
+			State:    state,
+			Object:   &obj,
+			Identity: p.observeIdentity(bd.Name),
+		}
+		if state == ObserveDead {
 			e.Agent = "dead"
 		}
 		listed[bd.Name] = true
@@ -296,12 +340,20 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	if req.Mode == "zombie" {
 		return "changed", nil
 	}
-	alive, err := p.paneAlive(ctx, bd)
+	state, holder, err := p.boxState(ctx, bd)
 	if err != nil {
 		return "", err
 	}
-	if alive {
+	if state == ObserveRunning && holder.BlockID == bd.BlockID && holder.WindowID == bd.WindowID {
 		return "live", nil
+	}
+	if state != ObserveDead {
+		// The recorded block is gone or a new box holds the name: the object
+		// names no box, and the exact-binding close has nothing to close.
+		return "gone", nil
+	}
+	if holder.BlockID != bd.BlockID || holder.WindowID != bd.WindowID {
+		return "gone", nil
 	}
 	attached, err := p.attached(ctx, bd)
 	if err != nil {

@@ -301,8 +301,8 @@ func TestKillObjectCorpseLiveWhenAttached(t *testing.T) {
 
 // TestKillObjectDoesNotCloseRecreatedPane proves kill-object never kills by
 // name: when the recorded pane vanished and something else took the name's
-// labels without Start, the kill closes the exact object and leaves the new
-// pane alone.
+// labels without Start, the object names no box, so the kill answers gone and
+// leaves the new pane alone.
 func TestKillObjectDoesNotCloseRecreatedPane(t *testing.T) {
 	fake, p := started(t)
 	name := "Indigo--dog-1"
@@ -319,11 +319,11 @@ func TestKillObjectDoesNotCloseRecreatedPane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("KillObject: %v", err)
 	}
-	if res != "killed" {
-		t.Errorf("result = %q, want killed for the vanished object", res)
+	if res != "gone" {
+		t.Errorf("result = %q, want gone for the vanished object", res)
 	}
-	if len(fake.ClosedBlocks) != 1 || fake.ClosedBlocks[0] != rex.BlockID(ans.Object.ID) {
-		t.Errorf("closed blocks = %v, want only %s", fake.ClosedBlocks, ans.Object.ID)
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed blocks = %v, want none for the vanished object", fake.ClosedBlocks)
 	}
 	if running, err := p.IsRunning(context.Background(), name); err != nil || !running {
 		t.Errorf("IsRunning after the kill = %v, %v; want the recreated pane still running", running, err)
@@ -331,8 +331,8 @@ func TestKillObjectDoesNotCloseRecreatedPane(t *testing.T) {
 }
 
 // TestObserveAbsentWhenPaneVanished proves what Rex proves when it no longer
-// knows the recorded block: the name is absent, not dead, and the stale record
-// is dropped.
+// knows the recorded block: the name is absent, not dead, and Observe leaves
+// the stale record for Start or Stop to replace.
 func TestObserveAbsentWhenPaneVanished(t *testing.T) {
 	fake, p := started(t)
 	name := "Indigo--dog-1"
@@ -352,8 +352,116 @@ func TestObserveAbsentWhenPaneVanished(t *testing.T) {
 	if ans.State != provider.ObserveAbsent || ans.Object != nil {
 		t.Errorf("Observe = %+v, want absent with no object", ans)
 	}
-	if _, ok := p.Binding(name); ok {
-		t.Error("the stale binding survived an absent observe")
+	if _, ok := p.Binding(name); !ok {
+		t.Error("Observe forgot the stale binding; Start and Stop own that cleanup")
+	}
+}
+
+// TestObserveAnswersForPaneRestoredUnderName proves rule 7's converse: Rex
+// proving the recorded block gone does not prove the name is free. A restore
+// or an operator can leave another pane under the same labels, and observe
+// must answer for that box instead of absent.
+func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
+	fake, p := started(t)
+	name := "Indigo--dog-1"
+	first, err := p.Observe(context.Background(), name, nil)
+	if err != nil || first.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
+	}
+	// A restore puts a different pane under the same tab and pane labels.
+	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
+	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
+
+	ans, err := p.Observe(context.Background(), name, nil)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if ans.State != provider.ObserveRunning {
+		t.Errorf("state = %q, want running for the restored pane", ans.State)
+	}
+	if ans.Object == nil || ans.Object.ID != "block:dog-1-restored" {
+		t.Errorf("object = %+v, want the restored pane's", ans.Object)
+	}
+}
+
+// TestObserveAbsentLeavesIncarnationStateAlone proves Observe is a read: when
+// the recorded block vanished it answers absent and leaves the binding and the
+// meta sidecar for the next Start or Stop to clear.
+func TestObserveAbsentLeavesIncarnationStateAlone(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	if err := p.Start(context.Background(), name, provider.Config{
+		Argv: []string{"sleep", "300"},
+		Env:  map[string]string{"GC_SESSION_ID": "sid-1"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	bd, ok := p.Binding(name)
+	if !ok {
+		t.Fatalf("Binding(%s) missing before the vanish", name)
+	}
+	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
+	fake.View.Windows[0].Blocks = nil
+
+	ans, err := p.Observe(context.Background(), name, nil)
+	if err != nil || ans.State != provider.ObserveAbsent {
+		t.Fatalf("Observe = %+v, %v; want absent", ans, err)
+	}
+	if got, err := p.GetMeta(context.Background(), name, "GC_SESSION_ID"); err != nil || got != "sid-1" {
+		t.Errorf("meta after absent observe = %q, %v; want the retired incarnation's sid-1", got, err)
+	}
+	if _, ok := p.Binding(name); !ok {
+		t.Error("Observe dropped the binding; Start and Stop own that cleanup")
+	}
+}
+
+// TestKillObjectGoneWhenBlockVanished proves kill-object names no box when the
+// recorded block is gone: it answers gone and closes nothing, so gc is not
+// told it killed a box it could not see.
+func TestKillObjectGoneWhenBlockVanished(t *testing.T) {
+	fake, p := started(t)
+	name := "Indigo--dog-1"
+	ans, err := p.Observe(context.Background(), name, nil)
+	if err != nil || ans.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
+	}
+	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(ans.Object.ID): true}
+	fake.View.Windows[0].Blocks = nil
+
+	res, err := p.KillObject(context.Background(), name, provider.KillObjectRequest{Object: *ans.Object, Mode: "corpse"})
+	if err != nil {
+		t.Fatalf("KillObject: %v", err)
+	}
+	if res != "gone" {
+		t.Errorf("result = %q, want gone for a vanished object", res)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed blocks = %v, want none for a vanished object", fake.ClosedBlocks)
+	}
+}
+
+// TestInventorySkipsVanishedBinding proves inventory agrees with observe about
+// a name nothing holds: a binding whose block vanished is omitted from a
+// complete listing rather than listed dead.
+func TestInventorySkipsVanishedBinding(t *testing.T) {
+	fake, p := started(t)
+	bd, ok := p.Binding("Indigo--dog-1")
+	if !ok {
+		t.Fatalf("Binding missing before the vanish")
+	}
+	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
+	fake.View.Windows[0].Blocks = nil
+
+	inv, err := p.Inventory(context.Background())
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if !inv.Complete {
+		t.Errorf("complete = false, want true: Rex proved nothing holds the name")
+	}
+	if len(inv.Sessions) != 0 {
+		t.Errorf("sessions = %+v, want none for the vanished binding", inv.Sessions)
 	}
 }
 
