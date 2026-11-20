@@ -18,4 +18,9 @@ bin/
 
 # Per-bead worktrees (gc staged workflow)
 /worktrees/
-plans/**/review.md
+
+# Workflow scratch: plans/ holds per-attempt output (summaries, reviews,
+# decompositions). The durable record is the bead plus git history; only the
+# marker file is tracked.
+/plans/*
+!/plans/.gc-plans

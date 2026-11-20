@@ -502,11 +502,11 @@ Phase 0 also confirms the plan's decisions against the live surface:
   so the CLI satisfies the attachment itself — but the provider does not call
   it. The live probe lists a `kind == "app"` client on an unattended scratch
   session, because the local app is attached to the shared server and not to a
-  particular session. That is the plan's approved skip branch
-  (`plans/GCREX-65/implementation-plan.md:102-105,205-208`): `stop` closes
-  panes only. Ownership rule (D3) still holds for the panes: `stop` closes only
-  the city's own blocks, never the server, other sessions, or a legacy-labelled
-  session. Consequence: after the last pane closes, the empty canonical
+  particular session. That is the approved skip branch: `stop` closes panes
+  only, because a faithful `session.destroy` would either destroy the shared
+  server or depend on an attachment the provider does not own. Ownership rule
+  (D3) still holds for the panes: `stop` closes only the city's own blocks,
+  never the server, other sessions, or a legacy-labelled session. Consequence: after the last pane closes, the empty canonical
   `gc:<city>` shell stays listed until someone removes it; the next `Start`
   reuses it through `FindSession`, so it costs nothing. `DestroySession` was
   removed from `rex.Client` in the same change. Self-exit of the agent with no
