@@ -626,8 +626,11 @@ Phase 0 also confirms the plan's decisions against the live surface:
   unclassifiable client kind returns an error rather than a false yes.
   **Live-verified:** a fresh scratch session already lists the server-wide Rex
   app client(s), and its first window becomes active even with `focus:false`,
-  so a single-agent city still reads attached; `Start` does send `focus:false`
-  so a background rig does not steal the active window. Attachment remains
+  so a single-agent city still reads attached. **Changed (gcrex-youi):**
+  `Start` now sends `focus:true` on `session.new_window` only when the name had
+  no binding yet, so a brand-new session's tab comes forward; a re-attach, a
+  relaunch of a dead pane and a `session.new_split` into an existing tab still
+  send `focus:false` and never move the active window. Attachment remains
   session-coarse: the surface cannot say which tab a given client is viewing.
 - **Version skew policy.** The CLI is `.20`/rev 16 while the running server is
   `.19`/rev 14. **Resolved (GCREX-6):** server rev 14 is inside the CLI's

@@ -624,7 +624,14 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				launched = startResult{sessionID: sid, blockID: block}
 				return nil
 			}
-			wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
+			// A brand-new session's tab becomes active so the operator lands in
+			// it. A name that already answered to a binding (a live pane
+			// returned above, a dead one is relaunched here) is an existing
+			// session and must not steal focus. A split never moves the active
+			// tab either.
+			windowSpec := spec
+			windowSpec.Focus = !found
+			wid, block, err := p.client.NewWindow(ctx, sid, tab, windowSpec)
 			if err != nil {
 				return err
 			}
