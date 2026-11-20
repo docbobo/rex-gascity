@@ -30,7 +30,7 @@ instead of the pack is recorded in the op's report, not silently dropped.
 |---|---|---|---|---|---|
 | `protocol` | [deviations](provider-method-audit/protocol.md) | 4 | 0 | 4 | 0 |
 | `start` | [deviations](provider-method-audit/start.md) | 10 | 4 | 6 | 0 |
-| `stop` | [deviations](provider-method-audit/stop.md) | 7 | 2 | 5 | 0 |
+| `stop` | [deviations](provider-method-audit/stop.md) | 6 | 1 | 5 | 0 |
 | `kill-object` | [not implemented](provider-method-audit/kill-object.md) | 4 | 0 | 4 | 0 |
 | `observe` | [not implemented](provider-method-audit/observe.md) | 5 | 0 | 3 | 0 |
 | `inventory` | [not implemented](provider-method-audit/inventory.md) | 4 | 0 | 4 | 0 |

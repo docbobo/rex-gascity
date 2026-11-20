@@ -171,10 +171,14 @@ type Provider struct {
 	ns Namespace
 
 	// runner runs the external processes the provider shells out to: the gc
-	// claim probe (nudge.go) and the git drain-diagnostic calls
-	// (drain_diag.go). It is shared, so it lives on Provider rather than in
-	// nudgeConfig.
+	// claim probe (nudge.go), the git drain-diagnostic calls (drain_diag.go)
+	// and the process table of the stop reap (reap.go). It is shared, so it
+	// lives on Provider rather than in nudgeConfig.
 	runner Runner
+
+	// signal delivers a signal to a pane descendant during the stop reap.
+	// Tests replace it so no real process is signalled.
+	signal func(pid int, sig os.Signal) error
 
 	// nudge holds the nudge and startup-delivery tunables (see nudge.go).
 	// It is a named field, not embedded, so the tunables are not promoted
@@ -297,6 +301,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		activity: NewMemoryActivityStore(),
 		meta:     NewMemoryMetaStore(),
 		runner:   ExecRunner{},
+		signal:   osSignal,
 		nudge:    defaultNudgeConfig(),
 
 		startBudget:         defaultStartBudget,
@@ -764,8 +769,19 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	}
 	// Sample the work tree before the pane closes, while the worker is alive.
 	p.writeDrainDiagnostic(ctx, binding)
-	if err := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return err
+	// Capture the pane's subtree too: a close is not proof that the tree is
+	// gone, and a detached descendant can no longer be attributed to the pane
+	// once it has been reparented (GCREX-50).
+	tree, treeErr := p.paneSubtree(ctx, binding)
+	closeErr := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID)
+	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
+		return closeErr
+	}
+	// Reap what the pane left behind and refuse to report success while any of
+	// it survives; the binding, meta and activity stay for a retry, as
+	// herdr-core keeps the box (parity doc ### stop row 2).
+	if left := p.reap(ctx, tree); treeErr != nil || len(left) > 0 {
+		return &survivorError{name: string(binding.Name), survivors: left, reason: treeErr}
 	}
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
