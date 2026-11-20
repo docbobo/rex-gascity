@@ -472,12 +472,19 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		PaneLabel: paneLabelFor(n, cfg.Env),
 		Aliases:   aliasesFor(n, cfg.Env),
 	}
+	// A pane started before GC_TEMPLATE drove the agent prefix carries the
+	// legacy label; find it rather than launch a duplicate beside it.
+	var legacyPanes []string
+	if legacy := legacyPaneLabelFor(n, cfg.Env); legacy != hint.PaneLabel {
+		legacyPanes = []string{legacy}
+	}
 
 	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
 		Name: n, Hint: hint, Mode: ResolveFresh,
 		// A window started before GCREX-72 carries the bare GC_RIG, which
 		// the name alone cannot derive for short pool names.
-		LegacyTabs: []string{legacyTabLabelFor(n, cfg.Env)},
+		LegacyTabs:  []string{legacyTabLabelFor(n, cfg.Env)},
+		LegacyPanes: legacyPanes,
 	})
 	if err != nil {
 		return startResult{}, err

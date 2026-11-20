@@ -383,6 +383,53 @@ func TestPaneLabelRediscovery(t *testing.T) {
 	}
 }
 
+// TestPaneLabelRediscoveryAfterTemplateChange covers the upgrade path: a pane
+// launched before GC_TEMPLATE drove the agent prefix carries
+// "<GC_AGENT> (<GC_SESSION_NAME>)". With GC_TEMPLATE set, the new hint differs
+// by the agent (and the start name differs from GC_SESSION_NAME), so a
+// recordless start must still find the old pane by its session suffix instead
+// of launching a duplicate.
+func TestPaneLabelRediscoveryAfterTemplateChange(t *testing.T) {
+	ctx := context.Background()
+	const (
+		start    = "pi-mc-wisp-fvwrce"
+		session  = "gc__implementation-worker-mc-wisp-fvwrce"
+		oldLabel = "mc-wisp-fvwrce (" + session + ")"
+	)
+	oldEnv := map[string]string{
+		"GC_RIG":          "rex-gascity",
+		"GC_AGENT":        "mc-wisp-fvwrce",
+		"GC_SESSION_NAME": session,
+	}
+	env := map[string]string{
+		"GC_RIG":          "rex-gascity",
+		"GC_TEMPLATE":     "rex-gascity/gc.implementation-worker",
+		"GC_AGENT":        "mc-wisp-fvwrce",
+		"GC_SESSION_NAME": session,
+	}
+
+	fake := faketest.New()
+	if err := New("acme", fake).Start(ctx, start, Config{Argv: []string{"pi"}, Env: oldEnv}); err != nil {
+		t.Fatalf("Start (old label): %v", err)
+	}
+	if len(fake.CreatedWindows) != 1 || fake.CreatedWindows[0].Spec.Label != oldLabel {
+		t.Fatalf("launched labels = %v, want %q", fake.CreatedWindows, oldLabel)
+	}
+
+	// Sidecar record lost, start env now carries GC_TEMPLATE: the hint names a
+	// different agent, so only the shared session suffix still identifies it.
+	rebuilt := faketest.New()
+	rebuilt.Sessions = fake.Sessions
+	rebuilt.View = fake.View
+	if err := New("acme", rebuilt).Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start with record lost: %v", err)
+	}
+	if len(rebuilt.CreatedWindows) != 0 || len(rebuilt.CreatedSplits) != 0 {
+		t.Fatalf("lost-record resume relaunched a pane: windows=%d splits=%d",
+			len(rebuilt.CreatedWindows), len(rebuilt.CreatedSplits))
+	}
+}
+
 // TestRecordlessDiscoveryBySessionSuffix is the GCREX-5qel review fix for
 // environment-free discovery: with no sidecar record and no start env, a
 // resolve must still find the live pane whose label carries the

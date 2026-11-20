@@ -118,11 +118,21 @@ const maxPaneLabelRunes = 128
 // is the identity even when it is over the limit, so it is clamped keeping the
 // bead id rather than falling through to the always-longer long form.
 func paneLabelFor(n SessionName, env map[string]string) string {
+	return paneLabelForAgent(n, env, paneLabelAgent(env))
+}
+
+// legacyPaneLabelFor is the label the pre-GC_TEMPLATE rule produced: the agent
+// came from GC_ALIAS/GC_AGENT, not GC_TEMPLATE. It is the label a pane started
+// before the change still carries, so an upgrade can recognise it.
+func legacyPaneLabelFor(n SessionName, env map[string]string) string {
+	return paneLabelForAgent(n, env, paneAgent(env))
+}
+
+func paneLabelForAgent(n SessionName, env map[string]string, agent string) string {
 	if env["GC_RIG"] == "" && n.IsTown() {
 		return n.PaneLabel()
 	}
 	session := strings.TrimSpace(env["GC_SESSION_NAME"])
-	agent := paneLabelAgent(env)
 	if session == "" || agent == "" {
 		return n.PaneLabel()
 	}
