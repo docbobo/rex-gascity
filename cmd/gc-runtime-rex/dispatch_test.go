@@ -81,7 +81,7 @@ const dog = "Indigo--dog-1"
 func TestProtocolHandshake(t *testing.T) {
 	h, _ := newHarness(t)
 	r := h.must("", "protocol")
-	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary"]}` + "\n"
+	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}` + "\n"
 	if r.stdout != want {
 		t.Fatalf("stdout = %q, want %q", r.stdout, want)
 	}
@@ -99,7 +99,7 @@ func TestProtocolHandshake(t *testing.T) {
 	for _, c := range hs["capabilities"].([]any) {
 		caps = append(caps, c.(string))
 	}
-	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary"}) {
+	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome"}) {
 		t.Errorf("capabilities = %v", caps)
 	}
 }
@@ -463,7 +463,12 @@ func TestAttachSucceedsWithHint(t *testing.T) {
 	}
 }
 
-func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
+// TestInputOpsOnMissingSessionAnswerGone pins the declared input-outcome
+// contract: gc reads a driving op's exit 80 and its one outcome line only when
+// the handshake declares input-outcome and carrier.ops
+// (gc internal/runtime/exec/outcome.go:193, outcomesRead), so a missing pane
+// answers `gone` instead of the old best-effort exit 0. Zero keys stay a no-op.
+func TestInputOpsOnMissingSessionAnswerGone(t *testing.T) {
 	h, fake := newHarness(t)
 	for _, c := range []struct {
 		stdin string
@@ -472,26 +477,36 @@ func TestInputOpsOnMissingSessionSucceed(t *testing.T) {
 		{"hello\n", []string{"nudge", "ghost"}},
 		{"", []string{"interrupt", "ghost"}},
 		{"", []string{"send-keys", "ghost", "C-c", "Enter"}},
-		{"", []string{"send-keys", "ghost"}},
 	} {
 		r := h.run(c.stdin, c.args...)
-		if r.code != exitOK || r.stdout != "" {
-			t.Errorf("%v: exit %d stdout %q stderr %q", c.args, r.code, r.stdout, r.stderr)
+		if r.code != exitInputOutcome {
+			t.Errorf("%v: exit %d, want %d (stderr %q)", c.args, r.code, exitInputOutcome, r.stderr)
+			continue
 		}
+		var line struct {
+			Outcome string `json:"outcome"`
+		}
+		if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+			t.Errorf("%v: stdout = %q, want one JSON line: %v", c.args, r.stdout, err)
+			continue
+		}
+		if line.Outcome != "gone" {
+			t.Errorf("%v: outcome = %q, want gone", c.args, line.Outcome)
+		}
+	}
+	// Zero keys is no input, so it never looks up the pane.
+	if r := h.run("", "send-keys", "ghost"); r.code != exitOK || r.stdout != "" {
+		t.Errorf("zero keys: exit %d stdout %q, want 0 and empty", r.code, r.stdout)
 	}
 	if len(fake.SentKeys) != 0 {
 		t.Errorf("keys sent to a missing session: %+v", fake.SentKeys)
 	}
 }
 
-// TestSendKeysOutcomeDeclaredGoneExits80 pins AC-2: once the caller declares
-// input-outcome, send-keys answers a missing pane with exit 80 and one
-// {"outcome":"gone",...} stdout line instead of the baseline best-effort exit 0.
-func TestSendKeysOutcomeDeclaredGoneExits80(t *testing.T) {
-	restore := inputOutcomeDeclared
-	inputOutcomeDeclared = func() bool { return true }
-	t.Cleanup(func() { inputOutcomeDeclared = restore })
-
+// TestSendKeysGoneExits80 pins the declared input-outcome contract: send-keys
+// answers a missing pane with exit 80 and one {"outcome":"gone",...} stdout
+// line instead of the baseline best-effort exit 0.
+func TestSendKeysGoneExits80(t *testing.T) {
 	h, _ := newHarness(t)
 	r := h.run("", "send-keys", "ghost", "C-c", "Enter")
 	if r.code != exitInputOutcome {
@@ -581,10 +596,10 @@ func TestClearScrollbackDeliveredExitsZero(t *testing.T) {
 }
 
 // TestInterruptReturnsInputOutcomes pins the typed exit-80 words interrupt
-// answers for a down server and a pre-send failure. A missing or dead pane is
-// best-effort: the handshake does not declare input-outcome, so gc v1.5.1 asks
-// for exit 0 there (docs/reference/exec-session-provider.md "Best-effort
-// interrupt/nudge"), and bestEffort answers it.
+// answers: `gone` for a missing or dead pane, `unavailable` for a down server
+// and `not_sent` for a pre-send failure. The handshake declares input-outcome
+// and carrier.ops, so gc reads the word rather than treating 80 as a plain
+// error (gc internal/runtime/exec/outcome.go:193).
 func TestInterruptReturnsInputOutcomes(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -594,8 +609,8 @@ func TestInterruptReturnsInputOutcomes(t *testing.T) {
 		code    int
 		outcome string
 	}{
-		{"missing pane", false, false, nil, exitOK, ""},
-		{"dead pane", true, true, nil, exitOK, ""},
+		{"missing pane", false, false, nil, exitInputOutcome, "gone"},
+		{"dead pane", true, true, nil, exitInputOutcome, "gone"},
 		{"server unreachable", false, false, rex.ErrUnavailable, exitInputOutcome, "unavailable"},
 		{"pre-send failure", false, false, errors.New("rex: protocol error"), exitInputOutcome, "not_sent"},
 	} {
