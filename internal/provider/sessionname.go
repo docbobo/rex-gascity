@@ -112,11 +112,13 @@ const maxPaneLabelRunes = 128
 // paneLabelFor returns the Rex pane label for a started session. An unaliased
 // pool seat whose name the env proves (Sanitize(agent)+"-"+bead id equals
 // GC_SESSION_NAME, gc's PoolSessionName shape) gets the short
-// "<agent> (<bead id>)" form; every other rig-scoped session keeps
+// "<agent> (#<bead id>)" form; every other rig-scoped session keeps
 // "<agent> (<GC_SESSION_NAME>)", and a town-level session keeps the
 // name-derived label. Both forms shorten only the agent. A verified short form
 // is the identity even when it is over the limit, so it is clamped keeping the
-// bead id rather than falling through to the always-longer long form.
+// bead id rather than falling through to the always-longer long form. The "#"
+// marks the short form so identityMatch never reads its bead id as a session
+// name.
 func paneLabelFor(n SessionName, env map[string]string) string {
 	return paneLabelForAgent(n, env, paneLabelAgent(env))
 }
@@ -136,10 +138,18 @@ func legacyPaneLabelFor(n SessionName, env map[string]string) string {
 	if session == "" || agent == "" {
 		return n.PaneLabel()
 	}
-	if label, ok := fitPaneLabel(agent, session); ok {
-		return label
+	// Pre-change truncation: cut the agent without the shortened marker. A
+	// pane started before the change carries that unmarked cut, so the legacy
+	// label must reproduce it exactly or the upgrade misses the live pane.
+	tail := " (" + session + ")"
+	budget := maxPaneLabelRunes - utf8.RuneCountInString(tail)
+	if budget < 1 {
+		return clampRexLabel(session)
 	}
-	return clampRexLabel(session)
+	if r := []rune(agent); len(r) > budget {
+		agent = string(r[:budget])
+	}
+	return agent + tail
 }
 
 func paneLabelForAgent(n SessionName, env map[string]string, agent string) string {
@@ -155,7 +165,7 @@ func paneLabelForAgent(n SessionName, env map[string]string, agent string) strin
 	// long form rather than to a guess.
 	if env["GC_ALIAS"] == "" {
 		if suffix := panePoolSuffix(env); suffix != "" && sanitizeQualified(agent)+"-"+suffix == session {
-			if label, ok := fitPaneLabel(agent, suffix); ok {
+			if label, ok := fitPaneLabel(agent, paneLabelShortForm+suffix); ok {
 				return label
 			}
 			return clampRexLabel(session)
@@ -174,10 +184,16 @@ func paneLabelForAgent(n SessionName, env map[string]string, agent string) strin
 // rig and agent names; none of them end in this rune.
 const paneLabelShortened = "…"
 
+// paneLabelShortForm marks the pool short form's suffix: the "#" says the
+// parenthesised text is a bead id, not a session name. A named session's name
+// can equal a bead id, so without the mark a short-form label would name it.
+const paneLabelShortForm = "#"
+
 // fitPaneLabel renders "<agent> (<suffix>)" at or under Rex's limit. Only the
 // agent is shortened: the parenthesised suffix is the discovery identity
 // (Binder.scan), so cutting it would make two sessions differing at the tail
-// share a label. A shortened agent is marked (paneLabelShortened) and names no
+// share a label. A short-form suffix carries paneLabelShortForm, so the mark
+// costs one rune of the agent budget. A shortened agent is marked (paneLabelShortened) and names no
 // session; ok is false when not even the marked agent and the suffix fit — no
 // label within the limit can then name the session.
 func fitPaneLabel(agent, suffix string) (string, bool) {
@@ -221,12 +237,14 @@ func panePoolSuffix(env map[string]string) string {
 	return paneAgent(map[string]string{"BEADS_ACTOR": env["BEADS_ACTOR"]})
 }
 
-// identityMatch reports whether label names session n: its parenthesised suffix
-// is n (legacy and named labels), or n is exactly Sanitize(agent)+"-"+suffix
-// (the pool short form). Nothing else counts. A short form that fitPaneLabel
-// had to shorten keeps the bead id but loses the agent's tail, so a prefix
-// plus the suffix names no session: two names can share both while differing
-// in between, and a label that fits two sessions is not evidence for either.
+// identityMatch reports whether label names session n. A short form is
+// "<agent> (#<bead id>)": its suffix carries paneLabelShortForm, so n is
+// exactly Sanitize(agent)+"-"+bead id. A long form is "<agent> (<suffix>)":
+// its suffix is n. Nothing else counts. A short form that fitPaneLabel had to
+// shorten keeps the bead id but loses the agent's tail, so a prefix plus the
+// suffix names no session: two names can share both while differing in
+// between, and a label that fits two sessions is not evidence for either. A
+// clamped label is a bare session name and names no session here.
 func identityMatch(name SessionName, label string) bool {
 	i := strings.LastIndex(label, " (")
 	if i < 0 || !strings.HasSuffix(label, ")") {
@@ -236,16 +254,14 @@ func identityMatch(name SessionName, label string) bool {
 	if agent == "" || suffix == "" {
 		return false
 	}
-	if suffix == string(name) {
-		return true
+	if strings.HasPrefix(suffix, paneLabelShortForm) {
+		bead := suffix[len(paneLabelShortForm):]
+		if bead == "" || strings.HasSuffix(agent, paneLabelShortened) {
+			return false
+		}
+		return sanitizeQualified(agent)+"-"+bead == string(name)
 	}
-	// A shortened agent is only a prefix of the real one, so the name rebuilt
-	// from it belongs to whichever session happens to be that short. The long
-	// form still matches above: its suffix is the whole name.
-	if strings.HasSuffix(agent, paneLabelShortened) {
-		return false
-	}
-	return sanitizeQualified(agent)+"-"+suffix == string(name)
+	return suffix == string(name)
 }
 
 // paneAgent resolves the display agent: GC_ALIAS, then GC_AGENT, then the

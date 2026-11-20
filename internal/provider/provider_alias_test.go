@@ -113,7 +113,7 @@ func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
 			name:  "verified pool seat short form",
 			start: wispStart,
 			env:   withSessionName(wispEnv(), wispStart),
-			want:  "pi (mc-wisp-ybq1)",
+			want:  "pi (#mc-wisp-ybq1)",
 		},
 		{
 			name:  "aliased named session keeps the whole name",

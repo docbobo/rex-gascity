@@ -232,7 +232,8 @@ Gas City sessions map onto the three-level Rex hierarchy:
     `GC_SESSION_NAME`; an unaliased pool/ephemeral seat uses its session bead
     id — `GC_AGENT` (a value containing `/` or `.` is a qualified agent, never
     a bead id), else `GC_SESSION_ID` — so a pool seat reads
-    `gc.implementation-worker (mc-wisp-kvqib)`. The bead id is *tried* against
+    `gc.implementation-worker (#mc-wisp-kvqib)`. The `#` marks the suffix as a
+    bead id, not a session name. The bead id is *tried* against
     the name, never assumed: a seat with neither `GC_AGENT` nor
     `GC_SESSION_ID` falls back to the template's agent part as the candidate
     suffix, the verification below fails, and the long form is emitted;
@@ -258,11 +259,11 @@ Gas City sessions map onto the three-level Rex hierarchy:
   fallback candidate is the template's agent part, so the check fails and the
   long form is emitted.
   Discovery applies the same rule (`identityMatch`): a label names session `n`
-  when its parenthesised suffix is `n`, or `n` is exactly
-  `Sanitize(agent)+"-"+suffix` with no shortening; a bare label, a
-  prefix-only match or an agent ending in `…` never counts.
+  when its parenthesised suffix is `n`, or its suffix is `#<bead id>` and
+  `n` is exactly `Sanitize(agent)+"-"+bead id` with no shortening; a bare
+  label, a prefix-only match or an agent ending in `…` never counts.
 - The launch label, the discovery hint and the recorded label all come from the same pool-routing-projected env (`launch.Project`), the one the pane itself runs with. Deriving the launch label from the pre-projection env would disagree with the hint whenever routing rewrites `BEADS_ACTOR`, and a restart with the sidecar record lost would launch a duplicate pane.
-- With no sidecar record and no start env (`is-running`, `stop`), the fallback scan accepts a pane label whose parenthesised suffix names the session — the long `(<GC_SESSION_NAME>)` form, or the verified pool short form `Sanitize(agent)+"-"+bead id == name` — as well as the exact name-derived label, so a live pane is found without any start env. A shortened short form names nobody: such a pane is left alone rather than risking another session's stop.
+- With no sidecar record and no start env (`is-running`, `stop`), the fallback scan accepts a pane label whose parenthesised suffix names the session — the long `(<GC_SESSION_NAME>)` form, or the verified pool short form `Sanitize(agent)+"-"+bead id == name` (written `#<bead id>`) — as well as the exact name-derived label, so a live pane is found without any start env. A shortened short form names nobody: such a pane is left alone rather than risking another session's stop.
 - A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `gc:<city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
