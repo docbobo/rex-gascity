@@ -76,6 +76,35 @@ func TestObserveRecordlessPaneUnreadableSidecarHasNoIdentity(t *testing.T) {
 	}
 }
 
+// TestObserveRecordlessDeadPaneHasNoIdentity proves the dead half of the
+// recordless rule. A restored pane that already exited answers dead with an
+// empty identity, and Observe saves no binding for it.
+func TestObserveRecordlessDeadPaneHasNoIdentity(t *testing.T) {
+	fake := faketest.New()
+	p := New("acme", fake)
+	reviewPane(fake)
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {LastExit: &rex.ExitStatus{}},
+	}
+	if err := p.metaSet("Indigo--dog-1", "GC_SESSION_ID", "sid-stale"); err != nil {
+		t.Fatalf("metaSet: %v", err)
+	}
+
+	ans, err := p.Observe(context.Background(), "Indigo--dog-1", nil)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if ans.State != ObserveDead || ans.Agent != "dead" || ans.Object == nil || ans.Object.ID != "block:dog-1" {
+		t.Fatalf("Observe = %+v, want the recordless pane dead", ans)
+	}
+	if ans.Identity == nil || len(ans.Identity) != 0 {
+		t.Errorf("identity = %v, want an empty set", ans.Identity)
+	}
+	if _, ok := p.Binding("Indigo--dog-1"); ok {
+		t.Error("Observe saved a binding, but discovery must stay read-only")
+	}
+}
+
 // TestInventoryAdoptedDiscoveryHasNoIdentity proves the saved-discovery path:
 // IsRunning adopts the recordless pane, and the stored record must remember it
 // was adopted so Inventory does not hand back the retired identity.
