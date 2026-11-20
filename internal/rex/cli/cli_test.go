@@ -379,6 +379,42 @@ func TestListClients(t *testing.T) {
 	}
 }
 
+func TestBlockSize(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "size", `{"columns":209,"rows":62,"owner":"client:a","desired":[{"client_id":"client:a","columns":209,"rows":62,"updated_at":"2026-11-20T21:19:50.77461+01:00"},{"client_id":null,"columns":80,"rows":24,"updated_at":"2026-11-20T21:19:50.77461+01:00"}]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	size, err := c.BlockSize(context.Background(), "session:a", "block:dog-1")
+	if err != nil {
+		t.Fatalf("BlockSize: %v", err)
+	}
+	if size.Owner != "client:a" {
+		t.Errorf("owner = %q, want client:a", size.Owner)
+	}
+	want := []rex.SizeRequest{{ClientID: "client:a"}, {ClientID: ""}}
+	if !reflect.DeepEqual(size.Desired, want) {
+		t.Errorf("desired = %+v, want %+v", size.Desired, want)
+	}
+	args := argsFor(t, fake.calls(t), "block.method")
+	if args["method"] != "size" || args["block_id"] != "block:dog-1" || args["session_id"] != "session:a" {
+		t.Errorf("block.method args = %v", args)
+	}
+}
+
+func TestBlockSizeUnowned(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "size", `{"columns":0,"rows":0,"owner":null,"desired":[]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	size, err := c.BlockSize(context.Background(), "session:a", "block:dog-1")
+	if err != nil {
+		t.Fatalf("BlockSize: %v", err)
+	}
+	if size.Owner != "" || len(size.Desired) != 0 {
+		t.Errorf("size = %+v, want an unowned block", size)
+	}
+}
+
 func TestBlockProgramStatus(t *testing.T) {
 	fake := newFakeRex(t)
 	fake.respond(t, "program_status", `{"records":[{"id":"r1","state":"working","app":"pi","kind":"permission","updated_at":"2026-11-17T20:18:53.239854+01:00"}]}`)

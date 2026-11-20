@@ -103,6 +103,11 @@ type Fake struct {
 	// block.
 	ProgramStatuses map[rex.BlockID]rex.ProgramStatus
 
+	// Sizes is the size claim BlockSize reports, keyed by block. A block with no
+	// entry reports the zero claim (no owner), as Rex does for a box no client
+	// displayed.
+	Sizes map[rex.BlockID]rex.BlockSize
+
 	// ProgramStatusFunc and WriteFunc, when non-nil, supersede the plain
 	// maps for those methods. They are called with the fake's lock held, so
 	// they must not call Fake methods; tests use them to model a program
@@ -111,10 +116,11 @@ type Fake struct {
 	ProgramStatusFunc func(rex.BlockID) rex.ProgramStatus
 	WriteFunc         func(sid rex.SessionID, block rex.BlockID, text string)
 
-	// ListClientsErr and ProgramStatusErr, when set, are returned by those
-	// methods.
+	// ListClientsErr, ProgramStatusErr and BlockSizeErr, when set, are returned
+	// by those methods.
 	ListClientsErr   error
 	ProgramStatusErr error
+	BlockSizeErr     error
 }
 
 // BlockCall records one block-method call.
@@ -292,6 +298,16 @@ func (f *Fake) BlockProgramStatus(_ context.Context, sid rex.SessionID, block re
 		return f.ProgramStatusFunc(block), nil
 	}
 	return f.ProgramStatuses[block], nil
+}
+
+func (f *Fake) BlockSize(_ context.Context, sid rex.SessionID, block rex.BlockID) (rex.BlockSize, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(sid, block, "size")
+	if f.BlockSizeErr != nil {
+		return rex.BlockSize{}, f.BlockSizeErr
+	}
+	return f.Sizes[block], nil
 }
 
 func (f *Fake) BlockEvent(_ context.Context, sid rex.SessionID, block rex.BlockID, _ rex.Event) error {

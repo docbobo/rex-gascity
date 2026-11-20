@@ -415,6 +415,7 @@ func TestIsAttached(t *testing.T) {
 		t.Errorf("is-attached without clients = %q", got)
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "app"}}
+	fake.Sizes = map[rex.BlockID]rex.BlockSize{"block:dog-1": {Owner: "c1"}}
 	fake.View.ActiveWindowID = fake.View.Windows[0].ID
 	if got := h.must("", "is-attached", dog).stdout; got != "true\n" {
 		t.Errorf("is-attached with app client = %q", got)
@@ -423,6 +424,8 @@ func TestIsAttached(t *testing.T) {
 	if got := h.must("", "is-attached", dog).stdout; got != "true\n" {
 		t.Errorf("is-attached with unclassifiable client kind = %q, want true", got)
 	}
+	fake.BlockSizeErr = errors.New("boom")
+	assertFailure(t, h.run("", "is-attached", dog), exitFail)
 }
 
 // downRex fails the read calls attach might use, modeling an unreachable Rex
@@ -436,6 +439,10 @@ func (downRex) SessionView(context.Context, rex.SessionID) (rex.SessionView, err
 
 func (downRex) ListClients(context.Context, rex.SessionID) ([]rex.ClientInfo, error) {
 	return nil, errors.New("rex: connection refused")
+}
+
+func (downRex) BlockSize(context.Context, rex.SessionID, rex.BlockID) (rex.BlockSize, error) {
+	return rex.BlockSize{}, errors.New("rex: connection refused")
 }
 
 func TestAttachSucceedsWithHint(t *testing.T) {

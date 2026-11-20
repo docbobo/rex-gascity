@@ -391,6 +391,32 @@ func (c *Client) BlockClear(ctx context.Context, sessionID rex.SessionID, block 
 	return c.blockMethod(ctx, sessionID, block, "clear", nil, nil)
 }
 
+// BlockSize returns a pane's size claim. An owner the reply omits is empty: Rex
+// reports null for a block no client has displayed.
+func (c *Client) BlockSize(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (rex.BlockSize, error) {
+	var reply struct {
+		Owner   *string `json:"owner"`
+		Desired []struct {
+			ClientID *string `json:"client_id"`
+		} `json:"desired"`
+	}
+	if err := c.blockMethod(ctx, sessionID, block, "size", nil, &reply); err != nil {
+		return rex.BlockSize{}, err
+	}
+	var size rex.BlockSize
+	if reply.Owner != nil {
+		size.Owner = *reply.Owner
+	}
+	for _, d := range reply.Desired {
+		req := rex.SizeRequest{}
+		if d.ClientID != nil {
+			req.ClientID = *d.ClientID
+		}
+		size.Desired = append(size.Desired, req)
+	}
+	return size, nil
+}
+
 // BlockProgramStatus returns the program-reported status records of a pane.
 // Records with an absent updated_at keep the zero time.
 func (c *Client) BlockProgramStatus(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (rex.ProgramStatus, error) {

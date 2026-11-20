@@ -7,14 +7,19 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
-// IsAttached reports whether a human is watching the agent's pane: an app
-// client exists and the agent's rig tab is the active window containing the
-// pane. A missing
-// pane is not attached. A Rex transport error is returned as is — gc reads any
-// is-attached error as "not attached" (fail-open), so the caller must not
-// mistake that error for a safe "nobody is watching" answer. A client of a
-// kind we cannot classify answers true, because that fail-open reading must
-// not close a pane a human may be watching.
+// IsAttached reports whether a human is watching the agent's pane. Attachment
+// has the two halves gc's own model implies. The session half is the block's
+// claim: the size method's owner is the client the block is displayed for, and
+// is empty when the app never showed the box even though the app is attached to
+// the session. The block half is the pane's window being the session's active
+// window.
+//
+// An app client that does not own the block is not watching it. A client kind we
+// cannot classify answers true, because gc reads any is-attached error as "not
+// attached" (fail-open) and must not close a pane a human may be watching. A
+// stale owner no longer in the client list also answers true: ownership is a
+// last-requested claim, not a heartbeat, so it errs toward true. A Rex transport
+// error is returned as is, so the op exits non-zero rather than answering false.
 func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil {
@@ -23,27 +28,32 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	size, err := p.client.BlockSize(ctx, binding.SessionID, binding.BlockID)
+	if err != nil {
+		return false, err
+	}
+	if size.Owner == "" {
+		return false, nil
+	}
 	clients, err := p.client.ListClients(ctx, binding.SessionID)
 	if err != nil {
 		return false, err
 	}
-	hasApp := false
+	kind, found := "", false
 	for _, c := range clients {
-		switch c.Kind {
-		case "app":
-			hasApp = true
-		case "cli", "peer":
-		default:
-			// We cannot classify this client, so we cannot tell whether a
-			// human is watching. gc reads any is-attached error as "not
-			// attached" (fail-open) and then lets config-drift restart,
-			// progress-stall recycle and the drain-ack escalation kill
-			// proceed, so answer true instead.
-			return true, nil
+		if c.ID == size.Owner {
+			kind, found = c.Kind, true
+			break
 		}
 	}
-	if !hasApp {
+	switch {
+	case !found:
+		return true, nil
+	case kind == "app":
+	case kind == "cli" || kind == "peer":
 		return false, nil
+	default:
+		return true, nil
 	}
 	view, err := p.client.SessionView(ctx, binding.SessionID)
 	if err != nil {
@@ -52,15 +62,11 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	return watchesAgent(view, binding), nil
 }
 
-// watchesAgent reports whether an app client is looking at the agent. Rex has
-// one server-side active window, and a rig tab tiles its agents as panes, so a
-// human watching the rig's tab sees every pane in it. The agent is therefore
-// watched only when its rig tab is the active window and that window still
-// holds the agent's block. The focused block of an inactive tab is not
-// attachment: that pane is not visible. The provider focuses a brand-new
-// session's tab on create and never moves focus for a re-attach, a relaunch or
-// a split into an existing tab, so attachment reflects what the user is looking
-// at. A window or block gone from view is false.
+// watchesAgent reports whether the agent's rig tab is the active window and
+// still holds the agent's block. Rex has one server-side active window, and a
+// rig tab tiles its agents as panes, so a human watching the rig's tab sees
+// every pane in it. The focused block of an inactive tab is not attachment:
+// that pane is not visible. A window or block gone from view is false.
 func watchesAgent(view rex.SessionView, b Binding) bool {
 	if view.ActiveWindowID != b.WindowID {
 		return false
