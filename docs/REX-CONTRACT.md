@@ -65,7 +65,7 @@ gc city → Rex session, gc rig → Rex tab, gc agent → Rex pane (Option B).
 | `session.view` | `session_id` | `session_id`, `active_window_id`, `label`, `revision` (increments per change, jumps on restore), `windows[].{window_id, label, focused_block_id, layers[]}`; each `layers[].blocks[]` entry is `{block_id, flavor, label, owner, creator_name, host_id}`. **The view has no `clients` field** |
 | `session.list` | — | `sessions[] {session_id, label}` in creation order |
 | `session.list_clients` | `session_id` | `clients[] {client_id, principal, info, connected_at, connection_state}` — the attached-client source (§12), not `session.view` |
-| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe.** Teardown calls it only on the provider's own empty canonical `gc:<city>` session, behind the guards in §12 (D3) |
+| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe.** The provider does not call it: the skip branch in §12 (GCREX-65) makes `stop` close panes only |
 | `session.focus_block` / `session.focus_window` | ids | focus a pane / tab |
 | `session.set_block_label` / `session.set_window_label` / `session.set_label` | ids, label | ≤128 chars |
 | `block.close` | `session_id`, `block_id` **or** `window_id`, `keep_last` | returns `{block_id, revision}`; `keep_last` refuses the last block in a window (`bad_request`, exit 1) |
@@ -345,8 +345,7 @@ environment variable, not part of RPP; round-tripping it through
 Run after any Rex upgrade. Every line must match the tables above. Uses
 `REX_BLOCK` / `REX_SESSION` from the calling pane. It creates exactly one
 scratch session, kills only the id it just created, and never executes
-`session.destroy` — that op is destructive; the provider calls it only on its
-own empty canonical session (§12).
+`session.destroy` — that op is destructive, and `stop` never calls it (§12).
 Set `GC_SRC` to a gc checkout to re-check the §9 capability names.
 
 ```bash
@@ -473,7 +472,7 @@ Phase 0 also confirms the plan's decisions against the live surface:
 | D0 delivery form | Out-of-tree RPP v0 executable via pack `[runtimes.rex]`. §9 records the op set and handshake; `gc runtime check` is the verifier. |
 | D1 mapping | session = city, tab = rig, pane = agent. §1; supported by `session.create` + `session.new_window` + `session.new_split`. |
 | D2 transport | Shell out to the CLI behind `rex.Client`; the socket protocol is undocumented and revision-numbered (§7). |
-| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes, and the canonical `gc:<city>` session (created at `internal/provider/provider.go:488`, the `CreateSession` call in the `FindSession`-miss branch) once it is empty and no Rex app is attached (§12, GCREX-65). The version skew in §0 is another reason never to touch the server: it only moves on restart. |
+| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes. The canonical `gc:<city>` session (created at `internal/provider/provider.go:488`, the `CreateSession` call in the `FindSession`-miss branch) is ours but is **not** destroyed: the live probe hit the skip branch (§12, GCREX-65) because a server-wide Rex app client is listed on every session. The version skew in §0 is another reason never to touch the server: it only moves on restart. |
 | D4 scope | Local server via the default socket or `-S <host>`; agents run on gc's host. RPP has no declaration for this. |
 | D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — emitted by the pane program; Pi does, and gc-managed Pi panes report under Rex). Fall back to `timed_only` if classification proves unreliable. |
 | D6 v1 breadth | Core `Provider` + idle/wait + relaunch + metadata sidecar + activity + attachment; skip `ExecProvider` and `DialogProvider`. |
@@ -483,28 +482,25 @@ Phase 0 also confirms the plan's decisions against the live surface:
 - **Resolved since capture.** `format` paging (Phase 1, GCREX-2): the hard
   control-response cap is 1 048 576 bytes; `peek` requests `max_bytes: 983040`
   and follows `id` with `blob_read` until `eof`.
-- **`session.destroy` is destructive; the provider calls it on one session
-  only (GCREX-65).** The schema requires an attached connection (or `conflict`)
-  and rejects an unknown id with `session_not_found`; `session_id` is
-  mandatory. A fresh CLI call on a scratch session returned exit 0 (recorded in
-  the "Empty city session" bullet below), so the CLI satisfies the attachment
-  itself. Ownership rule (D3): `Provider.stop` calls it only for a session whose
-  label equals `canonicalLabel()` — the one label `CreateSession` is ever called
-  with (`internal/provider/provider.go:488`) — never for a legacy-labelled
-  session it merely adopted. Guards, all under the state flock `Stop` already
-  holds: a fresh `session.view` has zero windows, `session.list_clients` lists no
-  `kind == "app"` client, and exactly one session carries the label. An
-  unreachable server or an already-gone session counts as success; any other
-  lookup or destroy error is logged and `Stop` still returns nil. The next
-  `Start` re-creates the session through `CreateSession`, and a `Start` whose
-  session vanished between find-or-create and launch retries once. Accepted
-  residual risks: the lookup→destroy window (below), and a human-created session
-  carrying the exact `gc:<city>` label would be destroyed once empty and
-  unattended. Self-exit of the agent with no later `Stop` leaves the empty shell
-  until the next `Stop` in that city (no pane-exit watcher; gc v1.5.1 has no such
-  caller). §10 still asserts the op's contract from the schema instead of
-  executing it.
-- **Empty city session (GCREX-65).** Live record, 2026-11-20 07:09 UTC, rex
+- **`session.destroy` is destructive and unused (GCREX-65).** The schema
+  requires an attached connection (or `conflict`) and rejects an unknown id with
+  `session_not_found`; `session_id` is mandatory. A fresh CLI call on a scratch
+  session returned exit 0 (recorded in the "Empty city session" bullet below),
+  so the CLI satisfies the attachment itself — but the provider does not call
+  it. The live probe lists a `kind == "app"` client on an unattended scratch
+  session, because the local app is attached to the shared server and not to a
+  particular session. That is the plan's approved skip branch
+  (`plans/GCREX-65/implementation-plan.md:102-105,205-208`): `stop` closes
+  panes only. Ownership rule (D3) still holds for the panes: `stop` closes only
+  the city's own blocks, never the server, other sessions, or a legacy-labelled
+  session. Consequence: after the last pane closes, the empty canonical
+  `gc:<city>` shell stays listed until someone removes it; the next `Start`
+  reuses it through `FindSession`, so it costs nothing. `DestroySession` was
+  removed from `rex.Client` in the same change. Self-exit of the agent with no
+  later `Stop` leaves the same empty shell (no pane-exit watcher; gc v1.5.1 has
+  no such caller). §10 still asserts the op's contract from the schema instead
+  of executing it.
+- **Empty city session (GCREX-65).** Live record, 2026-11-20 07:09 CET, rex
   0.1.0-preview.21 CLI against the running server `0.1.0-preview.20` (rev 16),
   scratch label `gc:gcrex65-scratch` (no real city touched; `gc:my-city` and
   `rex-gas-city` were left alone). One Rex app client (the local Mac app) is
@@ -592,8 +588,10 @@ Phase 0 also confirms the plan's decisions against the live surface:
   (`session_not_found`, maps to `rex.ErrNotFound`); an unreachable server exits
   **4** (`rex.ErrUnavailable`). No new exit-code mapping is needed. (5) An
   attached app client is observed on the session both before and after the pane
-  exits, so `kind == "app"` is the human-attached signal; the provider's own
-  connection is the `kind:"cli"` client. (6) `session.destroy` has no revision
+  exits, so `kind == "app"` marks an app client present on the session; this
+  session-level list cannot tell a client watching this session from the
+  server-wide app, so it is not a human-attached signal on its own (§12 skip
+  branch). The provider's own connection is the `kind:"cli"` client. (6) `session.destroy` has no revision
   precondition, so a human attaching between the emptiness check and the
   destroy cannot be detected; the window is the lookup, `session.view`,
   `session.list_clients` and `session.destroy` run back to back under the state
@@ -643,8 +641,8 @@ Phase 0 also confirms the plan's decisions against the live surface:
 - **Empty-tab teardown (resolved, GCREX-4; amended GCREX-65).** A live probe
   closed a scratch session's only block and `session.view` then reported zero
   windows: Rex removes a tab when its last block closes. Teardown closes blocks
-  with `block.close` and never calls `session.close_window`; when the session is
-  ours and left empty with no app attached, `Stop` then destroys it (above).
+  with `block.close` and never calls `session.close_window`. An empty owned
+  session is left in place (above); `Stop` never destroys.
 - **Delivery and handshake (resolved, GCREX-5).** `gc-runtime-rex`
   (`cmd/gc-runtime-rex`) is the out-of-tree RPP v0 dispatcher; `pack/pack.toml`
   declares `[runtimes.rex]` with `command = "gc-runtime-rex"` and `protocol = 0`,

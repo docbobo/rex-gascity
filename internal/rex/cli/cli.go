@@ -192,11 +192,6 @@ func (c *Client) CloseBlock(ctx context.Context, sessionID rex.SessionID, block 
 	}, nil)
 }
 
-// DestroySession destroys a session.
-func (c *Client) DestroySession(ctx context.Context, sessionID rex.SessionID) error {
-	return c.call(ctx, "session.destroy", map[string]any{"session_id": string(sessionID)}, nil)
-}
-
 // SessionView returns the session's windows and their blocks.
 func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.SessionView, error) {
 	var reply struct {

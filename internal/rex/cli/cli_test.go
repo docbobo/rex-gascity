@@ -180,27 +180,6 @@ func TestCloseBlock(t *testing.T) {
 	}
 }
 
-func TestDestroySession(t *testing.T) {
-	fake := newFakeRex(t)
-	fake.respond(t, "session.destroy", `{}`)
-	c := &cli.Client{Bin: fake.bin}
-
-	if err := c.DestroySession(context.Background(), "session:a"); err != nil {
-		t.Fatalf("DestroySession: %v", err)
-	}
-	args := argsFor(t, fake.calls(t), "session.destroy")
-	if args["session_id"] != "session:a" {
-		t.Errorf("session_id = %v, want session:a", args["session_id"])
-	}
-
-	if err := os.WriteFile(filepath.Join(fake.responses, "session.destroy.exit"), []byte("3"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.DestroySession(context.Background(), "session:a"); !errors.Is(err, rex.ErrNotFound) {
-		t.Fatalf("DestroySession exit 3 err = %v, want rex.ErrNotFound", err)
-	}
-}
-
 func TestSessionViewFlattensLayers(t *testing.T) {
 	fake := newFakeRex(t)
 	fake.respond(t, "session.view", `{

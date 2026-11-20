@@ -384,8 +384,8 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 		t.Log("not attached: no app client, or the agent's tab is not the active window")
 	}
 
-	// AC #5: Stop removes the pane and destroys the empty owned city session (GCREX-65).
-	appAttached := e2eAppAttached(ctx, t, b1.SessionID)
+	// AC #5: Stop removes the pane and never destroys the city session (GCREX-65
+	// skip branch: a server-wide Rex app client is listed on every session).
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if out, err := p.Peek(ctx, name); err != nil || out != "" {
 		t.Errorf("Peek after Stop = %q, %v; want empty, nil", out, err)
 	}
-	e2eExpectSessionAfterStop(ctx, t, b1.SessionID, city, appAttached)
+	e2eExpectSessionSurvivesStop(ctx, t, b1.SessionID, city)
 }
 
 // e2eP3WriteStale overwrites name's sidecar binding with bogus window and
@@ -421,50 +421,26 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 	}
 }
 
-// e2eExpectSessionAfterStop checks the GCREX-65 teardown rule after the last
-// agent of a city is stopped: the empty canonical session is destroyed, and the
-// destroy is skipped only while a Rex app client is attached to it.
-//
-// appAttached is sampled BEFORE Stop: sampling it after would let an unsafe
-// destroy pass as "unattached", because the destroyed session no longer lists
-// the app client that was attached when Stop ran (SPEC-1).
-func e2eExpectSessionAfterStop(ctx context.Context, t *testing.T, sid rex.SessionID, city string, appAttached bool) {
+// e2eExpectSessionSurvivesStop checks the GCREX-65 teardown rule after the last
+// agent of a city is stopped: the live probe (docs/REX-CONTRACT.md §12) lists a
+// server-wide Rex app client on every session, including an unattended scratch
+// one, so the approved skip branch applies and Stop never calls session.destroy.
+func e2eExpectSessionSurvivesStop(ctx context.Context, t *testing.T, sid rex.SessionID, city string) {
 	t.Helper()
 	sessions, err := cli.New().ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
-	var surviving *rex.Session
-	for i := range sessions {
-		if sessions[i].Label == "gc:"+city {
-			surviving = &sessions[i]
+	for _, s := range sessions {
+		if s.Label != "gc:"+city {
+			continue
 		}
-	}
-	switch {
-	case appAttached && surviving == nil:
-		t.Errorf("session gc:%s (%s) destroyed while a Rex app is attached", city, sid)
-	case appAttached && surviving.ID != sid:
-		t.Errorf("session gc:%s survives as %s, want the attached original %s; Stop destroyed and Start recreated it", city, surviving.ID, sid)
-	case appAttached:
-		t.Logf("Rex app attached: original session gc:%s (%s) kept by the attachment guard", city, sid)
-	case surviving != nil:
-		t.Errorf("session gc:%s still listed after Stop; the empty owned session must be destroyed", city)
-	}
-}
-
-// e2eAppAttached reports whether a Rex app client is attached to sid right now.
-func e2eAppAttached(ctx context.Context, t *testing.T, sid rex.SessionID) bool {
-	t.Helper()
-	clients, err := cli.New().ListClients(ctx, sid)
-	if err != nil {
-		t.Fatalf("ListClients: %v", err)
-	}
-	for _, c := range clients {
-		if c.Kind == "app" {
-			return true
+		if s.ID != sid {
+			t.Errorf("session gc:%s survives as %s, want the original %s; Stop destroyed and Start recreated it", city, s.ID, sid)
 		}
+		return
 	}
-	return false
+	t.Errorf("session gc:%s (%s) gone after Stop; Stop must not destroy the city session", city, sid)
 }
 
 // e2eHasSession reports whether a Rex session labelled label exists.
@@ -503,8 +479,9 @@ func e2eWindowsLabelled(ctx context.Context, t *testing.T, sessionID rex.Session
 // A launched command that exits closes its block, and the last block closing
 // removes the tab. IsRunning must report false without an error, Peek must
 // return nothing, the city session must survive the self-exit (no Stop ran),
-// the empty rig tab must be gone, and a later Stop must destroy the empty
-// canonical session unless a human app is attached (GCREX-65). It is opt-in because it mutates the user's Rex server:
+// the empty rig tab must be gone, and a later Stop must leave the empty
+// canonical session in place (GCREX-65). It is opt-in because it mutates the
+// user's Rex server:
 //
 //	REX_E2E=1 go test ./internal/provider -run TestE2EAgentExitLiveness -v
 func TestE2EAgentExitLiveness(t *testing.T) {
@@ -576,11 +553,10 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 		t.Errorf("tab Indigo still present after its last pane closed: %+v", left)
 	}
 
-	appAttached := e2eAppAttached(ctx, t, b.SessionID)
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	e2eExpectSessionAfterStop(ctx, t, b.SessionID, city, appAttached)
+	e2eExpectSessionSurvivesStop(ctx, t, b.SessionID, city)
 }
 
 // TestE2EParallelStarts starts four agents in one rig concurrently, as gc
@@ -657,11 +633,10 @@ func TestE2EParallelStarts(t *testing.T) {
 		}
 	}
 
-	appAttached := e2eAppAttached(ctx, t, first.SessionID)
 	for _, name := range names {
 		if err := p.Stop(ctx, name); err != nil {
 			t.Errorf("Stop %s: %v", name, err)
 		}
 	}
-	e2eExpectSessionAfterStop(ctx, t, first.SessionID, city, appAttached)
+	e2eExpectSessionSurvivesStop(ctx, t, first.SessionID, city)
 }

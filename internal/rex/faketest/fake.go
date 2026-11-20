@@ -83,11 +83,6 @@ type Fake struct {
 	// anything.
 	CloseBlockErr error
 
-	// DestroySessionErr, when set, is returned by DestroySession before it
-	// changes anything. DestroyedSessions records each destroyed session.
-	DestroySessionErr error
-	DestroyedSessions []rex.SessionID
-
 	// ListSessionsCalls and SessionViewCalls count calls to those methods.
 	ListSessionsCalls int
 	SessionViewCalls  int
@@ -197,18 +192,6 @@ func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID)
 		windows = append(windows, w)
 	}
 	f.View.Windows = windows
-	return nil
-}
-
-func (f *Fake) DestroySession(_ context.Context, sid rex.SessionID) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.DestroySessionErr != nil {
-		return f.DestroySessionErr
-	}
-	f.DestroyedSessions = append(f.DestroyedSessions, sid)
-	f.Sessions = slices.DeleteFunc(f.Sessions, func(s rex.Session) bool { return s.ID == sid })
-	f.View.Windows = nil
 	return nil
 }
 
