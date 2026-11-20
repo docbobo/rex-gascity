@@ -122,10 +122,24 @@ func paneLabelFor(n SessionName, env map[string]string) string {
 }
 
 // legacyPaneLabelFor is the label the pre-GC_TEMPLATE rule produced: the agent
-// came from GC_ALIAS/GC_AGENT, not GC_TEMPLATE. It is the label a pane started
-// before the change still carries, so an upgrade can recognise it.
+// came from GC_ALIAS/GC_AGENT, not GC_TEMPLATE, and the suffix was always the
+// full GC_SESSION_NAME — the pool short form did not exist yet, so it must not
+// be applied here even when the current name shape would verify it. It is the
+// label a pane started before the change still carries, so an upgrade can
+// recognise it.
 func legacyPaneLabelFor(n SessionName, env map[string]string) string {
-	return paneLabelForAgent(n, env, paneAgent(env))
+	if env["GC_RIG"] == "" && n.IsTown() {
+		return n.PaneLabel()
+	}
+	session := strings.TrimSpace(env["GC_SESSION_NAME"])
+	agent := paneAgent(env)
+	if session == "" || agent == "" {
+		return n.PaneLabel()
+	}
+	if label, ok := fitPaneLabel(agent, session); ok {
+		return label
+	}
+	return clampRexLabel(session)
 }
 
 func paneLabelForAgent(n SessionName, env map[string]string, agent string) string {

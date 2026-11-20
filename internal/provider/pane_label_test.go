@@ -942,3 +942,45 @@ func TestRecordlessDiscoveryByPoolIdentity(t *testing.T) {
 		t.Fatalf("IsRunning(%s) = true; adopted the sibling seat's pane", sibling)
 	}
 }
+
+// TestLegacyPaneLabelForIsFullSession pins the pre-GC_TEMPLATE rule: the old
+// label is always "<agent> (<GC_SESSION_NAME>)", never the pool short form the
+// current rule may derive from the same env (CodeRabbit review, PR 19).
+func TestLegacyPaneLabelForIsFullSession(t *testing.T) {
+	tests := []struct {
+		name string
+		sess SessionName
+		env  map[string]string
+		want string
+	}{
+		{
+			// Pool-short derivable now, but the pre-change provider wrote the
+			// full session name.
+			name: "short form not applied",
+			sess: "pi-1",
+			env: map[string]string{"GC_RIG": "rig", "GC_AGENT": "worker",
+				"GC_SESSION_NAME": "worker-worker", "GC_TEMPLATE": "rig/new"},
+			want: "worker (worker-worker)",
+		},
+		{
+			name: "alias drives the agent",
+			sess: "rig--worker",
+			env: map[string]string{"GC_RIG": "rig", "GC_ALIAS": "w",
+				"GC_AGENT": "worker", "GC_SESSION_NAME": "rig--worker"},
+			want: "w (rig--worker)",
+		},
+		{
+			name: "town session keeps the name-derived label",
+			sess: "mayor",
+			env:  map[string]string{"GC_SESSION_NAME": "mayor"},
+			want: "mayor",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := legacyPaneLabelFor(tc.sess, tc.env); got != tc.want {
+				t.Errorf("legacyPaneLabelFor = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
