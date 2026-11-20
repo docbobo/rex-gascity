@@ -211,11 +211,11 @@ func panePoolSuffix(env map[string]string) string {
 }
 
 // identityMatch reports whether label names session n: its parenthesised suffix
-// is n (legacy and named labels), n is exactly Sanitize(agent)+"-"+suffix
-// (the pool short form), or the label is a short form that fitPaneLabel had
-// to clamp to 128 runes — then the agent is only a prefix of the name, but
-// the exact "-"+suffix tail still pins the whole name. A bare label or a
-// prefix-only match never counts.
+// is n (legacy and named labels), or n is exactly Sanitize(agent)+"-"+suffix
+// (the pool short form). Nothing else counts. A short form that fitPaneLabel
+// had to shorten keeps the bead id but loses the agent's tail, so a prefix
+// plus the suffix names no session: two names can share both while differing
+// in between, and a label that fits two sessions is not evidence for either.
 func identityMatch(name SessionName, label string) bool {
 	i := strings.LastIndex(label, " (")
 	if i < 0 || !strings.HasSuffix(label, ")") {
@@ -225,15 +225,7 @@ func identityMatch(name SessionName, label string) bool {
 	if agent == "" || suffix == "" {
 		return false
 	}
-	if suffix == string(name) || sanitizeQualified(agent)+"-"+suffix == string(name) {
-		return true
-	}
-	// A clamped short form is exactly the label limit and names the session
-	// only as a prefix; requiring the exact tail and a whole-label clamp keeps
-	// this from widening ordinary matches.
-	return utf8.RuneCountInString(label) == maxPaneLabelRunes &&
-		strings.HasSuffix(string(name), "-"+suffix) &&
-		strings.HasPrefix(string(name), sanitizeQualified(agent))
+	return suffix == string(name) || sanitizeQualified(agent)+"-"+suffix == string(name)
 }
 
 // paneAgent resolves the display agent: GC_ALIAS, then GC_AGENT, then the

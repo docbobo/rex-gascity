@@ -186,10 +186,11 @@ func TestPaneLabelForClamp(t *testing.T) {
 		}
 	})
 
-	// A verified short form is the session's identity, so an over-long one is
-	// clamped on the agent and keeps its parenthesised bead id instead of
-	// falling through to the long form (which cannot fit either).
-	t.Run("verified short form over the limit keeps the bead id", func(t *testing.T) {
+	// An over-long short form keeps its parenthesised bead id for display
+	// instead of falling through to the long form (which cannot fit either).
+	// Cutting the agent's tail costs the label its identity: the bead id alone
+	// fits two names, so identityMatch must refuse it rather than guess.
+	t.Run("verified short form over the limit keeps the bead id but names nobody", func(t *testing.T) {
 		agent := strings.Repeat("a", 60)
 		bead := strings.Repeat("9", 78)
 		session := agent + "-" + bead
@@ -212,10 +213,13 @@ func TestPaneLabelForClamp(t *testing.T) {
 		if again := paneLabelFor(SessionName(session), env); again != got {
 			t.Fatalf("label is not deterministic: %q != %q", got, again)
 		}
-		// The bead id is only an identity if discovery honours the clamped
-		// label: Binder.scan has no env, so identityMatch must accept it.
-		if !identityMatch(SessionName(session), got) {
-			t.Fatalf("identityMatch(%q, %q) = false; the clamped short form names nobody", session, got)
+		if identityMatch(SessionName(session), got) {
+			t.Fatalf("identityMatch(%q, %q) = true; a shortened agent names nobody", session, got)
+		}
+		// The name that shares the visible prefix and the bead id differs only
+		// where the cut happened, so the label cannot tell the two apart.
+		if sibling := SessionName(agent + "-extra-" + bead); identityMatch(sibling, got) {
+			t.Fatalf("label %q was adopted by %q", got, sibling)
 		}
 	})
 
@@ -249,19 +253,21 @@ func TestPaneLabelForClamp(t *testing.T) {
 }
 
 // TestPaneLabelOverflowIdentity is the boundary proof for R2-F1: a verified
-// short form at exactly the 128-rune limit and one rune over it names the
-// session through identityMatch, so a recordless IsRunning/Stop can still
-// find the pane after fitPaneLabel shortens the agent.
+// short form at exactly the 128-rune limit is not shortened and still names
+// the session through identityMatch, while one rune over it must shorten the
+// agent and then names nobody. A shortened label fits a whole family of names,
+// so accepting it would let a recordless IsRunning/Stop pick the wrong pane.
 func TestPaneLabelOverflowIdentity(t *testing.T) {
 	tests := []struct {
 		name     string
 		agent    int
 		bead     int
 		wantRune int
+		names    bool
 	}{
-		{"exact limit", 60, 65, 128},
-		{"one over the limit", 60, 66, 129},
-		{"far over the limit", 100, 40, 143},
+		{"exact limit", 60, 65, 128, true},
+		{"one over the limit", 60, 66, 129, false},
+		{"far over the limit", 100, 40, 143, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -284,8 +290,8 @@ func TestPaneLabelOverflowIdentity(t *testing.T) {
 			if !strings.HasSuffix(got, " ("+bead+")") {
 				t.Fatalf("label %q lost the parenthesised bead id %q", got, bead)
 			}
-			if !identityMatch(SessionName(session), got) {
-				t.Fatalf("identityMatch(%q, %q) = false", session, got)
+			if names := identityMatch(SessionName(session), got); names != tt.names {
+				t.Fatalf("identityMatch row %q = %v, want %v", tt.name, names, tt.names)
 			}
 			if sibling := SessionName(agent + "-" + strings.Repeat("8", tt.bead)); identityMatch(sibling, got) {
 				t.Fatalf("label %q was adopted by a sibling seat %q", got, sibling)
@@ -294,10 +300,13 @@ func TestPaneLabelOverflowIdentity(t *testing.T) {
 	}
 }
 
-// TestRecordlessDiscoveryOfClampedShortForm starts an overflowing pool seat,
-// drops the sidecar record and the start env, and proves IsRunning/Stop still
-// find the pane through Binder.scan alone.
-func TestRecordlessDiscoveryOfClampedShortForm(t *testing.T) {
+// TestRecordlessClampedShortFormIsNotAnIdentity starts an overflowing pool
+// seat and drops the sidecar record, so only the shortened label is left. The
+// scan must not adopt it: this session's own pane, and a sibling whose name
+// shares the visible prefix and the bead id, are both refused, because a label
+// that fits two sessions is no evidence for either. Leaving the pane behind
+// beats stopping the wrong one.
+func TestRecordlessClampedShortFormIsNotAnIdentity(t *testing.T) {
 	ctx := context.Background()
 	agent := strings.Repeat("a", 100)
 	bead := strings.Repeat("9", 40)
@@ -312,17 +321,19 @@ func TestRecordlessDiscoveryOfClampedShortForm(t *testing.T) {
 	if err := New("acme", fake).Start(ctx, session, Config{Argv: []string{"pi"}, Env: env}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	block := rex.BlockID("block:" + paneLabelFor(SessionName(session), env))
-
-	running, err := New("acme", fake).IsRunning(ctx, session)
-	if err != nil || !running {
-		t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", session, running, err)
+	label := paneLabelFor(SessionName(session), env)
+	block := rex.BlockID("block:" + label)
+	for _, name := range []string{session, agent + "-extra-" + bead} {
+		running, err := New("acme", fake).IsRunning(ctx, name)
+		if err != nil || running {
+			t.Fatalf("IsRunning(%s) = %v, %v; want false, nil", name, running, err)
+		}
+		if err := New("acme", fake).Stop(ctx, name); err != nil {
+			t.Fatalf("Stop(%s): %v", name, err)
+		}
 	}
-	if err := New("acme", fake).Stop(ctx, session); err != nil {
-		t.Fatalf("Stop(%s): %v", session, err)
-	}
-	if !slices.Contains(fake.ClosedBlocks, block) {
-		t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+	if slices.Contains(fake.ClosedBlocks, block) {
+		t.Fatalf("Stop closed %s from a shortened label; closed %v", block, fake.ClosedBlocks)
 	}
 }
 
@@ -866,11 +877,15 @@ func TestIdentityMatch(t *testing.T) {
 		{"suffix satisfies neither branch", "gc__implementation-worker-mc-wisp-1e4r8", "other.agent (mc-wisp-1e4r8)", false},
 		{"empty suffix", "rex-gascity--worker", "worker ()", false},
 		{"prefix only", "rex-gascity--worker", "worker (nonsense)", false},
-		// fitPaneLabel cuts the agent to fit 128 runes. The third branch
-		// accepts that clamped label only for a whole-name tail and a prefix
-		// agent; a sibling's bead id still fails.
-		{"clamped short form", strings.Repeat("a", 100) + "-" + strings.Repeat("9", 40), strings.Repeat("a", 85) + " (" + strings.Repeat("9", 40) + ")", true},
+		// fitPaneLabel cuts the agent to fit 128 runes. That label names nobody:
+		// a prefix plus the bead id fits other names too, so it is not evidence.
+		{"clamped short form", strings.Repeat("a", 100) + "-" + strings.Repeat("9", 40), strings.Repeat("a", 85) + " (" + strings.Repeat("9", 40) + ")", false},
 		{"clamped short form, sibling bead id", strings.Repeat("a", 100) + "-" + strings.Repeat("9", 40), strings.Repeat("a", 85) + " (" + strings.Repeat("8", 40) + ")", false},
+		// A label at exactly the limit was not cut, so only the whole name
+		// counts: a name sharing its ends but not its middle is another
+		// session.
+		{"128-rune label, exact name", strings.Repeat("a", 123) + "-id", strings.Repeat("a", 123) + " (id)", true},
+		{"128-rune label, longer name with the same ends", strings.Repeat("a", 123) + "-extra-id", strings.Repeat("a", 123) + " (id)", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
