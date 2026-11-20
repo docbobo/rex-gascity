@@ -58,7 +58,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 |---|---|---|---|
 | `protocol` | implemented | 3 | intentional |
 | `start` | partially implemented | 18 | intentional |
-| `stop` | implemented | 7 | intentional |
+| `stop` | implemented | 8 | intentional |
 | `provision` | not implemented | 1 | not-implemented |
 | `exec` | not implemented | 1 | not-implemented |
 | `is-running` | implemented | 5 | intentional |
@@ -115,6 +115,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `stop` | locking scope | Per-name flock plus the city-wide state flock for the store mutations | Per-name exclusive lock | intentional | The per-name lock serializes a stop with a concurrent start/stop of the same name; the state flock still serializes concurrent stops. |
 | `stop` | cancellation | context.Background, no cancel handling | Cancel-aware pauses | gap | SIGTERM kills process anyway; unverified |
 | `stop` | drained-worker diagnostic | writes `<state dir>/diagnostics/<name>.json` when the work dir has modified tracked files (before the pane closes; best effort, shared 3 s bound) | no equivalent | intentional | Leaves a trace when gc drains a worker that still held edits (GCREX-32); never fails or delays stop. |
+| `stop` | core/server unreachable | exit 0 with no binding for the name, exit 1 with a binding present (GCREX-51); no pid sweep | sweeps by pid/token, exit 0 when nothing runs, else exit 1 | intentional (with a gap) | A lost binding with a live pane reports success; the label scan needs Rex. |
 | `provision` | op presence | Not implemented; exit 2, no proc.provision declared | Not implemented; exit 2, no proc.provision declared | not-implemented | Shared gap; gc only calls it with both capabilities declared, so exit 2 is unreachable today |
 | `exec` | op presence | Not implemented; exits 2, `proc.exec` undeclared | Not implemented; exits 2, `proc.exec` never declared | not-implemented | Shared gap; gc falls back to driving ops (REX-CONTRACT §9) |
 | `is-running` | server unreachable | Any client error exits 1, no stdout | `false` exit 0 if nothing of core runs | intentional | gc reads exit 1 and false alike as dead; no change needed. |
@@ -386,6 +387,7 @@ GCREX-25.2 — pre_start timeout, per-name/per-rig locking, SIGTERM rollback
 | 5 | locking scope | A per-name flock across the stop (`lock.go:38`) plus the state-dir-wide flock for the store mutations (`lock.go:26`) | Per-name exclusive lock (`lifecycle.py:515`) | intentional | The per-name lock serializes start/stop of one name; the state flock still serializes the store mutations of concurrent stops, with a 60 s wait that can reach the 30 s op deadline. |
 | 6 | cancellation | `signal.NotifyContext` cancels the op context on SIGTERM/SIGINT (`main.go:41`); the blocking close and the lock waits honour it | Cancel-aware pauses (`ctx.request.cancel.pause`, `lifecycle.py:348`) | intentional | GCREX-25.2 added the handler. gc sends SIGTERM to the process group and force-kills after 2 s (`exec/exec.go:92`), so partial effects between `block.close` and `Forget` are possible but bounded. |
 | 7 | drained-worker diagnostic | Before `block.close` (or from the stored binding when the pane is already gone), if the binding's `WorkDir` is a git work tree with modified tracked files, writes `<state dir>/diagnostics/<name>.json` with worker, aliases, `GC_SESSION_ID`, changed files and the newest-mtime file (`internal/provider/drain_diag.go`, called at `provider.go:425` and `:432`); untracked files ignored, git runs with `GIT_OPTIONAL_LOCKS=0`; best effort, one shared 3 s bound | none | intentional | Added for GCREX-32 so a drained worker's lost edits are traceable. Skipped silently for a clean tree, non-git dir, empty work dir or empty state dir. |
+| 8 | core/server unreachable | `rex.ErrUnavailable` (CLI exit 4) from `Resolve`: with no stored binding answering to the name (exact or alias, `Binder.lookup`, `binding.go:197`) the name's meta and activity are cleared and stop exits 0; with a binding present the error is returned, exit 1, and the binding, meta and activity stay (`Provider.stop`, `provider.go:701-711` as of slice 1, commit `b0d44f4`; GCREX-51). No pid sweep, no server start kick. | Core down and `nothing_runs`: `_stop_without_core` sweeps by stored pid/token, exit 0 without starting a core; otherwise exit 1 and a start kick (`lifecycle.py:518-522`, `:528`) | intentional (with a gap) | gc calls stop as a backstop after a failed or cancelled start and joins a stop error into the start error (`internal/runtime/exec/exec.go:262-270`, call at `:266`; `Stop` returns the op error, `:581-583`; gc `v1.5.1`), so exit 1 on an absent name would add a misleading cleanup error alongside the preserved start error (`errors.Join`). Exit 1 is kept while a binding is known because the pane may still be live and stop cannot close it while Rex is down. The gap: a lost binding record with a live pane reports success, because the label scan that could find it needs Rex, and there is no pid sweep to fall back on. Pinned by `TestStopUnreachableWithoutBindingSucceeds`, `TestStopUnreachableWithoutBindingClearsMeta`, `TestStopUnreachableRexUnknownNameExitsZero`, `TestStopUnreachableWithBindingKeepsError`, `TestStopUnreachableAliasBindingKeepsError`. |
 
 **Verdict.** intentional. Fire-and-forget pane close is the right fit for the Rex mapping, and idempotence and exit codes match. Stop now clears every meta key and the activity entry with the incarnation (GCREX-26), matching herdr's `forget`.
 
@@ -395,6 +397,7 @@ GCREX-12 — retired session whose Rex pane stays live
 GCREX-13 — identity seeding that stop clears
 GCREX-17 — name resolution (alias) used by stop
 GCREX-19.24 — server-stop comparison
+GCREX-51 — unreachable server with no binding exits 0
 
 **Follow-ups.**
 - Confirm that `block.close` kills detached descendants, or document the limit (gap).

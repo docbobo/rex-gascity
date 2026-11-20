@@ -243,3 +243,50 @@ func TestProcessAliveTransientProcessErrorIsUnknown(t *testing.T) {
 		t.Errorf("ProcessAlive after a transient error = %v, %v; want unknown, nil", state, err)
 	}
 }
+
+// TestStopUnreachableWithoutBindingSucceeds pins GCREX-51 REQ-001: with Rex
+// unreachable and no stored binding answering to the name, stop succeeds, as
+// herdr-core does for an absent name with the core down. This is the
+// stored-binding policy, not proof that no process is alive (parity stop
+// deviation 8).
+func TestStopUnreachableWithoutBindingSucceeds(t *testing.T) {
+	fake := faketest.New()
+	fake.ListSessionsErr = rex.ErrUnavailable
+	p := provider.New("acme", fake)
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop with Rex unreachable and no binding = %v, want nil", err)
+	}
+	if _, ok := p.Binding(teardownDog); ok {
+		t.Error("binding exists after Stop, want none")
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed = %v, want none", fake.ClosedBlocks)
+	}
+}
+
+// TestStopUnreachableWithBindingKeepsError pins REQ-002: while Rex is down a
+// bound pane may still be alive and stop cannot close it, so success would hide
+// a leak. Stop keeps the error and leaves the binding and meta for a retry.
+// SessionViewErr is the load-bearing fault: revalidate uses SessionView, and a
+// successful empty view would drop the record as a stale pane.
+func TestStopUnreachableWithBindingKeepsError(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	if err := p.SetMeta(context.Background(), teardownDog, "GC_USER_KEY", "keep"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+	fake.SessionViewErr = rex.ErrUnavailable
+
+	if err := p.Stop(context.Background(), teardownDog); !errors.Is(err, rex.ErrUnavailable) {
+		t.Fatalf("Stop = %v, want ErrUnavailable", err)
+	}
+	if _, ok := p.Binding(teardownDog); !ok {
+		t.Error("binding dropped although Stop failed")
+	}
+	if v, err := p.GetMeta(context.Background(), teardownDog, "GC_USER_KEY"); err != nil || v != "keep" {
+		t.Errorf("meta = %q, %v, want it kept", v, err)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed = %v, want none", fake.ClosedBlocks)
+	}
+}

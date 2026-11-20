@@ -296,6 +296,18 @@ func TestListRunningUnreachableRexIsEmptyExitZero(t *testing.T) {
 	}
 }
 
+// TestStopUnreachableRexUnknownNameExitsZero pins GCREX-51 REQ-001 through the
+// real dispatcher: Rex is down and the name was never started, so stop is a
+// no-op success with empty stdout and stderr.
+func TestStopUnreachableRexUnknownNameExitsZero(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ListSessionsErr = rex.ErrUnavailable
+	r := h.run("", "stop", dog)
+	if r.code != exitOK || r.stdout != "" || r.stderr != "" {
+		t.Errorf("stop with Rex unreachable, no binding = exit %d, stdout %q, stderr %q; want exit 0, empty", r.code, r.stdout, r.stderr)
+	}
+}
+
 // TestSetMetaUnknownSessionFailsExitOne pins GCREX-49: set-meta requires a
 // session record, so a name that was never started exits 1, writes nothing to
 // stdout, and leaves no value behind.

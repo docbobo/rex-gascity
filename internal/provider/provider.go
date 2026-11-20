@@ -703,7 +703,18 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	// Load the stored binding before Resolve: Resolve drops a stale record when
 	// its pane is gone, and a drained worker's process has often exited already.
 	stored, hadStored := p.bindingRead(n)
+	known := len(p.binder.lookup(n)) > 0 // before Resolve: Resolve may drop records
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: n, Mode: ResolveFresh})
+	if errors.Is(err, rex.ErrUnavailable) && !known {
+		// Rex is down and no stored binding answers to the name: herdr-core
+		// answers an absent name with exit 0, so stop does too and clears the
+		// name's state. This is a stored-binding policy, not proof that no
+		// process is alive: a lost binding with a live pane reports success
+		// (parity stop deviation 8).
+		// stored.Name is empty when !known, and clearIncarnations skips "",
+		// so this is the same cleanup as clearIncarnations(n, stored.Name).
+		return p.clearIncarnations(n)
+	}
 	if err != nil {
 		return err
 	}

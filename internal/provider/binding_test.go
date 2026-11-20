@@ -110,6 +110,21 @@ func TestResolveTransportErrorKeepsBinding(t *testing.T) {
 	}
 }
 
+func TestResolveScanUnavailableKeepsStaleBinding(t *testing.T) {
+	b, store, fake := newTestBinder(t)
+	store.Save(indigoBinding())
+	fake.NotFoundSessions = map[rex.SessionID]bool{"session:acme": true}
+	fake.ListSessionsErr = rex.ErrUnavailable
+
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
+	if ok || !errors.Is(err, rex.ErrUnavailable) {
+		t.Fatalf("Resolve = %v, %v", ok, err)
+	}
+	if _, ok := store.Load("Indigo--dog-1"); !ok {
+		t.Error("stale binding dropped although the scan failed")
+	}
+}
+
 func TestResolveStaleSessionIDRescansOnNotFound(t *testing.T) {
 	b, store, fake := newTestBinder(t, indigoWindow())
 	fake.Sessions = []rex.Session{{ID: "session:new", Label: testLabel}}
