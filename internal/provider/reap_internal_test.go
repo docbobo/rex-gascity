@@ -329,3 +329,107 @@ func TestPaneSubtreeSkipsAncestorsSiblings(t *testing.T) {
 		t.Errorf("captured pids = %v, want %v (no ancestor 200, no sibling 500)", pids, want)
 	}
 }
+
+// TestStopKeepsSignallingAfterASignalFailure is review R1: a process that
+// cannot be signalled must not shield the rest of the tree from TERM and KILL,
+// and the survivor error still names the first failure.
+func TestStopKeepsSignallingAfterASignalFailure(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	_, p, signals := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "bun"},
+				[4]string{"400", "300", "S", "node"},
+			)
+		}
+		return reapTable(
+			[4]string{"300", "1", "S", "bun"},
+			[4]string{"400", "1", "S", "node"},
+		)
+	})
+	// 300 is the lower survivor pid, so it is signalled first; it is the one
+	// that fails, like an EPERM from a process that changed uid.
+	p.signal = func(pid int, sig os.Signal) error {
+		if pid == 300 {
+			return syscall.EPERM
+		}
+		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+		return nil
+	}
+
+	err := p.Stop(ctx, reapDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure")
+	}
+	if got, want := *signals, []string{"terminated:400", "killed:400"}; !slices.Equal(got, want) {
+		t.Errorf("signals = %v, want %v despite the 300 failure", got, want)
+	}
+	for _, want := range []string{"300 (bun)", "400 (node)", "operation not permitted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Stop error %q does not carry %q", err, want)
+		}
+	}
+}
+
+// TestStopTreatsAVanishedPaneAsAnEmptyTree is review R2: a pane that vanishes
+// between Resolve and BlockProcess is the no-pane case, not a tree we could not
+// read, so the stop proceeds to the close and succeeds.
+func TestStopTreatsAVanishedPaneAsAnEmptyTree(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	fake, p, signals := reapProvider(t, liveTree, func(int) string {
+		t.Error("process table read for a vanished pane")
+		return ""
+	})
+
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(reapDog), Mode: ResolveFresh})
+	if err != nil || !ok {
+		t.Fatalf("Resolve = %v, %v", ok, err)
+	}
+	fake.ProcessErr = rex.ErrNotFound
+	tree, err := p.paneSubtree(ctx, binding)
+	if err != nil || len(tree) != 0 {
+		t.Fatalf("paneSubtree = %v, %v, want an empty tree", tree, err)
+	}
+	if err := p.Stop(ctx, reapDog); err != nil {
+		t.Fatalf("Stop = %v, want nil for a vanished pane", err)
+	}
+	if len(*signals) != 0 {
+		t.Errorf("signals = %v, want none", *signals)
+	}
+	if _, ok := p.Binding(reapDog); ok {
+		t.Error("binding survived a vanished pane's stop")
+	}
+}
+
+// TestPaneSubtreePinsAForegroundLeaf is review R3: a foreground that is a leaf
+// narrows the snapshot to that one process; the agent's other children are
+// siblings of it, not below it, and stay out.
+func TestPaneSubtreePinsAForegroundLeaf(t *testing.T) {
+	ctx := context.Background()
+	_, p, _ := reapProvider(t, rex.ProcessInfo{
+		Foreground: &rex.Process{PID: 300, Name: "go"},
+		Ancestors:  []rex.Process{{PID: 200, Name: "zsh"}, {PID: 100, Name: "claude"}},
+	}, func(int) string {
+		return reapTable(
+			[4]string{"200", "1", "Ss", "/bin/zsh"},
+			[4]string{"100", "200", "S+", "claude"},
+			[4]string{"300", "100", "S", "go"},
+			[4]string{"400", "100", "S", "bun"},
+		)
+	})
+	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(reapDog), Mode: ResolveFresh})
+	if err != nil || !ok {
+		t.Fatalf("Resolve = %v, %v", ok, err)
+	}
+	tree, err := p.paneSubtree(ctx, binding)
+	if err != nil {
+		t.Fatalf("paneSubtree: %v", err)
+	}
+	if len(tree) != 1 || tree[0].pid != 300 {
+		t.Errorf("captured = %v, want only the leaf foreground 300", tree)
+	}
+}

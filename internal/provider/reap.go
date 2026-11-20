@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // Reaping bounds. herdr-core reaps the pane's subtree TERM then KILL two
@@ -118,9 +121,13 @@ func splitProcessRow(line string) (pid, ppid, stat, comm string, ok bool) {
 // not the pane's process and must not be signalled. It must run before
 // block.close: a detached descendant is reparented to init when the pane dies
 // and can then no longer be attributed to this session. An unreadable process
-// listing is returned so stop can leave the pane open (GCREX-50).
+// listing is returned so stop can leave the pane open (GCREX-50). A pane that
+// vanished before the snapshot is the no-pane case, not an unreadable tree.
 func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, error) {
 	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
+	if errors.Is(err, rex.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -198,17 +205,20 @@ func hasReportedAncestor(pid int, reported map[int]string, table map[int]process
 }
 
 // signalAll delivers sig to every captured process and returns the first
-// failure, so a reap that could not signal can say why a process survived.
+// failure, so a reap that could not signal can say why a process survived. A
+// failure does not stop the loop: one unsignalable process must not shield the
+// rest of the tree from the signal.
 func (p *Provider) signalAll(procs []paneProc, sig syscall.Signal) error {
+	var first error
 	for _, proc := range procs {
 		if proc.pid <= 1 || proc.pid == os.Getpid() {
 			continue
 		}
-		if err := p.signal(proc.pid, sig); err != nil {
-			return err
+		if err := p.signal(proc.pid, sig); err != nil && first == nil {
+			first = err
 		}
 	}
-	return nil
+	return first
 }
 
 // living returns the captured processes still running. A zombie counts as
@@ -259,6 +269,9 @@ func (p *Provider) waitGone(ctx context.Context, tree []paneProc, wait time.Dura
 // and rescans. It returns the processes that are still alive, plus the first
 // signal failure when there was one; an empty result proves the tree is gone.
 func (p *Provider) reap(ctx context.Context, tree []paneProc) ([]paneProc, error) {
+	if len(tree) == 0 {
+		return nil, nil
+	}
 	left := p.living(ctx, tree)
 	if len(left) == 0 {
 		return nil, nil
