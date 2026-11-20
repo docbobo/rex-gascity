@@ -790,7 +790,7 @@ provider contract.
 
 | Variable | Meaning | When set | Role |
 |---|---|---|---|
-| `GC_RIG` | rig name (`my-project`); empty for town-level sessions | rig-scoped sessions (empty otherwise) | **Durable**: tab label, alias |
+| `GC_RIG` | rig name (`my-project`); empty for town-level sessions | rig-scoped sessions (empty otherwise) | **Durable**: tab label (`Rig: <rig>`), alias |
 | `GC_TEMPLATE` | qualified template (`my-project/pi`, `my-project/core.control-dispatcher`, `mayor`) | when `Info.Template` is non-empty | **Durable**: alias `Sanitize(GC_TEMPLATE)` |
 | `GC_ALIAS` | public routing/display alias (`mayor`, `my-project/core.control-dispatcher`; empty for an unaliased pool instance) | always (explicit empty clears a stale default) | **Durable**: alias `Sanitize(GC_ALIAS)` |
 | `GC_AGENT` | durable ownership identity (`mayor`, `mc-wisp-ybq1`, `my-project/core.control-dispatcher`) | when the assignee identity is non-empty | **Durable**: alias `Sanitize(GC_AGENT)` when qualified |
