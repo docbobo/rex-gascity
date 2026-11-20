@@ -773,7 +773,7 @@ func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
 // unreachable (from the resolve or the format call).
 func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (string, error) {
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
-	if err != nil && !errors.Is(err, rex.ErrUnavailable) {
+	if err != nil && !errors.Is(err, rex.ErrUnavailable) && !errors.Is(err, rex.ErrNotFound) {
 		return "", err
 	}
 	if err != nil || !ok {

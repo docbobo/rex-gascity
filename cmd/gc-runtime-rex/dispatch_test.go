@@ -246,6 +246,12 @@ func TestPeekNoScreenWhenPaneVanished(t *testing.T) {
 	assertNoScreen(t, h.run("", "peek", dog, "2"), dog)
 }
 
+func TestPeekNoScreenWhenResolveNotFound(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ListSessionsErr = fmt.Errorf("rex session.list: %w", rex.ErrNotFound)
+	assertNoScreen(t, h.run("", "peek", dog), dog)
+}
+
 func TestPeekNoScreenWhenRexUnavailable(t *testing.T) {
 	h, fake := newHarness(t)
 	h.start(dog)
