@@ -102,11 +102,13 @@ func WithNudgeConfirmation(window, interval time.Duration) Option {
 
 // ErrNudgeClaimHeld reports that gc's fallback pool-claim nudge was not typed
 // because the target session already holds a live claim. It is answered as the
-// RPP "busy" input outcome (exit 80): the seat is live, not idle, so gc's
-// stalled-claim backstop refunds it as a busy deferral and retries, and gc
-// treats the liveness claim's bead as in progress. A failed-delivery outcome
-// would instead let the backstop re-dispatch the seat's claim and abandon the
-// in-flight work (GCREX-69).
+// RPP "busy" input outcome (exit 80): the seat is live, not idle. At gc
+// `890a58a3e` / `544beb8d6` (#9137 only, not in `v1.5.1`; inert at the pin)
+// that word makes the stalled-claim backstop refund the reservation as a busy
+// deferral and retry; at `v1.5.1` exit 80 is a plain error and the attempt is
+// spent, the same as the old exit 1. A failed-delivery outcome would instead
+// let the backstop re-dispatch the seat's claim and abandon the in-flight work
+// (GCREX-69).
 var ErrNudgeClaimHeld = errors.New("provider: session holds a live claim")
 
 // defaultNudgeSubmitBudget bounds the write and the submit together when the
@@ -224,7 +226,10 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 }
 
 // isPoolClaimNudge reports whether text is gc's fallback pool-claim nudge (or
-// an agent template that configures the same claim instruction).
+// an agent template that configures the same claim instruction). The match is
+// a substring of `poolClaimNudgeSignature`, so any text carrying that
+// instruction matches; a false positive only refuses a nudge as a refundable
+// `busy` while a claim is live.
 func isPoolClaimNudge(text string) bool {
 	t := strings.TrimSpace(text)
 	return t == defaultPoolClaimNudge || strings.Contains(t, poolClaimNudgeSignature)

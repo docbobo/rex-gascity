@@ -47,11 +47,11 @@ const (
 // input-outcome says the four driving ops answer exit 80 with one typed
 // outcome line (GCREX-70). gc reads the typed word only when both are
 // declared (internal/runtime/exec/outcome.go:193). A live pool-claim refusal
-// on nudge answers `busy`, so gc's stalled-claim backstop refunds the
-// reservation rather than spending one of idleClaimNudgeMaxAttempts
-// (GCREX-69). gc 1.5.1 has no input-outcome vocabulary and ignores the
-// token, so 80 stays a plain error there — the same answer it gives an
-// undeclared pack.
+// on nudge answers `busy`; at gc `890a58a3e` / `544beb8d6` (#9137 only, not in
+// `v1.5.1`; inert at the pin) its stalled-claim reservation is refunded
+// rather than spending one of idleClaimNudgeMaxAttempts (GCREX-69). gc 1.5.1
+// has no input-outcome vocabulary and ignores the token, so 80 stays a plain
+// error there — the same answer it gives an undeclared pack.
 const handshake = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
 
 // buildVersion is the version the `version` op reports. A pack build may set
@@ -121,9 +121,10 @@ func main() {
 }
 
 // deps are the dispatcher's external dependencies, injected so tests can swap
-// the Rex client for a fake.
+// the Rex client for a fake and pass provider options.
 type deps struct {
-	newClient func() rex.Client
+	newClient       func() rex.Client
+	providerOptions []provider.Option
 }
 
 // liveDeps drives the real rex CLI. GC_REX_BIN overrides the binary; empty
@@ -268,7 +269,8 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
 		return exitFail
 	}
-	prov := provider.New(city, d.newClient(), provider.WithNamespace(ns), provider.WithWarnings(stderr))
+	opts := append([]provider.Option{provider.WithNamespace(ns), provider.WithWarnings(stderr)}, d.providerOptions...)
+	prov := provider.New(city, d.newClient(), opts...)
 
 	var out bytes.Buffer
 	if err := spec.handle(ctx, prov, rest, stdin, &out); err != nil {

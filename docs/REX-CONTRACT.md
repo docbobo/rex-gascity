@@ -236,9 +236,10 @@ submit that did not land (GCREX-45, GCREX-69).
 A delivered interrupt stays exit `0`; a nudge that reached the pane but whose
 turn start was not observed exits `0` with one `delivered_unobserved` line; and
 an interrupt send failure that may have written the request stays exit `1`
-(outcome unknown). `nudge`'s live-claim guard answers `80` `busy` (GCREX-69),
-so gc's stalled-claim backstop refunds the reservation as a busy deferral
-rather than spending one of `idleClaimNudgeMaxAttempts`. The key
+(outcome unknown). `nudge`'s live-claim guard answers `80` `busy` (GCREX-69);
+at gc `544beb8d6` (#9137, post-`v1.5.1`) the stalled-claim backstop refunds
+the reservation as a busy deferral rather than spending one of
+`idleClaimNudgeMaxAttempts`. The key
 grammar and the exit-80 words follow `docs/provider-herdr-method-io.md`
 §send-keys, §interrupt and §nudge.
 
