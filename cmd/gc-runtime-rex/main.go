@@ -44,8 +44,9 @@ const (
 // idle-boundary gates the `idle` snapshot op (GCREX-63). gc 1.5.1 has no such
 // token and ignores it; a gc that consumes it reads the point-in-time reading.
 // input-outcome makes gc read the exit-80 word on a driving op instead of
-// treating 80 as a plain error; gc refuses a nudge with `busy` here so its
-// stalled-claim backstop refunds the reservation rather than spending one of
+// treating 80 as a plain error. At gc `890a58a3e` / `544beb8d6` (#9137 only,
+// not in `v1.5.1`; inert at the pin) a nudge refused with `busy` has its
+// stalled-claim reservation refunded rather than spending one of
 // idleClaimNudgeMaxAttempts (GCREX-69). gc 1.5.1 has no input-outcome
 // vocabulary and ignores the token, so 80 stays a plain error there — the
 // same answer it gives an undeclared pack. GCREX-70 removes the remaining
@@ -119,9 +120,10 @@ func main() {
 }
 
 // deps are the dispatcher's external dependencies, injected so tests can swap
-// the Rex client for a fake.
+// the Rex client for a fake and pass provider options.
 type deps struct {
-	newClient func() rex.Client
+	newClient       func() rex.Client
+	providerOptions []provider.Option
 }
 
 // liveDeps drives the real rex CLI. GC_REX_BIN overrides the binary; empty
@@ -257,7 +259,8 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
 		return exitFail
 	}
-	prov := provider.New(city, d.newClient(), provider.WithNamespace(ns), provider.WithWarnings(stderr))
+	opts := append([]provider.Option{provider.WithNamespace(ns), provider.WithWarnings(stderr)}, d.providerOptions...)
+	prov := provider.New(city, d.newClient(), opts...)
 
 	var out bytes.Buffer
 	if err := spec.handle(ctx, prov, rest, stdin, &out); err != nil {

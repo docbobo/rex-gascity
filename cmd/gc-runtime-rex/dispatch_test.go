@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
@@ -28,8 +29,9 @@ type result struct {
 // separate gc-runtime-rex processes share one Rex server. Each call builds a
 // fresh provider, so state crosses calls only through the on-disk state dir.
 type harness struct {
-	t      *testing.T
-	client rex.Client
+	t       *testing.T
+	client  rex.Client
+	options []provider.Option
 }
 
 func newHarness(t *testing.T) (*harness, *faketest.Fake) {
@@ -43,7 +45,7 @@ func newHarness(t *testing.T) (*harness, *faketest.Fake) {
 func (h *harness) run(stdin string, args ...string) result {
 	h.t.Helper()
 	var stdout, stderr bytes.Buffer
-	d := deps{newClient: func() rex.Client { return h.client }}
+	d := deps{newClient: func() rex.Client { return h.client }, providerOptions: h.options}
 	code := run(args, strings.NewReader(stdin), &stdout, &stderr, d)
 	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
 }
@@ -985,6 +987,46 @@ func TestNudgeReturnsInputOutcomes(t *testing.T) {
 				t.Errorf("keys sent = %+v, want none", fake.SentKeys)
 			}
 		})
+	}
+}
+
+// TestNudgePoolClaimRefusalReturnsBusy drives the claim-held refusal through
+// opNudge: a live claim probe plus the fallback pool-claim prompt must exit 80
+// with the busy word and type nothing, so gc refunds rather than spending a
+// delivery attempt (GCREX-69).
+func TestNudgePoolClaimRefusalReturnsBusy(t *testing.T) {
+	const poolClaim = "Run gc hook --claim --drain-ack --json now; if it returns work, execute it immediately."
+	h, fake := newHarness(t)
+	gc := &provider.FakeRunner{Handle: func(_ context.Context, c provider.RunCall) (string, error) {
+		switch strings.Join(c.Args[:2], " ") {
+		case "hook current":
+			return "mc-claim-live\n", nil
+		case "bd list":
+			return `[{"status":"in_progress","assignee":"seat-a","metadata":{"gc.session_id":"mc-session-live"}}]`, nil
+		}
+		return "", errors.New("exit status 1")
+	}}
+	h.options = append(h.options, provider.WithRunner(gc))
+	h.must(`{"command":"sleep 300","env":{"GC_SESSION_ID":"mc-session-live"}}`, "start", dog)
+
+	r := h.run(poolClaim, "nudge", dog)
+	if r.code != exitInputOutcome {
+		t.Fatalf("exit = %d, want %d (stderr %q)", r.code, exitInputOutcome, r.stderr)
+	}
+	var line struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &line); err != nil {
+		t.Fatalf("stdout = %q, want one JSON line: %v", r.stdout, err)
+	}
+	if line.Outcome != "busy" {
+		t.Errorf("outcome = %q, want busy", line.Outcome)
+	}
+	if strings.Count(strings.TrimSpace(r.stdout), "\n") != 0 {
+		t.Errorf("stdout = %q, want one JSON line", r.stdout)
+	}
+	if len(fake.SentKeys) != 0 {
+		t.Errorf("keys sent = %+v, want none", fake.SentKeys)
 	}
 }
 

@@ -202,7 +202,7 @@ compares that `version` against the `[pack] version` in
 {"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","input-outcome"]}
 ```
 
-- **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`), `idle-boundary` (`idle`), `input-outcome` (the typed exit-80 words on driving ops; gc 1.5.1 ignores it, a consuming gc reads the word and refunds a `busy` nudge).
+- **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`), `idle-boundary` (`idle`), `input-outcome` (the typed exit-80 words on driving ops; gc 1.5.1 ignores it, a gc at `544beb8d6` (#9137, post-`v1.5.1`) reads the word and refunds a `busy` nudge).
 - **Capabilities not declared**: `proc.exec`, `proc.provision`, `proc.stream`, `tty.attach` (and no locality capability).
 
 Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`.

@@ -240,8 +240,9 @@ have written the request stays exit `1` (outcome unknown). A nudge to a missing
 or dead pane still exits `0` (best effort), and a `nudge` pool-claim refusal
 answers `80` `busy` so gc refunds the reservation (GCREX-69). The key grammar and the exit-80 words follow
 `docs/provider-herdr-method-io.md` §send-keys, §interrupt and §nudge. Our
-handshake declares `input-outcome` (GCREX-69), so a gc that consumes it reads
-the exit-80 word; gc 1.5.1 does not and reads exit `80` as a plain error, so
+handshake declares `input-outcome` (GCREX-69), so a gc at `544beb8d6`
+(#9137, post-`v1.5.1`) — the first revision that reads the token — reads the
+exit-80 word; gc 1.5.1 does not and reads exit `80` as a plain error, so
 there the typed word is inert. For `interrupt` that matters: the contract asks for a
 best-effort exit `0` on a gone session (gc
 `docs/reference/exec-session-provider.md:370`), so `opInterrupt` keeps the
@@ -251,9 +252,10 @@ non-zero exit unguarded (gc `internal/worker/runtime_handle.go:243-248`), so the
 typed `gone` would surface as an error there. With the capability declared,
 answering typed `gone` is the remaining follow-up (GCREX-70).
 `docs/provider-herdr-method-io.md` §interrupt Conflicts #1 records the
-deviation. For `nudge` a consuming gc reads the word: a pool-claim refusal is
-`80` `busy`, which gc's stalled-claim backstop refunds as `ErrSessionBusy`
-rather than counting it against the delivery attempts (GCREX-69). At the 1.5.1
+deviation. For `nudge` a gc at `544beb8d6` (#9137, post-`v1.5.1`) reads the
+word: a pool-claim refusal is `80` `busy`, which its stalled-claim backstop
+refunds as `ErrSessionBusy` rather than counting it against the delivery
+attempts (GCREX-69). At the 1.5.1
 pin the words
 stay inert: gc already read the previous `busy`,
 `blocked` and send failures as exit `1` and the unconfirmed delivery as exit
@@ -330,8 +332,9 @@ capability names that do not exist in gc 1.5.1, so `gc runtime check` would
 ignore them: `fs.host`, `carrier.ops`, `observe.v1` appear nowhere in the
 source, and `input-outcome` appears nowhere in the 1.5.1 source either — we
 declare it since GCREX-69 because we implement the behavior it gates (typed
-exit-80 words) and a consuming gc reads it to refund a `busy` nudge instead of
-counting it as a failed delivery. `idle-boundary` is not a 1.5.1 token; gc's working tree
+exit-80 words) and a gc at `544beb8d6` (#9137, post-`v1.5.1`), the first
+revision that reads it, refunds a `busy` nudge instead of counting it as a
+failed delivery. `idle-boundary` is not a 1.5.1 token; gc's working tree
 defines it (`internal/runtime/protocol.go`, ahead of the pin) as the
 idle-observation gate, and our provider declares it in the same change that
 adds the `idle` snapshot op it gates (GCREX-63). `server-lifecycle` appears only
