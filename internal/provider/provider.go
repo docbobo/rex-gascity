@@ -782,6 +782,12 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if hadStored {
 			p.writeDrainDiagnostic(ctx, stored)
 		}
+		// A retry after a stop whose pane has since vanished still owes the
+		// survivors that stop recorded a reap: clearing the record here would
+		// lose their pids and leave them running.
+		if err := p.reapSurvivors(ctx, stored, survivorProcs(stored.Survivors)); err != nil {
+			return err
+		}
 		// Even with no pane, nothing the incarnation left must outlive its
 		// life: clear the whole meta sidecar and the activity record, not just
 		// the identity seed a failed or rolled-back start may have written.
@@ -817,6 +823,10 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 	if err != nil {
 		return fmt.Errorf("could not inspect the pane's process tree, leaving it open: %w", err)
 	}
+	// A survivor an earlier stop recorded was captured before this pane closed,
+	// and a closed pane no longer reports it. Reap it with whatever the pane
+	// still shows, or the retry would clear the record while it runs.
+	tree = unionProcs(tree, survivorProcs(binding.Survivors))
 	closeErr := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID)
 	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
 		return closeErr
@@ -835,8 +845,8 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 	// it survives; the binding, meta and activity stay for a retry, as
 	// herdr-core keeps the box (parity doc ### stop row 2). A signal error with
 	// nothing left is a success: everything died anyway.
-	if left, signalErr := p.reap(ctx, tree); len(left) > 0 {
-		return &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
+	if err := p.reapSurvivors(ctx, binding, tree); err != nil {
+		return err
 	}
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
@@ -846,6 +856,20 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 		return errBlockGone
 	}
 	return nil
+}
+
+// reapSurvivors reaps tree and, while any of it survives, records the pids on
+// the binding so the retry stop herdr-core allows still has them: the pane is
+// closed by then and reports nothing. It returns the failure to report, nil
+// when the tree is gone.
+func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []paneProc) error {
+	left, signalErr := p.reap(ctx, tree)
+	if len(left) == 0 {
+		return nil
+	}
+	binding.Survivors = survivorRecords(left)
+	p.binder.Record(binding)
+	return &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
 }
 
 // clearIncarnations removes the whole metadata sidecar and the activity record

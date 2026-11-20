@@ -212,9 +212,10 @@ type bindingRecord struct {
 	// Adopted was added after the first records.
 	Adopted bool `json:"adopted,omitempty"`
 	// GCBin, WorkDir and ClaimSessionID were added after the first records.
-	GCBin          string `json:"gc_bin,omitempty"`
-	WorkDir        string `json:"work_dir,omitempty"`
-	ClaimSessionID string `json:"claim_session_id,omitempty"`
+	GCBin          string     `json:"gc_bin,omitempty"`
+	WorkDir        string     `json:"work_dir,omitempty"`
+	ClaimSessionID string     `json:"claim_session_id,omitempty"`
+	Survivors      []Survivor `json:"survivors,omitempty"`
 }
 
 // bindingFromRecord converts a stored record to a Binding. The cast keeps the

@@ -61,6 +61,31 @@ func (e *survivorError) Error() string {
 
 func (e *survivorError) Unwrap() error { return e.reason }
 
+// survivorRecords is what the binding keeps of a reaped set, so a retry whose
+// pane is already closed still has the pids to reap.
+func survivorRecords(procs []paneProc) []Survivor {
+	if len(procs) == 0 {
+		return nil
+	}
+	out := make([]Survivor, len(procs))
+	for i, proc := range procs {
+		out[i] = Survivor{PID: proc.pid, Name: proc.name, Start: proc.start}
+	}
+	return out
+}
+
+// survivorProcs turns the recorded survivors back into a tree to reap.
+func survivorProcs(recs []Survivor) []paneProc {
+	if len(recs) == 0 {
+		return nil
+	}
+	out := make([]paneProc, len(recs))
+	for i, rec := range recs {
+		out[i] = paneProc{pid: rec.PID, name: rec.Name, start: rec.Start}
+	}
+	return out
+}
+
 // processRow is one row of a host process table snapshot.
 type processRow struct {
 	ppid   int

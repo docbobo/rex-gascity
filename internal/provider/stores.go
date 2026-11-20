@@ -54,14 +54,6 @@ type clearer interface {
 	Clear(name SessionName) error
 }
 
-// snapshotter is the optional per-session bulk read of the metadata store: it
-// returns every key of one session in one pass. The file store keeps one file
-// per key under the session's directory, so a snapshot is one directory listing
-// instead of one read per key.
-type snapshotter interface {
-	Snapshot(name SessionName) map[string]string
-}
-
 // memTable is the one in-memory table behind every memory store: a mutex
 // around a map. The stores only add their key and value types.
 type memTable[K comparable, V any] struct {

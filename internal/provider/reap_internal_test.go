@@ -140,6 +140,70 @@ func TestStopFailsWhileDescendantsSurvive(t *testing.T) {
 	}
 }
 
+// TestStopRetriesTheSurvivorsItRecorded proves the retry half of GCREX-50: the
+// failed stop keeps the pids on the binding, and the retry reaps them although
+// the closed pane (here: gone from the view) no longer names any process. The
+// retry must not clear the record while the survivors run.
+func TestStopRetriesTheSurvivorsItRecorded(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	alive := true
+	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+		if call == 1 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "bun"},
+				[4]string{"400", "300", "S", "node"},
+			)
+		}
+		if !alive {
+			return ""
+		}
+		return reapTable(
+			[4]string{"300", "1", "S", "bun"},
+			[4]string{"400", "1", "S", "node"},
+		)
+	})
+	p.signal = func(pid int, sig os.Signal) error {
+		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+		if sig == syscall.SIGTERM && len(*signals) > 2 {
+			alive = false // the retry's TERM kills what the first round could not
+		}
+		return nil
+	}
+
+	if err := p.Stop(ctx, reapDog); err == nil {
+		t.Fatal("Stop = nil, want a survivor failure")
+	}
+	bd, ok := p.Binding(reapDog)
+	if !ok {
+		t.Fatal("binding gone after a survivor failure, want it kept for the retry")
+	}
+	pids := make([]int, 0, len(bd.Survivors))
+	for _, s := range bd.Survivors {
+		pids = append(pids, s.PID)
+	}
+	slices.Sort(pids)
+	if !slices.Equal(pids, []int{300, 400}) {
+		t.Fatalf("recorded survivors = %v, want pids 300 and 400", bd.Survivors)
+	}
+
+	// The close removed the pane, so only the record still names the
+	// survivors.
+	fake.View = rex.SessionView{}
+	fake.Processes = nil
+	if err := p.Stop(ctx, reapDog); err != nil {
+		t.Fatalf("retry Stop = %v, want nil once the recorded survivors are reaped", err)
+	}
+	if len(*signals) != 6 {
+		t.Errorf("signals = %v, want the first round's 4 and the retry's TERM on both survivors", *signals)
+	}
+	if _, ok := p.Binding(reapDog); ok {
+		t.Error("binding survived the successful retry")
+	}
+}
+
 // TestStopSucceedsWhenTheSubtreeDies proves the success path: descendants that
 // die on TERM leave no survivor, so the stop succeeds and retires the
 // incarnation.

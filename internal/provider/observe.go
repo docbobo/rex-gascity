@@ -90,26 +90,19 @@ func observeCreated(t time.Time) string {
 }
 
 // observeIdentity reads the start-config identity the provider seeded into the
-// meta sidecar before the launch. It returns nil when the sidecar has none. The
-// sidecar holds one file per key, so the whole identity is one snapshot of the
-// session's sidecar rather than one read per key.
+// meta sidecar before the launch. It returns nil when a key cannot be read: the
+// wire reads null as "not yet readable" (rule 5), and a partial identity must
+// not pass for the whole one, which would end the read early with keys missing.
+// It returns an empty set only when every key was readable and the start config
+// carried no identity.
 func (p *Provider) observeIdentity(n SessionName) map[string]string {
-	all := map[string]string{}
-	if snap, ok := p.meta.(snapshotter); ok {
-		all = snap.Snapshot(n)
-	} else {
-		for _, key := range startIdentityMetaKeys {
-			if v, ok, _ := p.metaGet(n, key); ok {
-				all[key] = v
-			}
-		}
-	}
-	var id map[string]string
+	id := map[string]string{}
 	for _, key := range startIdentityMetaKeys {
-		if v := all[key]; v != "" {
-			if id == nil {
-				id = map[string]string{}
-			}
+		v, ok, err := p.metaGet(n, key)
+		if err != nil {
+			return nil
+		}
+		if ok && v != "" {
 			id[key] = v
 		}
 	}

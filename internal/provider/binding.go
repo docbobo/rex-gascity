@@ -56,6 +56,17 @@ type Binding struct {
 	// already holds a claim is not re-prompted mid-task (GCREX-33). Empty on
 	// legacy records, where the guard cannot resolve the claim and delivers.
 	ClaimSessionID string
+	// Survivors are the descendants a stop could not reap. The closed pane
+	// no longer reports them, so the retry that herdr-core's stop allows
+	// reaps these instead of clearing the record blind. Empty when none.
+	Survivors []Survivor
+}
+
+// Survivor is one descendant a stop could not reap.
+type Survivor struct {
+	PID   int    `json:"pid"`
+	Name  string `json:"name,omitempty"`
+	Start string `json:"start,omitempty"` // ps lstart, the pid-reuse identity
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the
