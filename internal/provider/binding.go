@@ -58,7 +58,7 @@ func (b Binding) tabLabel() string {
 	if b.TabLabel != "" {
 		return b.TabLabel
 	}
-	return b.Name.TabLabel()
+	return b.Name.Rig()
 }
 
 // paneLabel returns the Rex pane label for the pane: the stored label when
@@ -85,7 +85,7 @@ func tabLabelFor(name SessionName, env map[string]string) string {
 	if rig := env["GC_RIG"]; rig != "" {
 		return rig
 	}
-	return name.TabLabel()
+	return name.Rig()
 }
 
 // aliasesFor lists the extra gc session names a started pane answers to,
@@ -435,7 +435,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 	}
 	tab := hint.TabLabel
 	if tab == "" {
-		tab = name.TabLabel()
+		tab = name.Rig()
 	}
 	pane := hint.PaneLabel
 	if pane == "" {
