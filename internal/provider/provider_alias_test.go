@@ -12,6 +12,9 @@ import (
 
 const (
 	aliasRig      = "my-project"
+	aliasTown     = aliasRig
+	aliasTab      = aliasTown // tab a town-level (no "--") name derives under that pin
+	rigTab        = "Rig: " + aliasRig
 	wispStart     = "pi-mc-wisp-ybq1"
 	wispInstance  = "my-project--pi-mc-wisp-ybq1"
 	wispTemplate  = "my-project--pi"
@@ -22,6 +25,15 @@ const (
 	cdPaneBlock   = rex.BlockID("block:" + cdStart)
 	wispWindowID  = rex.WindowID("window:" + aliasRig)
 )
+
+// pinTown clears the higher-precedence gc caller variables and sets the city
+// pin, so a town-level name derives aliasTown regardless of the harness env.
+func pinTown(t *testing.T) {
+	t.Helper()
+	t.Setenv("GC_EXEC_CITY_NAME", "")
+	t.Setenv("GC_EXEC_CITY_PATH", "")
+	t.Setenv("GC_REX_CITY", aliasTown)
+}
 
 func wispEnv() map[string]string {
 	return map[string]string{
@@ -43,6 +55,7 @@ func cdEnv() map[string]string {
 
 func TestStartDerivesTabFromGCRig(t *testing.T) {
 	ctx := context.Background()
+	pinTown(t)
 	fake := faketest.New()
 	p := provider.New("acme", fake)
 
@@ -53,8 +66,8 @@ func TestStartDerivesTabFromGCRig(t *testing.T) {
 		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
 	}
 	w := fake.CreatedWindows[0]
-	if w.Label != aliasRig {
-		t.Errorf("tab label = %q, want %q (from GC_RIG)", w.Label, aliasRig)
+	if w.Label != aliasTab {
+		t.Errorf("tab label = %q, want %q (stray GC_RIG must not override the town label)", w.Label, aliasTab)
 	}
 	if w.Spec.Label != wispStart {
 		t.Errorf("pane label = %q, want %q (from the start name)", w.Spec.Label, wispStart)
@@ -64,8 +77,8 @@ func TestStartDerivesTabFromGCRig(t *testing.T) {
 	if !ok {
 		t.Fatal("Binding(start name) = false")
 	}
-	if b.TabLabel != aliasRig || b.PaneLabel != wispStart {
-		t.Errorf("binding labels = %q/%q, want %q/%q", b.TabLabel, b.PaneLabel, aliasRig, wispStart)
+	if b.TabLabel != aliasTab || b.PaneLabel != wispStart {
+		t.Errorf("binding labels = %q/%q, want %q/%q", b.TabLabel, b.PaneLabel, aliasTab, wispStart)
 	}
 	for _, want := range []provider.SessionName{wispTemplate, wispInstance} {
 		if !slices.Contains(b.Aliases, want) {
@@ -82,8 +95,8 @@ func TestStartDerivesTabFromNameWithoutRig(t *testing.T) {
 	if err := p.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := fake.CreatedWindows[0].Label; got != "Indigo" {
-		t.Errorf("tab label = %q, want %q", got, "Indigo")
+	if got := fake.CreatedWindows[0].Label; got != "Rig: Indigo" {
+		t.Errorf("tab label = %q, want %q", got, "Rig: Indigo")
 	}
 	b, _ := p.Binding("Indigo--dog-1")
 	if len(b.Aliases) != 0 {
@@ -93,14 +106,15 @@ func TestStartDerivesTabFromNameWithoutRig(t *testing.T) {
 
 func TestIsRunningCanonicalAlias(t *testing.T) {
 	ctx := context.Background()
+	pinTown(t)
 	fake := faketest.New()
 	p := provider.New("acme", fake)
 
 	if err := p.Start(ctx, cdStart, provider.Config{Argv: []string{"gc"}, Env: cdEnv()}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := fake.CreatedWindows[0].Label; got != aliasRig {
-		t.Errorf("tab label = %q, want %q", got, aliasRig)
+	if got := fake.CreatedWindows[0].Label; got != aliasTab {
+		t.Errorf("tab label = %q, want %q", got, aliasTab)
 	}
 
 	running, err := p.IsRunning(ctx, cdCanonical)
@@ -204,8 +218,8 @@ func TestStartRigQualifiedNameKeepsTab(t *testing.T) {
 	if err := p.Start(ctx, "my-project--dog-1", provider.Config{Argv: []string{"claude"}, Env: env}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := fake.CreatedWindows[0].Label; got != aliasRig {
-		t.Errorf("tab label = %q, want %q", got, aliasRig)
+	if got := fake.CreatedWindows[0].Label; got != rigTab {
+		t.Errorf("tab label = %q, want %q", got, rigTab)
 	}
 	b, _ := p.Binding("my-project--dog-1")
 	if len(b.Aliases) != 0 {
@@ -274,6 +288,7 @@ func TestMetaAliasResolution(t *testing.T) {
 
 func TestIsRunningRecoversFromStaleBinding(t *testing.T) {
 	ctx := context.Background()
+	pinTown(t)
 	fake := faketest.New()
 	p := provider.New("acme", fake)
 	if err := p.Start(ctx, wispStart, provider.Config{Argv: []string{"pi"}, Env: wispEnv()}); err != nil {
@@ -284,7 +299,7 @@ func TestIsRunningRecoversFromStaleBinding(t *testing.T) {
 	// id; liveness must rediscover it rather than report the stale address dead.
 	fake.View = rex.SessionView{Windows: []rex.Window{{
 		ID:     wispWindowID,
-		Label:  aliasRig,
+		Label:  aliasTab,
 		Blocks: []rex.Block{{ID: "block:recreated", Label: wispStart}},
 	}}}
 
@@ -301,7 +316,7 @@ func rebuiltWispFake() *faketest.Fake {
 	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	fake.View = rex.SessionView{Windows: []rex.Window{{
 		ID:     wispWindowID,
-		Label:  aliasRig,
+		Label:  aliasTab,
 		Blocks: []rex.Block{{ID: wispPaneBlock, Label: wispStart}},
 	}}}
 	return fake
@@ -309,6 +324,7 @@ func rebuiltWispFake() *faketest.Fake {
 
 func TestAliasResolutionThroughFileStore(t *testing.T) {
 	ctx := context.Background()
+	pinTown(t)
 	dir := t.TempDir()
 
 	writer := provider.New("acme", faketest.New(), provider.WithBindingStore(provider.NewFileStore(dir)))
@@ -323,7 +339,7 @@ func TestAliasResolutionThroughFileStore(t *testing.T) {
 	if !ok {
 		t.Fatal("Binding(instance alias) = false after reload")
 	}
-	if b.Name != wispStart || b.TabLabel != aliasRig || b.PaneLabel != wispStart {
+	if b.Name != wispStart || b.TabLabel != aliasTab || b.PaneLabel != wispStart {
 		t.Errorf("reloaded binding = %+v", b)
 	}
 	if want := []provider.SessionName{wispTemplate, wispInstance}; !slices.Equal(b.Aliases, want) {

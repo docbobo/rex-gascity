@@ -545,7 +545,7 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 	var left []rex.Window
 	deadline = time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if left = e2eWindowsLabelled(ctx, t, b.SessionID, "Indigo"); len(left) == 0 {
+		if left = e2eWindowsLabelled(ctx, t, b.SessionID, "Rig: Indigo"); len(left) == 0 {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -614,7 +614,7 @@ func TestE2EParallelStarts(t *testing.T) {
 	if !ok {
 		t.Fatalf("Binding %s: not found", names[0])
 	}
-	windows := e2eWindowsLabelled(ctx, t, first.SessionID, "Indigo")
+	windows := e2eWindowsLabelled(ctx, t, first.SessionID, "Rig: Indigo")
 	if len(windows) != 1 {
 		t.Fatalf("got %d windows labelled Indigo, want exactly 1: %+v", len(windows), windows)
 	}
@@ -640,4 +640,7 @@ func TestE2EParallelStarts(t *testing.T) {
 		}
 	}
 	e2eExpectSessionSurvivesStop(ctx, t, first.SessionID, city)
+	if left := e2eWindowsLabelled(ctx, t, first.SessionID, "Rig: Indigo"); len(left) != 0 {
+		t.Errorf("tab Rig: Indigo still present after stopping all agents: %+v", left)
+	}
 }

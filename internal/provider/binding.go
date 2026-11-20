@@ -53,12 +53,14 @@ type Binding struct {
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the
-// record has one, otherwise the name-derived label for legacy records.
-func (b Binding) tabLabel() string {
+// record has one, otherwise the label the name derives with town as the town
+// label (a legacy record has no start env, so the rig comes from the name
+// split).
+func (b Binding) tabLabel(town string) string {
 	if b.TabLabel != "" {
 		return b.TabLabel
 	}
-	return b.Name.Rig()
+	return tabLabel(b.Name, nil, town)
 }
 
 // paneLabel returns the Rex pane label for the pane: the stored label when
@@ -76,16 +78,6 @@ func (b Binding) paneLabel() string {
 func sanitizeQualified(name string) string {
 	name = strings.ReplaceAll(name, "/", nameSep)
 	return strings.ReplaceAll(name, ".", "__")
-}
-
-// tabLabelFor returns the Rex tab label for a started session: GC_RIG when the
-// start config carries a non-empty rig (gc 1.5.1 does not put the rig in pool
-// names), otherwise the name-derived rig.
-func tabLabelFor(name SessionName, env map[string]string) string {
-	if rig := env["GC_RIG"]; rig != "" {
-		return rig
-	}
-	return name.Rig()
 }
 
 // aliasesFor lists the extra gc session names a started pane answers to,
@@ -129,18 +121,21 @@ type Binder struct {
 	// and a fresh record use the first; a legacy record under another
 	// candidate label still revalidates.
 	sessionLabels []string
+	// townTab is the town-level tab label, used to derive the tab label for
+	// a legacy record or a discovery scan that has no stored start env.
+	townTab string
 }
 
 // NewBinder builds a Binder that looks for the Rex session labelled
 // sessionLabel and caches bindings in store.
-func NewBinder(client rex.Client, store Store[SessionName, Binding], sessionLabel string) *Binder {
-	return NewBinderWithLabels(client, store, []string{sessionLabel})
+func NewBinder(client rex.Client, store Store[SessionName, Binding], sessionLabel, town string) *Binder {
+	return NewBinderWithLabels(client, store, []string{sessionLabel}, town)
 }
 
 // NewBinderWithLabels builds a Binder that accepts any of labels (canonical
 // first, duplicates and empty entries dropped) and caches bindings in store.
-func NewBinderWithLabels(client rex.Client, store Store[SessionName, Binding], labels []string) *Binder {
-	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels)}
+func NewBinderWithLabels(client rex.Client, store Store[SessionName, Binding], labels []string, town string) *Binder {
+	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels), townTab: town}
 }
 
 // normalizeSessionLabels trims, dedupes and drops empty labels, preserving
@@ -341,7 +336,7 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 		return Binding{}, false, nil
 	case err != nil:
 		return Binding{}, false, err
-	case stillBound(view, bd):
+	case stillBound(view, bd, b.townTab):
 		return bd, true, nil
 	default:
 		return Binding{}, false, nil
@@ -403,12 +398,12 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 // stillBound reports whether view still holds the binding's block under its
 // stored tab and pane labels (falling back to the name-derived labels for
 // legacy records).
-func stillBound(view rex.SessionView, bd Binding) bool {
+func stillBound(view rex.SessionView, bd Binding, town string) bool {
 	if view.Label != bd.SessionLabel {
 		return false
 	}
 	for _, w := range view.Windows {
-		if w.ID != bd.WindowID || w.Label != bd.tabLabel() {
+		if w.ID != bd.WindowID || w.Label != bd.tabLabel(town) {
 			continue
 		}
 		for _, blk := range w.Blocks {
@@ -435,7 +430,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding) (Bind
 	}
 	tab := hint.TabLabel
 	if tab == "" {
-		tab = name.Rig()
+		tab = tabLabel(name, nil, b.townTab)
 	}
 	pane := hint.PaneLabel
 	if pane == "" {

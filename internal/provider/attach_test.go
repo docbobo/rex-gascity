@@ -40,15 +40,15 @@ func attachWant(t *testing.T, p *provider.Provider, want bool) {
 }
 
 func TestIsAttachedNoClients(t *testing.T) {
-	attachWant(t, attachStarted(t, "window:Indigo", "block:dog-1"), false)
+	attachWant(t, attachStarted(t, "window:Rig: Indigo", "block:dog-1"), false)
 }
 
 func TestIsAttachedCLIOnly(t *testing.T) {
-	attachWant(t, attachStarted(t, "window:Indigo", "block:dog-1", attachCLI), false)
+	attachWant(t, attachStarted(t, "window:Rig: Indigo", "block:dog-1", attachCLI), false)
 }
 
 func TestIsAttachedAgentTabActive(t *testing.T) {
-	attachWant(t, attachStarted(t, "window:Indigo", "", attachApp, attachCLI), true)
+	attachWant(t, attachStarted(t, "window:Rig: Indigo", "", attachApp, attachCLI), true)
 }
 
 func TestIsAttachedFocusedBlockInInactiveTab(t *testing.T) {
@@ -62,18 +62,18 @@ func TestIsAttachedOtherRigActive(t *testing.T) {
 func TestIsAttachedBlockGoneFromActiveTab(t *testing.T) {
 	fake, p := started(t)
 	fake.Clients = []rex.ClientInfo{attachApp}
-	fake.View.ActiveWindowID = "window:Indigo"
+	fake.View.ActiveWindowID = "window:Rig: Indigo"
 	fake.View.Windows[0].Blocks = nil
 	attachWant(t, p, false)
 }
 
 func TestIsAttachedPeerOnly(t *testing.T) {
-	attachWant(t, attachStarted(t, "window:Indigo", "block:dog-1", rex.ClientInfo{ID: "p1", Kind: "peer", Name: "peer"}), false)
+	attachWant(t, attachStarted(t, "window:Rig: Indigo", "block:dog-1", rex.ClientInfo{ID: "p1", Kind: "peer", Name: "peer"}), false)
 }
 
 func TestIsAttachedUnknownKind(t *testing.T) {
 	for _, kind := range []string{"", "mystery"} {
-		p := attachStarted(t, "window:Indigo", "block:dog-1", attachApp, rex.ClientInfo{ID: "x", Kind: kind})
+		p := attachStarted(t, "window:Rig: Indigo", "block:dog-1", attachApp, rex.ClientInfo{ID: "x", Kind: kind})
 		got, err := p.IsAttached(context.Background(), attachName)
 		if err != nil {
 			t.Errorf("kind %q: IsAttached error = %v, want nil", kind, err)

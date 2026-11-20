@@ -68,7 +68,7 @@ func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wi
 		SessionID:      sid,
 		SessionLabel:   rexSessionLabel(p.city),
 		WindowID:       wid,
-		TabLabel:       tabLabelFor(n, cfg.Env),
+		TabLabel:       tabLabel(n, cfg.Env, p.townTab),
 		PaneLabel:      n.PaneLabel(),
 		Aliases:        aliasesFor(n, cfg.Env),
 		CreatedAt:      time.Now(),

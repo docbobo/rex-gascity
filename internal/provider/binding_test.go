@@ -12,7 +12,10 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
-const testLabel = "gc:acme"
+const (
+	testLabel = "gc:acme"
+	testTown  = "Acme"
+)
 
 func newTestBinder(t *testing.T, windows ...rex.Window) (*Binder, *MemoryStore, *faketest.Fake) {
 	t.Helper()
@@ -20,18 +23,18 @@ func newTestBinder(t *testing.T, windows ...rex.Window) (*Binder, *MemoryStore, 
 	fake.Sessions = []rex.Session{{ID: "session:acme", Label: testLabel}}
 	fake.View = rex.SessionView{Label: testLabel, Windows: windows}
 	store := NewMemoryStore()
-	return NewBinder(fake, store, testLabel), store, fake
+	return NewBinder(fake, store, testLabel, testTown), store, fake
 }
 
 func indigoWindow() rex.Window {
-	return rex.Window{ID: "window:Indigo", Label: "Indigo",
+	return rex.Window{ID: "window:Indigo", Label: "Rig: Indigo",
 		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}}
 }
 
 func indigoBinding() Binding {
 	return Binding{Name: "Indigo--dog-1", SessionID: "session:acme", SessionLabel: testLabel,
 		WindowID: "window:Indigo", BlockID: "block:dog-1",
-		TabLabel: "Indigo", PaneLabel: "dog-1"}
+		TabLabel: "Rig: Indigo", PaneLabel: "dog-1"}
 }
 
 func TestResolveCacheHit(t *testing.T) {
@@ -69,7 +72,7 @@ func TestResolveNotFound(t *testing.T) {
 }
 
 func TestResolveStaleBinding(t *testing.T) {
-	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Indigo",
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Rig: Indigo",
 		Blocks: []rex.Block{{ID: "block:dog-1b", Label: "dog-1"}}})
 	store.Save(indigoBinding())
 
@@ -164,7 +167,8 @@ func TestResolveForeignSessionLabelIgnored(t *testing.T) {
 // TestResolveLegacyBindingUsesNameLabels resolves a record written before
 // TabLabel/PaneLabel existed: the labels fall back to the name split.
 func TestResolveLegacyBindingUsesNameLabels(t *testing.T) {
-	b, store, _ := newTestBinder(t, indigoWindow())
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Rig: Indigo",
+		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}})
 	legacy := indigoBinding()
 	legacy.TabLabel, legacy.PaneLabel = "", ""
 	store.Save(legacy)
@@ -210,7 +214,7 @@ func TestForgetAliasClearsPrimary(t *testing.T) {
 }
 
 func TestResolveTownAgent(t *testing.T) {
-	b, _, _ := newTestBinder(t, rex.Window{ID: "window:__town", Label: "__town",
+	b, _, _ := newTestBinder(t, rex.Window{ID: "window:__town", Label: testTown,
 		Blocks: []rex.Block{{ID: "block:mayor", Label: "mayor"}}})
 
 	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "mayor", Mode: ResolveFresh})
@@ -346,7 +350,7 @@ func TestBinderLiveAliasRevalidates(t *testing.T) {
 // TestBinderLiveRescansStaleAddress checks a stale block id is rediscovered by
 // label, the record refreshed, and the new pane judged alive.
 func TestBinderLiveRescansStaleAddress(t *testing.T) {
-	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Indigo",
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Rig: Indigo",
 		Blocks: []rex.Block{{ID: "block:dog-1b", Label: "dog-1"}}})
 	store.Save(indigoBinding())
 
