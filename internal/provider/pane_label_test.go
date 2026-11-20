@@ -212,6 +212,11 @@ func TestPaneLabelForClamp(t *testing.T) {
 		if again := paneLabelFor(SessionName(session), env); again != got {
 			t.Fatalf("label is not deterministic: %q != %q", got, again)
 		}
+		// The bead id is only an identity if discovery honours the clamped
+		// label: Binder.scan has no env, so identityMatch must accept it.
+		if !identityMatch(SessionName(session), got) {
+			t.Fatalf("identityMatch(%q, %q) = false; the clamped short form names nobody", session, got)
+		}
 	})
 
 	t.Run("verified short form with a suffix that cannot fit falls back", func(t *testing.T) {
@@ -241,6 +246,84 @@ func TestPaneLabelForClamp(t *testing.T) {
 			t.Fatalf("paneLabelFor = %q, want %q", got, want)
 		}
 	})
+}
+
+// TestPaneLabelOverflowIdentity is the boundary proof for R2-F1: a verified
+// short form at exactly the 128-rune limit and one rune over it names the
+// session through identityMatch, so a recordless IsRunning/Stop can still
+// find the pane after fitPaneLabel shortens the agent.
+func TestPaneLabelOverflowIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    int
+		bead     int
+		wantRune int
+	}{
+		{"exact limit", 60, 65, 128},
+		{"one over the limit", 60, 66, 129},
+		{"far over the limit", 100, 40, 143},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := strings.Repeat("a", tt.agent)
+			bead := strings.Repeat("9", tt.bead)
+			session := agent + "-" + bead
+			if n := utf8.RuneCountInString(agent + " (" + bead + ")"); n != tt.wantRune {
+				t.Fatalf("fixture short form is %d runes, want %d", n, tt.wantRune)
+			}
+			env := map[string]string{
+				"GC_RIG":          "rex-gascity",
+				"GC_TEMPLATE":     "rex-gascity/" + agent,
+				"GC_AGENT":        bead,
+				"GC_SESSION_NAME": session,
+			}
+			got := paneLabelFor(SessionName(session), env)
+			if n := utf8.RuneCountInString(got); n > maxPaneLabelRunes {
+				t.Fatalf("label has %d runes, want <= %d: %q", n, maxPaneLabelRunes, got)
+			}
+			if !strings.HasSuffix(got, " ("+bead+")") {
+				t.Fatalf("label %q lost the parenthesised bead id %q", got, bead)
+			}
+			if !identityMatch(SessionName(session), got) {
+				t.Fatalf("identityMatch(%q, %q) = false", session, got)
+			}
+			if sibling := SessionName(agent + "-" + strings.Repeat("8", tt.bead)); identityMatch(sibling, got) {
+				t.Fatalf("label %q was adopted by a sibling seat %q", got, sibling)
+			}
+		})
+	}
+}
+
+// TestRecordlessDiscoveryOfClampedShortForm starts an overflowing pool seat,
+// drops the sidecar record and the start env, and proves IsRunning/Stop still
+// find the pane through Binder.scan alone.
+func TestRecordlessDiscoveryOfClampedShortForm(t *testing.T) {
+	ctx := context.Background()
+	agent := strings.Repeat("a", 100)
+	bead := strings.Repeat("9", 40)
+	session := agent + "-" + bead
+	env := map[string]string{
+		"GC_RIG":          "rex-gascity",
+		"GC_TEMPLATE":     "rex-gascity/" + agent,
+		"GC_AGENT":        bead,
+		"GC_SESSION_NAME": session,
+	}
+	fake := faketest.New()
+	if err := New("acme", fake).Start(ctx, session, Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	block := rex.BlockID("block:" + paneLabelFor(SessionName(session), env))
+
+	running, err := New("acme", fake).IsRunning(ctx, session)
+	if err != nil || !running {
+		t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", session, running, err)
+	}
+	if err := New("acme", fake).Stop(ctx, session); err != nil {
+		t.Fatalf("Stop(%s): %v", session, err)
+	}
+	if !slices.Contains(fake.ClosedBlocks, block) {
+		t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+	}
 }
 
 // TestPaneLabelRediscovery is the GCREX-5qel section 3 agreement proof: for one
@@ -736,6 +819,11 @@ func TestIdentityMatch(t *testing.T) {
 		{"suffix satisfies neither branch", "gc__implementation-worker-mc-wisp-1e4r8", "other.agent (mc-wisp-1e4r8)", false},
 		{"empty suffix", "rex-gascity--worker", "worker ()", false},
 		{"prefix only", "rex-gascity--worker", "worker (nonsense)", false},
+		// fitPaneLabel cuts the agent to fit 128 runes. The third branch
+		// accepts that clamped label only for a whole-name tail and a prefix
+		// agent; a sibling's bead id still fails.
+		{"clamped short form", strings.Repeat("a", 100) + "-" + strings.Repeat("9", 40), strings.Repeat("a", 85) + " (" + strings.Repeat("9", 40) + ")", true},
+		{"clamped short form, sibling bead id", strings.Repeat("a", 100) + "-" + strings.Repeat("9", 40), strings.Repeat("a", 85) + " (" + strings.Repeat("8", 40) + ")", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
