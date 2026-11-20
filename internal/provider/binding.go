@@ -472,18 +472,18 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	}
 	// IsRunning and Stop resolve without a start env, so the fallback scan
 	// must recognise the session identity alone: a pane labelled
-	// "<agent> (<GC_SESSION_NAME>)" — or, when that suffix does not fit, the
-	// bare session name — still belongs to name even though the agent prefix
-	// is unknown here.
+	// "<agent> (<GC_SESSION_NAME>)" still belongs to name even though the agent
+	// prefix is unknown here. A bare label matching the session name is not
+	// enough in these tabs: a legacy pane of another session can carry exactly
+	// that label ("rig--rig--worker" is labelled "rig--worker" and sits in
+	// "Rig: rig"), so a bare label is only accepted as the expected pane label
+	// from the hint or record above.
 	identity := " (" + string(name) + ")"
 	suffixMatch := func(label string) bool {
 		return strings.HasSuffix(label, identity)
 	}
-	identityMatch := func(label string) bool {
-		return label == string(name) || suffixMatch(label)
-	}
 	paneMatches := func(label string) bool {
-		return label == pane || identityMatch(label)
+		return label == pane || suffixMatch(label)
 	}
 	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool, error) {
 		bd := Binding{
