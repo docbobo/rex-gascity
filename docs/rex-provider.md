@@ -226,7 +226,7 @@ Gas City sessions map onto the three-level Rex hierarchy:
 
 - Starting the first agent in a rig creates a new Rex tab labeled `<rig>` (or `__town`).
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
-- `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never calls `session.destroy`.
+- `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `gc:<city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 
 ### Rig from the start config
 
@@ -498,7 +498,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **Unimplemented operations exit 2**: `exec`, `provision`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
 - **`attach` is a hint, not a pty passthrough (GCREX-20)**: gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` through `runWithTTY`, which does not apply the exit-2-is-success rule, so a Rex-backed session cannot answer exit 2 without failing the command. The provider registers `attach` and always exits 0, printing a one-line hint to open the Rex app and select the session. It reads no Rex state, so an unknown session and an unreachable server succeed too. No `tty.attach` capability is declared: this is a hint path, not an interactive connection.
 - **No busy-gated nudge (OSC 7501 is emitted by the agent)**: OSC 7501 agent status frames are emitted by the pane program, not the provider — Pi implements the protocol and gc-managed Pi panes report `idle`/`working`/… under Rex, so `program_status` is normally populated. The provider does not yet consume it: nudge busy-gating and submit confirmation are deferred, so `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
-- **Teardown leaves the server and session shell intact**: Stopping agents closes only city-owned blocks (`rex block close`); it never stops the shared Rex server and never calls `session.destroy`.
+- **Teardown leaves the server and the session intact**: Stopping agents closes only city-owned blocks (`rex block close`) and never stops the shared Rex server. After the last pane closes, the empty canonical `gc:<city>` session is left in place — the live probe lists the server-wide Rex app client on every session, which is the approved skip branch — and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 
 See `docs/rex-pilot-phase5.md` for the pilot and promotion record (GCREX-6), including the observed `gc:default` namespace under a launchd supervisor.
 See `docs/REX-RETIRE.md` for the retire/drain comparison against

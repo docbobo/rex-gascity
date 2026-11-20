@@ -480,22 +480,24 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// Find or create the city session under the short state lock: two starts of
 	// different names may run concurrently, and both would otherwise create the
 	// shared `gc:<city>` session.
-	var sid rex.SessionID
-	if err := p.withStateLock(ctx, func() error {
-		var ok bool
-		var err error
-		sid, ok, err = p.binder.FindSession(ctx)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
+	findOrCreate := func() (rex.SessionID, error) {
+		var sid rex.SessionID
+		err := p.withStateLock(ctx, func() error {
+			var ok bool
+			var err error
+			sid, ok, err = p.binder.FindSession(ctx)
 			if err != nil {
 				return err
 			}
-		}
-		return nil
-	}); err != nil {
+			if !ok {
+				sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
+			}
+			return err
+		})
+		return sid, err
+	}
+	sid, err := findOrCreate()
+	if err != nil {
 		return startResult{}, err
 	}
 
@@ -586,35 +588,52 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	// two concurrent starts in one rig cannot both create the tab.
 	var launched startResult
 	launchStart := time.Now()
-	if err := p.withTabLock(ctx, tab, func() error {
-		view, err := p.client.SessionView(ctx, sid)
-		if err != nil {
-			return err
-		}
-		for _, w := range view.Windows {
-			if w.Label != tab {
-				continue
-			}
-			anchor, direction, ok := nextSplit(w)
-			if !ok {
-				continue
-			}
-			block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
+	launch := func() error {
+		return p.withTabLock(ctx, tab, func() error {
+			view, err := p.client.SessionView(ctx, sid)
 			if err != nil {
 				return err
 			}
-			p.record(ctx, n, sid, w.ID, block, "split", cfg)
+			for _, w := range view.Windows {
+				if w.Label != tab {
+					continue
+				}
+				anchor, direction, ok := nextSplit(w)
+				if !ok {
+					continue
+				}
+				block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
+				if err != nil {
+					return err
+				}
+				p.record(ctx, n, sid, w.ID, block, "split", cfg)
+				launched = startResult{sessionID: sid, blockID: block}
+				return nil
+			}
+			wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
+			if err != nil {
+				return err
+			}
+			p.record(ctx, n, sid, wid, block, "window", cfg)
 			launched = startResult{sessionID: sid, blockID: block}
 			return nil
+		})
+	}
+	err = launch()
+	if errors.Is(err, rex.ErrNotFound) {
+		// A concurrent Stop of another name destroyed the empty city session
+		// after find-or-create released the state lock. Create it again and
+		// launch once more; a second miss is returned as is.
+		if sid, err = findOrCreate(); err == nil {
+			if err = p.withStateLock(ctx, func() error {
+				p.recordProvisionalBinding(n, sid, "", cfg)
+				return nil
+			}); err == nil {
+				err = launch()
+			}
 		}
-		wid, block, err := p.client.NewWindow(ctx, sid, tab, spec)
-		if err != nil {
-			return err
-		}
-		p.record(ctx, n, sid, wid, block, "window", cfg)
-		launched = startResult{sessionID: sid, blockID: block}
-		return nil
-	}); err != nil {
+	}
+	if err != nil {
 		return startResult{}, err
 	}
 	launched.launchDur = time.Since(launchStart)

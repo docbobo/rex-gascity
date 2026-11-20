@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -241,6 +242,125 @@ func TestProcessAliveTransientProcessErrorIsUnknown(t *testing.T) {
 	state, err := p.ProcessAlive(context.Background(), teardownDog, []string{"claude"})
 	if err != nil || state != provider.LivenessUnknown {
 		t.Errorf("ProcessAlive after a transient error = %v, %v; want unknown, nil", state, err)
+	}
+}
+
+func TestStopClosesOnlyTheStoppedPane(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	teardownStart(t, p, teardownCat)
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.ClosedBlocks) != 1 {
+		t.Errorf("closed = %v, want only the stopped pane", fake.ClosedBlocks)
+	}
+	if len(fake.Sessions) == 0 {
+		t.Errorf("sessions = %v, want the session left in place", fake.Sessions)
+	}
+}
+
+func TestStopKeepsSessionWithAttachedApp(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.Clients = []rex.ClientInfo{{ID: "client:1", Kind: "cli", Name: "rex"}, {ID: "client:2", Kind: "app", Name: "Rex"}}
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestStopNeverDestroysLegacyLabelledSession(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{{ID: "session:gc:oldacme", Label: "gc:oldacme"}}
+	p := provider.New("acme", fake, namespacesOption(t, []string{"acme", "oldacme"}))
+	teardownStart(t, p, teardownDog)
+	if len(fake.CreatedSessions) != 0 {
+		t.Fatalf("Start created %v, want it to adopt the legacy session", fake.CreatedSessions)
+	}
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.Sessions) == 0 {
+		t.Errorf("sessions = %v, want the adopted session left in place", fake.Sessions)
+	}
+}
+
+func TestStopToleratesLookupFailures(t *testing.T) {
+	for name, err := range map[string]error{
+		"list unavailable": rex.ErrUnavailable,
+		"list other":       errors.New("boom"),
+		"clients other":    errors.New("boom"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, p := teardownStarted(t, teardownDog)
+			fake.ListSessionsErr = err
+			fake.ListClientsErr = err
+			if err := p.Stop(context.Background(), teardownDog); err != nil {
+				t.Errorf("Stop = %v, want nil: the pane is closed", err)
+			}
+		})
+	}
+}
+
+func TestStopKeepsDuplicateCanonicalSessions(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.Sessions = append(fake.Sessions, rex.Session{ID: "session:dup", Label: fake.CreatedSessions[0]})
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(fake.Sessions) != 2 {
+		t.Errorf("sessions = %v, want both canonical sessions left in place", fake.Sessions)
+	}
+}
+
+// destroyedBeforeLaunch models the city session vanishing after Start found it
+// but before Start's launch read the view (an operator, another process).
+type destroyedBeforeLaunch struct {
+	*faketest.Fake
+	once sync.Once
+}
+
+func (d *destroyedBeforeLaunch) SessionView(ctx context.Context, sid rex.SessionID) (rex.SessionView, error) {
+	gone := false
+	d.once.Do(func() {
+		d.Sessions = nil
+		gone = true
+	})
+	if gone {
+		return rex.SessionView{}, rex.ErrNotFound
+	}
+	return d.Fake.SessionView(ctx, sid)
+}
+
+func TestStartRecreatesSessionDestroyedBeforeLaunch(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", &destroyedBeforeLaunch{Fake: fake})
+
+	if err := p.Start(context.Background(), teardownDog, teardownCfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.CreatedSessions) != 2 {
+		t.Errorf("created sessions = %v, want the session recreated once", fake.CreatedSessions)
+	}
+	if len(fake.CreatedWindows) != 1 {
+		t.Errorf("windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	if b, ok := p.Binding(teardownDog); !ok || b.SessionID == "" {
+		t.Errorf("binding = %+v, %v; want a recorded pane", b, ok)
+	}
+}
+
+func TestStopToleratesSessionGoneBeforeClose(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.Sessions = nil
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, ok := p.Binding(teardownDog); ok {
+		t.Error("binding still stored after Stop")
 	}
 }
 

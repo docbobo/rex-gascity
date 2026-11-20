@@ -1051,7 +1051,7 @@ GCREX-2 — stop semantics, the closest offered behavior (`stop`).
 
 **Cross-references.**
 GCREX-1 — §9 pins the op table and records `server-stop` and `server-lifecycle` as outside the baseline.
-GCREX-4 — teardown is block-only (`block.close`); never `session.destroy` or `server.stop`.
+GCREX-4, GCREX-65 — teardown closes blocks (`block.close`); never destroys a session (the live probe hit the approved skip branch: the app is listed on every session of the shared server) and never `server.stop`.
 GCREX-8 — removed `server-lifecycle` from the plan's capability list.
 `docs/REX-CONTRACT.md` §9 (not-in-baseline list, ~line 255-262) and §11 D3 (line 400).
 `docs/plans/native-rex-provider.md` §0 D3 (line 83), and Known gaps "Server lifecycle" (line 438), "Shared server" (line 644).

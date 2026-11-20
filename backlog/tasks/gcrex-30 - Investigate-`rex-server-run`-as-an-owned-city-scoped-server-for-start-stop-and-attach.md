@@ -43,4 +43,6 @@ Decision D3 (docs/plans/native-rex-provider.md:83, docs/REX-CONTRACT.md section 
 
 <!-- SECTION:NOTES:BEGIN -->
 Relevant Rex CLI facts captured while filing: `rex server run` supports --listen, --extra-listen, --socket-mode (default 0600), --state-dir, --config, --restore (default true), --exit-empty, --max-sessions/-blocks/-windows/-panes, --tailscale* and --block-dir. Ctrl+C/SIGTERM/`rex server stop` save sessions and stop; SIGHUP saves only when the server owns a terminal. `rex server start|stop|status|logs|install` manage a persistent/detached server. The CLI child commands take -S/--server and --autostart (default true); the Rex skill documentation explicitly says not to set REX_SERVER for the app, so a city-owned server must be addressed explicitly per invocation.
+
+GCREX-65 (2026-11-20): The earlier guarded session destroy was superseded. `Stop` leaves the canonical `gc:<city>` session in place even when empty, and the next `Start` reuses it. A city-owned server (this task) would need its own session lifecycle design, including how `--exit-empty` would work. See `docs/REX-CONTRACT.md` §11 D3 and §12.
 <!-- SECTION:NOTES:END -->
