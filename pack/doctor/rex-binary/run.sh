@@ -100,7 +100,7 @@ if [ -z "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not installed"
   provider_detail="\`$command_name\` is not on PATH"
-  remediation="Install it with \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@latest\`, then put \$(go env GOBIN) on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too."
+  remediation="Install it with \`gc doctor --fix\` (builds the pack's module, stamped with version $declared_version), then put \$(go env GOBIN) on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too. Without a Go toolchain: \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@v$declared_version\`."
 elif [ ! -x "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not executable"
@@ -132,7 +132,7 @@ else
         provider_status=error
         provider_message="the rex runtime provider version does not match the pack"
         provider_detail="provider: $provider_path reports version $reported_version, but the pack declares $declared_version"
-        remediation="Install the provider that matches pack version $declared_version: \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@v$normalized_declared\`, or build from the pack revision with -ldflags \"-X main.buildVersion=$declared_version\". Then put \$(go env GOBIN) on PATH."
+        remediation="Install the provider that matches pack version $declared_version with \`gc doctor --fix\` (builds the pack's commit, stamped with version $declared_version), or \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@v$normalized_declared\`. Then put \$(go env GOBIN) on PATH."
       fi
     fi
   else
