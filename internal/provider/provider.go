@@ -570,10 +570,10 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			return startResult{}, fmt.Errorf("work_dir %q is not an existing directory after pre_start", cfg.WorkDir)
 		}
 	}
-	// gc's managed-file preserve predicate can keep an existing current hook,
-	// so the controller may never write the rex pack's per-provider override.
+	// gc's managed-file preserve predicate can keep an existing current file,
+	// so the controller may never write a city-configured pack overlay.
 	// Write the per-provider subtree here after pre_start so the override lands
-	// even when the workdir already holds the managed v9 hook.
+	// even when the workdir already holds that managed file.
 	if err := stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, cfg.Env["GC_PROVIDER"]); err != nil {
 		return startResult{}, err
 	}

@@ -3,15 +3,15 @@ package provider
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// TestStagePackOverlaysReplacesManagedHook proves the provider stages the real
-// rex pack per-provider Pi overlay over a workdir that already holds a managed
-// v9 hook. gc's preserve predicate would keep that current managed file, so
-// the provider's writer is what makes the claim guard reach the session.
-func TestStagePackOverlaysReplacesManagedHook(t *testing.T) {
+// TestStagePackOverlaysStagesConfiguredSubtree proves the provider stages a
+// pack's per-provider subtree over a workdir that already holds a managed
+// file: gc's managed-file preserve predicate keeps that existing file, so the
+// provider's writer is what makes a city-configured pack_overlay_dirs override
+// reach the session. The fixture is synthetic; the pack ships no overlay.
+func TestStagePackOverlaysStagesConfiguredSubtree(t *testing.T) {
 	workDir := t.TempDir()
 	hookPath := filepath.Join(workDir, ".pi", "extensions", "gc-hooks.js")
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
@@ -22,10 +22,12 @@ func TestStagePackOverlaysReplacesManagedHook(t *testing.T) {
 		t.Fatalf("write managed v9 hook: %v", err)
 	}
 
-	packOverlay, err := filepath.Abs("../../pack/overlay")
-	if err != nil {
-		t.Fatalf("resolve pack overlay: %v", err)
-	}
+	packOverlay := t.TempDir()
+	override := "// synthetic pack override\nconst GC_PI_HOOK_VERSION = 100;\n"
+	writeOverlayFixture(t, packOverlay, filepath.Join(perProviderDir, "pi", ".pi", "extensions", "gc-hooks.js"), override)
+	writeOverlayFixture(t, packOverlay, filepath.Join(perProviderDir, "other", ".other", "settings.json"), "other provider")
+	writeOverlayFixture(t, packOverlay, ".pi/extensions/universal.js", "universal")
+
 	if err := stagePackOverlays(workDir, []string{packOverlay}, "pi"); err != nil {
 		t.Fatalf("stage pack overlays: %v", err)
 	}
@@ -34,11 +36,23 @@ func TestStagePackOverlaysReplacesManagedHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read staged hook: %v", err)
 	}
-	text := string(got)
-	if !strings.Contains(text, "const GC_PI_HOOK_VERSION = 100;") {
-		t.Fatalf("managed v9 hook was not replaced by the rex v100 override:\n%s", text)
+	if string(got) != override {
+		t.Fatalf("managed hook was not replaced by the configured override:\n%s", got)
 	}
-	if !strings.Contains(text, "currentClaimID") {
-		t.Fatalf("staged hook is missing the claim guard:\n%s", text)
+	for _, rel := range []string{".pi/extensions/universal.js", ".other/settings.json"} {
+		if _, err := os.Stat(filepath.Join(workDir, rel)); !os.IsNotExist(err) {
+			t.Fatalf("%s was staged; only the per-provider/pi subtree may land", rel)
+		}
+	}
+}
+
+func writeOverlayFixture(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
