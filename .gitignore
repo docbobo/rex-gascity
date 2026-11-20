@@ -18,3 +18,4 @@ bin/
 
 # Per-bead worktrees (gc staged workflow)
 /worktrees/
+plans/**/review.md
