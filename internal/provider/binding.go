@@ -505,10 +505,18 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 		_ = b.store.Write(bd.Name, bd)
 		return bd, true, nil
 	}
+	// Most specific first, so scan order never decides which pane a tab
+	// yields: a suffix-labelled pane names this session outright, while a
+	// bare label only belongs to it through the hint/record.
 	for _, tab := range tabs {
 		for _, w := range view.Windows {
 			if w.Label != tab {
 				continue
+			}
+			for _, blk := range w.Blocks {
+				if suffixMatch(blk.Label) {
+					return accept(tab, w, blk)
+				}
 			}
 			for _, blk := range w.Blocks {
 				if paneMatches(blk.Label) {

@@ -529,3 +529,59 @@ func TestBareLabelPaneFoundWithAttribution(t *testing.T) {
 		}
 	}
 }
+
+// TestTabScopedScanPrefersSuffixLabel pins the precedence inside one tab: a
+// suffix-labelled pane names the session outright, while a bare label only
+// belongs to it through the hint/record. The suffix-labelled pane must win
+// whichever order Rex lists the panes in.
+func TestTabScopedScanPrefersSuffixLabel(t *testing.T) {
+	ctx := context.Background()
+	const (
+		name     = "rex-gascity--worker"
+		bare     = rex.BlockID("block:worker")
+		suffixed = rex.BlockID("block:agent (rex-gascity--worker)")
+	)
+	barePane := rex.Block{ID: bare, Label: "worker"}
+	suffixPane := rex.Block{ID: suffixed, Label: "agent (rex-gascity--worker)"}
+	newFake := func(blocks ...rex.Block) *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:rig",
+			Label:  "Rig: rex-gascity",
+			Blocks: blocks,
+		}}}
+		return f
+	}
+
+	for _, tt := range []struct {
+		order  string
+		blocks []rex.Block
+	}{
+		{"bare first", []rex.Block{barePane, suffixPane}},
+		{"suffix first", []rex.Block{suffixPane, barePane}},
+	} {
+		t.Run(tt.order, func(t *testing.T) {
+			fake := newFake(tt.blocks...)
+			if err := New("acme", fake).Stop(ctx, name); err != nil {
+				t.Fatalf("Stop(%s): %v", name, err)
+			}
+			if slices.Contains(fake.ClosedBlocks, bare) {
+				t.Fatalf("Stop closed the bare-label pane %s; the suffix-labelled pane names the session", bare)
+			}
+			if !slices.Contains(fake.ClosedBlocks, suffixed) {
+				t.Fatalf("Stop did not close %s; closed %v", suffixed, fake.ClosedBlocks)
+			}
+		})
+	}
+
+	t.Run("bare alone still resolves", func(t *testing.T) {
+		fake := newFake(barePane)
+		if err := New("acme", fake).Stop(ctx, name); err != nil {
+			t.Fatalf("Stop(%s): %v", name, err)
+		}
+		if !slices.Contains(fake.ClosedBlocks, bare) {
+			t.Fatalf("Stop did not close the bare-label pane %s; closed %v", bare, fake.ClosedBlocks)
+		}
+	})
+}
