@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -392,8 +393,8 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if running, err := p.IsRunning(ctx, name); err != nil || running {
 		t.Errorf("IsRunning after Stop = %v, %v; want false, nil", running, err)
 	}
-	if out, err := p.Peek(ctx, name); err != nil || out != "" {
-		t.Errorf("Peek after Stop = %q, %v; want empty, nil", out, err)
+	if out, err := p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
+		t.Errorf("Peek after Stop = %q, %v; want empty, ErrNoScreen", out, err)
 	}
 	e2eExpectSessionSurvivesStop(ctx, t, b1.SessionID, city)
 }
@@ -529,8 +530,8 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	if out, err := p.Peek(ctx, name); err != nil || out != "" {
-		t.Errorf("Peek after exit = %q, %v; want empty, nil", out, err)
+	if out, err := p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
+		t.Errorf("Peek after exit = %q, %v; want empty, ErrNoScreen", out, err)
 	}
 
 	// Self-exit with no Stop leaves the empty session shell: no pane-exit

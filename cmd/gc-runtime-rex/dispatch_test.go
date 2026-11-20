@@ -221,10 +221,51 @@ func TestPeekLines(t *testing.T) {
 		t.Errorf("peek = %q", got)
 	}
 	assertFailure(t, h.run("", "peek", dog, "many"), exitFail)
-	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
-	if got := h.must("", "peek", dog, "2").stdout; got != "" {
-		t.Errorf("peek after pane vanished = %q, want empty", got)
+}
+
+// assertNoScreen pins herdr-core's peek failure: exit 66, empty stdout, and
+// `no screen for '<name>'` on stderr.
+func assertNoScreen(t *testing.T, r result, name string) {
+	t.Helper()
+	assertFailure(t, r, exitNoScreen)
+	if want := fmt.Sprintf("no screen for '%s'", name); !strings.Contains(r.stderr, want) {
+		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
+}
+
+func TestPeekNoScreenWhenNoRecord(t *testing.T) {
+	h, _ := newHarness(t)
+	assertNoScreen(t, h.run("", "peek", dog), dog)
+	assertNoScreen(t, h.run("", "peek", dog, "5"), dog)
+}
+
+func TestPeekNoScreenWhenPaneVanished(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrNotFound)
+	assertNoScreen(t, h.run("", "peek", dog, "2"), dog)
+}
+
+func TestPeekNoScreenWhenResolveNotFound(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ListSessionsErr = fmt.Errorf("rex session.list: %w", rex.ErrNotFound)
+	assertNoScreen(t, h.run("", "peek", dog), dog)
+}
+
+func TestPeekNoScreenWhenRexUnavailable(t *testing.T) {
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.FormatErr = fmt.Errorf("rex block.method: %w", rex.ErrUnavailable)
+	assertNoScreen(t, h.run("", "peek", dog), dog)
+
+	fake.FormatErr = nil
+	fake.SessionViewErr = fmt.Errorf("rex session.view: %w", rex.ErrUnavailable)
+	assertNoScreen(t, h.run("", "peek", dog), dog)
+
+	// An unrelated failure is still a plain exit 1, not "no screen".
+	fake.SessionViewErr = nil
+	fake.FormatErr = errors.New("boom")
+	assertFailure(t, h.run("", "peek", dog), exitFail)
 }
 
 func TestListRunning(t *testing.T) {
@@ -252,6 +293,18 @@ func TestListRunningUnreachableRexIsEmptyExitZero(t *testing.T) {
 	r := h.run("", "list-running")
 	if r.code != exitOK || r.stdout != "" {
 		t.Errorf("list-running with Rex unreachable = exit %d, stdout %q; want exit 0, empty", r.code, r.stdout)
+	}
+}
+
+// TestStopUnreachableRexUnknownNameExitsZero pins GCREX-51 REQ-001 through the
+// real dispatcher: Rex is down and the name was never started, so stop is a
+// no-op success with empty stdout and stderr.
+func TestStopUnreachableRexUnknownNameExitsZero(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ListSessionsErr = rex.ErrUnavailable
+	r := h.run("", "stop", dog)
+	if r.code != exitOK || r.stdout != "" || r.stderr != "" {
+		t.Errorf("stop with Rex unreachable, no binding = exit %d, stdout %q, stderr %q; want exit 0, empty", r.code, r.stdout, r.stderr)
 	}
 }
 
@@ -872,10 +925,8 @@ func TestLookupResolvesPinnedBindingFromUnpinnedCaller(t *testing.T) {
 		t.Errorf("set-meta/get-meta round trip = %q, want true", got)
 	}
 
-	// AC #5: a genuinely absent session is still empty output / false, exit 0.
-	if r := h.must("", "peek", "Indigo--absent"); r.stdout != "" {
-		t.Errorf("peek(absent) = %q, want empty", r.stdout)
-	}
+	// AC #5: a genuinely absent session has no screen (exit 66) and is not running.
+	assertNoScreen(t, h.run("", "peek", "Indigo--absent"), "Indigo--absent")
 	if got := strings.TrimSpace(h.must("", "is-running", "Indigo--absent").stdout); got != "false" {
 		t.Errorf("is-running(absent) = %q, want false", got)
 	}

@@ -292,6 +292,9 @@ func (e *exitError) Unwrap() error { return e.err }
 // at pack 0f07496): `fresh_only` refused a name any record holds.
 const exitFreshCollision = 73
 
+// exitNoScreen is herdr-core's NO_SCREEN code: `peek` found no screen to read.
+const exitNoScreen = 66
+
 // writeInputOutcome answers an RPP input-outcome: one
 // {"outcome":...,"detail":...} line on stdout and "<outcome>: <detail>" on
 // stderr, with exit 80. gc 1.5.1 reads exit 80 as a plain error, but a caller
@@ -502,6 +505,9 @@ func opPeek(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 		lines = n
 	}
 	text, err := p.PeekLines(ctx, args[0], lines)
+	if errors.Is(err, provider.ErrNoScreen) {
+		return &exitError{code: exitNoScreen, err: fmt.Errorf("no screen for '%s'", args[0])}
+	}
 	if err != nil {
 		return err
 	}
