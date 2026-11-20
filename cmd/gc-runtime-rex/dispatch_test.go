@@ -128,6 +128,7 @@ func TestObserveV1HandshakeGated(t *testing.T) {
 // and the start env's identity for a started box (RPP-OBSERVE-003), a
 // truthful inventory, and gone for an object that names no box.
 func TestObserveInventoryKillObjectOps(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, _ := newHarness(t)
 
 	type object struct {
@@ -181,12 +182,18 @@ func TestObserveInventoryKillObjectOps(t *testing.T) {
 }
 
 func TestUnknownAndUnimplementedOps(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "")
 	h, _ := newHarness(t)
+	// The observe.v1 ops are declared only behind the switch: with it off
+	// they are as unknown as any op this dispatcher does not have.
 	for _, args := range [][]string{
 		{"nosuchop", dog},
 		{"exec", dog},
 		{"provision", dog},
 		{"watch-startup", dog},
+		{"observe", dog},
+		{"inventory"},
+		{"kill-object", dog},
 		{},
 	} {
 		r := h.run("echo hi", args...)

@@ -56,7 +56,7 @@ const (
 // error there — the same answer it gives an undeclared pack.
 func handshake() string {
 	const base = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
-	if os.Getenv("GCREX_OBSERVE_V1") != "1" {
+	if !observeV1Enabled() {
 		return base
 	}
 	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1"]}`
@@ -214,6 +214,19 @@ var ops = map[string]opSpec{
 	"kill-object":       {1, "kill-object <name>", opKillObject},
 }
 
+// observeV1Ops are the ops the observe.v1 token declares. The token is the
+// only authorization: with the switch off they are unknown (RPP v0 exit 2),
+// so a caller never gets an answer from an undeclared capability.
+var observeV1Ops = map[string]bool{
+	"observe":     true,
+	"inventory":   true,
+	"kill-object": true,
+}
+
+// observeV1Enabled gates observe.v1, both its handshake token and its ops, so
+// the two cannot disagree until GCREX-111 retires the switch.
+func observeV1Enabled() bool { return os.Getenv("GCREX_OBSERVE_V1") == "1" }
+
 // inputOutcomeOps are the four driving ops whose failures are typed by
 // input-outcome (gc internal/runtime/exec/outcome.go, inputOutcomeOp).
 var inputOutcomeOps = map[string]bool{
@@ -257,6 +270,7 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		return exitOK
 	}
 	spec, known := ops[op]
+	known = known && (!observeV1Ops[op] || observeV1Enabled())
 	if !known {
 		if unimplemented[op] {
 			fmt.Fprintf(stderr, "gc-runtime-rex: operation %q not implemented\n", op)
