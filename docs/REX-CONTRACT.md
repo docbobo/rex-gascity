@@ -230,12 +230,16 @@ answers `80` `gone` for a missing or dead pane, `unavailable` when the Rex
 server is unreachable, and `not_sent` for another pre-send failure (GCREX-44);
 `clear-scrollback` answers `80` `gone` for a missing or dead pane (GCREX-57);
 and `nudge` answers `80` `rejected` for non-UTF-8 stdin, `pending_interaction`
-for a blocked pane, `busy` for a working pane, `unavailable` when the server is
-unreachable, and `not_sent` for a write or submit that did not land (GCREX-45).
+for a blocked pane, `busy` for a working pane or a pool-claim refusal,
+`unavailable` when the server is unreachable, and `not_sent` for a write or
+submit that did not land (GCREX-45, GCREX-69).
 A delivered interrupt stays exit `0`; a nudge that reached the pane but whose
 turn start was not observed exits `0` with one `delivered_unobserved` line; and
 an interrupt send failure that may have written the request stays exit `1`
-(outcome unknown). `nudge`'s live-claim guard stays a plain exit `1`. The key
+(outcome unknown). `nudge`'s live-claim guard answers `80` `busy` (GCREX-69);
+at gc `544beb8d6` (#9137, post-`v1.5.1`) the stalled-claim backstop refunds
+the reservation as a busy deferral rather than spending one of
+`idleClaimNudgeMaxAttempts`. The key
 grammar and the exit-80 words follow `docs/provider-herdr-method-io.md`
 §send-keys, §interrupt and §nudge.
 
