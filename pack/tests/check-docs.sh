@@ -1,6 +1,6 @@
 #!/bin/sh
 # Guard for the operator docs: run every command in a sh fence of
-# pack/README.md and docs/rex-binary-install.md against a scratch city.
+# docs/rex-runtime-pack.md and docs/rex-binary-install.md against a scratch city.
 #
 # The docs are the input, not the fixture: the fences are extracted and run in
 # order. A command that cannot run is a docs bug, so this fails on it.
@@ -15,7 +15,7 @@
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-readme=$repo/pack/README.md
+readme=$repo/docs/rex-runtime-pack.md
 guide=$repo/docs/rex-binary-install.md
 pack=$repo/pack
 pack_url=https://github.com/docbobo/rex-gascity/tree/main/pack
@@ -25,7 +25,7 @@ fail() {
   exit 1
 }
 
-[ -f "$readme" ] || fail "pack/README.md does not exist"
+[ -f "$readme" ] || fail "docs/rex-runtime-pack.md does not exist"
 [ -f "$guide" ] || fail "docs/rex-binary-install.md does not exist"
 command -v gc >/dev/null 2>&1 || fail "gc is not on PATH"
 command -v git >/dev/null 2>&1 || fail "git is not on PATH"

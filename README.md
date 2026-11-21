@@ -222,6 +222,7 @@ They create and close real sessions and panes on the configured server. Point th
 
 ## Documentation
 
+- [`docs/rex-runtime-pack.md`](docs/rex-runtime-pack.md) — operator quickstart for the runtime pack: import, install, auth, upgrades, release flow.
 - [`docs/rex-provider.md`](docs/rex-provider.md) — provider reference: install, pack and city configuration, identity mapping, state and environment.
 - [`docs/REX-CONTRACT.md`](docs/REX-CONTRACT.md) — the pinned Rex CLI/API surface and the RPP v0 baseline.
 - [`docs/plans/native-rex-provider.md`](docs/plans/native-rex-provider.md) — design and phase plan.
