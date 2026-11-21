@@ -32,6 +32,8 @@ if [ -z "$binary" ]; then
   echo "check-conformance: skip: gc-runtime-rex is not on PATH; pass --binary"
   exit 0
 fi
+# An absolute path keeps working after the subshell below changes into $tmp.
+binary=$(CDPATH= cd -- "$(dirname -- "$binary")" && pwd)/$(basename -- "$binary")
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/rexcheck.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
