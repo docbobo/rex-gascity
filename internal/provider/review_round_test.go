@@ -20,14 +20,14 @@ func TestKillObjectLiveWhenDeadPaneMovedToTheActiveWindow(t *testing.T) {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
-		rex.BlockID(ans.Object.ID): {LastExit: &rex.ExitStatus{ExitCode: 0}},
+		blockOf(t, p, name): {LastExit: &rex.ExitStatus{ExitCode: 0}},
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "app", Name: "Rex"}}
 	// The human dragged the pane into a new window and switched to it; the
 	// binding still records the window the pane was started in.
 	fake.View.Windows = []rex.Window{{
 		ID:     "window:moved",
-		Blocks: []rex.Block{{ID: rex.BlockID(ans.Object.ID), Owner: "c1"}},
+		Blocks: []rex.Block{{ID: blockOf(t, p, name), Owner: "c1"}},
 	}}
 	fake.View.ActiveWindowID = "window:moved"
 
@@ -54,7 +54,7 @@ func TestKillObjectGoneWhenTheCloseRacesAnotherClient(t *testing.T) {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
-		rex.BlockID(ans.Object.ID): {LastExit: &rex.ExitStatus{ExitCode: 0}},
+		blockOf(t, p, name): {LastExit: &rex.ExitStatus{ExitCode: 0}},
 	}
 	fake.CloseBlockErr = rex.ErrNotFound
 
