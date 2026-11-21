@@ -44,7 +44,43 @@ Add the pack to the city. A schema-2 city uses a pack import:
 gc import add /path/to/rex-gascity/pack --name rex --city /path/to/my-city
 ```
 
-which writes an `[imports.rex]` entry. A simple city without its own `pack.toml` can use a workspace include instead, with the path relative to `city.toml`:
+which writes an `[imports.rex]` entry.
+
+### Import from GitHub by tag
+
+The pack is the `pack/` subdirectory, so the source is a tree URL:
+
+```sh
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex \
+  --version 0.2.0 --city /path/to/my-city
+```
+
+- `--version` takes the bare semver (`0.2.0`), not the tag name. gc lists the
+  remote tags with `git ls-remote` and takes the highest tag that matches the
+  constraint. `--version v0.2.0` matches no tag and fails.
+- Push the tag before the import. A version import needs a pushed tag,
+  `v<version>`. Without one, gc reports that no tag matches the constraint.
+- `packs.lock` pins the tag commit, so the import is reproducible. A private
+  repository needs git credentials for `git ls-remote` and the fetch.
+- `sha:<commit>` pins one commit instead. It works only when that commit's
+  `[pack] version` has a published release. The install picks the release
+  `v<[pack] version>`, so a `sha:` import of an unreleased commit fails at
+  install and names the tag. See [`docs/rex-binary-install.md`](docs/rex-binary-install.md).
+
+Then install the pack and the provider binary:
+
+```sh
+gc import install --city /path/to/my-city
+gc doctor --check rex:rex-binary --city /path/to/my-city --fix
+```
+
+To release: push the tag `v<version>`. The build workflow attaches the four
+prebuilt binaries and `checksums.txt` to the draft release. The release script
+publishes it. Only the tag matters to `gc import add`. The release assets
+matter at install time, when `pack/install.sh` fetches the asset for
+`v<[pack] version>`.
+
+A simple city without its own `pack.toml` can use a workspace include instead, with the path relative to `city.toml`:
 
 ```toml
 [workspace]

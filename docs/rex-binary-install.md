@@ -94,6 +94,10 @@ gh fallback after a curl 404, and the checksum abort.
 `pack/tests/check-installer.sh` covers the installer seam end to end. It
 includes the arch mapping, the install directory, the PATH shadow warning,
 the private repository fallback, and the `gc doctor --fix` path.
+`pack/tests/check-import.sh` covers the import flow against a local bare
+repository and a fake `curl`. It imports by tag and imports the released commit
+by `sha:`. It also asserts that a `sha:` import of a commit without a release
+fails at install and names the tag.
 
 ## Scope
 
