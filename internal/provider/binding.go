@@ -60,6 +60,10 @@ type Binding struct {
 	// no longer reports them, so the retry that herdr-core's stop allows
 	// reaps these instead of clearing the record blind. Empty when none.
 	Survivors []Survivor
+	// Attempt identifies the start call that wrote a provisional record. The
+	// provisional record (no BlockID) is writable only by that same start, so
+	// a stale survivor write cannot replace another launch's pending record.
+	Attempt string
 }
 
 // Survivor is one descendant a stop could not reap.
@@ -649,15 +653,24 @@ func (b *Binder) Record(binding Binding) error { return b.store.Write(binding.Na
 // RecordIfCurrent stores binding only when the record under its name still
 // describes the same incarnation. A start that replaced the binding leaves a
 // different record, and a stale survivor write must not overwrite it. A
-// provisional record has no block id yet and is not a replacement: the same
-// start's final record will replace it after the launch. It reports whether
-// the write happened.
+// provisional record has no block id yet and is not a replacement, but only
+// the launch attempt that wrote it may replace it: an empty block id alone
+// does not authorize the write, or a stale writer could take another launch's
+// pending record and that launch's own write would be refused. It reports
+// whether the write happened.
 func (b *Binder) RecordIfCurrent(binding Binding) (bool, error) {
 	current, ok, err := b.store.Read(binding.Name)
 	if err != nil {
 		return false, err
 	}
-	if !ok || (current.BlockID != "" && !binding.sameIncarnation(current)) {
+	if !ok {
+		return false, nil
+	}
+	if current.BlockID == "" {
+		if current.Attempt == "" || current.Attempt != binding.Attempt {
+			return false, nil
+		}
+	} else if !binding.sameIncarnation(current) {
 		return false, nil
 	}
 	return true, b.store.Write(binding.Name, binding)

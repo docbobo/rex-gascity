@@ -585,3 +585,42 @@ func TestRecordIfCurrentKeepsAReplacementBinding(t *testing.T) {
 		t.Fatalf("stored binding carries stale survivors: %v", got.Survivors)
 	}
 }
+
+// TestRecordIfCurrentKeepsAnotherLaunchesProvisionalBinding proves the
+// provisional exception belongs to the launch that wrote the record: a stale
+// survivor write from an earlier attempt cannot replace a newer start's
+// pending record, which would then reject that start's own write and leave its
+// surviving descendants with no record.
+func TestRecordIfCurrentKeepsAnotherLaunchesProvisionalBinding(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	provisional := indigoBinding()
+	provisional.BlockID = ""
+	provisional.Attempt = "attempt-new"
+	if err := store.Write(provisional.Name, provisional); err != nil {
+		t.Fatal(err)
+	}
+	stale := indigoBinding()
+	stale.Attempt = "attempt-old"
+	stale.Survivors = []Survivor{{PID: 4242, Name: "worker"}}
+	wrote, err := binder.RecordIfCurrent(stale)
+	if err != nil {
+		t.Fatalf("RecordIfCurrent: %v", err)
+	}
+	if wrote {
+		t.Fatal("RecordIfCurrent wrote a stale survivor record over another launch's provisional binding")
+	}
+	got, ok := store.Load(provisional.Name)
+	if !ok || got.Attempt != "attempt-new" || got.BlockID != "" {
+		t.Fatalf("stored binding = %+v, want the new launch's provisional record", got)
+	}
+	if len(got.Survivors) != 0 {
+		t.Fatalf("provisional binding carries stale survivors: %v", got.Survivors)
+	}
+	// The launch that wrote the provisional record still replaces it.
+	own := provisional
+	own.BlockID = "block:dog-2"
+	wrote, err = binder.RecordIfCurrent(own)
+	if err != nil || !wrote {
+		t.Fatalf("RecordIfCurrent for the provisional record's own launch = %v, %v; want true, nil", wrote, err)
+	}
+}

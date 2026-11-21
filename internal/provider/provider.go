@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -441,6 +442,10 @@ type startResult struct {
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
 	n := SessionName(name)
+	// One token per start call. The provisional record this start writes is
+	// writable only by this attempt, so a stale survivor write from another
+	// launch cannot take it, and the retry below reuses the same token.
+	attempt := rand.Text()
 	// Build the one launch plan up front: it projects pool routing for every
 	// later step and owns the Rex block layout. The launch label must come
 	// from the same projected env as the hint and the record, or pool
@@ -631,7 +636,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if err := p.seedStartIdentity(n, cfg.Env); err != nil {
 			return err
 		}
-		return p.recordProvisionalBinding(n, sid, "", cfg)
+		return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
 	}); err != nil {
 		return startResult{}, err
 	}
@@ -663,7 +668,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 					return err
 				}
 				if block != "" {
-					bd := p.newBinding(n, sid, w.ID, block, "split", cfg)
+					bd := p.newBinding(n, sid, w.ID, block, "split", attempt, cfg)
 					if err := p.binder.Record(bd); err != nil {
 						return p.discardLaunch(ctx, bd, err)
 					}
@@ -683,7 +688,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				return err
 			}
 			if block != "" {
-				bd := p.newBinding(n, sid, wid, block, "window", cfg)
+				bd := p.newBinding(n, sid, wid, block, "window", attempt, cfg)
 				if err := p.binder.Record(bd); err != nil {
 					return p.discardLaunch(ctx, bd, err)
 				}
@@ -699,7 +704,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// launch once more; a second miss is returned as is.
 		if sid, err = findOrCreate(); err == nil {
 			if err = p.withStateLock(ctx, func() error {
-				return p.recordProvisionalBinding(n, sid, "", cfg)
+				return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
 			}); err == nil {
 				err = launch()
 			}
@@ -756,7 +761,7 @@ func rectArea(r [4]float64) (float64, bool) {
 
 // newBinding builds the record for a new pane, started in the given mode
 // ("window" or "split").
-func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string, cfg Config) Binding {
+func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode, attempt string, cfg Config) Binding {
 	return Binding{
 		Name:           n,
 		SessionID:      sid,
@@ -771,6 +776,7 @@ func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
 		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
+		Attempt:        attempt,
 	}
 }
 

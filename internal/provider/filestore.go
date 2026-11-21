@@ -216,6 +216,7 @@ type bindingRecord struct {
 	WorkDir        string     `json:"work_dir,omitempty"`
 	ClaimSessionID string     `json:"claim_session_id,omitempty"`
 	Survivors      []Survivor `json:"survivors,omitempty"`
+	Attempt        string     `json:"attempt,omitempty"`
 }
 
 // bindingFromRecord converts a stored record to a Binding. The cast keeps the

@@ -76,8 +76,9 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 // launch. The block id is not known until NewWindow/NewSplit returns, so the
 // provisional record has no BlockID; it exists so get-meta can resolve the
 // runtime name and its rig-qualified aliases during the launch window. The
-// final record replaces it after the launch returns.
-func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, cfg Config) error {
+// final record replaces it after the launch returns. attempt names the one
+// start call that may replace it.
+func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, attempt string, cfg Config) error {
 	return p.binder.Record(Binding{
 		Name:           n,
 		SessionID:      sid,
@@ -90,5 +91,6 @@ func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wi
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
 		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
+		Attempt:        attempt,
 	})
 }
