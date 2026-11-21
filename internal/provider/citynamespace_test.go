@@ -548,19 +548,14 @@ func TestStopAliasTakesThePrimaryLock(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	locks, err := filepath.Glob(filepath.Join(base, "*", "locks", "*.lock"))
-	if err != nil || len(locks) == 0 {
-		t.Fatalf("locks = %v, %v; want the start's name lock", locks, err)
+	// Glob for the primary name's own lock: the tab and launch locks share
+	// the directory and must not be mistaken for it.
+	sum := sha256.Sum256([]byte("Indigo--dog-1"))
+	locks, err := filepath.Glob(filepath.Join(base, "*", "locks", hex.EncodeToString(sum[:])+".lock"))
+	if err != nil || len(locks) != 1 {
+		t.Fatalf("primary name lock = %v, %v; want one lock", locks, err)
 	}
-	var nameLock string
-	for _, l := range locks {
-		if !strings.HasPrefix(filepath.Base(l), "tab-") {
-			nameLock = l
-		}
-	}
-	if nameLock == "" {
-		t.Fatalf("locks = %v, want a name lock", locks)
-	}
+	nameLock := locks[0]
 	f, err := os.OpenFile(nameLock, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		t.Fatalf("open %s: %v", nameLock, err)
