@@ -429,16 +429,23 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 		return Binding{}, false, err
 	}
 	for _, bd := range stale {
-		// A survivor recorded while this resolve ran names a process whose
-		// pane is gone. Keep the record so the retry can still reap it.
-		if len(bd.Survivors) > 0 {
-			continue
-		}
 		if !ok || bd.Name != got.Name { // scan already rewrote got.Name
-			_ = b.store.Drop(bd.Name)
+			b.dropStaleIfUnchanged(bd)
 		}
 	}
 	return got, ok, nil
+}
+
+// dropStaleIfUnchanged removes the record under bd.Name only when it is still
+// the record bd read and it names no survivor. A stop may have recorded a
+// survivor, or a start replaced the record, while the resolve ran: that record
+// is the only name for a pid whose pane is gone, and it is not ours to drop.
+func (b *Binder) dropStaleIfUnchanged(bd Binding) {
+	cur, ok, err := b.store.Read(bd.Name)
+	if err != nil || !ok || len(cur.Survivors) > 0 || !bd.sameIncarnation(cur) {
+		return
+	}
+	_ = b.store.Drop(bd.Name)
 }
 
 // stillBound reports whether view still holds the binding's block under its

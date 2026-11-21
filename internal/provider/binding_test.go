@@ -640,3 +640,29 @@ func TestRecordIfCurrentKeepsAnotherLaunchesProvisionalBinding(t *testing.T) {
 		t.Fatalf("RecordIfCurrent for the provisional record's own launch = %v, %v; want true, nil", wrote, err)
 	}
 }
+
+func TestDropStaleIfUnchanged(t *testing.T) {
+	withSurvivor := indigoBinding()
+	withSurvivor.Survivors = []Survivor{{PID: 300}}
+	replaced := indigoBinding()
+	replaced.BlockID = "block:replaced"
+
+	for _, tc := range []struct {
+		name    string
+		current Binding
+		want    bool // true when the record is dropped
+	}{
+		{"unchanged", indigoBinding(), true},
+		{"survivor recorded after the read", withSurvivor, false},
+		{"replaced by another start", replaced, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, store, _ := newTestBinder(t)
+			store.Save(tc.current)
+			b.dropStaleIfUnchanged(indigoBinding()) // the snapshot the resolve read
+			if _, found := store.Load(tc.current.Name); found != !tc.want {
+				t.Fatalf("record found = %v, want dropped = %v", found, tc.want)
+			}
+		})
+	}
+}

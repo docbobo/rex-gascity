@@ -868,13 +868,18 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if err := p.reapSurvivors(ctx, stored, survivorProcs(stored.Survivors)); err != nil {
 			return err
 		}
-		// The survivors are gone, so the record can go with them. Resolve
-		// keeps a stale record that still names a survivor.
-		p.binder.Forget(n)
 		// Even with no pane, nothing the incarnation left must outlive its
 		// life: clear the whole meta sidecar and the activity record, not just
 		// the identity seed a failed or rolled-back start may have written.
-		return p.clearIncarnations(n, stored.Name)
+		// Forget comes after, so a failed cleanup keeps the alias route for the
+		// retry, as stopBinding does.
+		if err := p.clearIncarnations(n, stored.Name); err != nil {
+			return err
+		}
+		// The survivors are gone and the metadata is clear, so the record can
+		// go with them. Resolve keeps a stale record that still names one.
+		p.binder.Forget(n)
+		return nil
 	}
 	err = p.stopBinding(ctx, n, binding)
 	if errors.Is(err, errBlockGone) {
