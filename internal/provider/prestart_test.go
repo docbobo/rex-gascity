@@ -449,3 +449,25 @@ func TestPreStartCwdFallsBackWhenWorkDirMissing(t *testing.T) {
 		t.Errorf("pre_start cwd = %q, want %q", got, "/")
 	}
 }
+
+// TestPreStartWaitsForBackgroundChild pins the timing a hook that backgrounds
+// its work and exits relies on: the child holds the output pipe, so the hook
+// runs to completion and its work dir exists before the launch is checked.
+func TestPreStartWaitsForBackgroundChild(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "worktree")
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  work,
+		PreStart: []string{"(sleep 0.3; mkdir -p " + work + ") &"},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (the background child must finish before the check)", err)
+	}
+	if len(fake.CreatedWindows) == 0 {
+		t.Error("launch did not happen after a backgrounded pre_start")
+	}
+}

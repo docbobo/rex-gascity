@@ -67,4 +67,13 @@ if grep -qx 'failed: 0' "$bad_summary"; then
   fail "a failing provider was reported with failed: 0"
 fi
 
+# A relative TMPDIR must not leak into GC_EXEC_STATE_DIR.
+( cd "$tmp" && TMPDIR=. GITHUB_STEP_SUMMARY=$tmp/rel-summary.md \
+    "$here/conformance.sh" --binary "$binary" > "$tmp/rel-out" 2>&1 ) || {
+  cat "$tmp/rel-out" >&2
+  fail "conformance.sh failed with TMPDIR=."
+}
+grep -qx 'ok: true' "$tmp/rel-summary.md" ||
+  fail "conformance.sh did not pass with TMPDIR=."
+
 echo "check-conformance: OK"

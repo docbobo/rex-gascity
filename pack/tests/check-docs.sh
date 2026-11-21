@@ -29,15 +29,17 @@ fail() {
 [ -f "$guide" ] || fail "docs/rex-binary-install.md does not exist"
 command -v gc >/dev/null 2>&1 || fail "gc is not on PATH"
 command -v git >/dev/null 2>&1 || fail "git is not on PATH"
-gc_dir=$(dirname "$(command -v gc)")
-git_dir=$(dirname "$(command -v git)")
-tool_path="$gc_dir:$git_dir:/usr/bin:/bin:/usr/sbin:/sbin"
+# Only the gc and git binaries, never their directories: gc's directory may
+# hold the developer's gc-runtime-rex, which install.sh must not see.
+tool_path=/usr/bin:/bin:/usr/sbin:/sbin
 
 tmpdir=${TMPDIR:-/tmp}; tmpdir=${tmpdir%/}
 work=$(mktemp -d "$tmpdir/check-docs.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$work/tools" "$work/releases" "$work/tree"
+ln -s "$(command -v gc)" "$work/tools/gc"
+ln -s "$(command -v git)" "$work/tools/git"
 
 # --- fake tools -------------------------------------------------------------
 

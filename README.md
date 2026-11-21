@@ -74,11 +74,19 @@ gc import install --city /path/to/my-city
 gc doctor --check rex:rex-binary --city /path/to/my-city --fix
 ```
 
-To release: push the tag `v<version>`. The build workflow attaches the four
-prebuilt binaries and `checksums.txt` to the draft release. The release script
-publishes it. Only the tag matters to `gc import add`. The release assets
-matter at install time, when `pack/install.sh` fetches the asset for
-`v<[pack] version>`.
+To release:
+
+1. Push the tag `v<version>`. Pushing a tag starts no build.
+2. Create the draft release for that tag:
+   `gh release create v<version> --draft --title v<version>`.
+3. Dispatch the build workflow, which attaches the four prebuilt binaries and
+   `checksums.txt` to that draft:
+   `gh workflow run release.yml -f tag=v<version>`.
+4. Publish the draft once its assets are verified:
+   `gh release edit v<version> --draft=false`.
+
+Only the tag matters to `gc import add`. The release assets matter at install
+time, when `pack/install.sh` fetches the asset for `v<[pack] version>`.
 
 A simple city without its own `pack.toml` can use a workspace include instead, with the path relative to `city.toml`:
 

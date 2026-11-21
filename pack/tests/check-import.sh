@@ -132,19 +132,38 @@ chmod 755 "$work/tools/curl" "$work/tools/gh"
 # Minimal PATH: no gc-runtime-rex from the developer's machine may shadow the
 # installed one, and no real gh may reach the network.
 base_path="$work/tools"
-for tool in sh awk sed cut mkdir mktemp mv rm cp chmod dirname cat uname \
-            shasum sha256sum git; do
+# Link each tool into $work/tools instead of adding its directory. A
+# developer's ~/.local/bin holds rex and gc-runtime-rex beside each other, and
+# a directory on PATH would expose that provider to install.sh.
+tools='sh awk sed grep cut mkdir mktemp mv rm cp chmod dirname cat uname shasum sha256sum git'
+link_tools() {
+  for tool in $tools; do
+    resolved=$(command -v "$tool" 2>/dev/null) || continue
+    ln -sf "$resolved" "$work/tools/$tool"
+  done
+}
+
+# Regression: the search runs with a directory that holds a provider beside
+# the tools, as a developer's ~/.local/bin does. That provider must stay off
+# the case PATH and must survive install.sh unchanged.
+dev_tools=$work/dev-tools
+mkdir -p "$dev_tools"
+for tool in $tools rex; do
   resolved=$(command -v "$tool" 2>/dev/null) || continue
-  dir=${resolved%/*}
-  case ":$base_path:" in
-    *":$dir:"*) ;;
-    *) base_path="$base_path:$dir" ;;
-  esac
+  ln -sf "$resolved" "$dev_tools/$tool"
 done
-# The doctor check also requires the rex CLI. Add it when present, so the
+printf '#!/bin/sh
+echo developer-provider
+' > "$dev_tools/gc-runtime-rex"
+chmod 755 "$dev_tools/gc-runtime-rex"
+( PATH=$dev_tools:$PATH; export PATH; link_tools )
+leaked=$(PATH=$base_path command -v gc-runtime-rex 2>/dev/null || true)
+[ -z "$leaked" ] || fail "case PATH exposes a provider: $leaked"
+
+# The doctor check also requires the rex CLI. Link it when present, so the
 # doctor assertion runs here as well.
 rex_bin=$(command -v rex 2>/dev/null || true)
-[ -n "$rex_bin" ] && base_path="$base_path:${rex_bin%/*}"
+[ -n "$rex_bin" ] && ln -sf "$rex_bin" "$work/tools/rex"
 
 # new_city <name>: a scratch city plus its own HOME and GC_HOME. The provider
 # install destination is $HOME/.local/bin, so each case gets a clean one.
@@ -211,6 +230,8 @@ run_gc import install --city "$work/city-tag" >/dev/null ||
   fail "case A: gc import install failed"
 install_provider || fail "case A: install.sh failed: $(cat "$home/install.out")"
 assert_provider_version "case A"
+grep -qx "echo developer-provider" "$dev_tools/gc-runtime-rex" ||
+  fail "case A: install.sh overwrote the developer's provider"
 run_gc import check --city "$work/city-tag" >/dev/null ||
   fail "case A: gc import check failed"
 

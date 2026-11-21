@@ -43,7 +43,9 @@ fi
 command -v "$gc" >/dev/null 2>&1 || { echo "conformance: gc is not on PATH (set GC_BIN)" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "conformance: python3 is required to read the JSON report" >&2; exit 2; }
 
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/rexconf.XXXXXX")
+# An absolute scratch root: with TMPDIR=. mktemp prints a relative path, and
+# gc rejects a relative GC_EXEC_STATE_DIR.
+scratch=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/rexconf.XXXXXX")" && pwd -P)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 city=$pack/../testdata/city

@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -1099,24 +1101,70 @@ func runPreStart(ctx context.Context, command, workDir string, env []string) err
 	cmd.Dir = preStartCwd(workDir)
 	cmd.Env = env
 	// Run the hook in its own process group so a cancel kills the whole
-	// group. Killing only the shell leaves a child (e.g. sleep) holding the
-	// stdout pipe open, and CombinedOutput blocks until that child exits.
+	// group: killing only the shell leaves a child (e.g. sleep) holding the
+	// output pipe open.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 200 * time.Millisecond
-	out, err := cmd.CombinedOutput()
+
+	var out lockedBuffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		// A live ctx keeps the wait open, so a hook that backgrounds its work
+		// and exits still runs until that work closes the pipe. Only a
+		// cancelled hook is bounded, so a child that escaped the process group
+		// cannot hold the start past the hook deadline.
+		select {
+		case err = <-done:
+		case <-time.After(preStartCancelGrace):
+			err = ctx.Err()
+		}
+	}
 	if err != nil {
 		// A cancelled or timed-out ctx means the command did not fail on its
 		// own; surface that so the caller can name the timeout or cancellation.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = ctxErr
 		}
-		if len(out) > 0 {
-			return fmt.Errorf("%s: %w\n%s", command, err, out)
+		if got := out.String(); got != "" {
+			return fmt.Errorf("%s: %w\n%s", command, err, got)
 		}
 		return fmt.Errorf("%s: %w", command, err)
 	}
 	return nil
+}
+
+// preStartCancelGrace bounds the pipe wait after a pre_start hook's context
+// ends. The group kill normally closes the pipes at once; the grace covers a
+// child that left the process group.
+const preStartCancelGrace = 200 * time.Millisecond
+
+// lockedBuffer collects a command's output while a copy goroutine may still
+// write into it after runPreStart stops waiting.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // runPreStartWithTimeout runs one pre_start hook under a per-hook timeout. A
