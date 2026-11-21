@@ -472,17 +472,6 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 		// killed agent to come back to, and gc reaps it with corpse.
 		return "changed", nil
 	}
-	if req.Mode == "zombie" {
-		dead, err := p.deadAgent(ctx, bd, req.AgentPID)
-		if err != nil {
-			return "", err
-		}
-		if !dead {
-			// Not provably dead: a killed box whose agent came back would be
-			// gc's zombie reaped alive, so answer changed and kill nothing.
-			return "changed", nil
-		}
-	}
 	attached, err := p.attached(ctx, bd)
 	if err != nil {
 		// An unreadable attachment is not proof nobody is watching.
@@ -495,6 +484,21 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 			return "changed", nil
 		}
 		return "live", nil
+	}
+	if req.Mode == "zombie" {
+		// The liveness answer comes after the attachment read, so a shell that
+		// started a matching agent meanwhile is seen and answers changed, not
+		// reaped by the close below. The window left is the one between this
+		// snapshot and the close.
+		dead, err := p.deadAgent(ctx, bd, req.AgentPID)
+		if err != nil {
+			return "", err
+		}
+		if !dead {
+			// Not provably dead: a killed box whose agent came back would be
+			// gc's zombie reaped alive, so answer changed and kill nothing.
+			return "changed", nil
+		}
 	}
 	// Close exactly the object that was re-checked, never by name: a fresh
 	// resolve could close a pane that took the name's labels after this one
