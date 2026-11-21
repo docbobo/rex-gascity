@@ -2,6 +2,8 @@ package provider_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -571,7 +573,64 @@ func TestStopAliasTakesThePrimaryLock(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if err := p.Stop(ctx, "dog"); err == nil {
-		t.Fatal("Stop(alias) = nil while the primary lock is held, want it to wait for that lock")
+	if err := p.Stop(ctx, "dog"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop(alias) = %v while the primary lock is held, want context.DeadlineExceeded", err)
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("ctx.Err() = %v, want context.DeadlineExceeded", ctx.Err())
+	}
+}
+
+// TestStopAliasLocksTheRecordItRetires proves the alias stop locks the record
+// ResolveFresh selects, not the first stored candidate. The stale record sorts
+// first, so an unmoved stop would lock the stale name and retire the live
+// record under no lock of its own. With the live record's name lock held
+// elsewhere, the alias stop must wait for it.
+func TestStopAliasLocksTheRecordItRetires(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("GC_REX_STATE_DIR", base)
+	t.Setenv("GC_CITY_PATH", "/a/b/acme")
+	t.Setenv("GC_CITY", "")
+	fake := faketest.New()
+	ns, err := provider.NewNamespace([]string{"acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := provider.New("acme", fake, provider.WithNamespace(ns))
+	ctx := context.Background()
+	for _, name := range []string{"Indigo--dog-1", "Indigo--dog-2"} {
+		if err := p.Start(ctx, name, provider.Config{
+			Argv: []string{"sleep", "300"},
+			Env:  map[string]string{"GC_ALIAS": "dog"},
+		}); err != nil {
+			t.Fatalf("Start(%s): %v", name, err)
+		}
+	}
+	stale, ok := p.Binding("Indigo--dog-1")
+	if !ok {
+		t.Fatal("no binding for Indigo--dog-1")
+	}
+	if err := fake.CloseBlock(ctx, stale.SessionID, stale.BlockID); err != nil {
+		t.Fatalf("CloseBlock: %v", err)
+	}
+	sum := sha256.Sum256([]byte("Indigo--dog-2"))
+	locks, err := filepath.Glob(filepath.Join(base, "*", "locks", hex.EncodeToString(sum[:])+".lock"))
+	if err != nil || len(locks) != 1 {
+		t.Fatalf("live record's name lock = %v, %v; want one lock", locks, err)
+	}
+	f, err := os.OpenFile(locks[0], os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open %s: %v", locks[0], err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("flock %s: %v", locks[0], err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+
+	stopCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if err := p.Stop(stopCtx, "dog"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop(alias) = %v, want a wait on the live record's name lock", err)
 	}
 }

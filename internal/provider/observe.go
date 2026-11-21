@@ -297,8 +297,10 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 // a box gc has not polled yet reports its start time as the floor.
 //
 // A box whose liveness cannot be read is listed with no state and the answer
-// claims no completeness, because a backend fault proves nothing absent. So
-// does a pane under a city label that names a session no binding holds.
+// claims no completeness, because a backend fault proves nothing absent. A pane
+// under a city label that names no binding proves nothing about this store: it
+// may belong to another store of the same city, or to a stop still closing, and
+// neither can be told apart from here. So it does not affect the answer.
 //
 // ponytail: one Rex block-process call and, for a running box, one
 // program_status read per session, since Rex has no bulk liveness or status
@@ -358,15 +360,6 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 		listed[bd.Name] = true
 		sessions = append(sessions, e)
 	}
-	panes, err := p.cityPanes(ctx)
-	if err != nil {
-		complete = false
-	}
-	for name := range panes {
-		if !listed[name] {
-			complete = false
-		}
-	}
 	return InventoryAnswer{Complete: complete, Sessions: sessions}, nil
 }
 
@@ -389,7 +382,9 @@ func (p *Provider) inventoryActivity(ctx context.Context, b Binding) string {
 		at = laterOf(at, laterOf(rec.At, rec.InputAt))
 	}
 	if statusAt, ok, err := p.statusActivity(ctx, b); err == nil && ok {
-		at = laterOf(at, statusAt)
+		// The status answer already carries the input floor, and GetLastActivity
+		// returns it as is; the store's stamp must not make inventory newer.
+		at = statusAt
 	}
 	if at.IsZero() {
 		// An adopted pane has no stored start time; now is the only floor that
@@ -397,61 +392,6 @@ func (p *Provider) inventoryActivity(ctx context.Context, b Binding) string {
 		at = time.Now().UTC()
 	}
 	return at.UTC().Format(time.RFC3339Nano)
-}
-
-// cityPanes returns the session names this city's panes name in their Rex
-// labels, so Inventory can tell a pane no binding lists from the boxes it
-// enumerates. A label without the "<agent> (<name>)" suffix names no session
-// and is left to whatever else shares the city session (an operator's shell).
-func (p *Provider) cityPanes(ctx context.Context) (map[SessionName]bool, error) {
-	sessions, err := p.client.ListSessions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	names := map[SessionName]bool{}
-	for _, s := range sessions {
-		if !p.binder.acceptsLabel(s.Label) {
-			continue
-		}
-		view, err := p.client.SessionView(ctx, s.ID)
-		if errors.Is(err, rex.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		for _, w := range view.Windows {
-			for _, blk := range w.Blocks {
-				if n, ok := paneSessionName(blk.Label); ok {
-					names[n] = true
-				}
-			}
-		}
-	}
-	return names, nil
-}
-
-// paneSessionName recovers the session name a pane label names. A label
-// without a parenthesised suffix names no session. A short form carries a bead
-// id after paneLabelShortForm. So its name is Sanitize(agent)+"-"+bead id, as
-// identityMatch reads it. A shortened agent names no session.
-func paneSessionName(label string) (SessionName, bool) {
-	i := strings.LastIndex(label, " (")
-	if i < 0 || !strings.HasSuffix(label, ")") {
-		return "", false
-	}
-	agent, suffix := label[:i], strings.TrimSpace(label[i+2:len(label)-1])
-	if suffix == "" {
-		return "", false
-	}
-	if strings.HasPrefix(suffix, paneLabelShortForm) {
-		bead := suffix[len(paneLabelShortForm):]
-		if bead == "" || strings.HasSuffix(agent, paneLabelShortened) {
-			return "", false
-		}
-		return SessionName(sanitizeQualified(agent) + "-" + bead), true
-	}
-	return SessionName(suffix), true
 }
 
 // KillObject re-checks that the exact object still holds the name and, if so,

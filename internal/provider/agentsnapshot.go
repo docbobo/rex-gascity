@@ -26,6 +26,20 @@ var snapshotInterpreters = map[string]bool{"node": true, "bun": true, "npx": tru
 // argument that names the process.
 var snapshotRunnerArgs = map[string]bool{"run": true, "exec": true, "x": true}
 
+// snapshotValueArgs are interpreter options whose value is the next argument,
+// so the script operand after them is not that value. Node, bun and deno
+// accept both; the set covers the options that precede a script in practice.
+var snapshotValueArgs = map[string]bool{
+	"-r": true, "--require": true,
+	"-e": true, "--eval": true, "-p": true, "--print": true,
+	"--import": true, "--loader": true, "--experimental-loader": true,
+	"--preload": true, "--config": true, "-c": true,
+	"--import-map": true, "-C": true, "--conditions": true,
+	"--inspect-port": true, "--title": true,
+	"--max-old-space-size": true, "--max-semi-space-size": true,
+	"-L": true, "--log-level": true, "--cert": true, "--key": true,
+}
+
 // snapshotProcessTable is gc's one-pass view of the host process table: a wide
 // snapshot of pid, ppid and command line, and a narrow one of pid and command
 // name. -ww is load-bearing: without it procps cuts the command line at
@@ -71,11 +85,11 @@ func snapshotAgent(wide, comms string, root int, names []string) (string, int) {
 	queue := []int{root}
 	for i := 0; i < len(queue); i++ {
 		pid := queue[i]
-		proc := snapshotProcess(rows[pid].args, commByPID[pid])
+		proc, reliable := snapshotProcess(rows[pid].args, commByPID[pid])
 		if processMatches(proc, names) {
 			return agentAlive, pid
 		}
-		if processOpaque(proc) {
+		if !reliable || processOpaque(proc) {
 			opaque = true
 		}
 		queue = append(queue, children[pid]...)
@@ -164,29 +178,39 @@ func parseCommRows(out string) map[int]string {
 
 // snapshotProcess turns a snapshot row into the process identity gc's matcher
 // reads: the command name, the argv0 basename, and, for an interpreter, the
-// first argument that names the program it runs.
-func snapshotProcess(args, comm string) rex.Process {
+// first argument that names the program it runs. The bool is false when a
+// value-taking option has no value: the script operand is then unidentifiable,
+// and the caller must read the row as opaque, never as proof of death.
+func snapshotProcess(args, comm string) (rex.Process, bool) {
 	var proc rex.Process
 	if comm != "" {
 		proc.Name = filepath.Base(comm)
 	}
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
-		return proc
+		return proc, true
 	}
 	argv0 := filepath.Base(fields[0])
 	proc.Argv0 = argv0
 	if !snapshotInterpreters[argv0] {
-		return proc
+		return proc, true
 	}
-	for _, arg := range fields[1:] {
+	for i := 1; i < len(fields); i++ {
+		arg := fields[i]
+		if snapshotValueArgs[arg] {
+			if i+1 >= len(fields) || strings.HasPrefix(fields[i+1], "-") {
+				return proc, false
+			}
+			i++
+			continue
+		}
 		if strings.HasPrefix(arg, "-") || snapshotRunnerArgs[arg] {
 			continue
 		}
 		proc.Script = arg
-		break
+		return proc, true
 	}
-	return proc
+	return proc, true
 }
 
 // agentState takes gc's snapshot and answers the box's agent state. An

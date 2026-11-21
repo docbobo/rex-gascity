@@ -273,10 +273,12 @@ func TestInventoryReportsStateAndSkipsStopped(t *testing.T) {
 	}
 }
 
-// TestInventoryIncompleteForUnlistedPane proves inventory does not claim
-// completeness for a pane its binding store does not list, such as one started
-// by an older script or one whose binding was lost.
-func TestInventoryIncompleteForUnlistedPane(t *testing.T) {
+// TestInventoryCompleteIgnoresUnlistedPane proves a pane whose label names a
+// session no binding lists does not make the answer incomplete. Another store of
+// the same city, or a stop still closing, leaves such a pane, and neither can be
+// told apart from here, so it is no evidence about this store. gc reads a false
+// "incomplete" as a reason to distrust every name the listing omits.
+func TestInventoryCompleteIgnoresUnlistedPane(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()
 	p := provider.New("acme", fake)
@@ -291,31 +293,11 @@ func TestInventoryIncompleteForUnlistedPane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inventory: %v", err)
 	}
-	if inv.Complete {
-		t.Errorf("complete = true, want false for a pane no binding lists")
-	}
-}
-
-// TestInventoryCompleteForPoolShortFormPane proves a pool seat's short pane
-// label names its session. The "#" suffix is a bead id. So the label must not
-// read as a session no binding lists.
-func TestInventoryCompleteForPoolShortFormPane(t *testing.T) {
-	ctx := context.Background()
-	fake := faketest.New()
-	p := provider.New("acme", fake)
-	name := "pool-dog-1"
-	cfg := provider.Config{Argv: []string{"sleep", "300"}}
-	if err := p.Start(ctx, name, cfg); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	fake.View.Windows[0].Blocks[0].Label = "pool (#dog-1)"
-
-	inv, err := p.Inventory(ctx)
-	if err != nil {
-		t.Fatalf("Inventory: %v", err)
-	}
 	if !inv.Complete {
-		t.Errorf("complete = false, want true for the short form %s", name)
+		t.Errorf("complete = false, want true: an unlisted pane proves nothing about the store")
+	}
+	if len(inv.Sessions) != 1 || inv.Sessions[0].Name != name {
+		t.Errorf("sessions = %+v, want only %s", inv.Sessions, name)
 	}
 }
 
@@ -918,8 +900,8 @@ func TestInventoryLastActivityFromStore(t *testing.T) {
 	if !seen[polled] || !seen[fresh] {
 		t.Errorf("inventory = %+v, want both running sessions", inv)
 	}
-	if fake.ListSessionsCalls != 1 || fake.SessionViewCalls != 1 {
-		t.Errorf("snapshot calls: list=%d view=%d, want one of each", fake.ListSessionsCalls, fake.SessionViewCalls)
+	if fake.ListSessionsCalls != 0 || fake.SessionViewCalls != 0 {
+		t.Errorf("listing read sessions: list=%d view=%d, want none", fake.ListSessionsCalls, fake.SessionViewCalls)
 	}
 	for _, c := range fake.BlockCalls {
 		// The liveness read and the program_status read are the two calls the

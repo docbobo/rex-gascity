@@ -148,6 +148,28 @@ func TestSnapshotAgent(t *testing.T) {
 			wantState: agentUnknown,
 		},
 		{
+			// --require takes the next argument, so the script is the operand
+			// after it. Reading the preload as the script would read a live
+			// agent dead and authorize its kill.
+			name: "value-taking option before the interpreter script",
+			ps: snapRow("100", "1", "sh -c agent") +
+				snapRow("101", "100", "node --require /opt/preload.js /opt/agent.js"),
+			root:      100,
+			names:     []string{"agent"},
+			wantState: agentAlive,
+			wantPID:   101,
+		},
+		{
+			// A value option with no value leaves the script unidentifiable:
+			// the row could be the agent, so the answer is unknown, never dead.
+			name: "value-taking option without a value is unknown",
+			ps: snapRow("100", "1", "sh -c agent") +
+				snapRow("101", "100", "node --require"),
+			root:      100,
+			names:     []string{"agent"},
+			wantState: agentUnknown,
+		},
+		{
 			name: "opaque descendant hides a possible match",
 			ps: snapRow("100", "1", "sh -c run") +
 				snapRow("101", "100", ""),

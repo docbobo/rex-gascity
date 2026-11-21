@@ -831,21 +831,32 @@ func (p *Provider) Stop(ctx context.Context, name string) error {
 	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
 }
 
-// stopUnderPrimaryLock runs stop with the lock of the record's own name as well
-// as the caller's. An alias and its primary name map to different lock files,
-// so a start of the primary would otherwise run beside this stop and write a
-// replacement record that the stop's retirement then clears. The locks are
-// taken in caller-then-primary order, and a primary stop never takes a second
-// lock, so no path takes them in the other order.
+// stopUnderPrimaryLock runs stop with the lock of every record's own name that
+// answers to the caller's as well as the caller's lock. An alias and its
+// primary names map to different lock files, so a start of one of them would
+// otherwise run beside this stop and write a replacement record that the stop's
+// retirement then clears. Every such name is locked, not just the first stored
+// candidate: ResolveFresh skips a stale candidate and can retire a later live
+// one. The locks are taken in caller-then-primary order, sorted to a fixed order
+// among themselves, and a primary stop takes no second lock, so no two paths
+// take them in opposite order.
 func (p *Provider) stopUnderPrimaryLock(ctx context.Context, name string) error {
-	primary := SessionName(name)
-	if cands := p.binder.lookup(SessionName(name)); len(cands) > 0 {
-		primary = cands[0].Name
+	n := SessionName(name)
+	var primaries []SessionName
+	for _, bd := range p.binder.lookup(n) {
+		if bd.Name != n && !slices.Contains(primaries, bd.Name) {
+			primaries = append(primaries, bd.Name)
+		}
 	}
-	if primary == SessionName(name) {
-		return p.stop(ctx, name)
+	slices.Sort(primaries)
+	var lock func(i int) error
+	lock = func(i int) error {
+		if i == len(primaries) {
+			return p.stop(ctx, name)
+		}
+		return p.withNameLock(ctx, primaries[i], func() error { return lock(i + 1) })
 	}
-	return p.withNameLock(ctx, primary, func() error { return p.stop(ctx, name) })
+	return lock(0)
 }
 
 func (p *Provider) stop(ctx context.Context, name string) error {
