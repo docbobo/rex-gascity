@@ -483,6 +483,14 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		legacyPanes = []string{legacy}
 	}
 
+	// A binding kept by a stop or a failed launch whose descendant could not
+	// be reaped is the only name for that process once its pane is gone.
+	// ResolveFresh drops such a stale record and Start then writes a new one,
+	// so finish the cleanup first or the pid runs on with no record.
+	if err := p.reapStartSurvivors(ctx, n); err != nil {
+		return startResult{}, err
+	}
+
 	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
 		Name: n, Hint: hint, Mode: ResolveFresh,
 		// A window started before GCREX-72 carries the bare GC_RIG, which
@@ -764,6 +772,23 @@ func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID
 		WorkDir:        cfg.WorkDir,
 		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
 	}
+}
+
+// reapStartSurvivors finishes the cleanup a prior stop or failed launch left
+// pending on a binding that answers to n. A survivor the closed pane can no
+// longer report must be reaped before ResolveFresh drops or replaces that
+// record, or the next Start forgets the pid while it still runs. A survivor
+// that will not die keeps the binding and fails the start for a retry.
+func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error {
+	for _, bd := range p.binder.lookup(n) {
+		if len(bd.Survivors) == 0 {
+			continue
+		}
+		if err := p.reapSurvivors(ctx, bd, survivorProcs(bd.Survivors)); err != nil {
+			return fmt.Errorf("start %s: reap the pending survivors and retry: %w", n, err)
+		}
+	}
+	return nil
 }
 
 // discardLaunch retires a pane NewSplit or NewWindow created whose final record
