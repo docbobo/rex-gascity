@@ -767,3 +767,102 @@ func TestObserveAgentFromProcessSnapshot(t *testing.T) {
 		t.Errorf("agent = %q pid = %q, want an omitted agent for an unreadable snapshot", unreadable.Agent, unreadable.AgentPID)
 	}
 }
+
+// TestInventoryLastActivityFromStore proves RPP-OBSERVE-015's wire contract:
+// every running entry carries a last_activity, the activity store's stamp for
+// a polled box and the start-time floor for one gc has not polled yet, without
+// the listing polling any box itself.
+func TestInventoryLastActivityFromStore(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	polled, fresh := "Indigo--dog-1", "Indigo--fox-2"
+	for _, n := range []string{polled, fresh} {
+		if err := p.Start(ctx, n, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+			t.Fatalf("Start %s: %v", n, err)
+		}
+	}
+	freshBinding, ok := p.Binding(fresh)
+	if !ok {
+		t.Fatalf("no binding for %s", fresh)
+	}
+	activity, err := p.GetLastActivity(ctx, polled)
+	if err != nil {
+		t.Fatalf("GetLastActivity: %v", err)
+	}
+	fake.ListSessionsCalls, fake.SessionViewCalls = 0, 0
+	fake.BlockCalls = nil
+
+	inv, err := p.Inventory(ctx)
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if !inv.Complete {
+		t.Errorf("inventory = %+v, want complete", inv)
+	}
+	seen := map[string]bool{}
+	for _, e := range inv.Sessions {
+		if seen[e.Name] {
+			t.Errorf("%s listed twice, want one entry per binding", e.Name)
+		}
+		seen[e.Name] = true
+		at, err := time.Parse(time.RFC3339, e.LastActivity)
+		if e.LastActivity == "" || err != nil || at.Unix() <= 0 {
+			t.Errorf("%s last_activity = %q, want an RFC3339 time", e.Name, e.LastActivity)
+			continue
+		}
+		switch e.Name {
+		case polled:
+			if !at.Equal(activity.At) {
+				t.Errorf("last_activity = %v, want the activity store's %v", at, activity.At)
+			}
+		case fresh:
+			if !at.Equal(freshBinding.CreatedAt) {
+				t.Errorf("last_activity = %v, want the start time %v", at, freshBinding.CreatedAt)
+			}
+		}
+	}
+	if !seen[polled] || !seen[fresh] {
+		t.Errorf("inventory = %+v, want both running sessions", inv)
+	}
+	if fake.ListSessionsCalls != 1 || fake.SessionViewCalls != 1 {
+		t.Errorf("snapshot calls: list=%d view=%d, want one of each", fake.ListSessionsCalls, fake.SessionViewCalls)
+	}
+	for _, c := range fake.BlockCalls {
+		if c.Op != "process" {
+			t.Errorf("inventory called %q per box, want only the liveness process read", c.Op)
+		}
+	}
+}
+
+// TestInventoryFailsWhenLivenessIsUnreadable proves a listing whose liveness
+// read faults fails the op, so gc sees a non-zero exit instead of an answer
+// that calls a running name absent.
+func TestInventoryFailsWhenLivenessIsUnreadable(t *testing.T) {
+	fake, p := started(t)
+	fake.ProcessErr = errors.New("rex: protocol error")
+	if inv, err := p.Inventory(context.Background()); err == nil {
+		t.Fatalf("Inventory = %+v, want an error so the op exits non-zero", inv)
+	}
+}
+
+// TestInventoryOmitsAProvisionalRecord proves a record written before its pane
+// exists (a start in flight) is not read as a box: Rex rejects an empty block
+// id, and the name is not running yet.
+func TestInventoryOmitsAProvisionalRecord(t *testing.T) {
+	fake := faketest.New()
+	bs := provider.NewMemoryStore()
+	p := provider.New("acme", fake, provider.WithBindingStore(bs))
+	bs.Save(provider.Binding{Name: "Indigo--fox-2", SessionID: "session:pending", Attempt: "pending"})
+
+	inv, err := p.Inventory(context.Background())
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if !inv.Complete || len(inv.Sessions) != 0 {
+		t.Errorf("inventory = %+v, want complete with no sessions", inv)
+	}
+	for _, c := range fake.BlockCalls {
+		t.Errorf("inventory read %q for a record with no block yet", c.Op)
+	}
+}

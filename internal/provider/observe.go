@@ -49,11 +49,12 @@ type ObserveAnswer struct {
 // ObserveAnswer's, marshals {} for a box with no gc identity and null for one
 // whose identity is not yet readable.
 type InventoryEntry struct {
-	Name     string            `json:"name"`
-	State    string            `json:"state,omitempty"`
-	Object   *ObserveObject    `json:"object,omitempty"`
-	Agent    string            `json:"agent,omitempty"`
-	Identity map[string]string `json:"identity"`
+	Name         string            `json:"name"`
+	State        string            `json:"state,omitempty"`
+	Object       *ObserveObject    `json:"object,omitempty"`
+	Agent        string            `json:"agent,omitempty"`
+	Identity     map[string]string `json:"identity"`
+	LastActivity string            `json:"last_activity,omitempty"`
 }
 
 // InventoryAnswer is the `inventory` wire object.
@@ -293,16 +294,19 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 }
 
 // Inventory snapshots every session the provider tracks for the city. It is a
-// read: no meta is written and no session changes. Each entry carries the state
-// and identity observe would report for it, so gc need not observe every box.
+// read: no meta is written and no session changes. Each entry carries the state,
+// identity and last activity observe or get-last-activity would report for it,
+// so gc need not read every box. The activity comes from the provider's store;
+// a box gc has not polled yet reports its start time as the floor.
 //
 // A box whose liveness cannot be read is listed with no state and the answer
 // claims no completeness, because a backend fault proves nothing absent. So
 // does a pane under a city label that names a session no binding holds.
 //
 // ponytail: one Rex block-process call per session, since Rex has no bulk
-// liveness query. Move to a bulk query (or a trusted last_exit cache) if a city
-// grows past the inventory call's time budget.
+// liveness query (session.view carries no process data). Move to a bulk query
+// (or a trusted last_exit cache) if a city grows past the inventory call's
+// time budget.
 func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 	lister, ok := p.bindings.(Lister[Binding])
 	if !ok {
@@ -313,6 +317,15 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 	listed := make(map[SessionName]bool, len(bds))
 	sessions := make([]InventoryEntry, 0, len(bds))
 	for _, bd := range bds {
+		if listed[bd.Name] {
+			continue
+		}
+		if bd.BlockID == "" {
+			// A record written before its pane exists (a start in flight) is
+			// not a box: the name is not running yet, and Rex rejects the empty
+			// block id.
+			continue
+		}
 		state, holder, err := p.boxState(ctx, bd)
 		switch {
 		case errors.Is(err, rex.ErrUnavailable):
@@ -337,8 +350,12 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 		} else {
 			e.Identity = map[string]string{}
 		}
-		if state == ObserveDead {
+		switch state {
+		case ObserveDead:
 			e.Agent = "dead"
+		case ObserveRunning:
+			rec, found := p.activityRead(bd.Name)
+			e.LastActivity = inventoryActivity(holder, rec, found)
 		}
 		listed[bd.Name] = true
 		sessions = append(sessions, e)
@@ -353,6 +370,23 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 		}
 	}
 	return InventoryAnswer{Complete: complete, Sessions: sessions}, nil
+}
+
+// inventoryActivity stamps a running session's last activity from the activity
+// store, floored by the binding's start time so a session gc has not polled yet
+// still answers one. A record from another incarnation is ignored, as in
+// GetLastActivity.
+func inventoryActivity(b Binding, rec ActivityRecord, found bool) string {
+	at := b.CreatedAt
+	if found && rec.Identity == string(b.BlockID) {
+		at = laterOf(at, laterOf(rec.At, rec.InputAt))
+	}
+	if at.IsZero() {
+		// An adopted pane has no stored start time; now is the only floor that
+		// cannot call an idle box stale.
+		at = time.Now().UTC()
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }
 
 // cityPanes returns the session names this city's panes name in their Rex
