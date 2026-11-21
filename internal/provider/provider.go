@@ -459,6 +459,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	})
 	cfg.Env = plan.Env
 	seeded := false
+	// keepProvisional stays true when a failed launch could not remove the
+	// empty city session. A later Stop then still finds the session id.
+	keepProvisional := false
 	defer func() {
 		if err == nil || !seeded {
 			return
@@ -471,7 +474,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
 			return
 		}
-		p.binder.Forget(n)
+		if !keepProvisional {
+			p.binder.Forget(n)
+		}
 	}()
 	// The env-derived labels let Resolve rediscover a live pane whose sidecar
 	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
@@ -729,6 +734,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if derr := p.withStateLock(cleanupCtx, func() error {
 			return p.destroyEmptyCitySession(cleanupCtx, sid)
 		}); derr != nil {
+			// Keep the provisional record: the deferred handler must not
+			// forget it. A later Stop retries the removal.
+			keepProvisional = true
 			p.warnf("start %s: remove the empty city session %s: %v", n, sid, derr)
 		}
 		return startResult{}, err
