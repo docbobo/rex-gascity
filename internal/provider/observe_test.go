@@ -63,6 +63,43 @@ func TestObserveRunningCarriesObjectAndIdentity(t *testing.T) {
 	}
 }
 
+// TestObserveVisiblePaneDuringStart covers the window in RPP-OBSERVE-003
+// where Rex has created the pane but Start has yet to record its block ID.
+func TestObserveVisiblePaneDuringStart(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	bs := provider.NewMemoryStore()
+	p := provider.New("acme", fake, provider.WithBindingStore(bs))
+	const name = "Indigo--dog-1"
+	cfg := provider.Config{
+		Argv: []string{"sleep", "300"},
+		Env:  map[string]string{"GC_SESSION_ID": "sid-1"},
+	}
+	if err := p.Start(ctx, name, cfg); err != nil {
+		t.Fatal(err)
+	}
+	final, ok := p.Binding(name)
+	if !ok || final.BlockID == "" {
+		t.Fatal("missing final binding")
+	}
+	provisional := final
+	provisional.BlockID = ""
+	provisional.WindowID = ""
+	bs.Save(provisional)
+	// Rex rejects a block.process request without a block ID.
+	fake.VanishedBlocks = map[rex.BlockID]bool{"": true}
+	ans, err := p.Observe(ctx, name, nil)
+	if err != nil || ans.State != provider.ObserveUnknown || ans.Object != nil || ans.Identity != nil {
+		t.Fatalf("Observe during Start = %+v, %v; want unknown while the visible pane's object is unconfirmed", ans, err)
+	}
+
+	bs.Save(final)
+	ans, err = p.Observe(ctx, name, nil)
+	if err != nil || ans.State != provider.ObserveRunning || ans.Identity["GC_SESSION_ID"] != "sid-1" {
+		t.Fatalf("Observe after Start = %+v, %v; want the running pane with its identity", ans, err)
+	}
+}
+
 // TestKillObjectGoneForUnknownObject proves the "never kill by name" rule: an
 // object that does not match the stored binding answers gone and kills nothing.
 func TestKillObjectGoneForUnknownObject(t *testing.T) {

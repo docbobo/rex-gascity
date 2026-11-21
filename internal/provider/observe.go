@@ -158,15 +158,11 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	defer cancel()
 	n := SessionName(name)
 	bd, ok := p.Binding(name)
-	// fromRecord is false for the read-only scan below: a pane this provider
-	// did not start has no gc identity to read from its sidecar.
-	fromRecord := ok
-	if !ok {
-		// No cached record: scan for a live pane under the name's labels
-		// without adopting it. Observe is a read, so a discovered pane must
-		// not gain a binding (or inherit a sidecar identity) from an answer.
+	// Scan without adopting when there is no recorded block yet. In
+	// particular, a provisional start has labels but no block ID to probe.
+	if !ok || bd.BlockID == "" {
 		var err error
-		bd, ok, err = p.binder.find(ctx, n, Binding{}, nil)
+		bd, ok, err = p.binder.find(ctx, n, bd, nil)
 		if err != nil {
 			if observeUnreadable(err) {
 				return ObserveAnswer{State: ObserveUnknown}, nil
@@ -187,17 +183,23 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	if state == ObserveAbsent {
 		return ObserveAnswer{State: ObserveAbsent}, nil
 	}
-	idName := holder.Name
-	if idName == "" {
-		idName = n
+	// Start can make the pane visible while the backend read is in flight.
+	// Recheck the store before deciding a pane found by label is ownerless.
+	current, recorded := p.Binding(name)
+	sameSession := recorded && current.SessionID == holder.SessionID
+	sameBlock := sameSession && current.BlockID == holder.BlockID
+	if sameSession && current.BlockID == "" && current.Attempt != "" {
+		// A pane is visible, but Start has not confirmed its block ID.
+		// Its object and identity cannot yet be attributed to this launch.
+		return ObserveAnswer{State: ObserveUnknown}, nil
+	}
+	if sameBlock {
+		holder = current
 	}
 	obj := observeObjectFor(holder)
 	ans := ObserveAnswer{State: state, Object: &obj}
-	// Identity is the started incarnation's start config. A pane that took the
-	// name without Start has no gc identity of its own: an empty set, which gc
-	// reads as operator-made, never nil, which it reads as "not yet readable".
-	if fromRecord && holder.BlockID == bd.BlockID && !bd.Adopted {
-		ans.Identity = p.observeIdentity(idName)
+	if sameBlock && !current.Adopted {
+		ans.Identity = p.observeIdentity(current.Name)
 	} else {
 		ans.Identity = map[string]string{}
 	}
@@ -207,9 +209,10 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	// Agent liveness is a verdict gc acts on, so only a certain answer is
 	// reported (RPP-OBSERVE-006): the box root's process snapshot must both be
 	// readable and hold one of the names.
-	if state == ObserveRunning && len(names) > 0 && holder.BlockID == bd.BlockID {
-		if root := p.foregroundPID(ctx, bd); root > 0 {
-			if agent, pid := p.agentState(ctx, root, expandProcessNames(names, bindingGCBin(bd))); agent != agentUnknown {
+	sameProbedBlock := holder.SessionID == bd.SessionID && holder.BlockID == bd.BlockID
+	if state == ObserveRunning && len(names) > 0 && (sameBlock || sameProbedBlock) {
+		if root := p.foregroundPID(ctx, holder); root > 0 {
+			if agent, pid := p.agentState(ctx, root, expandProcessNames(names, bindingGCBin(holder))); agent != agentUnknown {
 				ans.Agent = agent
 				if pid > 0 {
 					ans.AgentPID = strconv.Itoa(pid)

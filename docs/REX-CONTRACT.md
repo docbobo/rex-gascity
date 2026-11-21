@@ -614,13 +614,21 @@ Phase 0 also confirms the plan's decisions against the live surface:
   canonical session must go. `DestroySession` is back on `rex.Client`, and
   `stop` calls it from one place only, after the pane is closed and the
   incarnation is cleared. The guard, failing closed, is:
-  1. The caller already holds the city-wide state lock (`withStateLock`); stop
-     and the `kill-object` retire path both enter `stopBinding` inside it. The
-     lock covers the view read and the destroy, so a concurrent Start in
-     another rig cannot add a pane between them. A Start that found the session
-     before the destroy and then launches gets `session_not_found`
-     (`rex.ErrNotFound`) and recreates the session (test
-     `TestStartRecreatesSessionDestroyedBeforeLaunch`).
+  <!-- coderabbit-ai-generated:v1 -->
+
+  <!-- coderabbit-ai-generated-section:v1:3ba588f8dc007031d42853495ce938863a85b0a3b25daa10b0edd7a5d5566884 -->
+
+  1. The caller holds the city-wide state lock (`withStateLock`) for store and
+     session mutations. To exclude concurrent launches from any rig,
+     `destroyEmptyCitySession` tries to take the per-session launch lock
+     exclusively without waiting; if it is busy, the session stays in place.
+     `Start` holds that same lock in shared mode across the view read and pane
+     creation. Teardown holds it across the empty check and destroy. A `Start`
+     that found the session before it was destroyed retries on
+     `session_not_found` (`rex.ErrNotFound`) by finding or creating the session
+     again (test `TestStartRecreatesSessionDestroyedBeforeLaunch`).
+
+  <!-- /coderabbit-ai-generated:v1 -->
   2. `session.view` must name this city's canonical label (`gc:<city>`) and
      carry no windows. A legacy-labelled, foreign or other-city session stays
      (D3), and a session with any pane or block stays.
