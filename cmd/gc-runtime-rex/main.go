@@ -143,14 +143,15 @@ func liveDeps() deps {
 
 // startConfig is the start op's stdin JSON. Unknown fields are ignored. The
 // field set mirrors gc v1.5.1's inner startConfig
-// (internal/runtime/exec/json.go:26-42): every field gc sends except
-// process_names, which needs a Rex process-appeared signal this provider does
-// not have, plus fresh_only, which the pack sends and gc v1.5.1 never does.
-// work_dir_exclude is pack-only as well.
+// (internal/runtime/exec/json.go:26-42): every field gc sends, plus fresh_only,
+// which the pack sends and gc v1.5.1 never does. work_dir_exclude is pack-only
+// as well. process_names seeds GT_PROCESS_NAMES for observe.v1's liveness; it
+// does not drive a process-appeared wait, which Rex has no signal for.
 type startConfig struct {
 	WorkDir            string              `json:"work_dir"`
 	Command            string              `json:"command"`
 	Env                map[string]string   `json:"env"`
+	ProcessNames       []string            `json:"process_names"`
 	PreStart           []string            `json:"pre_start"`
 	Nudge              string              `json:"nudge"`
 	Lifecycle          string              `json:"lifecycle"`
@@ -370,6 +371,30 @@ func printBool(w io.Writer, b bool) {
 	fmt.Fprintln(w, strconv.FormatBool(b))
 }
 
+// seedProcessNames fills GT_PROCESS_NAMES from the start config's
+// process_names when env leaves it unset, as gc's tmux adapter does for its
+// sessions (gc v1.5.1 internal/runtime/tmux/adapter.go:179-180,186-194):
+// trimmed, non-empty, comma-separated. An env value always wins.
+// observe.v1-only, so flag-off starts carry the same env as before.
+func seedProcessNames(cfg *startConfig) {
+	if !observeV1Enabled() || strings.TrimSpace(cfg.Env["GT_PROCESS_NAMES"]) != "" {
+		return
+	}
+	var names []string
+	for _, n := range cfg.ProcessNames {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
+	}
+	cfg.Env["GT_PROCESS_NAMES"] = strings.Join(names, ",")
+}
+
 func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, _ io.Writer) error {
 	name := args[0]
 	raw, err := io.ReadAll(stdin)
@@ -383,6 +408,7 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+	seedProcessNames(&cfg)
 	err = p.StartNew(ctx, name, provider.Config{
 		Argv:               launch.CommandArgv(cfg.Command),
 		WorkDir:            cfg.WorkDir,

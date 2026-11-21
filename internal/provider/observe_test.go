@@ -606,3 +606,71 @@ func TestInventoryIncompleteWhenLivenessUnavailable(t *testing.T) {
 		t.Errorf("sessions = %+v, want one entry with no state", inv.Sessions)
 	}
 }
+
+// TestObserveIdentityIsGetMetaIdentity proves RPP-OBSERVE-008: observe reports
+// the one identity get-meta serves, including the process names observe.v1's
+// liveness reads, and a set-meta of an identity key lands in the next observe.
+func TestObserveIdentityIsGetMetaIdentity(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	ctx := context.Background()
+	p := provider.New("acme", faketest.New())
+	const name = "Indigo--dog-1"
+	env := map[string]string{
+		"GC_SESSION_ID":     "sid-1",
+		"GC_RUNTIME_EPOCH":  "7",
+		"GC_INSTANCE_TOKEN": "tok-1",
+		"GT_PROCESS_NAMES":  "sleep",
+	}
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ans, err := p.Observe(ctx, name, nil)
+	if err != nil || ans.State != provider.ObserveRunning {
+		t.Fatalf("Observe = %+v, %v; want a running box", ans, err)
+	}
+	for _, key := range []string{"GC_SESSION_ID", "GC_RUNTIME_EPOCH", "GC_INSTANCE_TOKEN", "GT_PROCESS_NAMES"} {
+		got, err := p.GetMeta(ctx, name, key)
+		if err != nil {
+			t.Fatalf("GetMeta(%s): %v", key, err)
+		}
+		if got != ans.Identity[key] {
+			t.Errorf("GetMeta(%s) = %q, observe identity says %q", key, got, ans.Identity[key])
+		}
+	}
+
+	if err := p.SetMeta(ctx, name, "GC_RUNTIME_EPOCH", "8"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+	after, err := p.Observe(ctx, name, nil)
+	if err != nil || after.State != provider.ObserveRunning {
+		t.Fatalf("Observe after set-meta = %+v, %v; want a running box", after, err)
+	}
+	if got := after.Identity["GC_RUNTIME_EPOCH"]; got != "8" {
+		t.Errorf("observe GC_RUNTIME_EPOCH after set-meta = %q, want %q", got, "8")
+	}
+}
+
+// TestObserveAbsentAfterStop proves RPP-OBSERVE-004: stop retires the pane and
+// its seeded identity, so observe answers absent and is-running false.
+func TestObserveAbsentAfterStop(t *testing.T) {
+	ctx := context.Background()
+	p := provider.New("acme", faketest.New())
+	const name = "Indigo--dog-1"
+	env := map[string]string{"GC_SESSION_ID": "sid-1", "GC_INSTANCE_TOKEN": "tok-1"}
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := p.Stop(ctx, name); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	ans, err := p.Observe(ctx, name, nil)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if ans.State != provider.ObserveAbsent || ans.Object != nil {
+		t.Errorf("Observe after stop = %+v, want absent with no object", ans)
+	}
+	if running, err := p.IsRunning(ctx, name); err != nil || running {
+		t.Errorf("IsRunning after stop = %v, %v; want false, nil", running, err)
+	}
+}

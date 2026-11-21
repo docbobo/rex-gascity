@@ -27,6 +27,45 @@ func TestStartFreshOnlyExits73(t *testing.T) {
 	}
 }
 
+// TestStartPersistsProcessNamesAsIdentity pins GCREX-107: a start's
+// process_names reach the metadata sidecar as GT_PROCESS_NAMES, the value
+// observe.v1's liveness reads from the box's own record, once for every start
+// and only when the profile is on. gc sends the names as a start-config field,
+// not in env, on a non-fresh start (gc v1.5.1 internal/runtime/exec/json.go:31).
+func TestStartPersistsProcessNamesAsIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag string
+		want string
+	}{
+		{name: "observe.v1", flag: "1", want: "pi,node"},
+		{name: "flag off", flag: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GCREX_OBSERVE_V1", tc.flag)
+			h, _ := newHarness(t)
+			h.must(`{"command":"sleep 300","process_names":["pi"," node ",""]}`, "start", dog)
+			r := h.must("", "get-meta", dog, "GT_PROCESS_NAMES")
+			if r.stdout != tc.want {
+				t.Errorf("GT_PROCESS_NAMES = %q, want %q", r.stdout, tc.want)
+			}
+		})
+	}
+}
+
+// TestStartEnvProcessNamesWinOverTheConfigField keeps gc's tmux adapter
+// contract: when env already carries GT_PROCESS_NAMES, the start-config field
+// must not replace it (gc v1.5.1 internal/runtime/tmux/adapter.go:179-180).
+func TestStartEnvProcessNamesWinOverTheConfigField(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	h, _ := newHarness(t)
+	h.must(`{"command":"sleep 300","process_names":["pi"],"env":{"GT_PROCESS_NAMES":"from-env"}}`, "start", dog)
+	r := h.must("", "get-meta", dog, "GT_PROCESS_NAMES")
+	if r.stdout != "from-env" {
+		t.Errorf("GT_PROCESS_NAMES = %q, want from-env", r.stdout)
+	}
+}
+
 // TestStartRunsSessionSetupAndWarnsSessionLive pins GCREX-56 AC2 through the
 // dispatcher: session_setup runs, and a non-empty session_live writes its
 // SESSION_LIVE_SKIPPED warning to stderr on an otherwise successful start.
