@@ -80,7 +80,7 @@ These choices shape everything else. D0–D6 are all **confirmed** in
 |---|---|---|---|
 | D1 | **Layout mapping** (diagrams in §4) | **Option B — CHOSEN.** Rex **session = city** (`gc:<city>`), **tab = rig**, **pane = agent** (agents tiled in the rig's tab). One Rex session per city; fewest sessions. | **Option A** — session = rig, tab = agent (each agent its own tab). **Option C** — session = agent (simplest, no grouping). |
 | D2 | **Transport** | Shell out to the `rex` CLI **now**, but only through a stable `rex.Client` interface; a direct unix-socket (JSON wire) implementation can be dropped in later without touching provider logic. | Go straight to the socket — Rex's CLI is versioned and documented; the socket protocol is not. |
-| D3 | **Server ownership** | The provider never stops the server and does not implement a server-teardown op. Never stop the shared Rex server — the user's own work runs on it. Teardown closes only city-owned blocks with `block.close` and leaves the shared city session; never call `session.destroy` (destructive). | Own a per-city server — impossible; Rex has one shared server, not one per city. |
+| D3 | **Server ownership** | The provider never stops the server and does not implement a server-teardown op. Never stop the shared Rex server — the user's own work runs on it. Teardown closes only city-owned blocks with `block.close`. `session.destroy` runs in one place: removing the city's own canonical `gc:<city>` session once its last pane is gone, behind the fail-closed empty check (GCREX-31, `docs/REX-CONTRACT.md` §12). | Own a per-city server — impossible; Rex has one shared server, not one per city. |
 | D4 | **Scope** | Local Rex server only (default socket, or `-S <host>` for a remote Rex that shares the filesystem). Agents run **on gc's host**, so pre_start/session_setup run locally as tmux does. There is no RPP declaration for where agents run; the handshake carries none. | Remote boxes. Out of scope for v1. |
 | D5 | **Sleep tier** | Aim for `full` sleep via `report-activity` plus the block's `program_status` (OSC 7501). Fall back to `timed_only` if idle detection proves unreliable. | Ship `timed_only` first, add `full` later. |
 | D6 | **v1 capability breadth** | Core ops, metadata via sidecar, activity tracker (`report-activity`), attachment (`report-attachment`), and `exec` (`proc.exec`) as the driving path gc uses. Skip a dialog matcher in v1. | Implement everything up front. |
@@ -118,7 +118,7 @@ removes several of herdr's bridges:
 | Exit status | `child_exited` event (`exit_code`), `process.last_exit` | herdr via process-info — parity |
 | Activity | `process_changed.generation`, `session.view.revision` (v1 does not consume `rex events`; it polls) | herdr had **no** timestamp → tracker bridge |
 | Attachment | `session.list_clients` (`session.view` has no `clients` field) | herdr best-effort → now first-class |
-| Create / destroy | `session.create`, `session.new_window`, `block.close` (the provider never calls `session.destroy`, including for an empty city session; GCREX-65, `docs/REX-CONTRACT.md` §12) | herdr workspace/tab/pane — parity |
+| Create / destroy | `session.create`, `session.new_window`, `block.close`, and `session.destroy` only for the empty canonical `gc:<city>` session (GCREX-31, `docs/REX-CONTRACT.md` §12) | herdr workspace/tab/pane — parity |
 
 Terminal methods available: `blob_read, clear, clipboard_read,
 download_begin, format, input_mode, list_dir, modes, process, program_status,

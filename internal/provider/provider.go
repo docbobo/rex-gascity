@@ -879,7 +879,10 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		// The survivors are gone and the metadata is clear, so the record can
 		// go with them. Resolve keeps a stale record that still names one.
 		p.binder.Forget(n)
-		return nil
+		// The pane went on its own and this stop found none, but it still
+		// leaves the last pane: remove the empty city session (GCREX-31). The
+		// state lock is already held.
+		return p.destroyEmptyCitySession(ctx, stored.SessionID)
 	}
 	err = p.stopBinding(ctx, n, binding)
 	if errors.Is(err, errBlockGone) {
@@ -940,8 +943,41 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 		return err
 	}
 	p.binder.Forget(binding.Name)
+	// The pane is closed and its incarnations are clear: remove the canonical
+	// city session when it is now empty (GCREX-31). The state lock is held
+	// for the check and the removal, so a concurrent Start cannot lose a pane
+	// (it recreates the session on ErrNotFound).
+	if err := p.destroyEmptyCitySession(ctx, binding.SessionID); err != nil {
+		return err
+	}
 	if alreadyClosed {
 		return errBlockGone
+	}
+	return nil
+}
+
+// destroyEmptyCitySession removes this city's canonical gc:<city> session once
+// its last pane is gone (GCREX-31). The caller holds the state lock across the
+// view check and the removal, so no other provider process can add a pane in
+// between. It fails closed: a session with any window, a label that is not the
+// canonical one (a legacy, foreign or other-city session), or any Rex error
+// keeps the session and returns the error.
+func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
+	if sid == "" {
+		return nil
+	}
+	view, err := p.client.SessionView(ctx, sid)
+	if errors.Is(err, rex.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, err)
+	}
+	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
+		return nil
+	}
+	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
 	}
 	return nil
 }

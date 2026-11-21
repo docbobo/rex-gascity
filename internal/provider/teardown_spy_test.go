@@ -2,6 +2,8 @@ package provider_test
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -9,13 +11,12 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
-// TestStopKeepsCitySession is the SPEC-3 regression: the live probe
-// (docs/REX-CONTRACT.md §12) lists a server-wide Rex app client on every
-// session, so the approved skip branch applies and neither Stop path may
-// destroy the city session. rex.Client has no session-destroy op, so the
-// observable boundary is the post-condition: the session Start created is
-// still listed with the same ID after Stop, with and without a pane.
-func TestStopKeepsCitySession(t *testing.T) {
+// TestStopRemovesEmptyCitySession pins GCREX-31: once its last pane goes, the
+// canonical gc:<city> session is removed from `rex session ls`. A server-wide
+// app client is listed on every session (docs/REX-CONTRACT.md §12), so it
+// cannot keep an empty session alive. Both the pane and the no-pane Stop path
+// remove it.
+func TestStopRemovesEmptyCitySession(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		kind   string
@@ -37,12 +38,29 @@ func TestStopKeepsCitySession(t *testing.T) {
 			if err := p.Stop(context.Background(), teardownDog); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
-			for _, s := range fake.Sessions {
-				if s.ID == "session:gc:acme" {
-					return
-				}
+			if !slices.Equal(fake.DestroyedSessions, []rex.SessionID{"session:gc:acme"}) {
+				t.Errorf("destroyed = %v, want the empty city session", fake.DestroyedSessions)
 			}
-			t.Errorf("sessions = %v, want gc:acme left in place after Stop", fake.Sessions)
+			if len(fake.Sessions) != 0 {
+				t.Errorf("sessions = %v, want the empty city session gone", fake.Sessions)
+			}
 		})
+	}
+}
+
+// TestStopReportsDestroyFailure pins the fail-closed half of GCREX-31: a failed
+// destroy keeps the session and returns the error, so the retry sees it.
+func TestStopReportsDestroyFailure(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	teardownStart(t, p, teardownDog)
+	boom := errors.New("session.destroy: conflict")
+	fake.DestroySessionErr = boom
+
+	if err := p.Stop(context.Background(), teardownDog); !errors.Is(err, boom) {
+		t.Fatalf("Stop = %v, want the destroy error", err)
+	}
+	if len(fake.Sessions) != 1 || fake.Sessions[0].ID != "session:gc:acme" {
+		t.Errorf("sessions = %v, want the city session kept", fake.Sessions)
 	}
 }

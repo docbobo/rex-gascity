@@ -101,6 +101,13 @@ func (c *Client) CreateSession(ctx context.Context, label string) (rex.SessionID
 	return rex.SessionID(reply.SessionID), nil
 }
 
+// DestroySession closes every window and block in the session. It is
+// destructive and must only run after the provider proves the session is its
+// own and empty (GCREX-31).
+func (c *Client) DestroySession(ctx context.Context, sessionID rex.SessionID) error {
+	return c.call(ctx, "session.destroy", map[string]any{"session_id": string(sessionID)}, nil)
+}
+
 // ListSessions lists every session on the server.
 func (c *Client) ListSessions(ctx context.Context) ([]rex.Session, error) {
 	var reply struct {

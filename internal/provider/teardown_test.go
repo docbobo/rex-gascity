@@ -255,17 +255,11 @@ func TestStopClosesOnlyTheStoppedPane(t *testing.T) {
 	if len(fake.ClosedBlocks) != 1 {
 		t.Errorf("closed = %v, want only the stopped pane", fake.ClosedBlocks)
 	}
-	if len(fake.Sessions) == 0 {
-		t.Errorf("sessions = %v, want the session left in place", fake.Sessions)
+	if len(fake.Sessions) != 1 {
+		t.Errorf("sessions = %v, want the session with the live pane left in place", fake.Sessions)
 	}
-}
-
-func TestStopKeepsSessionWithAttachedApp(t *testing.T) {
-	fake, p := teardownStarted(t, teardownDog)
-	fake.Clients = []rex.ClientInfo{{ID: "client:1", Kind: "cli", Name: "rex"}, {ID: "client:2", Kind: "app", Name: "Rex"}}
-
-	if err := p.Stop(context.Background(), teardownDog); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none while a live pane remains", fake.DestroyedSessions)
 	}
 }
 
@@ -310,13 +304,16 @@ func TestStopKeepsDuplicateCanonicalSessions(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if len(fake.Sessions) != 2 {
-		t.Errorf("sessions = %v, want both canonical sessions left in place", fake.Sessions)
+	// Only the exact session the stop used is a removal candidate, so the
+	// duplicate stays: removing by label could destroy another server's shell.
+	if len(fake.Sessions) != 1 || fake.Sessions[0].ID != "session:dup" {
+		t.Errorf("sessions = %v, want only the untouched duplicate left", fake.Sessions)
 	}
 }
 
 // destroyedBeforeLaunch models the city session vanishing after Start found it
-// but before Start's launch read the view (an operator, another process).
+// but before Start's launch read the view: a concurrent Stop of the last pane
+// in another rig removes the empty session, or an operator does (GCREX-31).
 type destroyedBeforeLaunch struct {
 	*faketest.Fake
 	once sync.Once
