@@ -304,7 +304,7 @@ request/response `exec` connection cannot carry a stream.
 Handshake (`protocol` op):
 
 ```json
-{"version": 0, "capabilities": ["report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome"]}
+{"version": 0, "capabilities": ["report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome", "observe.v1", "city-scoped"]}
 ```
 
 There is **no `locality` field**. A script that does not implement `protocol`
@@ -314,7 +314,10 @@ handshake additionally declares `idle-boundary` for the `idle` op (GCREX-63),
 `carrier.ops` for the five ops gc drives when it does not use exec, and
 `input-outcome` for the four driving ops' typed exit 80 (GCREX-70). `idle-boundary`
 is outside the 1.5.1 baseline and gc 1.5.1 ignores it; `carrier.ops` and
-`input-outcome` are consumed by the edge build gc is pinned to.
+`input-outcome` are consumed by the edge build gc is pinned to. The handshake
+also declares `observe.v1` and `city-scoped` (GCREX-111): `observe.v1` is the
+reconciler-v2 profile token the edge build defines (`internal/runtime/protocol.go:89`),
+and `city-scoped` is the real per-city isolation GCREX-105 added (RPP-OBSERVE-014).
 
 The pinned baseline has exactly **six** capability strings
 (`internal/runtime/protocol.go`):
@@ -330,8 +333,8 @@ The pinned baseline has exactly **six** capability strings
 
 **Not in the pinned baseline — declare only alongside the behavior it gates.**
 The plan (`docs/plans/native-rex-provider.md`) and the research notes use
-capability names that do not exist in gc 1.5.1: `fs.host`, `carrier.ops`,
-`observe.v1`, `input-outcome`. `idle-boundary` is not a 1.5.1 token; gc's working
+capability names that do not exist in the gc 1.5.1 baseline: `fs.host`, `carrier.ops`,
+`observe.v1`, `input-outcome`, `city-scoped`, `server-lifecycle`. `idle-boundary` is not a 1.5.1 token; gc's working
 tree defines it (`internal/runtime/protocol.go`, ahead of the pin) as the
 idle-observation gate, and our provider declares it in the same change that
 adds the `idle` snapshot op it gates (GCREX-63). `carrier.ops`
@@ -339,7 +342,10 @@ adds the `idle` snapshot op it gates (GCREX-63). `carrier.ops`
 interrupt, clear-scrollback) instead of exec, and `input-outcome`
 (`protocol.go:118`) types their exit 80; our provider declares both in GCREX-70,
 the change that answers typed outcomes (gc reads them only with both,
-`internal/runtime/exec/outcome.go:193`). Both are ignored by gc 1.5.1.
+`internal/runtime/exec/outcome.go:193`). `observe.v1` and `city-scoped` are
+declared in GCREX-111, with the whole profile they gate: `observe`, `inventory`,
+`kill-object`, `fresh_only` on `start` and exit 2 read as a failure. All four
+non-baseline tokens are ignored by gc 1.5.1.
 `server-lifecycle` appears only
 in a release-gate evidence file for a provider interface, not in `protocol.go`.
 Treat all of them as design shorthand. A non-baseline token may be declared only
@@ -640,7 +646,8 @@ Phase 0 also confirms the plan's decisions against the live surface:
   vocabulary has no basis in gc 1.5.1 (§9). Rewrite the plan's capability
   language, or confirm a newer gc adds those tokens, before Phase 4.
   **Resolved (GCREX-8):** the plan now uses only the six gc 1.5.1 strings; the
-  earlier vocabulary is stated as not in the pinned baseline.
+  earlier vocabulary is stated as not in the pinned baseline. GCREX-111 later
+  declared `observe.v1` and `city-scoped`, which the edge build defines.
 - **Pane process-identity stability:** `block_id` is persisted in the sidecar.
   **Resolved (GCREX-4):** ids are never trusted blindly — a binding is
   re-validated against `session.view`, and a stale or post-restart id is cleared

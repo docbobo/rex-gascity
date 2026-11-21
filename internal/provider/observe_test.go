@@ -296,6 +296,29 @@ func TestInventoryIncompleteForUnlistedPane(t *testing.T) {
 	}
 }
 
+// TestInventoryCompleteForPoolShortFormPane proves a pool seat's short pane
+// label names its session. The "#" suffix is a bead id. So the label must not
+// read as a session no binding lists.
+func TestInventoryCompleteForPoolShortFormPane(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "pool-dog-1"
+	cfg := provider.Config{Argv: []string{"sleep", "300"}}
+	if err := p.Start(ctx, name, cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fake.View.Windows[0].Blocks[0].Label = "pool (#dog-1)"
+
+	inv, err := p.Inventory(ctx)
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if !inv.Complete {
+		t.Errorf("complete = false, want true for the short form %s", name)
+	}
+}
+
 // TestKillObjectCorpseLiveWhenAttached proves corpse mode leaves a dead box
 // open while a client is attached: gc's `live` answer keeps the operator's
 // screen, which gc's edge doc requires and which this mode must re-check.

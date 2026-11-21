@@ -847,20 +847,14 @@ func readStartupTiming(t *testing.T, stateDir, name string) map[string]any {
 	return got
 }
 
-// TestStartGatesProcessNamesOnObserveV1 is the CodeRabbit fix for identity.go:
-// GT_PROCESS_NAMES is observe.v1 metadata, so flag-off Start must leave it
-// unset (and cleanup must not have to delete it) while flag-on still seeds it.
-func TestStartGatesProcessNamesOnObserveV1(t *testing.T) {
+// TestStartSeedsProcessNames proves GCREX-111 retired the switch: Start seeds
+// GT_PROCESS_NAMES with no environment set, and a leftover GCREX_OBSERVE_V1
+// value changes nothing.
+func TestStartSeedsProcessNames(t *testing.T) {
 	ctx := context.Background()
-	for _, tc := range []struct {
-		flag string
-		want string
-	}{
-		{flag: "", want: ""},
-		{flag: "1", want: "pi|node"},
-	} {
-		t.Run("flag="+tc.flag, func(t *testing.T) {
-			t.Setenv("GCREX_OBSERVE_V1", tc.flag)
+	for _, flag := range []string{"", "0", "1"} {
+		t.Run("GCREX_OBSERVE_V1="+flag, func(t *testing.T) {
+			t.Setenv("GCREX_OBSERVE_V1", flag)
 			p := provider.New("acme", faketest.New())
 			env := identityEnv()
 			env["GT_PROCESS_NAMES"] = "pi|node"
@@ -872,8 +866,8 @@ func TestStartGatesProcessNamesOnObserveV1(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetMeta: %v", err)
 			}
-			if got != tc.want {
-				t.Errorf("GT_PROCESS_NAMES = %q, want %q", got, tc.want)
+			if got != "pi|node" {
+				t.Errorf("GT_PROCESS_NAMES = %q, want %q", got, "pi|node")
 			}
 		})
 	}

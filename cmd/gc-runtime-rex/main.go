@@ -41,8 +41,8 @@ const (
 
 // handshake is the protocol op's reply. It declares only what is implemented:
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
-// observe.v1 is a switch: GCREX_OBSERVE_V1=1 declares it until GCREX-111
-// retires the switch.
+// observe.v1 is declared unconditionally (GCREX-111): the profile is
+// implemented and proven by gc runtime conformance.
 // idle-boundary gates the `idle` snapshot op (GCREX-63); gc 1.5.1 has no such
 // token and ignores it. carrier.ops says gc drives the five session ops
 // (nudge, peek, send-keys, interrupt, clear-scrollback) instead of exec, and
@@ -55,10 +55,6 @@ const (
 // has no input-outcome vocabulary and ignores the token, so 80 stays a plain
 // error there — the same answer it gives an undeclared pack.
 func handshake() string {
-	const base = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
-	if !observeV1Enabled() {
-		return base
-	}
 	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}`
 }
 
@@ -215,19 +211,6 @@ var ops = map[string]opSpec{
 	"kill-object":       {1, "kill-object <name>", opKillObject},
 }
 
-// observeV1Ops are the ops the observe.v1 token declares. The token is the
-// only authorization: with the switch off they are unknown (RPP v0 exit 2),
-// so a caller never gets an answer from an undeclared capability.
-var observeV1Ops = map[string]bool{
-	"observe":     true,
-	"inventory":   true,
-	"kill-object": true,
-}
-
-// observeV1Enabled gates observe.v1, both its handshake token and its ops, so
-// the two cannot disagree until GCREX-111 retires the switch.
-func observeV1Enabled() bool { return os.Getenv("GCREX_OBSERVE_V1") == "1" }
-
 // inputOutcomeOps are the four driving ops whose failures are typed by
 // input-outcome (gc internal/runtime/exec/outcome.go, inputOutcomeOp).
 var inputOutcomeOps = map[string]bool{
@@ -271,7 +254,6 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		return exitOK
 	}
 	spec, known := ops[op]
-	known = known && (!observeV1Ops[op] || observeV1Enabled())
 	if !known {
 		if unimplemented[op] {
 			fmt.Fprintf(stderr, "gc-runtime-rex: operation %q not implemented\n", op)
@@ -374,10 +356,9 @@ func printBool(w io.Writer, b bool) {
 // seedProcessNames fills GT_PROCESS_NAMES from the start config's
 // process_names when env leaves it unset, as gc's fresh start does (gc v1.5.1
 // internal/runtime/exec/observe.go:142-150,355-362): trimmed, non-empty,
-// comma-separated. An env value always wins. observe.v1-only, so flag-off
-// starts carry the same env as before.
+// comma-separated. An env value always wins.
 func seedProcessNames(cfg *startConfig) {
-	if !observeV1Enabled() || strings.TrimSpace(cfg.Env["GT_PROCESS_NAMES"]) != "" {
+	if strings.TrimSpace(cfg.Env["GT_PROCESS_NAMES"]) != "" {
 		return
 	}
 	var names []string

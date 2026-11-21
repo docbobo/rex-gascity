@@ -12,9 +12,8 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
-// The observe.v1 profile's read and kill ops. The profile is gated by the
-// handshake's observe.v1 token, which the dispatcher declares only when
-// GCREX_OBSERVE_V1=1 until GCREX-111 retires the switch.
+// The observe.v1 profile's read and kill ops. The handshake declares the
+// observe.v1 token unconditionally (GCREX-111).
 
 // Observe states, matching gc's wire vocabulary.
 const (
@@ -419,18 +418,27 @@ func (p *Provider) cityPanes(ctx context.Context) (map[SessionName]bool, error) 
 	return names, nil
 }
 
-// paneSessionName recovers the session name from a "<agent> (<name>)" pane
-// label. A label without that suffix names no session.
+// paneSessionName recovers the session name a pane label names. A label
+// without a parenthesised suffix names no session. A short form carries a bead
+// id after paneLabelShortForm. So its name is Sanitize(agent)+"-"+bead id, as
+// identityMatch reads it. A shortened agent names no session.
 func paneSessionName(label string) (SessionName, bool) {
 	i := strings.LastIndex(label, " (")
 	if i < 0 || !strings.HasSuffix(label, ")") {
 		return "", false
 	}
-	name := strings.TrimSpace(label[i+2 : len(label)-1])
-	if name == "" {
+	agent, suffix := label[:i], strings.TrimSpace(label[i+2:len(label)-1])
+	if suffix == "" {
 		return "", false
 	}
-	return SessionName(name), true
+	if strings.HasPrefix(suffix, paneLabelShortForm) {
+		bead := suffix[len(paneLabelShortForm):]
+		if bead == "" || strings.HasSuffix(agent, paneLabelShortened) {
+			return "", false
+		}
+		return SessionName(sanitizeQualified(agent) + "-" + bead), true
+	}
+	return SessionName(suffix), true
 }
 
 // KillObject re-checks that the exact object still holds the name and, if so,
