@@ -431,7 +431,7 @@ func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin i
 	if err != nil {
 		return fmt.Errorf("read process names: %w", err)
 	}
-	ans, err := p.Observe(ctx, args[0], strings.Fields(string(raw)))
+	ans, err := p.Observe(ctx, args[0], processNames(raw))
 	if err != nil {
 		return err
 	}
@@ -550,6 +550,19 @@ func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.R
 		return nil
 	}
 	return p.SendKeys(ctx, args[0], keys...)
+}
+
+// processNames reads one process name per line, the shape gc writes to observe
+// and process-alive. A name can contain spaces, so the split is on newlines,
+// and blank lines carry no name.
+func processNames(raw []byte) []string {
+	var names []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a

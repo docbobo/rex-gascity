@@ -300,10 +300,12 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 // claims no completeness, because a backend fault proves nothing absent. So
 // does a pane under a city label that names a session no binding holds.
 //
-// ponytail: one Rex block-process call per session, since Rex has no bulk
-// liveness query (session.view carries no process data). Move to a bulk query
-// (or a trusted last_exit cache) if a city grows past the inventory call's
-// time budget.
+// ponytail: one Rex block-process call and, for a running box, one
+// program_status read per session, since Rex has no bulk liveness or status
+// query (session.view carries no process data). The status read is what keeps
+// last_activity equal to get-last-activity's value (review comment 3); drop it
+// for a bulk query or a trusted last_exit cache if a city grows past the
+// inventory call's time budget.
 func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 	lister, ok := p.bindings.(Lister[Binding])
 	if !ok {
@@ -351,8 +353,7 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 		case ObserveDead:
 			e.Agent = "dead"
 		case ObserveRunning:
-			rec, found := p.activityRead(bd.Name)
-			e.LastActivity = inventoryActivity(holder, rec, found)
+			e.LastActivity = p.inventoryActivity(ctx, holder)
 		}
 		listed[bd.Name] = true
 		sessions = append(sessions, e)
@@ -369,14 +370,26 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 	return InventoryAnswer{Complete: complete, Sessions: sessions}, nil
 }
 
-// inventoryActivity stamps a running session's last activity from the activity
-// store, floored by the binding's start time so a session gc has not polled yet
-// still answers one. A record from another incarnation is ignored, as in
-// GetLastActivity.
-func inventoryActivity(b Binding, rec ActivityRecord, found bool) string {
+// inventoryActivity stamps a running session's last activity with the value
+// GetLastActivity would report for it, without writing anything. A
+// program_status record decides it, as it does for GetLastActivity; otherwise
+// the activity store answers, floored by the binding's start time so a session
+// gc has not polled yet still answers one. A record from another incarnation is
+// ignored, and an unreadable status leaves the store's value standing: a
+// listing is a floor, never a claim that a box is active.
+//
+// The program_status read costs one more Rex call per running session than the
+// liveness probe alone (see Inventory's budget note). Skipping it would report
+// a working or blocked agent's stale store stamp, which an idle check would
+// then read as an idle box.
+func (p *Provider) inventoryActivity(ctx context.Context, b Binding) string {
+	rec, found := p.activityRead(b.Name)
 	at := b.CreatedAt
 	if found && rec.Identity == string(b.BlockID) {
 		at = laterOf(at, laterOf(rec.At, rec.InputAt))
+	}
+	if statusAt, ok, err := p.statusActivity(ctx, b); err == nil && ok {
+		at = laterOf(at, statusAt)
 	}
 	if at.IsZero() {
 		// An adopted pane has no stored start time; now is the only floor that
@@ -569,11 +582,18 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 }
 
 // deadAgent proves the box's agent is gone, for zombie mode's kill. The start
-// meta names the agent processes; the box's root pid must still be readable (and
-// the one the caller saw, when agentPID is given), and a fresh host snapshot must
-// walk the root's subtree without finding one of the names. Anything it cannot
-// prove is not dead: an absent record or an unreadable snapshot answers false.
+// meta names the agent processes; the box's root pid must still be readable, and
+// a fresh host snapshot must walk the root's subtree without finding one of the
+// names. agentPID is the pid the caller saw Observe report: that is the matched
+// agent's pid, which can be a descendant of the root, so it is re-checked only
+// while the host still shows it, and a live pid outside the root's subtree names
+// another box. Anything it cannot prove is not dead: an adopted binding whose
+// sidecar belongs to an earlier incarnation, an absent record, or an unreadable
+// snapshot answers false.
 func (p *Provider) deadAgent(ctx context.Context, bd Binding, agentPID string) (bool, error) {
+	if bd.Adopted {
+		return false, nil
+	}
 	raw, ok, err := p.metaGet(bd.Name, "GT_PROCESS_NAMES")
 	if err != nil || !ok {
 		return false, err
@@ -583,15 +603,15 @@ func (p *Provider) deadAgent(ctx context.Context, bd Binding, agentPID string) (
 	if root <= 0 || len(names) == 0 {
 		return false, nil
 	}
-	if agentPID != "" {
-		pid, err := strconv.Atoi(agentPID)
-		if err != nil || pid != root {
-			return false, nil
-		}
-	}
 	wide, comms, err := p.snapshotProcessTable(ctx)
 	if err != nil {
 		return false, nil
+	}
+	if agentPID != "" {
+		pid, err := strconv.Atoi(agentPID)
+		if err != nil || pidOutsideSubtree(wide, root, pid) {
+			return false, nil
+		}
 	}
 	agent, _ := snapshotAgent(wide, comms, root, names)
 	return agent == agentDead, nil

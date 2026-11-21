@@ -1206,3 +1206,13 @@ func TestNudgeUnconfirmedExitsZeroWithOutcome(t *testing.T) {
 		t.Errorf("no *-nudge-unconfirmed.json under %s, want the diagnostic kept", base)
 	}
 }
+
+// TestProcessNamesSplitsOnLines proves observe's stdin reader keeps a name that
+// contains spaces, which the exact-match snapshot matcher needs.
+func TestProcessNamesSplitsOnLines(t *testing.T) {
+	got := processNames([]byte("my agent\nclaude\n\n  \ncodex \n"))
+	want := []string{"my agent", "claude", "codex"}
+	if !slices.Equal(got, want) {
+		t.Errorf("processNames = %q, want %q", got, want)
+	}
+}

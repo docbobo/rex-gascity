@@ -825,7 +825,24 @@ func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) e
 // lock is needed: the close, the reap and the re-read run while stops and starts
 // of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	return p.withNameLock(ctx, SessionName(name), func() error { return p.stop(ctx, name) })
+	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
+}
+
+// stopUnderPrimaryLock runs stop with the lock of the record's own name as well
+// as the caller's. An alias and its primary name map to different lock files,
+// so a start of the primary would otherwise run beside this stop and write a
+// replacement record that the stop's retirement then clears. The locks are
+// taken in caller-then-primary order, and a primary stop never takes a second
+// lock, so no path takes them in the other order.
+func (p *Provider) stopUnderPrimaryLock(ctx context.Context, name string) error {
+	primary := SessionName(name)
+	if cands := p.binder.lookup(SessionName(name)); len(cands) > 0 {
+		primary = cands[0].Name
+	}
+	if primary == SessionName(name) {
+		return p.stop(ctx, name)
+	}
+	return p.withNameLock(ctx, primary, func() error { return p.stop(ctx, name) })
 }
 
 func (p *Provider) stop(ctx context.Context, name string) error {
@@ -1038,10 +1055,21 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 	if err != nil {
 		return "", err
 	}
-	if out == "" && info.LastExit != nil {
+	if out == "" {
 		// A dead box's screen is the only record of why it died, so a capture
-		// that wrote nothing is unreadable, never a blank screen.
-		return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+		// that wrote nothing is unreadable, never a blank screen. The program
+		// can exit between the two calls, so an empty capture re-reads the
+		// process state before the blank screen is accepted; a re-read that
+		// fails leaves the earlier answer standing.
+		dead := info.LastExit != nil
+		if !dead {
+			if after, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID); err == nil {
+				dead = after.LastExit != nil
+			}
+		}
+		if dead {
+			return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+		}
 	}
 	if lines <= 0 {
 		return out, nil

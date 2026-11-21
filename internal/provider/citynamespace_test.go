@@ -3,10 +3,13 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -519,5 +522,56 @@ func TestUnpinnedLookupDuplicateNamePrecedence(t *testing.T) {
 	bd, ok := p.Binding(name)
 	if !ok || bd.SessionID != "session:gc:alpha" {
 		t.Errorf("duplicate name resolved %+v, %v; want the first sibling (alpha)", bd, ok)
+	}
+}
+
+// TestStopAliasTakesThePrimaryLock proves a stop of an alias also holds the
+// lock of the record's own name: a start of the primary must not run beside it
+// and have the fresh record cleared. With the primary lock held elsewhere, the
+// alias stop waits for it instead of finishing.
+func TestStopAliasTakesThePrimaryLock(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("GC_REX_STATE_DIR", base)
+	t.Setenv("GC_CITY_PATH", "/a/b/acme")
+	t.Setenv("GC_CITY", "")
+	fake := faketest.New()
+	ns, err := provider.NewNamespace([]string{"acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := provider.New("acme", fake, provider.WithNamespace(ns))
+	if err := p.Start(context.Background(), "Indigo--dog-1", provider.Config{
+		Argv: []string{"sleep", "300"},
+		Env:  map[string]string{"GC_ALIAS": "dog"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	locks, err := filepath.Glob(filepath.Join(base, "*", "locks", "*.lock"))
+	if err != nil || len(locks) == 0 {
+		t.Fatalf("locks = %v, %v; want the start's name lock", locks, err)
+	}
+	var nameLock string
+	for _, l := range locks {
+		if !strings.HasPrefix(filepath.Base(l), "tab-") {
+			nameLock = l
+		}
+	}
+	if nameLock == "" {
+		t.Fatalf("locks = %v, want a name lock", locks)
+	}
+	f, err := os.OpenFile(nameLock, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open %s: %v", nameLock, err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("flock %s: %v", nameLock, err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := p.Stop(ctx, "dog"); err == nil {
+		t.Fatal("Stop(alias) = nil while the primary lock is held, want it to wait for that lock")
 	}
 }

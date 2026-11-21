@@ -114,6 +114,36 @@ func parseWideRows(out string) (map[int]snapshotRow, bool) {
 	return rows, true
 }
 
+// pidOutsideSubtree reports whether pid is a live row of the snapshot that is
+// not root and not one of root's descendants. An absent pid is not outside: it
+// may have exited, and an exited agent is exactly what the zombie check looks
+// for. An empty snapshot is not outside either, so the caller's own proof
+// requirement still decides.
+func pidOutsideSubtree(wide string, root, pid int) bool {
+	rows, ok := parseWideRows(wide)
+	if !ok || root <= 0 || pid <= 0 {
+		return false
+	}
+	row, ok := rows[pid]
+	if !ok {
+		return false
+	}
+	for i := 0; i <= len(rows); i++ {
+		if pid == root {
+			return false
+		}
+		if pid <= 1 {
+			return true
+		}
+		parent, ok := rows[row.ppid]
+		if !ok {
+			return true
+		}
+		pid, row = row.ppid, parent
+	}
+	return false
+}
+
 // parseCommRows reads the pid and command name of every row of the narrow
 // snapshot. A row that does not parse carries no name and is skipped.
 func parseCommRows(out string) map[int]string {

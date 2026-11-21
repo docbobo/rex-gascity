@@ -429,7 +429,8 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 		t.Fatalf("identity = %v, want the started incarnation's", first.Identity)
 	}
 	// A restore puts a different pane under the same tab and pane labels.
-	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
+	recorded := blockOf(t, p, name)
+	fake.VanishedBlocks = map[rex.BlockID]bool{recorded: true}
 	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
 
 	ans, err := p.Observe(context.Background(), name, nil)
@@ -445,7 +446,7 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 	// Observe is a read: the restored pane answers, but the recorded binding is
 	// left for Start or Stop to replace, and the retired box's created and
 	// identity are not reported for a pane the provider did not start.
-	if bd, ok := p.Binding(name); !ok || bd.BlockID != blockOf(t, p, name) {
+	if bd, ok := p.Binding(name); !ok || bd.BlockID != recorded {
 		t.Errorf("binding after observe = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 	if ans.Object != nil && ans.Object.Created == first.Object.Created {
@@ -472,7 +473,8 @@ func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
 	if err != nil || first.Object == nil {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
 	}
-	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
+	recorded := blockOf(t, p, name)
+	fake.VanishedBlocks = map[rex.BlockID]bool{recorded: true}
 	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
 
 	inv, err := p.Inventory(context.Background())
@@ -482,7 +484,7 @@ func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
 	if len(inv.Sessions) != 1 || inv.Sessions[0].Object == nil || inv.Sessions[0].Object.ID != "block:dog-1-restored" {
 		t.Fatalf("sessions = %+v, want the restored pane running", inv.Sessions)
 	}
-	if bd, ok := p.Binding(name); !ok || bd.BlockID != blockOf(t, p, name) {
+	if bd, ok := p.Binding(name); !ok || bd.BlockID != recorded {
 		t.Errorf("binding after inventory = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 	// Like observe, the restored pane's identity is an empty set, not null: gc
@@ -920,8 +922,10 @@ func TestInventoryLastActivityFromStore(t *testing.T) {
 		t.Errorf("snapshot calls: list=%d view=%d, want one of each", fake.ListSessionsCalls, fake.SessionViewCalls)
 	}
 	for _, c := range fake.BlockCalls {
-		if c.Op != "process" {
-			t.Errorf("inventory called %q per box, want only the liveness process read", c.Op)
+		// The liveness read and the program_status read are the two calls the
+		// inventory budget allows; a screen capture (format) is a poll.
+		if c.Op != "process" && c.Op != "program_status" {
+			t.Errorf("inventory called %q per box, want only the liveness and status reads", c.Op)
 		}
 	}
 }
