@@ -103,6 +103,22 @@ func TestResolveStaleBindingGone(t *testing.T) {
 	}
 }
 
+func TestResolveKeepsStaleBindingWithPendingSurvivors(t *testing.T) {
+	b, store, _ := newTestBinder(t)
+	stale := indigoBinding()
+	stale.Survivors = []Survivor{{PID: 4242, Start: "Mon Nov 17 10:00:00 2026"}}
+	store.Save(stale)
+
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
+	if ok || err != nil {
+		t.Fatalf("Resolve = %v, %v", ok, err)
+	}
+	saved, found := store.Load("Indigo--dog-1")
+	if !found || len(saved.Survivors) != 1 || saved.Survivors[0].PID != 4242 {
+		t.Fatalf("stale record with survivors gone: %+v, %v", saved, found)
+	}
+}
+
 func TestResolveTransportErrorKeepsBinding(t *testing.T) {
 	b, store, fake := newTestBinder(t, indigoWindow())
 	store.Save(indigoBinding())

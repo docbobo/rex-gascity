@@ -429,6 +429,11 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 		return Binding{}, false, err
 	}
 	for _, bd := range stale {
+		// A survivor recorded while this resolve ran names a process whose
+		// pane is gone. Keep the record so the retry can still reap it.
+		if len(bd.Survivors) > 0 {
+			continue
+		}
 		if !ok || bd.Name != got.Name { // scan already rewrote got.Name
 			_ = b.store.Drop(bd.Name)
 		}
