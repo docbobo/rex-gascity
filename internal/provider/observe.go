@@ -404,8 +404,9 @@ func paneSessionName(label string) (SessionName, bool) {
 // The whole check-then-kill runs under the name lock, so a start cannot slip a
 // new box under the name between the re-check and the close. Corpse mode kills
 // only a box nothing runs in and no client has open, and answers `live`
-// otherwise. Zombie mode needs the agent check RPP-OBSERVE-006 does not
-// implement yet, so it never kills and answers `changed`.
+// otherwise. Zombie mode needs the box running, unattached, and its agent
+// provably dead by the RPP-OBSERVE-006 snapshot; anything less answers
+// `changed`.
 func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRequest) (string, error) {
 	if strings.TrimSpace(req.Object.ID) == "" || strings.TrimSpace(req.Object.Created) == "" {
 		return "", errors.New("kill-object: object id and created are required")
