@@ -5,11 +5,6 @@ on:
   push:
     branches: [main]   # the release branch: tags are cut from main
   workflow_dispatch:
-    inputs:
-      ci_rex:
-        description: Install the pinned rex CLI and rerun conformance with it (off by default)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -18,8 +13,8 @@ env:
   # The gc commit conformance runs against. Bump deliberately: a new
   # conformance requirement must show up here, not pass silently.
   GASCITY_PIN: baf57f4ff60ea949d2a0c3922a65be95cf6b7cc1
-  # The optional rex run pins one published preview archive by commit and
-  # checksum, so a newer preview never changes what ci_rex tests.
+  # The conformance run pins one published preview archive by commit and
+  # checksum, so a newer preview never changes what conformance tests.
   REX_PIN: 0.1.0-preview.22
   REX_URL: https://blob.superlogical.com/download/rex/preview/a086db17db8d464627c77e3bb0be6d462668b0ac/rex-linux-amd64.tar.gz
   REX_SHA256: 90ef882c73d5c8fa154586ce0cc36a835a6f0b80c150eb38d3cd127b18476e3c
@@ -78,19 +73,9 @@ jobs:
           go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      # No rex is installed. gc replaces GC_REX_CITY with GC_EXEC_CITY_NAME,
-      # so the provider uses a scratch namespace and leaves no session behind.
-      - name: Conformance (no rex)
-        run: pack/tests/conformance.sh --binary bin/gc-runtime-rex
-
-      - name: Check the conformance harness
-        run: pack/tests/check-conformance.sh --binary bin/gc-runtime-rex
-
-      # Optional: run the same suite with a real rex CLI. conformance.sh does
-      # not need rex, but a real CLI is the only thing that exercises the
-      # provider's session path. Off unless the dispatch input asks for it.
+      # The provider's session path shells out to the rex CLI, so install the
+      # pinned preview archive before running conformance.
       - name: Install pinned rex
-        if: inputs.ci_rex
         run: |
           mkdir -p "$RUNNER_TEMP/rex-bin"
           curl -fsSL "$REX_URL" -o "$RUNNER_TEMP/rex.tar.gz"
@@ -101,6 +86,8 @@ jobs:
           echo "$version"
           echo "$version" | grep -q "$REX_PIN" || { echo "rex is not the pinned $REX_PIN" >&2; exit 1; }
 
-      - name: Conformance (pinned rex)
-        if: inputs.ci_rex
+      - name: Check the conformance harness
+        run: pack/tests/check-conformance.sh --binary bin/gc-runtime-rex
+
+      - name: Conformance
         run: pack/tests/conformance.sh --binary bin/gc-runtime-rex
