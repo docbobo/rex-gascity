@@ -39,6 +39,13 @@ passes. The task notes carry the evidence.
 Merging is not yours unless the brief says so. Tagging and publishing are never
 yours.
 
+Never merge with admin rights, with a bypassed rule, or with a required check
+skipped. Never disable branch protection to make a merge possible.
+
+A pending re-review is not an approval. When the verdict is CHANGES_REQUESTED,
+the merge waits for a new verdict from that reviewer. A reply to a review
+comment does not change a verdict.
+
 ## Overlay changes need approval
 
 Every file under an `overlay` directory MUST be approved by Boris before it
