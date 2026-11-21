@@ -9,7 +9,7 @@ GC_REX_CITY ?= rex-verify
 PACK_VERSION ?= $(shell awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $$2; exit}' pack/pack.toml)
 LDFLAGS ?= -X main.buildVersion=$(PACK_VERSION)
 
-.PHONY: help build install hooks vet test check conformance clean
+.PHONY: help build install hooks vet test verify check conformance clean
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-14s %s\n", $$1, $$2}' Makefile
@@ -29,11 +29,14 @@ vet: ## Run go vet across all packages
 test: ## Run unit tests across all packages
 	go test ./...
 
+verify: ## Run the pack check scripts (pack/tests/verify.sh)
+	bash pack/tests/verify.sh
+
 check: build ## Build and run gc runtime check against testdata/city
 	PATH="$(abspath $(BIN_DIR)):$$PATH" GC_REX_CITY="$(GC_REX_CITY)" gc runtime check rex --city "$(CITY_DIR)"
 
 conformance: build ## Build and run gc runtime conformance against testdata/city
-	PATH="$(abspath $(BIN_DIR)):$$PATH" GC_REX_CITY="$(GC_REX_CITY)" gc runtime conformance rex --city "$(CITY_DIR)"
+	./pack/tests/conformance.sh --binary "$(abspath $(BIN))"
 
 clean: ## Remove build artifacts
 	rm -rf "$(BIN_DIR)"

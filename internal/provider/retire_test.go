@@ -34,13 +34,17 @@ func retireStarted(t *testing.T, name string) (*faketest.Fake, *provider.Provide
 	return fake, p, b.BlockID
 }
 
+// fakePID is above Linux pid_max so no real host process matches it; a
+// low pid like 42 can be a kernel thread and make kill return EPERM.
+const fakePID = 1 << 22
+
 // wrappedForeground is the process tree Rex reports for a live control
 // dispatcher: the foreground program's name, path and argv0 are all the
 // wrapped binary, so only a GC_BIN expansion matches the "gc" hint.
 func wrappedForeground(block rex.BlockID) map[rex.BlockID]rex.ProcessInfo {
 	path := "/nix/store/x/bin/" + wrappedGC
 	return map[rex.BlockID]rex.ProcessInfo{
-		block: {Foreground: &rex.Process{PID: 42, Name: wrappedGC, Path: path, Argv0: path}},
+		block: {Foreground: &rex.Process{PID: fakePID, Name: wrappedGC, Path: path, Argv0: path}},
 	}
 }
 
