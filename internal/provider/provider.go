@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -196,6 +197,13 @@ type Provider struct {
 	// a refused copy_files destination). It is stderr in production; tests can
 	// capture it with WithWarnings.
 	warn io.Writer
+
+	// launching counts the launches in flight per session. A launch registers
+	// under the state lock before it can create a window; a stop checks it
+	// under the same lock before removing an "empty" session, so it cannot
+	// destroy the session a start is about to fill (GCREX-31 review).
+	launchingMu sync.Mutex
+	launching   map[rex.SessionID]int
 }
 
 // Option configures a Provider.
@@ -636,10 +644,18 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if err := p.seedStartIdentity(n, cfg.Env); err != nil {
 			return err
 		}
-		return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
+		if err := p.recordProvisionalBinding(n, sid, "", attempt, cfg); err != nil {
+			return err
+		}
+		// Register the launch under the same lock a stop holds across its
+		// empty-session check: until the window exists the session still looks
+		// empty, and a stop must not remove it (GCREX-31 review).
+		p.markLaunching(sid)
+		return nil
 	}); err != nil {
 		return startResult{}, err
 	}
+	defer p.unmarkLaunching(sid)
 
 	tab := hint.TabLabel
 	spec := plan.Spec
@@ -704,8 +720,13 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// launch once more; a second miss is returned as is.
 		if sid, err = findOrCreate(); err == nil {
 			if err = p.withStateLock(ctx, func() error {
-				return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
+				if err := p.recordProvisionalBinding(n, sid, "", attempt, cfg); err != nil {
+					return err
+				}
+				p.markLaunching(sid)
+				return nil
 			}); err == nil {
+				defer p.unmarkLaunching(sid)
 				err = launch()
 			}
 		}
@@ -876,13 +897,18 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if err := p.clearIncarnations(n, stored.Name); err != nil {
 			return err
 		}
-		// The survivors are gone and the metadata is clear, so the record can
-		// go with them. Resolve keeps a stale record that still names one.
-		p.binder.Forget(n)
 		// The pane went on its own and this stop found none, but it still
 		// leaves the last pane: remove the empty city session (GCREX-31). The
-		// state lock is already held.
-		return p.destroyEmptyCitySession(ctx, stored.SessionID)
+		// state lock is already held. A failed removal keeps the record, or the
+		// retry would lose the session id it needs (GCREX-31 review).
+		if err := p.destroyEmptyCitySession(ctx, stored.SessionID); err != nil {
+			return err
+		}
+		// The survivors are gone, the metadata is clear and the session is
+		// removed, so the record can go with them. Resolve keeps a stale
+		// record that still names a survivor.
+		p.binder.Forget(n)
+		return nil
 	}
 	err = p.stopBinding(ctx, n, binding)
 	if errors.Is(err, errBlockGone) {
@@ -942,14 +968,16 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
 	}
-	p.binder.Forget(binding.Name)
 	// The pane is closed and its incarnations are clear: remove the canonical
 	// city session when it is now empty (GCREX-31). The state lock is held
 	// for the check and the removal, so a concurrent Start cannot lose a pane
-	// (it recreates the session on ErrNotFound).
+	// (it recreates the session on ErrNotFound). The record goes only after a
+	// successful removal: a failed one must keep the session id for the retry
+	// (GCREX-31 review).
 	if err := p.destroyEmptyCitySession(ctx, binding.SessionID); err != nil {
 		return err
 	}
+	p.binder.Forget(binding.Name)
 	if alreadyClosed {
 		return errBlockGone
 	}
@@ -976,10 +1004,46 @@ func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionI
 	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
 		return nil
 	}
+	// A launch registered on this session has no window yet, so the view above
+	// cannot see the pane it is about to create (GCREX-31 review). Rex removes
+	// a tab with its last block (docs/plans/native-rex-provider.md:387,
+	// live-verified), so zero windows is a true empty session otherwise.
+	if p.launchInFlight(sid) {
+		return nil
+	}
 	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
 	}
 	return nil
+}
+
+// markLaunching registers a launch on sid. The caller holds the state lock, so
+// the registration and the stop's check cannot interleave.
+func (p *Provider) markLaunching(sid rex.SessionID) {
+	p.launchingMu.Lock()
+	defer p.launchingMu.Unlock()
+	if p.launching == nil {
+		p.launching = map[rex.SessionID]int{}
+	}
+	p.launching[sid]++
+}
+
+// unmarkLaunching drops one registration for sid.
+func (p *Provider) unmarkLaunching(sid rex.SessionID) {
+	p.launchingMu.Lock()
+	defer p.launchingMu.Unlock()
+	if p.launching[sid] > 1 {
+		p.launching[sid]--
+		return
+	}
+	delete(p.launching, sid)
+}
+
+// launchInFlight reports whether a launch on sid is registered and not done.
+func (p *Provider) launchInFlight(sid rex.SessionID) bool {
+	p.launchingMu.Lock()
+	defer p.launchingMu.Unlock()
+	return p.launching[sid] > 0
 }
 
 // reapSurvivors reaps tree and, while any of it survives, records the pids on
