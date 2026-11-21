@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -1097,6 +1098,12 @@ func runPreStart(ctx context.Context, command, workDir string, env []string) err
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	cmd.Dir = preStartCwd(workDir)
 	cmd.Env = env
+	// Run the hook in its own process group so a cancel kills the whole
+	// group. Killing only the shell leaves a child (e.g. sleep) holding the
+	// stdout pipe open, and CombinedOutput blocks until that child exits.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 200 * time.Millisecond
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// A cancelled or timed-out ctx means the command did not fail on its

@@ -29,6 +29,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install pinned gc
+        run: |
+          go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Run pack checks
         run: bash pack/tests/verify.sh
 
