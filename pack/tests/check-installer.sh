@@ -139,8 +139,17 @@ awk -v name=gc-runtime-rex_darwin_arm64 '
   { print }
 ' "$work/release/checksums.txt" > "$work/release-bad/checksums.txt"
 
-base_path="/usr/bin:/bin"
-[ -d /run/current-system/sw/bin ] && base_path="$base_path:/run/current-system/sw/bin"
+# sysbin holds the shell utilities the installer runs, linked into a directory
+# of its own. A real /usr/bin may carry gc-runtime-rex, and then the installer
+# would pick that directory as the install target instead of ~/.local/bin.
+sysbin=$work/sysbin
+mkdir -p "$sysbin"
+for t in sh awk sed grep cut mkdir mktemp mv rm cp chmod dirname cat \
+         sha256sum shasum; do
+  p=$(command -v "$t" 2>/dev/null) || continue
+  ln -sf "$p" "$sysbin/$t"
+done
+base_path=$sysbin
 tools_path="$work/tools:$base_path"
 nogh_path="$work/tools-nogh:$base_path"
 
@@ -212,6 +221,31 @@ FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$reuse:$nogh_path" ||
 "$reuse/gc-runtime-rex" version | grep -q "$version" ||
   fail "install did not replace the provider in the directory command -v reports"
 [ ! -e "$home/.local/bin/gc-runtime-rex" ] || fail "install wrote to ~/.local/bin although a provider was on PATH"
+
+# --- relative PATH entry ----------------------------------------------------
+
+# command -v reports the relative spelling, relbin/gc-runtime-rex. The install
+# target must still be that directory, not ~/.local/bin.
+home=$work/home-relative
+relbin=$work/relbin
+mkdir -p "$home" "$relbin"
+printf '#!/bin/sh\nexit 1\n' > "$relbin/gc-runtime-rex"   # a stale provider
+chmod 755 "$relbin/gc-runtime-rex"
+reset_logs
+if ! out=$(
+  cd "$work" && env -i HOME="$home" PATH="relbin:$nogh_path" \
+    FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 \
+    FAKE_RELEASE_DIR="$work/release" \
+    FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" \
+    FAKE_CURL_HTTP=200 FAKE_CURL_MODE=ok \
+    sh "$installer" 2>&1
+); then
+  fail "install failed with a relative PATH entry: $out"
+fi
+[ ! -e "$home/.local/bin/gc-runtime-rex" ] ||
+  fail "a relative PATH entry was not resolved; install went to ~/.local/bin"
+"$relbin/gc-runtime-rex" version | grep -q "$version" ||
+  fail "install did not replace the provider under the relative PATH entry"
 
 # --- PATH shadow warning ----------------------------------------------------
 

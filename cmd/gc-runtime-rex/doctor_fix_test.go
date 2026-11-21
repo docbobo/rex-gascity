@@ -103,6 +103,27 @@ func fixLayout(t *testing.T, version string) (packDir, home, binDir, releaseDir 
 	return packDir, home, binDir, releaseDir
 }
 
+// isolatedPath puts binDir first and then a shim directory holding only the
+// tools the fix needs. A real /usr/bin would let a host gc-runtime-rex decide
+// the install destination. The test expects ~/.local/bin.
+func isolatedPath(t *testing.T, binDir string) string {
+	t.Helper()
+	shim := t.TempDir()
+	for _, name := range []string{
+		"sh", "uname", "dirname", "mktemp", "awk", "cut", "cat", "mkdir",
+		"cp", "chmod", "mv", "rm", "sed", "sha256sum", "shasum",
+	} {
+		src, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		if err := os.Symlink(src, filepath.Join(shim, name)); err != nil {
+			t.Fatalf("symlink %s: %v", name, err)
+		}
+	}
+	return binDir + ":" + shim
+}
+
 // TestRexBinaryDoctorFix drives the real fix.sh the way gc does: the script
 // itself, cwd at the pack directory. The fix installs the release asset, so
 // these cases need no Go toolchain: curl succeeds, curl 404 falls back to gh,
@@ -111,7 +132,7 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 	t.Run("installs the release asset", func(t *testing.T) {
 		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
 		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
-			"PATH":         binDir + ":/usr/bin:/bin",
+			"PATH":         isolatedPath(t, binDir),
 			"HOME":         home,
 			"FAKE_RELEASE": releaseDir,
 			"FAKE_HTTP":    "200",
@@ -133,7 +154,7 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
 		writeExecutable(t, filepath.Join(binDir, "gh"), []byte(fakeGH))
 		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
-			"PATH":         binDir + ":/usr/bin:/bin",
+			"PATH":         isolatedPath(t, binDir),
 			"HOME":         home,
 			"FAKE_RELEASE": releaseDir,
 			"FAKE_HTTP":    "404",
@@ -152,7 +173,7 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 			t.Fatalf("write checksums.txt: %v", err)
 		}
 		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
-			"PATH":         binDir + ":/usr/bin:/bin",
+			"PATH":         isolatedPath(t, binDir),
 			"HOME":         home,
 			"FAKE_RELEASE": releaseDir,
 			"FAKE_HTTP":    "200",

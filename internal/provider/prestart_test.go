@@ -471,3 +471,31 @@ func TestPreStartWaitsForBackgroundChild(t *testing.T) {
 		t.Error("launch did not happen after a backgrounded pre_start")
 	}
 }
+
+// TestPreStartCancelKillsBackgroundChild pins the grace branch of
+// runPreStart: once cmd.Wait has seen the shell exit, cmd.Cancel no longer
+// runs, so a backgrounded child that still holds the output pipe must be
+// killed by hand. Without that kill the child survives the cancellation.
+func TestPreStartCancelKillsBackgroundChild(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "alive")
+	fake := faketest.New()
+	p := provider.New("acme", fake,
+		provider.WithStartBudget(10*time.Second),
+		provider.WithPreStartHookTimeout(10*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  root,
+		PreStart: []string{"(sleep 0.6; echo alive > " + marker + ") &"},
+	}
+	if err := p.Start(ctx, "pi-mc-wisp-abc", cfg); err == nil {
+		t.Fatal("Start succeeded, want a canceled start")
+	}
+	time.Sleep(time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the backgrounded child survived the cancellation and wrote its marker")
+	}
+}

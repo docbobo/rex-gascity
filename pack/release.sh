@@ -5,7 +5,7 @@
 #   pack/release.sh v<version> [--dry-run] [--resume] [--yes]
 #
 # Preconditions: clean tree (tracked files), branch main, [pack].version equal
-# to <version>, and no release or tag for it. A leftover draft needs --resume;
+# to <version>, and no tag at another commit. A leftover draft needs --resume;
 # a published release is never touched. --dry-run prints the commit and asset
 # names and changes no remote state. --yes skips the interactive publish
 # prompt; use it only after a human approved the release.
@@ -89,12 +89,36 @@ json_field() {
   printf '%s' "$1" | python3 -c "import json,sys; print(json.load(sys.stdin)['$2'])"
 }
 
+# remote_tag_commit prints the commit origin's tag points at. It asks for the
+# peeled ref so an annotated tag reports its commit, and touches no local ref.
+# No local variables here: a sh function would clobber the caller's names.
+remote_tag_commit() {
+  ref_lines=$(git -C "$root" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" 2>/dev/null) || return 0
+  peeled=$(printf '%s\n' "$ref_lines" |
+    awk -v t="refs/tags/$tag^{}" '$2 == t { print $1; exit }')
+  [ -n "$peeled" ] || peeled=$(printf '%s\n' "$ref_lines" |
+    awk -v t="refs/tags/$tag" '$2 == t { print $1; exit }')
+  [ -n "$peeled" ] || return 0
+  printf '%s\n' "$peeled"
+}
+
 release_json=$("$GH" release view "$tag" --json isDraft,url,assets 2>/dev/null || true)
 release_exists=0
 [ -n "$release_json" ] && release_exists=1
 
 remote_tag=0
 [ -n "$(git -C "$root" ls-remote --tags origin "refs/tags/$tag" 2>/dev/null)" ] && remote_tag=1
+
+# The tag names the commit the assets were built from, so a tag anywhere else
+# means the draft and this checkout disagree. Compare before downloading.
+tag_commit=$commit
+if [ "$remote_tag" -eq 1 ]; then
+  tag_commit=$(remote_tag_commit)
+  [ -n "$tag_commit" ] ||
+    die "cannot read the commit of origin tag $tag"
+  [ "$tag_commit" = "$commit" ] ||
+    die "origin tag $tag points at $tag_commit, not at HEAD ($commit); check out that commit and retry"
+fi
 
 if [ "$release_exists" -eq 1 ]; then
   is_draft=$(json_field "$release_json" isDraft)
@@ -103,7 +127,6 @@ if [ "$release_exists" -eq 1 ]; then
     die "release $tag already exists; pass --resume to continue an existing draft"
   [ "$is_draft" = "True" ] || die "release $tag is already published; refusing to touch it"
 else
-  [ "$remote_tag" -eq 0 ] || die "tag $tag already exists without a release"
   [ "$resume" -eq 0 ] || die "no draft release $tag to resume"
 fi
 
@@ -126,7 +149,13 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 
 if [ "$release_exists" -eq 0 ]; then
-  "$GH" release create "$tag" --draft --target "$commit"     --title "rex runtime pack $tag"     --notes "Rex runtime pack $tag. See pack/README.md to import and install."
+  # The workflow gate resolves refs/tags/$tag and a draft release creates no
+  # tag, so the tag must exist before the dispatch. Push it at this commit.
+  if [ "$remote_tag" -eq 0 ]; then
+    git -C "$root" push --quiet origin "$commit:refs/tags/$tag" ||
+      die "cannot push tag $tag at $commit"
+  fi
+  "$GH" release create "$tag" --draft --title "rex runtime pack $tag"     --notes "Rex runtime pack $tag. See pack/README.md to import and install."
   "$GH" workflow run "$workflow" -f "tag=$tag"
 fi
 
@@ -171,6 +200,10 @@ fi
 [ "$actual" = "$expected" ] ||
   die "sha256 mismatch for $asset: expected $expected, got $actual"
 
+# gh release download writes 0644. The checksum covers the content, not the
+# mode, and conformance.sh refuses a --binary it cannot execute.
+chmod 0755 "$dl/$asset"
+
 sh "$pack/tests/verify.sh" ||
   die "pack checks failed; release $tag is still a draft"
 
@@ -187,12 +220,6 @@ gc_version=$("$gc_bin" version 2>/dev/null | head -1 || true)
 gc_commit=$("$gc_bin" version --json 2>/dev/null |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])' 2>/dev/null || true)
 [ -n "$gc_commit" ] || gc_commit=unknown
-
-tag_commit=$commit
-if [ "$release_exists" -eq 1 ]; then
-  git -C "$root" fetch --quiet origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
-  tag_commit=$(git -C "$root" rev-parse "$tag^{commit}" 2>/dev/null || echo unknown)
-fi
 
 if [ "$conf_status" -eq 0 ]; then result=PASS; else result=FAIL; fi
 {

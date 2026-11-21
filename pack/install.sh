@@ -47,9 +47,8 @@ version=$(
 # ~/.local/bin. Never a second choice such as GOBIN.
 target_dir=
 if resolved=$(command -v gc-runtime-rex 2>/dev/null) && [ -n "$resolved" ]; then
-  case "$resolved" in
-    /*) target_dir=${resolved%/*} ;;
-  esac
+  # Resolve the directory, not the spelling: PATH may hold a relative entry.
+  target_dir=$(CDPATH= cd -- "$(dirname -- "$resolved")" 2>/dev/null && pwd) || target_dir=
 fi
 if [ -z "$target_dir" ]; then
   [ -n "${HOME:-}" ] || die "HOME is not set; cannot choose the default install directory"

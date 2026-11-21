@@ -18,12 +18,23 @@ keys=${LANDING_KEYS:-"GCREX-120.1 GCREX-120.2 GCREX-120.3 GCREX-120.4 GCREX-120.
 
 log=$(git -C "$root" log --format='%s%n%b' HEAD)
 missing=
+# A plain substring test finds GCREX-120.1 inside GCREX-120.10. The key must
+# start at a boundary and must not be followed by a digit or a dot.
+has_key() {
+  key_re=$(printf '%s' "$1" | sed 's/[.]/\\./g')
+  grep -Eq "(^|[^0-9A-Za-z._-])${key_re}([^0-9.]|$)"
+}
 for key in $keys; do
-  printf '%s\n' "$log" | grep -qF "$key" || missing="$missing $key"
+  printf '%s\n' "$log" | has_key "$key" || missing="$missing $key"
 done
 
-# The guard has teeth: a key no commit can carry must be reported missing.
-if printf '%s\n' "$log" | grep -qF "GCREX-120.self-test-$$"; then
+# The guard has teeth: the boundary test must not accept .1 for a .10 commit,
+# and a key no commit can carry must be reported missing.
+if printf '%s\n' "GCREX-120.10 landed" | has_key "GCREX-120.1"; then
+  echo "check-landing: self-test failed: GCREX-120.1 matched GCREX-120.10" >&2
+  exit 1
+fi
+if printf '%s\n' "$log" | has_key "GCREX-120.self-test-$$"; then
   echo "check-landing: self-test failed: an impossible key was found" >&2
   exit 1
 fi

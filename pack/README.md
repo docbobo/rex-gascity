@@ -169,10 +169,12 @@ create the draft, build, verify, ask, and publish. Run
 `sh pack/release.sh v0.2.0 --resume` to continue an existing draft.
 
 It refuses a dirty tracked tree, a branch other than `main`, a tag that
-disagrees with `[pack] version`, an existing tag, and a release that is
-already published. An existing draft needs `--resume`.
+disagrees with `[pack] version`, a tag that points at another commit, and a
+release that is already published. An existing draft needs `--resume`, and
+`--resume` refuses a tag that points at another commit.
 
-A run creates the draft and its tag, dispatches `release.yml`, waits a
+A run creates the draft, pushes the tag at the current commit, dispatches
+`release.yml`, waits a
 bounded time for the four binaries and `checksums.txt`, downloads the asset
 for this host, checks its sha256, runs `pack/tests/verify.sh` and
 `pack/tests/conformance.sh` against that downloaded asset, and writes

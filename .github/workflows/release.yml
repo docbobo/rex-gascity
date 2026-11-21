@@ -40,11 +40,20 @@ jobs:
         id: sha
         env:
           TAG: ${{ inputs.tag }}
-        run: echo "sha=$(git rev-parse --verify "refs/tags/$TAG^{commit}")" >>"$GITHUB_OUTPUT"
+        # Assign first, write second: under the default -e an echo that only
+        # embeds a failed substitution still exits 0 and publishes an empty sha.
+        run: |
+          sha=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
       - name: Check the tag against [pack].version
         env:
           TAG: ${{ inputs.tag }}
-        run: bash pack/check-release-version.sh "$TAG"
+          SHA: ${{ steps.sha.outputs.sha }}
+        # The tree this workflow builds is SHA, not the dispatch ref, so the
+        # version check must read the tag's own pack.toml.
+        run: |
+          git checkout --quiet "$SHA"
+          bash pack/check-release-version.sh "$TAG"
 
   build:
     needs: gate

@@ -1126,6 +1126,11 @@ func runPreStart(ctx context.Context, command, workDir string, env []string) err
 		select {
 		case err = <-done:
 		case <-time.After(preStartCancelGrace):
+			// cmd.Cancel stops running once cmd.Wait has seen the shell exit,
+			// so a child that escaped the process group would survive it and
+			// keep the output pipe open. Kill the group again; ESRCH only
+			// means it is already gone.
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			err = ctx.Err()
 		}
 	}

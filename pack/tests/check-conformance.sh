@@ -36,6 +36,9 @@ fi
 binary=$(CDPATH= cd -- "$(dirname -- "$binary")" && pwd)/$(basename -- "$binary")
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/rexcheck.XXXXXX")
+# The relative-TMPDIR case below runs a subshell from $tmp, so the path the
+# trap and the redirects use must not stay relative.
+tmp=$(CDPATH= cd -- "$tmp" && pwd)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 fail() {

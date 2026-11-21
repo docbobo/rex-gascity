@@ -144,6 +144,9 @@ exit "${FAKE_VERIFY_STATUS:-0}"
 VERIFY
 cat > "$repo/pack/tests/conformance.sh" <<'CONF'
 #!/bin/sh
+# The real conformance.sh exits 2 on a --binary it cannot execute, and that is
+# what a freshly downloaded 0644 asset is until release.sh chmods it.
+[ -x "$2" ] || { echo "fake conformance: not executable: $2" >&2; exit 2; }
 echo "fake conformance stdout: $*"
 echo "fake conformance stderr" >&2
 exit "${FAKE_CONFORMANCE_STATUS:-0}"
@@ -170,6 +173,10 @@ reset_state() {
     cp "$work/asset" "$state/assets/$name"
     printf '%s  %s\n' "$sha" "$name" >> "$state/assets/checksums.txt"
   done
+  # gh release download writes 0644; the release script must chmod the asset.
+  chmod 0644 "$state"/assets/*
+  git -C "$work/origin.git" tag -d v0.2.0 >/dev/null 2>&1 || true
+  git -C "$repo" tag -d v0.2.0 >/dev/null 2>&1 || true
 }
 
 mutations() {
@@ -237,6 +244,38 @@ run sh pack/release.sh v0.2.0 --resume --dry-run > "$work/out" 2>&1 ||
   fail "--resume on a draft failed: $(cat "$work/out")"
 [ -z "$(mutations)" ] || fail "resume dry run mutated remote state: $(mutations)"
 
+# A tag at another commit is not this release: refuse before any download.
+reset_state
+git -C "$repo" commit -q --allow-empty -m "a later commit"
+git -C "$repo" tag v0.2.0 HEAD~1
+git -C "$repo" push -q origin refs/tags/v0.2.0
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "a tag at another commit must fail without a release"
+fi
+grep -q "$(git -C "$repo" rev-parse HEAD~1)" "$work/out" ||
+  fail "refusal does not name the tag's commit"
+[ ! -f "$state/draft" ] || fail "release created a draft under a tag at another commit"
+[ -z "$(grep -E '^release download' "$state/calls.log" 2>/dev/null)" ] ||
+  fail "release downloaded assets before comparing the tag commit"
+
+# The same holds for --resume: a draft and a tag that disagree cannot be
+# resumed, because the assets were built from the tag's commit.
+reset_state
+touch "$state/draft"
+git -C "$repo" tag v0.2.0 HEAD~1
+git -C "$repo" push -q origin refs/tags/v0.2.0
+if run sh pack/release.sh v0.2.0 --resume --yes > "$work/out" 2>&1; then
+  fail "--resume must refuse a tag at another commit"
+fi
+grep -q "$(git -C "$repo" rev-parse HEAD~1)" "$work/out" ||
+  fail "resume refusal does not name the tag's commit"
+[ -z "$(grep -E '^release download' "$state/calls.log" 2>/dev/null)" ] ||
+  fail "resume downloaded assets before comparing the tag commit"
+[ -z "$(mutations | grep -E '^release (upload|edit)')" ] ||
+  fail "resume mutated the release under a tag at another commit"
+git -C "$repo" push -q origin :refs/tags/v0.2.0
+git -C "$repo" tag -d v0.2.0 >/dev/null
+
 # Conformance failure: evidence is attached, nothing is published, cleanup prints.
 reset_state
 if FAKE_CONFORMANCE_STATUS=1 run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
@@ -267,6 +306,8 @@ grep -q 'result: PASS' "$state/assets/conformance.txt" 2>/dev/null ||
 grep -q 'release edit v0.2.0 --draft=false' "$state/calls.log" ||
   fail "publish did not run gh release edit --draft=false"
 [ -f "$state/published" ] || fail "release is not published"
+[ "$(git -C "$work/origin.git" rev-parse "refs/tags/v0.2.0^{commit}")" = "$(git -C "$repo" rev-parse HEAD)" ] ||
+  fail "release did not push the tag at HEAD"
 grep -q 'https://example.test/releases/tag/v0.2.0' "$work/out" ||
   fail "success does not print the release URL"
 grep -q 'gc-runtime-rex_' "$work/out" || fail "success does not print the asset list"
