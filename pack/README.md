@@ -158,6 +158,36 @@ Such a build reports the module pseudo-version, so the doctor check warns
 that it cannot confirm the pack version. The release asset is the default
 path.
 
+## Build and release
+
+`pack/release.sh` is the only publisher. CI builds into the draft that the
+script creates and never publishes.
+
+Run `sh pack/release.sh v0.2.0 --dry-run` to print the resolved commit and
+asset names without changing remote state. Run `sh pack/release.sh v0.2.0` to
+create the draft, build, verify, ask, and publish. Run
+`sh pack/release.sh v0.2.0 --resume` to continue an existing draft.
+
+It refuses a dirty tracked tree, a branch other than `main`, a tag that
+disagrees with `[pack] version`, an existing tag, and a release that is
+already published. An existing draft needs `--resume`.
+
+A run creates the draft and its tag, dispatches `release.yml`, waits a
+bounded time for the four binaries and `checksums.txt`, downloads the asset
+for this host, checks its sha256, runs `pack/tests/verify.sh` and
+`pack/tests/conformance.sh` against that downloaded asset, and writes
+`conformance.txt`. The file records PASS or FAIL, the conformance output, the
+rex version, the gc version and commit, the asset name and sha256, the host,
+the UTC time and the tag commit.
+
+A failing conformance attaches the evidence, leaves the draft in place, prints
+`gh release delete <tag> --cleanup-tag`, and exits non-zero. There is no skip
+case. Publish needs approval: the prompt is interactive, and `--yes` is for a
+run where a human already approved.
+
+Bump `[pack].version` and commit before the release run. The build gate refuses
+a tag that disagrees with it.
+
 ## Trust model
 
 `checksums.txt` ships in the same release as the binary. It catches a

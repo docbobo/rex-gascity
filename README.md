@@ -76,14 +76,18 @@ gc doctor --check rex:rex-binary --city /path/to/my-city --fix
 
 To release:
 
-1. Push the tag `v<version>`. Pushing a tag starts no build.
-2. Create the draft release for that tag:
-   `gh release create v<version> --draft --title v<version>`.
-3. Dispatch the build workflow, which attaches the four prebuilt binaries and
-   `checksums.txt` to that draft:
-   `gh workflow run release.yml -f tag=v<version>`.
-4. Publish the draft once its assets are verified:
-   `gh release edit v<version> --draft=false`.
+1. Bump `[pack].version` in `pack/pack.toml` and commit it.
+2. Run `sh pack/release.sh v<version>`. It creates the draft and its tag,
+   dispatches the build, waits for the four binaries and `checksums.txt`,
+   downloads the asset for this host, verifies its sha256, runs conformance on
+   that downloaded binary, and attaches `conformance.txt`.
+3. Approve the publish prompt, or pass `--yes` after a human approved. Only
+   then is the release published.
+
+`--dry-run` prints the commit and asset names and changes no remote state.
+`--resume` continues an existing draft. A failed conformance leaves the draft
+in place and prints the cleanup command. Never push the tag by hand: a
+hand-pushed tag builds nothing, because the build runs on workflow dispatch.
 
 Only the tag matters to `gc import add`. The release assets matter at install
 time, when `pack/install.sh` fetches the asset for `v<[pack] version>`.
