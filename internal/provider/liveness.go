@@ -14,6 +14,15 @@ import (
 // herdrcore/procs.py NAME_ALIASES): a configured hint also matches these names.
 var procNameAliases = map[string][]string{"kimi": {"kimi-code"}}
 
+// bindingGCBin is the GC_BIN basename a binding was launched with, falling
+// back to the provider's own environment on legacy records that carry none.
+func bindingGCBin(b Binding) string {
+	if b.GCBin != "" {
+		return b.GCBin
+	}
+	return gcBinBasename(map[string]string{"GC_BIN": os.Getenv("GC_BIN")})
+}
+
 // gcBinBasename returns the basename of the GC_BIN the agent was launched with,
 // or "" when the start config carried none.
 func gcBinBasename(env map[string]string) string {
@@ -180,9 +189,5 @@ func (p *Provider) ProcessAlive(ctx context.Context, name string, names []string
 	// Legacy bindings started before GCBin was persisted carry none; fall back
 	// to the provider's own environment so an already-running wrapped gc is
 	// still recognised (herdr-core reads gc_bin from stored meta).
-	gcBin := b.GCBin
-	if gcBin == "" {
-		gcBin = gcBinBasename(map[string]string{"GC_BIN": os.Getenv("GC_BIN")})
-	}
-	return processAlive(info, expandProcessNames(names, gcBin)), nil
+	return processAlive(info, expandProcessNames(names, bindingGCBin(b))), nil
 }

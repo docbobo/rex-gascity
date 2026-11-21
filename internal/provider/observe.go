@@ -208,12 +208,8 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	// reported (RPP-OBSERVE-006): the box root's process snapshot must both be
 	// readable and hold one of the names.
 	if state == ObserveRunning && len(names) > 0 && holder.BlockID == bd.BlockID {
-		gcBin := bd.GCBin
-		if gcBin == "" {
-			gcBin = gcBinBasename(map[string]string{"GC_BIN": os.Getenv("GC_BIN")})
-		}
 		if root := p.foregroundPID(ctx, bd); root > 0 {
-			if agent, pid := p.agentState(ctx, root, expandProcessNames(names, gcBin)); agent != agentUnknown {
+			if agent, pid := p.agentState(ctx, root, expandProcessNames(names, bindingGCBin(bd))); agent != agentUnknown {
 				ans.Agent = agent
 				if pid > 0 {
 					ans.AgentPID = strconv.Itoa(pid)
@@ -410,8 +406,9 @@ func paneSessionName(label string) (SessionName, bool) {
 // The whole check-then-kill runs under the name lock, so a start cannot slip a
 // new box under the name between the re-check and the close. Corpse mode kills
 // only a box nothing runs in and no client has open, and answers `live`
-// otherwise. Zombie mode needs the agent check RPP-OBSERVE-006 does not
-// implement yet, so it never kills and answers `changed`.
+// otherwise. Zombie mode needs the box running, unattached, and its agent
+// provably dead by the RPP-OBSERVE-006 snapshot; anything less answers
+// `changed`.
 func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRequest) (string, error) {
 	if strings.TrimSpace(req.Object.ID) == "" || strings.TrimSpace(req.Object.Created) == "" {
 		return "", errors.New("kill-object: object id and created are required")
@@ -446,13 +443,7 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 		return "", err
 	}
 	exact := holder.BlockID == bd.BlockID && holder.WindowID == bd.WindowID
-	if state == ObserveRunning && exact {
-		if req.Mode == "zombie" {
-			return "changed", nil
-		}
-		return "live", nil
-	}
-	if state != ObserveDead || !exact {
+	if !exact {
 		// The recorded block is gone or a new box holds the name: the object
 		// names no box, and the exact-binding close has nothing to close. If
 		// this record is still ours, finish the retirement a previous
@@ -476,10 +467,26 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 		}
 		return "gone", nil
 	}
-	if req.Mode == "zombie" {
-		// The agent check (RPP-OBSERVE-006) is unimplemented, so the pack
-		// cannot prove the agent is dead: answer changed and never kill.
+	if req.Mode == "corpse" && state == ObserveRunning {
+		// corpse reaps only a box nothing runs in: one that came back between
+		// gc's observe and this kill is still live.
+		return "live", nil
+	}
+	if req.Mode == "zombie" && state == ObserveDead {
+		// A pane whose program exited is no zombie: nothing runs there for a
+		// killed agent to come back to, and gc reaps it with corpse.
 		return "changed", nil
+	}
+	if req.Mode == "zombie" {
+		dead, err := p.deadAgent(ctx, bd, req.AgentPID)
+		if err != nil {
+			return "", err
+		}
+		if !dead {
+			// Not provably dead: a killed box whose agent came back would be
+			// gc's zombie reaped alive, so answer changed and kill nothing.
+			return "changed", nil
+		}
 	}
 	attached, err := p.attached(ctx, bd)
 	if err != nil {
@@ -487,6 +494,11 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 		return "", err
 	}
 	if attached {
+		// zombie kills a dead box nothing watches; corpse reaps only an
+		// unwatched one, and a watched box is still live to gc.
+		if req.Mode == "zombie" {
+			return "changed", nil
+		}
 		return "live", nil
 	}
 	// Close exactly the object that was re-checked, never by name: a fresh
@@ -512,6 +524,35 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 		return "gone", nil
 	}
 	return "killed", nil
+}
+
+// deadAgent proves the box's agent is gone, for zombie mode's kill. The start
+// meta names the agent processes; the box's root pid must still be readable (and
+// the one the caller saw, when agentPID is given), and a fresh host snapshot must
+// walk the root's subtree without finding one of the names. Anything it cannot
+// prove is not dead: an absent record or an unreadable snapshot answers false.
+func (p *Provider) deadAgent(ctx context.Context, bd Binding, agentPID string) (bool, error) {
+	raw, ok, err := p.metaGet(bd.Name, "GT_PROCESS_NAMES")
+	if err != nil || !ok {
+		return false, err
+	}
+	names := expandProcessNames(strings.Split(raw, ","), bindingGCBin(bd))
+	root := p.foregroundPID(ctx, bd)
+	if root <= 0 || len(names) == 0 {
+		return false, nil
+	}
+	if agentPID != "" {
+		pid, err := strconv.Atoi(agentPID)
+		if err != nil || pid != root {
+			return false, nil
+		}
+	}
+	wide, comms, err := p.snapshotProcessTable(ctx)
+	if err != nil {
+		return false, nil
+	}
+	agent, _ := snapshotAgent(wide, comms, root, names)
+	return agent == agentDead, nil
 }
 
 // withSameBinding runs fn under the state lock only while the name still
