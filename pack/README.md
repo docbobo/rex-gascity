@@ -63,7 +63,8 @@ gc import check
 `gc import install` writes the pack files. It does not install the provider
 binary, because gc has no pack install hook. `gc doctor --fix` runs the
 pack's `doctor/rex-binary/fix.sh`, which runs `pack/install.sh`. Run
-`sh pack/install.sh` yourself from the pack directory if you prefer.
+`sh pack/install.sh` yourself from the repository root if you prefer, or
+`sh ./install.sh` from the pack directory.
 
 A green `gc doctor --check rex:rex-binary` means the provider handshakes,
 its version matches `pack.toml`, and the `rex` CLI resolves. A full
@@ -140,9 +141,10 @@ gc doctor --check rex:rex-binary --fix
 gc doctor --check rex:rex-binary
 ```
 
-To roll back, use the previous version in the same commands. A caret
-constraint, `--version '^0.2.0'`, tracks a major line, and
-`gc import upgrade rex` then moves to the newest matching tag.
+To roll back, use the previous version in the same commands. While the
+version is 0.x, a caret constraint tracks a minor line: `--version '^0.2.0'`
+matches 0.2.x and not 0.3.0. `gc import upgrade rex` then moves to the
+newest matching tag.
 
 ## Source checkout
 

@@ -282,6 +282,22 @@ after=$(ls -i "$target" | awk '{print $1}')
 [ "$before" = "$after" ] || fail "repeat install replaced the binary (inode $before -> $after)"
 printf '%s' "$out" | grep -q "already installed" || fail "repeat install does not report success"
 
+# --- repair: a matching but non-executable binary ---------------------------
+
+home=$work/home-repair
+reset_logs
+FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$nogh_path" ||
+  fail "repair case: first install failed: $out"
+target=$home/.local/bin/gc-runtime-rex
+chmod 644 "$target"
+reset_logs
+FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$nogh_path" ||
+  fail "repair case: install failed on a matching 0644 provider: $out"
+[ -x "$target" ] ||
+  fail "repair case: install reported success but left $target non-executable"
+"$target" version | grep -q "$version" ||
+  fail "repair case: repaired provider does not run and report $version"
+
 # --- doctor path ------------------------------------------------------------
 
 if ! command -v gc >/dev/null 2>&1; then

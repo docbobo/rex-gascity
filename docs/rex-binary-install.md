@@ -42,11 +42,13 @@ repository needs them for `git ls-remote` and the fetch.
 
 `gc import install` only materializes the pack. gc does not run the pack
 install step by itself. `gc doctor --fix` runs it. An operator who prefers
-to run it by hand does so from the pack directory:
+to run it by hand does so from the repository root:
 
 ```sh
 sh pack/install.sh
 ```
+
+From the pack directory itself, the same script is `sh ./install.sh`.
 
 ## What the fix does
 

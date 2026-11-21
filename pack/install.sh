@@ -181,7 +181,7 @@ actual=$(sha256_of "$tmp/$asset")
 [ "$actual" = "$expected" ] ||
   die "sha256 mismatch for $asset: release checksums.txt has $expected, download has $actual"
 
-if [ -f "$target" ] && [ "$(sha256_of "$target")" = "$expected" ]; then
+if [ -f "$target" ] && [ -x "$target" ] && [ "$(sha256_of "$target")" = "$expected" ]; then
   echo "gc-runtime-rex $version is already installed at $target"
 else
   staging=$target_dir/.gc-runtime-rex.$$
