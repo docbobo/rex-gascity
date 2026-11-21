@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -406,6 +407,50 @@ func TestStartNewFreshOnlyRefusesAHeldName(t *testing.T) {
 	err = p.StartNew(ctx, "pi-mc-wisp-abc", provider.Config{Argv: []string{"pi"}, FreshOnly: true})
 	if !errors.Is(err, provider.ErrFreshCollision) {
 		t.Fatalf("StartNew fresh_only dead record = %v, want ErrFreshCollision", err)
+	}
+}
+
+// TestStartNewFreshOnlyLeavesTheHeldBoxUntouched pins GCREX-107's other
+// acceptance row: a refused fresh_only start touches nothing. The held box keeps
+// its binding, identity and pane, is never recycled, and no Rex call creates or
+// closes anything.
+func TestStartNewFreshOnlyLeavesTheHeldBoxUntouched(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	ctx := context.Background()
+	const name = "pi-mc-wisp-abc"
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: identityEnv()}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	before, ok := p.Binding(name)
+	if !ok {
+		t.Fatal("start recorded no binding")
+	}
+	metaBefore, err := p.GetMeta(ctx, name, "GC_INSTANCE_TOKEN")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	closed, created := len(fake.ClosedBlocks), len(fake.CreatedWindows)+len(fake.CreatedSplits)
+
+	err = p.StartNew(ctx, name, provider.Config{
+		Argv:      []string{"pi"},
+		Env:       identityEnv(),
+		FreshOnly: true,
+	})
+	if !errors.Is(err, provider.ErrFreshCollision) {
+		t.Fatalf("StartNew fresh_only = %v, want ErrFreshCollision", err)
+	}
+	after, ok := p.Binding(name)
+	if !ok || !reflect.DeepEqual(before, after) {
+		t.Errorf("binding changed: before %+v, after %+v (ok=%v)", before, after, ok)
+	}
+	if metaAfter, err := p.GetMeta(ctx, name, "GC_INSTANCE_TOKEN"); err != nil || metaAfter != metaBefore {
+		t.Errorf("GC_INSTANCE_TOKEN = %q, %v; want %q, nil", metaAfter, err, metaBefore)
+	}
+	if len(fake.ClosedBlocks) != closed || len(fake.CreatedWindows)+len(fake.CreatedSplits) != created {
+		t.Errorf("refused start touched Rex: closed %d->%d, created %d->%d",
+			closed, len(fake.ClosedBlocks), created, len(fake.CreatedWindows)+len(fake.CreatedSplits))
 	}
 }
 
