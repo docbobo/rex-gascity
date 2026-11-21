@@ -1,7 +1,7 @@
 #!/bin/sh
 # Landing guard for the GCREX-120 epic: every child must have a commit.
 #
-#   pack/tests/check-landing.sh
+#   pack/tests/landing.sh
 #
 # A commit carries the epic key (GCREX-120.N), never the internal bead id, so
 # the list below is the epic keys. It reads the full commit message of every
