@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -132,7 +134,7 @@ func TestKillObjectCorpseRemovesDeadBox(t *testing.T) {
 	}
 	// The box's program exits; Rex keeps the pane.
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
-		rex.BlockID(ans.Object.ID): {LastExit: &rex.ExitStatus{ExitCode: 0}},
+		blockOf(t, p, name): {LastExit: &rex.ExitStatus{ExitCode: 0}},
 	}
 	dead, err := p.Observe(ctx, name, nil)
 	if err != nil || dead.State != provider.ObserveDead {
@@ -190,7 +192,7 @@ func TestKillObjectZombieGoneWhenBlockVanished(t *testing.T) {
 	if err != nil || ans.Object == nil {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
 	}
-	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(ans.Object.ID): true}
+	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
 	fake.View.Windows[0].Blocks = nil
 
 	res, err := p.KillObject(context.Background(), name, provider.KillObjectRequest{Object: *ans.Object, Mode: "zombie"})
@@ -306,7 +308,7 @@ func TestKillObjectCorpseLiveWhenAttached(t *testing.T) {
 	}
 	// The box's program exited; Rex keeps the pane, and an operator has it open.
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
-		rex.BlockID(ans.Object.ID): {LastExit: &rex.ExitStatus{ExitCode: 0}},
+		blockOf(t, p, name): {LastExit: &rex.ExitStatus{ExitCode: 0}},
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "app", Name: "Rex"}}
 	fake.View.Windows[0].Blocks[0].Owner = "c1"
@@ -337,7 +339,7 @@ func TestKillObjectDoesNotCloseRecreatedPane(t *testing.T) {
 	}
 	// The recorded pane vanishes from Rex; a restore puts a different pane
 	// under the same tab and pane labels, without going through Start.
-	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(ans.Object.ID): true}
+	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
 	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
 
 	res, err := p.KillObject(context.Background(), name, provider.KillObjectRequest{Object: *ans.Object, Mode: "corpse"})
@@ -404,7 +406,7 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 		t.Fatalf("identity = %v, want the started incarnation's", first.Identity)
 	}
 	// A restore puts a different pane under the same tab and pane labels.
-	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
+	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
 	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
 
 	ans, err := p.Observe(context.Background(), name, nil)
@@ -420,7 +422,7 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 	// Observe is a read: the restored pane answers, but the recorded binding is
 	// left for Start or Stop to replace, and the retired box's created and
 	// identity are not reported for a pane the provider did not start.
-	if bd, ok := p.Binding(name); !ok || bd.BlockID != rex.BlockID(first.Object.ID) {
+	if bd, ok := p.Binding(name); !ok || bd.BlockID != blockOf(t, p, name) {
 		t.Errorf("binding after observe = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 	if ans.Object != nil && ans.Object.Created == first.Object.Created {
@@ -447,7 +449,7 @@ func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
 	if err != nil || first.Object == nil {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
 	}
-	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
+	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
 	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
 
 	inv, err := p.Inventory(context.Background())
@@ -457,7 +459,7 @@ func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
 	if len(inv.Sessions) != 1 || inv.Sessions[0].Object == nil || inv.Sessions[0].Object.ID != "block:dog-1-restored" {
 		t.Fatalf("sessions = %+v, want the restored pane running", inv.Sessions)
 	}
-	if bd, ok := p.Binding(name); !ok || bd.BlockID != rex.BlockID(first.Object.ID) {
+	if bd, ok := p.Binding(name); !ok || bd.BlockID != blockOf(t, p, name) {
 		t.Errorf("binding after inventory = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 	// Like observe, the restored pane's identity is an empty set, not null: gc
@@ -488,7 +490,7 @@ func TestKillObjectGoneForRestoredPane(t *testing.T) {
 	if err != nil || first.Object == nil {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", first, err)
 	}
-	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(first.Object.ID): true}
+	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
 	fake.View.Windows[0].Blocks = []rex.Block{{ID: "block:dog-1-restored", Label: "dog-1"}}
 	restored, err := p.Observe(ctx, name, nil)
 	if err != nil || restored.Object == nil || restored.Object.ID != "block:dog-1-restored" {
@@ -549,7 +551,7 @@ func TestKillObjectGoneWhenBlockVanished(t *testing.T) {
 	if err != nil || ans.Object == nil {
 		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
 	}
-	fake.VanishedBlocks = map[rex.BlockID]bool{rex.BlockID(ans.Object.ID): true}
+	fake.VanishedBlocks = map[rex.BlockID]bool{blockOf(t, p, name): true}
 	fake.View.Windows[0].Blocks = nil
 
 	res, err := p.KillObject(context.Background(), name, provider.KillObjectRequest{Object: *ans.Object, Mode: "corpse"})
@@ -604,5 +606,108 @@ func TestInventoryIncompleteWhenLivenessUnavailable(t *testing.T) {
 	}
 	if len(inv.Sessions) != 1 || inv.Sessions[0].State != "" {
 		t.Errorf("sessions = %+v, want one entry with no state", inv.Sessions)
+	}
+}
+
+// blockOf returns the Rex block the provider recorded for name. Object.ID is
+// opaque (the block id plus the incarnation), so fake state keyed by block
+// takes the binding instead.
+func blockOf(t *testing.T, p *provider.Provider, name string) rex.BlockID {
+	t.Helper()
+	bd, ok := p.Binding(name)
+	if !ok {
+		t.Fatalf("Binding(%s) missing", name)
+	}
+	return bd.BlockID
+}
+
+// TestObserveObjectStableAndNewPerBox proves RPP-OBSERVE-005: two observes of
+// one box return the same object, and a new box under the same name returns a
+// different id. The fake reuses a block id for a relaunched pane under the same
+// labels (internal/rex/faketest/fake.go, CloseBlock), so the id must not be the
+// block id alone.
+func TestObserveObjectStableAndNewPerBox(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	start := func() {
+		t.Helper()
+		if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+	start()
+
+	first, err := p.Observe(ctx, name, nil)
+	if err != nil || first.State != provider.ObserveRunning || first.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a running box with an object", first, err)
+	}
+	second, err := p.Observe(ctx, name, nil)
+	if err != nil || second.Object == nil {
+		t.Fatalf("Observe again = %+v, %v; want the same box", second, err)
+	}
+	if second.Object.ID != first.Object.ID || second.Object.Created != first.Object.Created {
+		t.Errorf("object = %+v, want %+v byte-identical", second.Object, first.Object)
+	}
+
+	if err := p.Stop(ctx, name); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	start()
+	again, err := p.Observe(ctx, name, nil)
+	if err != nil || again.State != provider.ObserveRunning || again.Object == nil {
+		t.Fatalf("Observe after the restart = %+v, %v; want a running box", again, err)
+	}
+	if again.Object.ID == first.Object.ID {
+		t.Errorf("object id = %q after a new start, want a new one (the old box was %+v)", again.Object.ID, first.Object)
+	}
+}
+
+// observeStalled answers BlockProcess only when the call's own deadline ends,
+// as a slow backend does, so a test can measure observe's bound on its calls.
+type observeStalled struct {
+	*faketest.Fake
+	stall bool
+}
+
+func (c *observeStalled) BlockProcess(ctx context.Context, sid rex.SessionID, b rex.BlockID) (rex.ProcessInfo, error) {
+	if !c.stall {
+		return c.Fake.BlockProcess(ctx, sid, b)
+	}
+	select {
+	case <-ctx.Done():
+		return rex.ProcessInfo{}, ctx.Err()
+	case <-time.After(5 * time.Second):
+		return rex.ProcessInfo{}, errors.New("observe: the Rex call carried no deadline")
+	}
+}
+
+// TestObserveAnswersUnknownWithinBound proves RPP-OBSERVE-013 (rule 11): the
+// answer lands inside gc's 4 s probe bound, and a backend that outlives the
+// op's own deadline (GC_EXEC_DEADLINE_MS, set by gc on every op) reads unknown
+// rather than an error or an overrun.
+func TestObserveAnswersUnknownWithinBound(t *testing.T) {
+	t.Setenv("GC_EXEC_DEADLINE_MS", "600")
+	ctx := context.Background()
+	client := &observeStalled{Fake: faketest.New()}
+	p := provider.New("acme", client)
+	name := "Indigo--dog-1"
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	client.stall = true
+
+	begin := time.Now()
+	ans, err := p.Observe(ctx, name, nil)
+	elapsed := time.Since(begin)
+	if err != nil {
+		t.Fatalf("Observe of a stalled backend: %v; want unknown, not an error", err)
+	}
+	if ans.State != provider.ObserveUnknown {
+		t.Errorf("state = %q, want %q", ans.State, provider.ObserveUnknown)
+	}
+	if elapsed >= 4*time.Second {
+		t.Errorf("Observe took %v, want under the 4 s probe bound", elapsed)
 	}
 }

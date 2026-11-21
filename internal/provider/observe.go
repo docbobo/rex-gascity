@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,7 +78,42 @@ func observeObjectFor(b Binding) ObserveObject {
 	if id == "" {
 		id = string(b.WindowID)
 	}
-	return ObserveObject{ID: id, Created: observeCreated(b.CreatedAt)}
+	created := observeCreated(b.CreatedAt)
+	// A record the provider holds is one incarnation: Rex may reuse a block id
+	// for a relaunched pane under the same labels, so the object id pairs the
+	// block with the creation time. The pair is byte-identical across calls for
+	// one box (both come from the binding) and differs for every new start,
+	// which is what gc's object check compares (RPP-OBSERVE-005). A discovered
+	// pane has no record and no creation time, so its block id stands alone.
+	if b.CreatedAt.IsZero() {
+		return ObserveObject{ID: id, Created: created}
+	}
+	return ObserveObject{ID: id + "/" + created, Created: created}
+}
+
+const (
+	// observeProbeBound is rule 11's answer bound: gc kills an observe call at
+	// 4 s and reads the kill as unknown.
+	observeProbeBound = 4 * time.Second
+	// observeMargin is the time Observe keeps back for the dispatcher's own
+	// work (stdin drain, answer encode, answer write), so it answers unknown
+	// itself instead of being killed mid-call.
+	observeMargin = 250 * time.Millisecond
+)
+
+// observeBudget caps an Observe op's Rex calls at the probe bound, or at the
+// deadline gc set on the op when that is sooner. gc sets GC_EXEC_DEADLINE_MS
+// (whole milliseconds left until the kill) on every op under a deadline and
+// reads an unanswered call as unknown, so a slow backend must end in unknown
+// here rather than in an error or an overrun (RPP-OBSERVE-013).
+func observeBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := observeProbeBound - observeMargin
+	if ms, err := strconv.ParseInt(os.Getenv("GC_EXEC_DEADLINE_MS"), 10, 64); err == nil && ms > 0 {
+		if d := time.Duration(ms)*time.Millisecond - observeMargin; d < budget {
+			budget = max(d, time.Millisecond)
+		}
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 // observeCreated formats a binding's creation time as the wire's created
@@ -114,6 +151,8 @@ func (p *Provider) observeIdentity(n SessionName) map[string]string {
 // reached. It is a read and never mutates the session; a vanished record is
 // left for the next Start or Stop to replace.
 func (p *Provider) Observe(ctx context.Context, name string, _ []string) (ObserveAnswer, error) {
+	ctx, cancel := observeBudget(ctx)
+	defer cancel()
 	n := SessionName(name)
 	bd, ok := p.Binding(name)
 	// fromRecord is false for the read-only scan below: a pane this provider
@@ -126,7 +165,7 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 		var err error
 		bd, ok, err = p.binder.find(ctx, n, Binding{}, nil)
 		if err != nil {
-			if errors.Is(err, rex.ErrUnavailable) {
+			if observeUnreadable(err) {
 				return ObserveAnswer{State: ObserveUnknown}, nil
 			}
 			return ObserveAnswer{}, err
@@ -137,7 +176,7 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 	}
 	state, holder, err := p.boxState(ctx, bd)
 	if err != nil {
-		if errors.Is(err, rex.ErrUnavailable) {
+		if observeUnreadable(err) {
 			return ObserveAnswer{State: ObserveUnknown}, nil
 		}
 		return ObserveAnswer{}, err
@@ -163,6 +202,13 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 		ans.Agent = "dead"
 	}
 	return ans, nil
+}
+
+// observeUnreadable reports a Rex answer Observe cannot get: the backend is
+// unreachable, or the op's own deadline ended the call. Both read as unknown on
+// the wire (rule 11).
+func observeUnreadable(err error) bool {
+	return errors.Is(err, rex.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // retireStale finishes the cleanup of a record whose block is already gone: the
