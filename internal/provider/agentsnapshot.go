@@ -40,6 +40,15 @@ var snapshotValueArgs = map[string]bool{
 	"-L": true, "--log-level": true, "--cert": true, "--key": true,
 }
 
+// snapshotMainThreadInterpreter reports whether argv0 is Node's main thread
+// name, which carries the interpreter name plus "-MainThread". Node 25 names
+// its main thread, and the thread name can reach ps as argv0, so the script
+// operand must still be found behind it.
+func snapshotMainThreadInterpreter(argv0 string) bool {
+	name, ok := strings.CutSuffix(argv0, "-MainThread")
+	return ok && snapshotInterpreters[name]
+}
+
 // snapshotProcessTable is gc's one-pass view of the host process table: a wide
 // snapshot of pid, ppid and command line, and a narrow one of pid and command
 // name. -ww is load-bearing: without it procps cuts the command line at
@@ -186,13 +195,19 @@ func snapshotProcess(args, comm string) (rex.Process, bool) {
 	if comm != "" {
 		proc.Name = filepath.Base(comm)
 	}
+	// ps brackets the command line when it cannot read it (a kernel thread, a
+	// zombie). The brackets are not an argv0, and a live agent in that state
+	// must not read as absent.
+	if strings.HasPrefix(strings.TrimSpace(args), "[") {
+		return proc, false
+	}
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
 		return proc, true
 	}
 	argv0 := filepath.Base(fields[0])
 	proc.Argv0 = argv0
-	if !snapshotInterpreters[argv0] {
+	if !snapshotInterpreters[argv0] && !snapshotMainThreadInterpreter(argv0) {
 		return proc, true
 	}
 	for i := 1; i < len(fields); i++ {

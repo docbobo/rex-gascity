@@ -62,6 +62,28 @@ func TestSnapshotAgent(t *testing.T) {
 			wantPID:   101,
 		},
 		{
+			// ps brackets an argument list it cannot read. The row proves
+			// nothing about the agent, so the answer is unknown, never dead.
+			name:      "bracketed argument list is opaque",
+			ps:        snapRow("100", "1", "sh -c agent") + snapRow("101", "100", "[node]"),
+			comms:     commRow("100", "sh") + commRow("101", "node"),
+			root:      100,
+			names:     []string{"agent"},
+			wantState: agentUnknown,
+		},
+		{
+			// Node 25's main-thread name carries the interpreter name, so the
+			// script operand behind it still names the process.
+			name: "main-thread interpreter name",
+			ps: snapRow("100", "1", "sh -c agent") +
+				snapRow("101", "100", "node-MainThread /usr/local/bin/agent"),
+			comms:     commRow("100", "sh") + commRow("101", "node-MainThread"),
+			root:      100,
+			names:     []string{"agent"},
+			wantState: agentAlive,
+			wantPID:   101,
+		},
+		{
 			// A command name cut to 16 bytes cannot match; the interpreter
 			// argument, extension and all, still can.
 			name: "truncated command name covered by the interpreter argument",
