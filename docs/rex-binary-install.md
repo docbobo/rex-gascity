@@ -2,7 +2,7 @@
 
 GCREX-120. How the pack installs `gc-runtime-rex`: where the binary comes
 from, where it goes, and what `gc doctor --fix` runs. The pack's
-[`README.md`](../pack/README.md) is the operator quickstart. This file has
+[`rex-runtime-pack.md`](rex-runtime-pack.md) is the operator quickstart. This file has
 the mechanism.
 
 ## The gap
@@ -189,7 +189,7 @@ missing `checksums.txt` entry and a sha256 mismatch complete the list.
   released commit as a `sha` version. One more assertion covers a commit
   without a release. The install must fail and name the tag.
 - `pack/tests/check-docs.sh` runs every command in a `sh` fence. It covers
-  this file and `pack/README.md`, against a scratch city.
+  this file and `docs/rex-runtime-pack.md`, against a scratch city.
 
 ## Scope
 

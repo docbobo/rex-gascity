@@ -162,7 +162,7 @@ if [ "$release_exists" -eq 0 ]; then
     git -C "$root" push --quiet origin "$commit:refs/tags/$tag" ||
       die "cannot push tag $tag at $commit"
   fi
-  "$GH" release create "$tag" --draft --title "rex runtime pack $tag"     --notes "Rex runtime pack $tag. See pack/README.md to import and install."
+  "$GH" release create "$tag" --draft --title "rex runtime pack $tag"     --notes "Rex runtime pack $tag. See docs/rex-runtime-pack.md to import and install."
   "$GH" workflow run "$workflow" -f "tag=$tag"
 fi
 
