@@ -417,10 +417,11 @@ func TestStopUnreachableWithBindingKeepsError(t *testing.T) {
 // start TOCTOU).
 type gatedLaunch struct {
 	*faketest.Fake
-	gate    atomic.Bool
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
+	gate        atomic.Bool
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
 }
 
 func (g *gatedLaunch) NewWindow(ctx context.Context, sid rex.SessionID, label string, spec rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
@@ -441,28 +442,35 @@ func (g *gatedLaunch) wait() {
 }
 
 // TestStopDoesNotDestroySessionDuringLaunch pins the fix for the stop/start
-// race: the city session looks empty to the stop while another start's launch
-// has not committed its window yet, but the session must survive so the
-// launch does not fill a removed session.
+// race: the city session looks empty to a stop in another dispatcher process
+// while a launch has not committed its window yet, but the session must
+// survive so the launch does not fill a removed session.
 func TestStopDoesNotDestroySessionDuringLaunch(t *testing.T) {
+	dir := t.TempDir()
 	fake := &gatedLaunch{
 		Fake:    faketest.New(),
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	p := provider.New("acme", fake)
-	teardownStart(t, p, teardownDog) // one live pane, in the dog rig tab
+	// Two providers over one state dir, as two dispatcher processes are: the
+	// launch lock is the only thing they share.
+	newProvider := func() *provider.Provider {
+		return provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
+	}
+	starter, stopper := newProvider(), newProvider()
+	teardownStart(t, starter, teardownDog) // one live pane, in the dog rig tab
 
 	fake.gate.Store(true)
 	started := make(chan error, 1)
-	go func() { started <- p.Start(context.Background(), teardownCat, teardownCfg) }()
+	go func() { started <- starter.Start(context.Background(), teardownCat, teardownCfg) }()
+	t.Cleanup(func() { fake.releaseOnce.Do(func() { close(fake.release) }) })
 	<-fake.entered
 
-	// The ox launch holds no window yet, so the stop sees an empty session.
-	if err := p.Stop(context.Background(), teardownDog); err != nil {
+	// The cat launch holds no window yet, so the stop sees an empty session.
+	if err := stopper.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	close(fake.release)
+	fake.releaseOnce.Do(func() { close(fake.release) })
 	if err := <-started; err != nil {
 		t.Fatalf("Start %s: %v", teardownCat, err)
 	}
@@ -473,8 +481,40 @@ func TestStopDoesNotDestroySessionDuringLaunch(t *testing.T) {
 	if len(fake.Sessions) != 1 {
 		t.Errorf("sessions = %v, want the city session kept", fake.Sessions)
 	}
-	if _, ok := p.Binding(teardownCat); !ok {
+	if _, ok := starter.Binding(teardownCat); !ok {
 		t.Error("no binding for the launched pane")
+	}
+}
+
+// TestStopNoPaneKeepsBindingWhenDestroyFails pins the no-pane half of the
+// forget-before-destroy bug: ResolveFresh drops the stale record before the
+// destroy, so a failed destroy must write it back or the retry has no session
+// id to remove.
+func TestStopNoPaneKeepsBindingWhenDestroyFails(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	bd, ok := p.Binding(teardownDog)
+	if !ok {
+		t.Fatal("no binding after Start")
+	}
+	// The pane goes on its own, which is the no-pane stop path.
+	if err := fake.CloseBlock(context.Background(), bd.SessionID, bd.BlockID); err != nil {
+		t.Fatalf("CloseBlock: %v", err)
+	}
+	fake.DestroySessionErr = errors.New("destroy down")
+
+	if err := p.Stop(context.Background(), teardownDog); err == nil {
+		t.Fatal("Stop = nil, want the destroy error")
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none", fake.DestroyedSessions)
+	}
+
+	fake.DestroySessionErr = nil
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("retry Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 1 {
+		t.Errorf("destroyed = %v, want the retry to remove the empty session", fake.DestroyedSessions)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -197,13 +196,6 @@ type Provider struct {
 	// a refused copy_files destination). It is stderr in production; tests can
 	// capture it with WithWarnings.
 	warn io.Writer
-
-	// launching counts the launches in flight per session. A launch registers
-	// under the state lock before it can create a window; a stop checks it
-	// under the same lock before removing an "empty" session, so it cannot
-	// destroy the session a start is about to fill (GCREX-31 review).
-	launchingMu sync.Mutex
-	launching   map[rex.SessionID]int
 }
 
 // Option configures a Provider.
@@ -644,18 +636,10 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if err := p.seedStartIdentity(n, cfg.Env); err != nil {
 			return err
 		}
-		if err := p.recordProvisionalBinding(n, sid, "", attempt, cfg); err != nil {
-			return err
-		}
-		// Register the launch under the same lock a stop holds across its
-		// empty-session check: until the window exists the session still looks
-		// empty, and a stop must not remove it (GCREX-31 review).
-		p.markLaunching(sid)
-		return nil
+		return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
 	}); err != nil {
 		return startResult{}, err
 	}
-	defer p.unmarkLaunching(sid)
 
 	tab := hint.TabLabel
 	spec := plan.Spec
@@ -666,6 +650,16 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	var launched startResult
 	launchStart := time.Now()
 	launch := func() error {
+		// The shared launch lock is held across the view read and the
+		// create/split call, so a stop of any name can tell that a pane is
+		// still to come even while the session view shows no window yet
+		// (GCREX-31 review). It is cross-process, and the kernel drops it if
+		// this process dies.
+		releaseLaunch, err := p.beginLaunch(ctx, sid)
+		if err != nil {
+			return err
+		}
+		defer releaseLaunch()
 		return p.withTabLock(ctx, tab, func() error {
 			view, err := p.client.SessionView(ctx, sid)
 			if err != nil {
@@ -720,18 +714,23 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// launch once more; a second miss is returned as is.
 		if sid, err = findOrCreate(); err == nil {
 			if err = p.withStateLock(ctx, func() error {
-				if err := p.recordProvisionalBinding(n, sid, "", attempt, cfg); err != nil {
-					return err
-				}
-				p.markLaunching(sid)
-				return nil
+				return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
 			}); err == nil {
-				defer p.unmarkLaunching(sid)
 				err = launch()
 			}
 		}
 	}
 	if err != nil {
+		// A failed launch leaves no pane, and the stop that skipped this
+		// session because the launch was in flight will not run again: remove
+		// the empty city session here, or it outlives its last pane
+		// (GCREX-31 review). The launch lock is released by now.
+		cleanupCtx := context.WithoutCancel(ctx)
+		if derr := p.withStateLock(cleanupCtx, func() error {
+			return p.destroyEmptyCitySession(cleanupCtx, sid)
+		}); derr != nil {
+			p.warnf("start %s: remove the empty city session %s: %v", n, sid, derr)
+		}
 		return startResult{}, err
 	}
 	launched.launchDur = time.Since(launchStart)
@@ -902,6 +901,14 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		// state lock is already held. A failed removal keeps the record, or the
 		// retry would lose the session id it needs (GCREX-31 review).
 		if err := p.destroyEmptyCitySession(ctx, stored.SessionID); err != nil {
+			// ResolveFresh dropped the stale record before this destroy, so
+			// put it back: the retry reads the session id from it (GCREX-31
+			// review).
+			if hadStored {
+				if recErr := p.binder.Record(stored); recErr != nil {
+					return errors.Join(err, recErr)
+				}
+			}
 			return err
 		}
 		// The survivors are gone, the metadata is clear and the session is
@@ -1004,46 +1011,25 @@ func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionI
 	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
 		return nil
 	}
-	// A launch registered on this session has no window yet, so the view above
-	// cannot see the pane it is about to create (GCREX-31 review). Rex removes
-	// a tab with its last block (docs/plans/native-rex-provider.md:387,
-	// live-verified), so zero windows is a true empty session otherwise.
-	if p.launchInFlight(sid) {
+	// A launch on this session has no window yet, so the view above cannot
+	// see the pane it is about to create (GCREX-31 review). Its shared launch
+	// lock is the cross-process signal; if this process already holds it, the
+	// stop cannot take it exclusively and answers not-empty, which is the safe
+	// side. Rex removes a tab with its last block
+	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
+	// is a true empty session otherwise.
+	release, busy, lockErr := p.tryLaunchLock(sid)
+	if lockErr != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
+	}
+	if busy {
 		return nil
 	}
+	defer release()
 	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
 	}
 	return nil
-}
-
-// markLaunching registers a launch on sid. The caller holds the state lock, so
-// the registration and the stop's check cannot interleave.
-func (p *Provider) markLaunching(sid rex.SessionID) {
-	p.launchingMu.Lock()
-	defer p.launchingMu.Unlock()
-	if p.launching == nil {
-		p.launching = map[rex.SessionID]int{}
-	}
-	p.launching[sid]++
-}
-
-// unmarkLaunching drops one registration for sid.
-func (p *Provider) unmarkLaunching(sid rex.SessionID) {
-	p.launchingMu.Lock()
-	defer p.launchingMu.Unlock()
-	if p.launching[sid] > 1 {
-		p.launching[sid]--
-		return
-	}
-	delete(p.launching, sid)
-}
-
-// launchInFlight reports whether a launch on sid is registered and not done.
-func (p *Provider) launchInFlight(sid rex.SessionID) bool {
-	p.launchingMu.Lock()
-	defer p.launchingMu.Unlock()
-	return p.launching[sid] > 0
 }
 
 // reapSurvivors reaps tree and, while any of it survives, records the pids on
