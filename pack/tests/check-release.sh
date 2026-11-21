@@ -240,6 +240,8 @@ if run sh pack/release.sh v0.2.0 --dry-run > "$work/out" 2>&1; then
   fail "an existing draft without --resume must fail"
 fi
 grep -q -- '--resume' "$work/out" || fail "draft refusal does not name --resume"
+git -C "$repo" tag v0.2.0
+git -C "$repo" push -q origin refs/tags/v0.2.0
 run sh pack/release.sh v0.2.0 --resume --dry-run > "$work/out" 2>&1 ||
   fail "--resume on a draft failed: $(cat "$work/out")"
 [ -z "$(mutations)" ] || fail "resume dry run mutated remote state: $(mutations)"
@@ -275,6 +277,52 @@ grep -q "$(git -C "$repo" rev-parse HEAD~1)" "$work/out" ||
   fail "resume mutated the release under a tag at another commit"
 git -C "$repo" push -q origin :refs/tags/v0.2.0
 git -C "$repo" tag -d v0.2.0 >/dev/null
+
+# A draft whose origin tag is gone cannot be resumed: nothing shows the assets
+# were built from this commit, so a resume would publish unverifiable bytes.
+reset_state
+touch "$state/draft"
+if run sh pack/release.sh v0.2.0 --resume --yes > "$work/out" 2>&1; then
+  fail "--resume must refuse a draft whose origin tag is missing"
+fi
+grep -q 'Delete the draft' "$work/out" ||
+  fail "missing-tag refusal does not tell the operator to delete the draft"
+[ -z "$(grep -E '^release download' "$state/calls.log" 2>/dev/null)" ] ||
+  fail "resume downloaded assets without an origin tag"
+[ -z "$(mutations | grep -E '^release (upload|edit)')" ] ||
+  fail "resume published a draft without an origin tag"
+
+# git ls-remote reports an annotated tag object next to its peeled commit. Read
+# the peeled ref, or an annotated tag at another commit would pass the check.
+reset_state
+git -C "$repo" commit -q --allow-empty -m "a later commit"
+git -C "$repo" tag -a v0.2.0 -m "annotated release tag" HEAD~1
+git -C "$repo" push -q origin refs/tags/v0.2.0
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "an annotated tag at another commit must fail"
+fi
+grep -q "$(git -C "$repo" rev-parse HEAD~1^{commit})" "$work/out" ||
+  fail "the refusal does not name the annotated tag's commit"
+[ -z "$(grep -E '^release download' "$state/calls.log" 2>/dev/null)" ] ||
+  fail "release downloaded assets under an annotated tag at another commit"
+
+touch "$state/draft"
+if run sh pack/release.sh v0.2.0 --resume --yes > "$work/out" 2>&1; then
+  fail "--resume must refuse an annotated tag at another commit"
+fi
+[ -z "$(mutations | grep -E '^release (upload|edit)')" ] ||
+  fail "resume published under an annotated tag at another commit"
+
+# An annotated tag at HEAD peels to this commit and is resumable.
+git -C "$repo" push -q origin :refs/tags/v0.2.0
+git -C "$repo" tag -d v0.2.0 >/dev/null
+git -C "$repo" tag -a v0.2.0 -m "annotated release tag" HEAD
+git -C "$repo" push -q origin refs/tags/v0.2.0
+run sh pack/release.sh v0.2.0 --resume --yes > "$work/out" 2>&1 ||
+  fail "--resume under an annotated tag at HEAD failed: $(cat "$work/out")"
+[ -f "$state/published" ] || fail "an annotated tag at HEAD did not publish"
+grep -q "tag_commit: $(git -C "$repo" rev-parse HEAD)" "$state/assets/conformance.txt" ||
+  fail "an annotated tag at HEAD recorded the wrong tag_commit"
 
 # Conformance failure: evidence is attached, nothing is published, cleanup prints.
 reset_state

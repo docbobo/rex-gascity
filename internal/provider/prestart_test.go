@@ -479,17 +479,30 @@ func TestPreStartWaitsForBackgroundChild(t *testing.T) {
 func TestPreStartCancelKillsBackgroundChild(t *testing.T) {
 	root := t.TempDir()
 	marker := filepath.Join(root, "alive")
+	// The child writes ready before its delay, so the cancel lands after the
+	// background subshell exists. A fixed delay can cancel too early and let the
+	// absent marker pass without the grace-branch kill.
+	ready := filepath.Join(root, "ready")
 	fake := faketest.New()
 	p := provider.New("acme", fake,
 		provider.WithStartBudget(10*time.Second),
 		provider.WithPreStartHookTimeout(10*time.Second))
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		for i := 0; i < 500; i++ {
+			if _, err := os.Stat(ready); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 
 	cfg := provider.Config{
 		Argv:     []string{"pi"},
 		WorkDir:  root,
-		PreStart: []string{"(sleep 0.6; echo alive > " + marker + ") &"},
+		PreStart: []string{"(echo ready > " + ready + "; sleep 0.6; echo alive > " + marker + ") &"},
 	}
 	if err := p.Start(ctx, "pi-mc-wisp-abc", cfg); err == nil {
 		t.Fatal("Start succeeded, want a canceled start")

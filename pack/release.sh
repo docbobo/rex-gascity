@@ -130,6 +130,13 @@ else
   [ "$resume" -eq 0 ] || die "no draft release $tag to resume"
 fi
 
+# A resumed draft must be tied to the tag it claims. Without an origin tag
+# nothing shows the assets were built from this commit, and the report would
+# name a tag_commit the assets cannot prove. Only a new release pushes the tag
+# itself, so a missing tag is fatal only when a draft already exists.
+[ "$release_exists" -eq 0 ] || [ "$remote_tag" -eq 1 ] ||
+  die "draft release $tag exists but origin tag $tag is missing; its assets cannot be tied to $commit. Delete the draft with: $GH release delete $tag, then start a new release"
+
 if [ "$dry_run" -eq 1 ]; then
   echo "release:    $tag"
   echo "version:    $declared (pack/pack.toml)"
