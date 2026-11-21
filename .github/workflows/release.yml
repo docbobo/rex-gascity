@@ -1,0 +1,97 @@
+name: release
+
+# Build the prebuilt provider binaries and upload them into the draft release
+# that pack/release.sh creates. This workflow never publishes: pack/release.sh
+# downloads the uploaded asset, verifies it, attaches conformance.txt and
+# publishes.
+#
+# Dispatch only, with the tag as input. A hand-pushed tag must build nothing,
+# and a release event must never race the draft creation that release.sh does.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, for example v0.2.0"
+        required: true
+        type: string
+
+# Only what the jobs need: uploading assets to the draft release.
+permissions:
+  contents: write
+
+env:
+  # go.mod has no toolchain line, so an unpinned setup-go picks whatever the
+  # runner defaults to and a toolchain bump can silently change the build.
+  GO_VERSION: "1.27.3"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag against [pack].version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: bash pack/check-release-version.sh "$TAG"
+
+  build:
+    needs: gate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-latest }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { os: darwin, arch: amd64, runner: macos-15-intel }
+          - { os: darwin, arch: arm64, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build the ${{ matrix.os }}/${{ matrix.arch }} asset
+        env:
+          VERSION: ${{ inputs.tag }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          asset="gc-runtime-rex_${GOOS}_${GOARCH}"
+          mkdir -p dist
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-X main.buildVersion=$VERSION" \
+            -o "dist/$asset" ./cmd/gc-runtime-rex
+          echo "ASSET=$asset" >>"$GITHUB_ENV"
+      # Each runner executes the binary for its own platform, so all four
+      # assets are proved, not just the linux/amd64 one.
+      - name: Prove the build stamped the tag
+        env:
+          VERSION: ${{ inputs.tag }}
+        run: ./dist/$ASSET version | jq -e --arg v "$VERSION" '.version == $v'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: dist/${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 1
+
+  upload:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write checksums.txt
+        working-directory: dist
+        run: |
+          sha256sum gc-runtime-rex_* >checksums.txt
+          cat checksums.txt
+      # No --clobber: a release is immutable, so a second upload of the same
+      # asset fails instead of replacing a published binary.
+      - name: Upload the assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY"

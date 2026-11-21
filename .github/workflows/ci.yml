@@ -1,0 +1,17 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]   # the release branch: tags are cut from main
+
+permissions:
+  contents: read
+
+jobs:
+  pack-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run pack checks
+        run: bash pack/tests/verify.sh
