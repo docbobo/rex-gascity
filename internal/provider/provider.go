@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -441,6 +442,10 @@ type startResult struct {
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
 	n := SessionName(name)
+	// One token per start call. The provisional record this start writes is
+	// writable only by this attempt, so a stale survivor write from another
+	// launch cannot take it, and the retry below reuses the same token.
+	attempt := rand.Text()
 	// Build the one launch plan up front: it projects pool routing for every
 	// later step and owns the Rex block layout. The launch label must come
 	// from the same projected env as the hint and the record, or pool
@@ -460,8 +465,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		}
 		// A failed launch or a canceled start must not leave a seeded identity
 		// or a provisional binding behind. Stop clears the same keys on the
-		// successful retire path.
+		// successful retire path. A survivor record is the only name for a
+		// descendant the retire could not reap, so it stays.
 		_ = p.clearStartIdentity(n)
+		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
+			return
+		}
 		p.binder.Forget(n)
 	}()
 	// The env-derived labels let Resolve rediscover a live pane whose sidecar
@@ -477,6 +486,14 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	var legacyPanes []string
 	if legacy := legacyPaneLabelFor(n, cfg.Env); legacy != hint.PaneLabel {
 		legacyPanes = []string{legacy}
+	}
+
+	// A binding kept by a stop or a failed launch whose descendant could not
+	// be reaped is the only name for that process once its pane is gone.
+	// ResolveFresh drops such a stale record and Start then writes a new one,
+	// so finish the cleanup first or the pid runs on with no record.
+	if err := p.reapStartSurvivors(ctx, n); err != nil {
+		return startResult{}, err
 	}
 
 	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
@@ -498,6 +515,25 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			return startResult{}, nil
 		}
 		if err := p.client.CloseBlock(ctx, old.SessionID, old.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+			return startResult{}, err
+		}
+		// The retired incarnation's identity goes with it: a start that fails
+		// before seeding (a missing work_dir, a canceled launch) must not leave
+		// a GC_SESSION_ID behind for the next pane under the name to inherit.
+		// The retired identity can sit under the canonical name the caller
+		// reached by alias, not only under n: clear both before the record is
+		// dropped, or a failed relaunch leaves the old GC_SESSION_ID readable.
+		names := []SessionName{n}
+		if old.Name != "" && old.Name != n {
+			names = append(names, old.Name)
+		}
+		if err := p.withStateLock(ctx, func() error {
+			var errs []error
+			for _, name := range names {
+				errs = append(errs, p.clearStartIdentity(name))
+			}
+			return errors.Join(errs...)
+		}); err != nil {
 			return startResult{}, err
 		}
 		p.binder.Forget(n)
@@ -600,8 +636,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if err := p.seedStartIdentity(n, cfg.Env); err != nil {
 			return err
 		}
-		p.recordProvisionalBinding(n, sid, "", cfg)
-		return nil
+		return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
 	}); err != nil {
 		return startResult{}, err
 	}
@@ -632,7 +667,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				if err != nil {
 					return err
 				}
-				p.record(ctx, n, sid, w.ID, block, "split", cfg)
+				if block != "" {
+					bd := p.newBinding(n, sid, w.ID, block, "split", attempt, cfg)
+					if err := p.binder.Record(bd); err != nil {
+						return p.discardLaunch(ctx, bd, err)
+					}
+				}
 				launched = startResult{sessionID: sid, blockID: block}
 				return nil
 			}
@@ -647,7 +687,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			if err != nil {
 				return err
 			}
-			p.record(ctx, n, sid, wid, block, "window", cfg)
+			if block != "" {
+				bd := p.newBinding(n, sid, wid, block, "window", attempt, cfg)
+				if err := p.binder.Record(bd); err != nil {
+					return p.discardLaunch(ctx, bd, err)
+				}
+			}
 			launched = startResult{sessionID: sid, blockID: block}
 			return nil
 		})
@@ -659,8 +704,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// launch once more; a second miss is returned as is.
 		if sid, err = findOrCreate(); err == nil {
 			if err = p.withStateLock(ctx, func() error {
-				p.recordProvisionalBinding(n, sid, "", cfg)
-				return nil
+				return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
 			}); err == nil {
 				err = launch()
 			}
@@ -715,13 +759,10 @@ func rectArea(r [4]float64) (float64, bool) {
 	return w * h, true
 }
 
-// record stores a binding for a new pane, started in the given mode ("window"
-// or "split"). A pane with no block ID is not recorded.
-func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string, cfg Config) {
-	if block == "" {
-		return
-	}
-	p.binder.Record(Binding{
+// newBinding builds the record for a new pane, started in the given mode
+// ("window" or "split").
+func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode, attempt string, cfg Config) Binding {
+	return Binding{
 		Name:           n,
 		SessionID:      sid,
 		SessionLabel:   rexSessionLabel(p.city),
@@ -735,7 +776,44 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
 		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
-	})
+		Attempt:        attempt,
+	}
+}
+
+// reapStartSurvivors finishes the cleanup a prior stop or failed launch left
+// pending on a binding that answers to n. A survivor the closed pane can no
+// longer report must be reaped before ResolveFresh drops or replaces that
+// record, or the next Start forgets the pid while it still runs. A survivor
+// that will not die keeps the binding and fails the start for a retry.
+func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error {
+	for _, bd := range p.binder.lookup(n) {
+		if len(bd.Survivors) == 0 {
+			continue
+		}
+		if err := p.reapSurvivors(ctx, bd, survivorProcs(bd.Survivors)); err != nil {
+			return fmt.Errorf("start %s: reap the pending survivors and retry: %w", n, err)
+		}
+	}
+	return nil
+}
+
+// discardLaunch retires a pane NewSplit or NewWindow created whose final record
+// failed: the pane would otherwise run on after the deferred cleanup forgets
+// its binding, and a retry would adopt it with no start identity. It reuses
+// stopBinding's order (snapshot the tree, close, re-read, reap) and reports
+// cause joined with any retire failure.
+func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) error {
+	tree, err := p.paneSubtree(ctx, bd)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if err := p.client.CloseBlock(ctx, bd.SessionID, bd.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return errors.Join(cause, err)
+	}
+	if after, readErr := p.paneSubtree(ctx, bd); readErr == nil {
+		tree = unionProcs(tree, after)
+	}
+	return errors.Join(cause, p.reapSurvivors(ctx, bd, tree))
 }
 
 // Stop closes the agent's pane and leaves the city session and other rigs
@@ -754,8 +832,16 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	n := SessionName(name)
 	// Load the stored binding before Resolve: Resolve drops a stale record when
 	// its pane is gone, and a drained worker's process has often exited already.
-	stored, hadStored := p.bindingRead(n)
-	known := len(p.binder.lookup(n)) > 0 // before Resolve: Resolve may drop records
+	// Resolve answers to a primary record or an alias, so the retry's drain
+	// diagnostic and survivors must come from the same record: a plain read of
+	// an alias name has no entry and would lose them.
+	cands := p.binder.lookup(n) // before Resolve: Resolve may drop records
+	known := len(cands) > 0
+	var stored Binding
+	hadStored := known
+	if known {
+		stored = cands[0]
+	}
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: n, Mode: ResolveFresh})
 	if errors.Is(err, rex.ErrUnavailable) && !known {
 		// Rex is down and no stored binding answers to the name: herdr-core
@@ -776,11 +862,44 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if hadStored {
 			p.writeDrainDiagnostic(ctx, stored)
 		}
+		// A retry after a stop whose pane has since vanished still owes the
+		// survivors that stop recorded a reap: clearing the record here would
+		// lose their pids and leave them running.
+		if err := p.reapSurvivors(ctx, stored, survivorProcs(stored.Survivors)); err != nil {
+			return err
+		}
 		// Even with no pane, nothing the incarnation left must outlive its
 		// life: clear the whole meta sidecar and the activity record, not just
 		// the identity seed a failed or rolled-back start may have written.
-		return p.clearIncarnations(n, stored.Name)
+		// Forget comes after, so a failed cleanup keeps the alias route for the
+		// retry, as stopBinding does.
+		if err := p.clearIncarnations(n, stored.Name); err != nil {
+			return err
+		}
+		// The survivors are gone and the metadata is clear, so the record can
+		// go with them. Resolve keeps a stale record that still names one.
+		p.binder.Forget(n)
+		return nil
 	}
+	err = p.stopBinding(ctx, n, binding)
+	if errors.Is(err, errBlockGone) {
+		// Stop stays idempotent: the pane was already closed by another client,
+		// and the cleanup above has finished the retirement.
+		return nil
+	}
+	return err
+}
+
+// errBlockGone reports that the exact block was already closed when the close
+// was attempted. stopBinding returns it after finishing the retirement, so Stop
+// can stay idempotent while kill-object answers `gone` instead of `killed`.
+var errBlockGone = errors.New("block already closed")
+
+// stopBinding closes one exact binding: the drain diagnostic, the close, the
+// re-read, the reap and the record cleanup. stop resolves a name to a binding
+// first; kill-object passes the object it re-checked, so its close never
+// follows a fresh resolve onto a different pane.
+func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Binding) error {
 	// Sample the work tree before the pane closes, while the worker is alive.
 	p.writeDrainDiagnostic(ctx, binding)
 	// Capture the pane's reported process tree too: a close is not proof that
@@ -792,10 +911,15 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("could not inspect the pane's process tree, leaving it open: %w", err)
 	}
+	// A survivor an earlier stop recorded was captured before this pane closed,
+	// and a closed pane no longer reports it. Reap it with whatever the pane
+	// still shows, or the retry would clear the record while it runs.
+	tree = unionProcs(tree, survivorProcs(binding.Survivors))
 	closeErr := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID)
 	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
 		return closeErr
 	}
+	alreadyClosed := errors.Is(closeErr, rex.ErrNotFound)
 	// The close is not proof that the tree is gone either: a process the pane
 	// spawned after the snapshot, or one Rex only reports now, would otherwise
 	// pass unreaped. Re-read the pane and union what it still reports. A closed
@@ -809,14 +933,43 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	// it survives; the binding, meta and activity stay for a retry, as
 	// herdr-core keeps the box (parity doc ### stop row 2). A signal error with
 	// nothing left is a success: everything died anyway.
-	if left, signalErr := p.reap(ctx, tree); len(left) > 0 {
-		return &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
+	if err := p.reapSurvivors(ctx, binding, tree); err != nil {
+		return err
 	}
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
 	}
 	p.binder.Forget(binding.Name)
+	if alreadyClosed {
+		return errBlockGone
+	}
 	return nil
+}
+
+// reapSurvivors reaps tree and, while any of it survives, records the pids on
+// the binding so the retry stop herdr-core allows still has them: the pane is
+// closed by then and reports nothing. It returns the failure to report, nil
+// when the tree is gone.
+func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []paneProc) error {
+	// A survivor recorded by an earlier stop can spawn a child before the
+	// retry, and the closed pane no longer reports that child: read the host
+	// table so the retry reaps what the tree grew, not only what it was given.
+	tree = p.descendants(ctx, tree)
+	left, signalErr := p.reap(ctx, tree)
+	if len(left) == 0 {
+		return nil
+	}
+	binding.Survivors = survivorRecords(left)
+	survived := &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
+	// A start may have replaced the binding while this reap ran. Record only
+	// while the stored binding is still the one we reaped: a replacement owns
+	// the name and must not carry the old pane's survivors.
+	if _, err := p.binder.RecordIfCurrent(binding); err != nil {
+		// The stop fails either way: the record that would name these pids for
+		// the next retry was not saved.
+		return errors.Join(err, survived)
+	}
+	return survived
 }
 
 // clearIncarnations removes the whole metadata sidecar and the activity record

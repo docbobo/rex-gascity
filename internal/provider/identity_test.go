@@ -146,6 +146,40 @@ func TestStartClearsStaleIdentityWhenEnvHasEmptyValues(t *testing.T) {
 	}
 }
 
+// TestStartDropsTheRetiredIdentityWhenTheRelaunchFails proves a start that
+// closes a dead pane and then fails before it seeds leaves no identity of the
+// retired incarnation behind: a recordless pane under the name must not report
+// its GC_SESSION_ID as its own.
+func TestStartDropsTheRetiredIdentityWhenTheRelaunchFails(t *testing.T) {
+	const name = "pi-mc-wisp-abc"
+	ctx := context.Background()
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: identityEnv()}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	bd, ok := p.Binding(name)
+	if !ok || bd.BlockID == "" {
+		t.Fatal("no binding after the first start")
+	}
+	if got, _ := p.GetMeta(ctx, name, "GC_SESSION_ID"); got == "" {
+		t.Fatal("GC_SESSION_ID not seeded before the relaunch")
+	}
+	// The agent exits and Rex keeps the pane, so the next start recycles it.
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		bd.BlockID: {LastExit: &rex.ExitStatus{ExitCode: 0}},
+	}
+
+	// The relaunch fails after the dead pane is closed and before it seeds.
+	cfg := provider.Config{Argv: []string{"pi"}, Env: identityEnv(), WorkDir: filepath.Join(t.TempDir(), "missing")}
+	if err := p.Start(ctx, name, cfg); err == nil {
+		t.Fatal("Start with a missing work_dir succeeded")
+	}
+	if got, _ := p.GetMeta(ctx, name, "GC_SESSION_ID"); got != "" {
+		t.Errorf("GC_SESSION_ID = %q after a failed relaunch, want empty: the retired identity survived", got)
+	}
+}
+
 func TestStopClearsSeededIdentity(t *testing.T) {
 	const name = "pi-mc-wisp-abc"
 	ctx := context.Background()
@@ -811,4 +845,36 @@ func readStartupTiming(t *testing.T, stateDir, name string) map[string]any {
 		t.Fatalf("decode startup timing diagnostic: %v (%s)", err, raw)
 	}
 	return got
+}
+
+// TestStartGatesProcessNamesOnObserveV1 is the CodeRabbit fix for identity.go:
+// GT_PROCESS_NAMES is observe.v1 metadata, so flag-off Start must leave it
+// unset (and cleanup must not have to delete it) while flag-on still seeds it.
+func TestStartGatesProcessNamesOnObserveV1(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		flag string
+		want string
+	}{
+		{flag: "", want: ""},
+		{flag: "1", want: "pi|node"},
+	} {
+		t.Run("flag="+tc.flag, func(t *testing.T) {
+			t.Setenv("GCREX_OBSERVE_V1", tc.flag)
+			p := provider.New("acme", faketest.New())
+			env := identityEnv()
+			env["GT_PROCESS_NAMES"] = "pi|node"
+			const name = "pi-mc-wisp-abc"
+			if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: env}); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			got, err := p.GetMeta(ctx, name, "GT_PROCESS_NAMES")
+			if err != nil {
+				t.Fatalf("GetMeta: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("GT_PROCESS_NAMES = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }

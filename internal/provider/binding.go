@@ -34,6 +34,10 @@ type Binding struct {
 	LaunchMode string
 	// CreatedAt is when the pane was started; zero when unknown.
 	CreatedAt time.Time
+	// Adopted marks a record whose pane this provider did not start: a
+	// restored or operator-made pane that answered to the name. Its sidecar
+	// identity belongs to a retired incarnation, so Observe answers {} for it.
+	Adopted bool
 	// GCBin is the basename of the GC_BIN binary the agent was launched with,
 	// when the start config carried one. gc's configured process_names hint for
 	// the control dispatcher is "gc", but a wrapped gc runs as e.g.
@@ -52,6 +56,21 @@ type Binding struct {
 	// already holds a claim is not re-prompted mid-task (GCREX-33). Empty on
 	// legacy records, where the guard cannot resolve the claim and delivers.
 	ClaimSessionID string
+	// Survivors are the descendants a stop could not reap. The closed pane
+	// no longer reports them, so the retry that herdr-core's stop allows
+	// reaps these instead of clearing the record blind. Empty when none.
+	Survivors []Survivor
+	// Attempt identifies the start call that wrote a provisional record. The
+	// provisional record (no BlockID) is writable only by that same start, so
+	// a stale survivor write cannot replace another launch's pending record.
+	Attempt string
+}
+
+// Survivor is one descendant a stop could not reap.
+type Survivor struct {
+	PID   int    `json:"pid"`
+	Name  string `json:"name,omitempty"`
+	Start string `json:"start,omitempty"` // ps lstart, the pid-reuse identity
 }
 
 // tabLabel returns the Rex tab label for the pane: the stored label when the
@@ -411,10 +430,73 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 	}
 	for _, bd := range stale {
 		if !ok || bd.Name != got.Name { // scan already rewrote got.Name
-			_ = b.store.Drop(bd.Name)
+			b.dropStaleIfUnchanged(bd)
 		}
 	}
 	return got, ok, nil
+}
+
+// dropStaleIfUnchanged removes the record under bd.Name only when it is still
+// the record bd read and it names no survivor. A stop may have recorded a
+// survivor, or a start replaced the record, while the resolve ran: that record
+// is the only name for a pid whose pane is gone, and it is not ours to drop.
+func (b *Binder) dropStaleIfUnchanged(bd Binding) {
+	cur, ok, err := b.store.Read(bd.Name)
+	if err != nil || !ok || len(cur.Survivors) > 0 || !bd.sameIncarnation(cur) {
+		return
+	}
+	_ = b.store.Drop(bd.Name)
+}
+
+// saveKeepingSurvivors writes bd but keeps any survivor another writer
+// recorded under the same name, or any survivor the record already held. A
+// stop can record a survivor while a scan runs: the scan's pre-stop snapshot
+// is not a reason to forget a pid whose pane is gone. The store applies the
+// merge under its lock, so the read-modify-write cannot interleave.
+func (b *Binder) saveKeepingSurvivors(bd Binding) error {
+	if ms, ok := b.store.(interface {
+		Mutate(SessionName, func(Binding) Binding) error
+	}); ok {
+		return ms.Mutate(bd.Name, func(cur Binding) Binding {
+			return keepOtherLaunch(cur, bd)
+		})
+	}
+	cur, _, err := b.store.Read(bd.Name)
+	if err != nil {
+		return err
+	}
+	bd = keepOtherLaunch(cur, bd)
+	return b.store.Write(bd.Name, bd)
+}
+
+// keepOtherLaunch refuses to replace a provisional record written by another
+// start: that launch's final write is conditional on the attempt it wrote.
+// Otherwise it merges the stored survivor set into bd.
+func keepOtherLaunch(cur, bd Binding) Binding {
+	if cur.BlockID == "" && cur.Attempt != "" && cur.Attempt != bd.Attempt {
+		return cur
+	}
+	bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
+	return bd
+}
+
+// mergeSurvivors returns own plus every survivor of other that is not already
+// in own, deduplicated by pid and start time.
+func mergeSurvivors(own, other []Survivor) []Survivor {
+	out := own
+	for _, s := range other {
+		dup := false
+		for _, have := range out {
+			if have.PID == s.PID && have.Start == s.Start {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // stillBound reports whether view still holds the binding's block under its
@@ -442,14 +524,64 @@ func stillBound(view rex.SessionView, bd Binding, town string) bool {
 // env-derived labels is found again; empty fields fall back to the labels the
 // name implies.
 func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string) (Binding, bool, error) {
-	sid, ok, err := b.FindSession(ctx)
-	if err != nil || !ok {
-		return Binding{}, false, err
-	}
-	view, err := b.client.SessionView(ctx, sid)
+	return b.scanWith(ctx, name, hint, legacy, legacyPanes, true)
+}
+
+// find is scan without the save: it returns the pane a scan would adopt but
+// leaves the binding store untouched, so a read op can answer for a restored
+// pane without replacing the record. The returned binding carries no CreatedAt:
+// the pane was not started by this provider, so the retired record's time is
+// not its.
+func (b *Binder) find(ctx context.Context, name SessionName, hint Binding, legacy []string) (Binding, bool, error) {
+	// A read op has no start env, so it cannot derive the pre-GC_TEMPLATE
+	// pane labels: it recognises only the labels the record and name imply.
+	return b.scanWith(ctx, name, hint, legacy, nil, false)
+}
+
+func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string, save bool) (Binding, bool, error) {
+	// Search every accepted namespace, canonical first: a pane that exists only
+	// in a legacy session must still be found, and the canonical session not
+	// holding it is not evidence the city does not (CodeRabbit fix).
+	sessions, err := b.acceptedSessions(ctx)
 	if err != nil {
 		return Binding{}, false, err
 	}
+	for _, sess := range sessions {
+		view, err := b.client.SessionView(ctx, sess.ID)
+		if errors.Is(err, rex.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return Binding{}, false, err
+		}
+		if bd, ok := b.scanView(name, hint, legacy, legacyPanes, save, sess.ID, view); ok {
+			return bd, true, nil
+		}
+	}
+	return Binding{}, false, nil
+}
+
+// acceptedSessions lists the city's sessions in preference order: canonical
+// first, then every other accepted namespace.
+func (b *Binder) acceptedSessions(ctx context.Context) ([]rex.Session, error) {
+	sessions, err := b.client.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []rex.Session
+	for _, label := range b.sessionLabels {
+		for _, s := range sessions {
+			if s.Label == label {
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// scanView is scanWith's search of one session's view.
+func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []string, save bool, sid rex.SessionID, view rex.SessionView) (Binding, bool) {
 	primary := hint.TabLabel
 	if primary == "" {
 		primary = tabLabel(name, nil, b.townTab)
@@ -493,7 +625,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 		}
 		return false
 	}
-	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool, error) {
+	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool) {
 		bd := Binding{
 			Name:         name,
 			SessionID:    sid,
@@ -506,12 +638,28 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 			// Launch details the labels do not carry: dropping them
 			// would silently disable the Stop-time drain diagnostic.
 			LaunchMode: hint.LaunchMode,
-			CreatedAt:  hint.CreatedAt,
 			GCBin:      hint.GCBin,
 			WorkDir:    hint.WorkDir,
+			// The pending survivor set is cleanup state, not identity: a
+			// replacement pane keeps it, or the stop forgets pids a closed
+			// pane no longer reports.
+			Survivors: hint.Survivors,
 		}
-		_ = b.store.Write(bd.Name, bd)
-		return bd, true, nil
+		if save {
+			if hint.BlockID != blk.ID {
+				// Adopted: a pane this provider did not start. The retired
+				// record's creation time and identity are not its, so keep the
+				// creation time unknown and mark it adopted; a later Observe
+				// then reports the same `created` the read-only scan did.
+				bd.CreatedAt = time.Time{}
+				bd.Adopted = true
+			} else {
+				bd.CreatedAt = hint.CreatedAt
+				bd.Adopted = hint.Adopted
+			}
+			_ = b.saveKeepingSurvivors(bd)
+		}
+		return bd, true
 	}
 	// Most specific first, so scan order never decides which pane a tab
 	// yields: a suffix-labelled pane names this session outright, while a
@@ -550,11 +698,46 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 			}
 		}
 	}
-	return Binding{}, false, nil
+	return Binding{}, false
 }
 
-// Record stores binding, replacing any earlier one for the same name.
-func (b *Binder) Record(binding Binding) { _ = b.store.Write(binding.Name, binding) }
+// sameIncarnation reports whether other records the same pane: the same block
+// and window, created at the same time. A start that replaced the binding
+// leaves a different incarnation.
+func (b Binding) sameIncarnation(other Binding) bool {
+	return b.BlockID == other.BlockID && b.WindowID == other.WindowID && b.CreatedAt.Equal(other.CreatedAt)
+}
+
+// Record stores binding, replacing any earlier one for the same name. The
+// caller must handle the error: an unsaved record leaves a pane or a survivor
+// set no later stop can name.
+func (b *Binder) Record(binding Binding) error { return b.store.Write(binding.Name, binding) }
+
+// RecordIfCurrent stores binding only when the record under its name still
+// describes the same incarnation. A start that replaced the binding leaves a
+// different record, and a stale survivor write must not overwrite it. A
+// provisional record has no block id yet and is not a replacement, but only
+// the launch attempt that wrote it may replace it: an empty block id alone
+// does not authorize the write, or a stale writer could take another launch's
+// pending record and that launch's own write would be refused. It reports
+// whether the write happened.
+func (b *Binder) RecordIfCurrent(binding Binding) (bool, error) {
+	current, ok, err := b.store.Read(binding.Name)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if current.BlockID == "" {
+		if current.Attempt == "" || current.Attempt != binding.Attempt {
+			return false, nil
+		}
+	} else if !binding.sameIncarnation(current) {
+		return false, nil
+	}
+	return true, b.store.Write(binding.Name, binding)
+}
 
 // Forget drops the stored binding that answers to name, clearing the whole
 // primary record including its aliases. An alias drops the primary it names.

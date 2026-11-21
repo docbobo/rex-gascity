@@ -43,6 +43,8 @@ type Fake struct {
 
 	Sessions []rex.Session
 	View     rex.SessionView
+	// Views, when set, supersedes View per session.
+	Views map[rex.SessionID]rex.SessionView
 
 	// Processes is the process state BlockProcess reports, keyed by block.
 	Processes map[rex.BlockID]rex.ProcessInfo
@@ -51,6 +53,10 @@ type Fake struct {
 	// fake's lock held, so it must not call Fake methods; tests use it to model
 	// a pane whose program exits between calls.
 	ProcessFunc func(rex.BlockID) rex.ProcessInfo
+
+	// VanishedBlocks lists blocks whose BlockProcess returns rex.ErrNotFound,
+	// as Rex does for a pane whose program exited and closed its block.
+	VanishedBlocks map[rex.BlockID]bool
 
 	// Formats is the rendered output BlockFormat reports, keyed by block.
 	Formats map[rex.BlockID]string
@@ -206,7 +212,10 @@ func (f *Fake) SessionView(_ context.Context, sid rex.SessionID) (rex.SessionVie
 		return rex.SessionView{}, f.SessionViewErr
 	}
 	v := f.View
-	v.Windows = cloneWindows(f.View.Windows)
+	if sv, ok := f.Views[sid]; ok {
+		v = sv
+	}
+	v.Windows = cloneWindows(v.Windows)
 	v.SessionID = sid
 	if v.Label == "" {
 		for _, s := range f.Sessions {
@@ -234,6 +243,9 @@ func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.Bloc
 	f.record(sid, block, "process")
 	if f.ProcessErr != nil {
 		return rex.ProcessInfo{}, f.ProcessErr
+	}
+	if f.VanishedBlocks[block] {
+		return rex.ProcessInfo{}, rex.ErrNotFound
 	}
 	if f.ProcessFunc != nil {
 		return f.ProcessFunc(block), nil

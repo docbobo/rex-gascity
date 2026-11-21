@@ -192,3 +192,27 @@ func TestMetaFileStoreUnreadableDirIsError(t *testing.T) {
 		t.Errorf("Get = %q, %v, %v; want a read error", got, ok, err)
 	}
 }
+
+// TestMetaSnapshotIgnoresTempResidue is the CodeRabbit fix for stores.go: a
+// crash between CreateTemp and Rename leaves a `.tmp-*` file holding a complete
+// entry. Get does not read that path, so Snapshot must not report it either.
+func TestMetaSnapshotIgnoresTempResidue(t *testing.T) {
+	dir := t.TempDir()
+	s := NewFileMetaStore(dir)
+	name := SessionName("Indigo--dog-1")
+	if err := s.Set(name, "GC_SESSION_ID", "real"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// A completed entry for a key with no .json file, parked in a temp name.
+	entry := `{"key":"GC_INSTANCE_TOKEN","value_b64":"c3RhbGU="}`
+	if err := os.WriteFile(filepath.Join(dir, nameKey(name), ".tmp-crash"), []byte(entry), 0o644); err != nil {
+		t.Fatalf("write residue: %v", err)
+	}
+	snap := s.Snapshot(name)
+	if _, ok := snap["GC_INSTANCE_TOKEN"]; ok {
+		t.Errorf("Snapshot returned a key from a temp-file residue: %v", snap)
+	}
+	if got := snap["GC_SESSION_ID"]; got != "real" {
+		t.Errorf("Snapshot[GC_SESSION_ID] = %q, want real", got)
+	}
+}

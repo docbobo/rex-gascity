@@ -55,7 +55,12 @@ func TestResolveScanFallback(t *testing.T) {
 	b, store, _ := newTestBinder(t, indigoWindow())
 
 	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
-	if err != nil || !ok || !reflect.DeepEqual(got, indigoBinding()) {
+	// No record and no hint labels: this provider cannot prove it started the
+	// pane, so the rebuilt binding is an adoption (unknown creation, no gc
+	// identity), the same answer Observe gives a recordless pane.
+	want := indigoBinding()
+	want.Adopted = true
+	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
 	if saved, ok := store.Load("Indigo--dog-1"); !ok || !reflect.DeepEqual(saved, got) {
@@ -95,6 +100,22 @@ func TestResolveStaleBindingGone(t *testing.T) {
 	}
 	if _, ok := store.Load("Indigo--dog-1"); ok {
 		t.Error("stale binding not deleted")
+	}
+}
+
+func TestResolveKeepsStaleBindingWithPendingSurvivors(t *testing.T) {
+	b, store, _ := newTestBinder(t)
+	stale := indigoBinding()
+	stale.Survivors = []Survivor{{PID: 4242, Start: "Mon Nov 17 10:00:00 2026"}}
+	store.Save(stale)
+
+	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
+	if ok || err != nil {
+		t.Fatalf("Resolve = %v, %v", ok, err)
+	}
+	saved, found := store.Load("Indigo--dog-1")
+	if !found || len(saved.Survivors) != 1 || saved.Survivors[0].PID != 4242 {
+		t.Fatalf("stale record with survivors gone: %+v, %v", saved, found)
 	}
 }
 
@@ -347,8 +368,14 @@ func TestScanRebuiltBindingKeepsHintFields(t *testing.T) {
 		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 	}
 	if got.WorkDir != stale.WorkDir || got.GCBin != stale.GCBin ||
-		got.LaunchMode != stale.LaunchMode || !got.CreatedAt.Equal(stale.CreatedAt) {
+		got.LaunchMode != stale.LaunchMode {
 		t.Errorf("rebuilt binding lost hint fields: %+v", got)
+	}
+	// The stale record's creation time is not the replacement pane's: an
+	// adopted pane reports its own (unknown) creation, so Observe keeps
+	// answering the same `created` a read-only scan did (CodeRabbit fix).
+	if !got.CreatedAt.IsZero() || !got.Adopted {
+		t.Errorf("rebuilt binding kept the retired box's creation: %+v", got)
 	}
 	if saved, _ := store.Load("Indigo--dog-1"); saved.WorkDir != stale.WorkDir {
 		t.Errorf("saved WorkDir = %q, want %q", saved.WorkDir, stale.WorkDir)
@@ -515,5 +542,180 @@ func TestBinderLiveSkipsOtherNameRecord(t *testing.T) {
 
 	if _, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveLive}); ok || err != nil {
 		t.Fatalf("Live = %v, %v", ok, err)
+	}
+}
+
+// TestScanFindsPaneInLegacySession is the CodeRabbit fix for binding.go: the
+// canonical session exists, but the replacement pane lives only in a legacy
+// accepted session. Absence from the canonical session is not absence.
+func TestScanFindsPaneInLegacySession(t *testing.T) {
+	fake := faketest.New()
+	fake.Sessions = []rex.Session{
+		{ID: "session:acme", Label: testLabel},
+		{ID: "session:legacy", Label: "gc:legacy"},
+	}
+	fake.Views = map[rex.SessionID]rex.SessionView{
+		"session:acme":   {Label: testLabel},
+		"session:legacy": {Label: "gc:legacy", Windows: []rex.Window{indigoWindow()}},
+	}
+	b := NewBinderWithLabels(fake, NewMemoryStore(), []string{testLabel, "gc:legacy"}, testTown)
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
+	if err != nil || !ok {
+		t.Fatalf("Resolve = %+v, %v, %v; want the legacy session's pane", got, ok, err)
+	}
+	if got.BlockID != "block:dog-1" || got.SessionID != "session:legacy" {
+		t.Errorf("Resolve = %+v, want block:dog-1 in session:legacy", got)
+	}
+}
+
+// TestRecordIfCurrentKeepsAReplacementBinding proves a stale survivor write
+// cannot replace a binding a concurrent start installed under the same name.
+func TestRecordIfCurrentKeepsAReplacementBinding(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	old := indigoBinding()
+	if err := store.Write(old.Name, old); err != nil {
+		t.Fatal(err)
+	}
+	newer := old
+	newer.BlockID = "block:dog-2"
+	if err := store.Write(newer.Name, newer); err != nil {
+		t.Fatal(err)
+	}
+	stale := old
+	stale.Survivors = []Survivor{{PID: 4242, Name: "worker"}}
+	wrote, err := binder.RecordIfCurrent(stale)
+	if err != nil {
+		t.Fatalf("RecordIfCurrent: %v", err)
+	}
+	if wrote {
+		t.Fatal("RecordIfCurrent wrote a stale survivor record over a replacement binding")
+	}
+	got, ok := store.Load(newer.Name)
+	if !ok {
+		t.Fatal("replacement binding is gone")
+	}
+	if got.BlockID != newer.BlockID {
+		t.Fatalf("stored binding = %q, want the replacement %q", got.BlockID, newer.BlockID)
+	}
+	if len(got.Survivors) != 0 {
+		t.Fatalf("stored binding carries stale survivors: %v", got.Survivors)
+	}
+}
+
+// TestRecordIfCurrentKeepsAnotherLaunchesProvisionalBinding proves the
+// provisional exception belongs to the launch that wrote the record: a stale
+// survivor write from an earlier attempt cannot replace a newer start's
+// pending record, which would then reject that start's own write and leave its
+// surviving descendants with no record.
+func TestRecordIfCurrentKeepsAnotherLaunchesProvisionalBinding(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	provisional := indigoBinding()
+	provisional.BlockID = ""
+	provisional.Attempt = "attempt-new"
+	if err := store.Write(provisional.Name, provisional); err != nil {
+		t.Fatal(err)
+	}
+	stale := indigoBinding()
+	stale.Attempt = "attempt-old"
+	stale.Survivors = []Survivor{{PID: 4242, Name: "worker"}}
+	wrote, err := binder.RecordIfCurrent(stale)
+	if err != nil {
+		t.Fatalf("RecordIfCurrent: %v", err)
+	}
+	if wrote {
+		t.Fatal("RecordIfCurrent wrote a stale survivor record over another launch's provisional binding")
+	}
+	got, ok := store.Load(provisional.Name)
+	if !ok || got.Attempt != "attempt-new" || got.BlockID != "" {
+		t.Fatalf("stored binding = %+v, want the new launch's provisional record", got)
+	}
+	if len(got.Survivors) != 0 {
+		t.Fatalf("provisional binding carries stale survivors: %v", got.Survivors)
+	}
+	// The launch that wrote the provisional record still replaces it.
+	own := provisional
+	own.BlockID = "block:dog-2"
+	wrote, err = binder.RecordIfCurrent(own)
+	if err != nil || !wrote {
+		t.Fatalf("RecordIfCurrent for the provisional record's own launch = %v, %v; want true, nil", wrote, err)
+	}
+}
+
+func TestSaveKeepingSurvivorsKeepsTheStoredSet(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	stored := indigoBinding()
+	stored.Survivors = []Survivor{{PID: 300}}
+	store.Save(stored)
+
+	fresh := indigoBinding() // the scan snapshot, taken before the stop wrote 300
+	fresh.BlockID = "block:dog-1b"
+	if err := binder.saveKeepingSurvivors(fresh); err != nil {
+		t.Fatalf("saveKeepingSurvivors = %v", err)
+	}
+	saved, _ := store.Load(fresh.Name)
+	if saved.BlockID != "block:dog-1b" || len(saved.Survivors) != 1 || saved.Survivors[0].PID != 300 {
+		t.Fatalf("saved = %+v; want the fresh record with pid 300", saved)
+	}
+}
+
+func TestSaveKeepingSurvivorsKeepsAnotherLaunchesProvisional(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	provisional := indigoBinding()
+	provisional.BlockID = ""
+	provisional.Attempt = "launch-a"
+	store.Save(provisional)
+
+	scanned := indigoBinding() // a scan for the same name, from another launch
+	scanned.BlockID = "block:dog-1b"
+	scanned.Attempt = "launch-b"
+	if err := binder.saveKeepingSurvivors(scanned); err != nil {
+		t.Fatalf("saveKeepingSurvivors = %v", err)
+	}
+	saved, _ := store.Load(scanned.Name)
+	if saved.Attempt != "launch-a" || saved.BlockID != "" {
+		t.Fatalf("saved = %+v; want launch-a's provisional record", saved)
+	}
+}
+
+func TestSaveKeepingSurvivorsReplacesAFinishedRecord(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	finished := indigoBinding() // a start that committed: BlockID is set
+	finished.Attempt = "launch-a"
+	store.Save(finished)
+
+	scanned := indigoBinding()
+	scanned.BlockID = "block:dog-1b"
+	if err := binder.saveKeepingSurvivors(scanned); err != nil {
+		t.Fatalf("saveKeepingSurvivors = %v", err)
+	}
+	saved, _ := store.Load(scanned.Name)
+	if saved.BlockID != "block:dog-1b" {
+		t.Fatalf("saved = %+v; want the scanned record", saved)
+	}
+}
+
+func TestDropStaleIfUnchanged(t *testing.T) {
+	withSurvivor := indigoBinding()
+	withSurvivor.Survivors = []Survivor{{PID: 300}}
+	replaced := indigoBinding()
+	replaced.BlockID = "block:replaced"
+
+	for _, tc := range []struct {
+		name    string
+		current Binding
+		want    bool // true when the record is dropped
+	}{
+		{"unchanged", indigoBinding(), true},
+		{"survivor recorded after the read", withSurvivor, false},
+		{"replaced by another start", replaced, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, store, _ := newTestBinder(t)
+			store.Save(tc.current)
+			b.dropStaleIfUnchanged(indigoBinding()) // the snapshot the resolve read
+			if _, found := store.Load(tc.current.Name); found != !tc.want {
+				t.Fatalf("record found = %v, want dropped = %v", found, tc.want)
+			}
+		})
 	}
 }

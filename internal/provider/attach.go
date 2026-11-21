@@ -28,17 +28,48 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	return p.attached(ctx, binding)
+}
+
+// attached reports whether a human is watching one exact binding's pane. It is
+// IsAttached without the resolve, so kill-object can check the object it has
+// already identified instead of whichever box a fresh resolve would return.
+func (p *Provider) attached(ctx context.Context, binding Binding) (bool, error) {
+	clients, err := p.client.ListClients(ctx, binding.SessionID)
+	if err != nil {
+		return false, err
+	}
+	hasApp := false
+	for _, c := range clients {
+		switch c.Kind {
+		case "app":
+			hasApp = true
+		case "cli", "peer":
+		default:
+			// We cannot classify this client, so we cannot tell whether a
+			// human is watching. gc reads any is-attached error as "not
+			// attached" (fail-open) and then lets config-drift restart,
+			// progress-stall recycle and the drain-ack escalation kill
+			// proceed, so answer true instead.
+			return true, nil
+		}
+	}
+	if !hasApp {
+		return false, nil
+	}
 	view, err := p.client.SessionView(ctx, binding.SessionID)
 	if err != nil {
 		return false, err
 	}
+	// The pane may have moved since the binding recorded its window; attachment
+	// is about where the block is shown now, so read the live location.
+	window, present := blockWindow(view, binding.BlockID)
+	if !present {
+		return false, nil
+	}
 	owner := blockOwner(view, binding.BlockID)
 	if owner == "" {
 		return false, nil
-	}
-	clients, err := p.client.ListClients(ctx, binding.SessionID)
-	if err != nil {
-		return false, err
 	}
 	kind, found := "", false
 	for _, c := range clients {
@@ -56,7 +87,17 @@ func (p *Provider) IsAttached(ctx context.Context, name string) (bool, error) {
 	default:
 		return true, nil
 	}
-	return watchesAgent(view, binding), nil
+	return window == view.ActiveWindowID, nil
+}
+
+// blockWindow returns the window currently holding blockID.
+func blockWindow(view rex.SessionView, blockID rex.BlockID) (rex.WindowID, bool) {
+	for _, w := range view.Windows {
+		if slices.ContainsFunc(w.Blocks, func(b rex.Block) bool { return b.ID == blockID }) {
+			return w.ID, true
+		}
+	}
+	return "", false
 }
 
 // blockOwner returns the client the block is displayed for, empty when the view

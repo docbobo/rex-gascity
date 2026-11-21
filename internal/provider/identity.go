@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -26,12 +27,26 @@ var startIdentityMetaKeys = []string{
 	"GC_PROVIDER",
 }
 
+// observeV1Enabled mirrors the dispatcher's GCREX_OBSERVE_V1 switch. Flag-off
+// Start must leave observe.v1's own metadata unset, as it did before the profile.
+func observeV1Enabled() bool { return os.Getenv("GCREX_OBSERVE_V1") == "1" }
+
+// startMetaKeys is the identity set this process seeds and clears.
+// GT_PROCESS_NAMES only exists for observe.v1's process classification, so it
+// is gated: flag-off Start must not add it or have cleanup delete it.
+func startMetaKeys() []string {
+	if !observeV1Enabled() {
+		return startIdentityMetaKeys
+	}
+	return append(append([]string{}, startIdentityMetaKeys...), "GT_PROCESS_NAMES")
+}
+
 // clearStartIdentity removes the identity keys seeded for a start. It is used
 // when a start rolls back and when Stop retires the pane, so a previous life's
 // GC_SESSION_ID/GC_INSTANCE_TOKEN cannot be read as the current one.
 func (p *Provider) clearStartIdentity(n SessionName) error {
 	var errs []error
-	for _, key := range startIdentityMetaKeys {
+	for _, key := range startMetaKeys() {
 		if err := p.metaDelete(n, key); err != nil {
 			errs = append(errs, err)
 		}
@@ -47,7 +62,7 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 	if err := p.clearStartIdentity(n); err != nil {
 		return err
 	}
-	for _, key := range startIdentityMetaKeys {
+	for _, key := range startMetaKeys() {
 		if v := env[key]; v != "" {
 			if err := p.metaSet(n, key, v); err != nil {
 				return err
@@ -61,9 +76,10 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 // launch. The block id is not known until NewWindow/NewSplit returns, so the
 // provisional record has no BlockID; it exists so get-meta can resolve the
 // runtime name and its rig-qualified aliases during the launch window. The
-// final record replaces it after the launch returns.
-func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, cfg Config) {
-	p.binder.Record(Binding{
+// final record replaces it after the launch returns. attempt names the one
+// start call that may replace it.
+func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, attempt string, cfg Config) error {
+	return p.binder.Record(Binding{
 		Name:           n,
 		SessionID:      sid,
 		SessionLabel:   rexSessionLabel(p.city),
@@ -75,5 +91,6 @@ func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wi
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
 		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
+		Attempt:        attempt,
 	})
 }

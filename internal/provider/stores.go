@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -77,6 +78,13 @@ func (t *memTable[K, V]) put(k K, v V) {
 	t.m[k] = v
 }
 
+// update applies fn to the value under k and stores the result.
+func (t *memTable[K, V]) update(k K, fn func(V) V) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.m[k] = fn(t.m[k])
+}
+
 func (t *memTable[K, V]) remove(k K) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -121,6 +129,11 @@ func (s *memStore[K, V]) Read(k K) (V, bool, error) {
 
 func (s *memStore[K, V]) Write(k K, v V) error {
 	s.t.put(k, v)
+	return nil
+}
+
+func (s *memStore[K, V]) Mutate(k K, fn func(V) V) error {
+	s.t.update(k, fn)
 	return nil
 }
 
@@ -260,6 +273,19 @@ func (s *memoryMetaStore) Clear(name SessionName) error {
 	return nil
 }
 
+// Snapshot returns every key stored for name.
+func (s *memoryMetaStore) Snapshot(name SessionName) map[string]string {
+	out := map[string]string{}
+	s.t.mu.RLock()
+	defer s.t.mu.RUnlock()
+	for k, v := range s.t.m {
+		if k.name == name {
+			out[k.key] = v
+		}
+	}
+	return out
+}
+
 // metaEntry is the on-disk shape of one metadata key.
 type metaEntry struct {
 	Key string `json:"key"`
@@ -328,4 +354,30 @@ func (s *fileMetaStore) Delete(name SessionName, key string) error {
 // file, so removing it drops the whole sidecar. A missing directory is success.
 func (s *fileMetaStore) Clear(name SessionName) error {
 	return s.t.removeAll(filepath.Join(s.t.dir, nameKey(name)))
+}
+
+// Snapshot reads every key file of name in one directory pass. Unreadable or
+// corrupt entries are skipped, as a per-key read would report them.
+func (s *fileMetaStore) Snapshot(name SessionName) map[string]string {
+	dir := filepath.Join(s.t.dir, nameKey(name))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, entry := range entries {
+		var r metaEntry
+		if ok, err := readJSON(filepath.Join(dir, entry.Name()), &r); err != nil || !ok || r.ValueB64 == nil {
+			continue
+		}
+		// Only the file Get reads for this key counts: a `.tmp-*` residue from
+		// a crashed writeJSON is not the key's entry, and Get would not see it.
+		if filepath.Base(s.path(name, r.Key)) != entry.Name() {
+			continue
+		}
+		if v, err := decodeMetaEntry(r); err == nil {
+			out[r.Key] = v
+		}
+	}
+	return out
 }
