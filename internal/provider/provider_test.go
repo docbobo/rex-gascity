@@ -235,11 +235,18 @@ func TestPeekReturnsAgentOutput(t *testing.T) {
 	if out != "hello from dog-1\n" {
 		t.Errorf("Peek = %q, want %q", out, "hello from dog-1\n")
 	}
-	// Peek must scope the block call to the city session Rex requires.
-	if len(fake.BlockCalls) != 1 {
-		t.Fatalf("block calls = %v, want one", fake.BlockCalls)
+	// Peek must scope the block calls to the city session Rex requires.
+	var formats []faketest.BlockCall
+	for _, call := range fake.BlockCalls {
+		if call.Op != "format" {
+			continue
+		}
+		formats = append(formats, call)
 	}
-	if call := fake.BlockCalls[0]; call.SessionID != "session:gc:acme" || call.BlockID != "block:dog-1" || call.Op != "format" {
+	if len(formats) != 1 {
+		t.Fatalf("block calls = %v, want one format", fake.BlockCalls)
+	}
+	if call := formats[0]; call.SessionID != "session:gc:acme" || call.BlockID != "block:dog-1" {
 		t.Errorf("block call = %+v, want session:gc:acme/block:dog-1/format", call)
 	}
 }
@@ -254,6 +261,73 @@ func TestPeekNoScreenWhenNoPane(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("Peek = %q, want empty for a missing pane", out)
+	}
+}
+
+// TestPeekDeadBoxWithScreen proves the op is not gated on liveness: v2 runs
+// peek whatever is-running says, and Rex keeps a box's rendered screen after
+// the program exits. A dead box with a screen answers it with exit 0.
+func TestPeekDeadBoxWithScreen(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	block := rex.BlockID("block:dog-1")
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{block: {LastExit: &rex.ExitStatus{}}}
+	fake.Formats = map[rex.BlockID]string{block: "fatal: rate limit\nretry later\n"}
+
+	out, err := p.Peek(context.Background(), name)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if out != "fatal: rate limit\nretry later\n" {
+		t.Errorf("Peek = %q, want the dead box's screen", out)
+	}
+}
+
+// TestPeekDeadBoxEmptyCaptureIsAFailure proves a dead box's capture that
+// rendered nothing is a failure, never an empty success and never no screen:
+// gc reads exit 0 with no lines as nothing to classify why the box died.
+func TestPeekDeadBoxEmptyCaptureIsAFailure(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	block := rex.BlockID("block:dog-1")
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{block: {LastExit: &rex.ExitStatus{}}}
+	fake.Formats = map[rex.BlockID]string{block: ""}
+
+	out, err := p.Peek(context.Background(), name)
+	if err == nil {
+		t.Fatalf("Peek = %q, want a failure for a dead box's empty capture", out)
+	}
+	if errors.Is(err, provider.ErrNoScreen) {
+		t.Errorf("Peek err = %v, want an unreadable-capture failure, not ErrNoScreen", err)
+	}
+}
+
+// TestPeekRunningBlankScreenSucceeds proves a running box that has rendered
+// nothing yet is an empty screen, not a failure: RPP-OBSERVE-016 reads a
+// running box's peek as a success.
+func TestPeekRunningBlankScreenSucceeds(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fake.Formats = map[rex.BlockID]string{"block:dog-1": ""}
+
+	out, err := p.Peek(context.Background(), name)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if out != "" {
+		t.Errorf("Peek = %q, want an empty screen", out)
 	}
 }
 

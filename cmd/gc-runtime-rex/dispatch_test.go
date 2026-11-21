@@ -351,6 +351,58 @@ func TestPeekNoScreenWhenRexUnavailable(t *testing.T) {
 	assertFailure(t, h.run("", "peek", dog), exitFail)
 }
 
+// TestObserveV1PeekReadsADeadBox proves RPP-OBSERVE-016's dead-box clause under
+// the profile: v2 runs peek whatever is-running says, so a box whose program
+// exited still answers its screen with exit 0.
+func TestObserveV1PeekReadsADeadBox(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	h, fake := newHarness(t)
+	h.start(dog)
+	block := rex.BlockID("block:dog-1")
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{block: {LastExit: &rex.ExitStatus{}}}
+	fake.Formats = map[rex.BlockID]string{block: "a\nb\nc\n"}
+
+	if got := h.must("", "peek", dog, "2").stdout; got != "b\nc\n" {
+		t.Errorf("peek of a dead box = %q, want the last two lines", got)
+	}
+}
+
+// TestObserveV1PeekDeadBoxEmptyCaptureIsAFailure pins the profile's "never an
+// empty success" for a dead box: a capture that wrote nothing is a plain
+// non-zero failure, not exit 0 with an empty screen and not exit 66.
+func TestObserveV1PeekDeadBoxEmptyCaptureIsAFailure(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	h, fake := newHarness(t)
+	h.start(dog)
+	block := rex.BlockID("block:dog-1")
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{block: {LastExit: &rex.ExitStatus{}}}
+	fake.Formats = map[rex.BlockID]string{block: ""}
+	assertFailure(t, h.run("", "peek", dog), exitFail)
+}
+
+// TestObserveV1PeekRunningBlankScreenSucceeds pins RPP-OBSERVE-016's running
+// clause: a box that has rendered nothing yet answers exit 0, not 66 and not a
+// failure.
+func TestObserveV1PeekRunningBlankScreenSucceeds(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	h, fake := newHarness(t)
+	h.start(dog)
+	fake.Formats = map[rex.BlockID]string{"block:dog-1": ""}
+	if got := h.must("", "peek", dog, "10").stdout; got != "" {
+		t.Errorf("peek of a running blank screen = %q, want empty", got)
+	}
+}
+
+// TestObserveV1PeekNoScreenAfterStop covers the conformance probe's last step:
+// a stopped name must answer exit 66, never an empty success.
+func TestObserveV1PeekNoScreenAfterStop(t *testing.T) {
+	t.Setenv("GCREX_OBSERVE_V1", "1")
+	h, _ := newHarness(t)
+	h.start(dog)
+	h.must("", "stop", dog)
+	assertNoScreen(t, h.run("", "peek", dog, "10"), dog)
+}
+
 func TestListRunning(t *testing.T) {
 	h, _ := newHarness(t)
 	h.start(dog)

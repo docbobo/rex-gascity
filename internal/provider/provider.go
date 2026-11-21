@@ -1012,7 +1012,10 @@ func (p *Provider) Peek(ctx context.Context, name string) (string, error) {
 // PeekLines returns the last lines lines of the agent's rendered output, or
 // all of it when lines <= 0. It returns ErrNoScreen when there is no screen to
 // read: no binding, a pane that vanished before it could be formatted, or Rex
-// unreachable (from the resolve or the format call).
+// unreachable (from the resolve, the liveness read or the format call). A dead
+// box's capture that rendered nothing is an error, never an empty screen: v2
+// reads exit 0 with no lines as nothing to classify why the box died. A
+// running box that has rendered nothing yet is a blank screen, which succeeds.
 func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (string, error) {
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(name), Mode: ResolveFresh})
 	if err != nil && !errors.Is(err, rex.ErrUnavailable) && !errors.Is(err, rex.ErrNotFound) {
@@ -1021,12 +1024,27 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 	if err != nil || !ok {
 		return "", ErrNoScreen
 	}
+	info, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID)
+	if errors.Is(err, rex.ErrNotFound) || errors.Is(err, rex.ErrUnavailable) {
+		return "", ErrNoScreen
+	}
+	if err != nil {
+		return "", err
+	}
 	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
 	if errors.Is(err, rex.ErrNotFound) || errors.Is(err, rex.ErrUnavailable) {
 		return "", ErrNoScreen
 	}
-	if err != nil || lines <= 0 {
-		return out, err
+	if err != nil {
+		return "", err
+	}
+	if out == "" && info.LastExit != nil {
+		// A dead box's screen is the only record of why it died, so a capture
+		// that wrote nothing is unreadable, never a blank screen.
+		return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+	}
+	if lines <= 0 {
+		return out, nil
 	}
 	return lastLines(out, lines), nil
 }
