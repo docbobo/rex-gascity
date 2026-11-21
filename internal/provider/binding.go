@@ -253,6 +253,10 @@ type ResolveRequest struct {
 	// after the hint and name-derived labels so an upgrade finds the pane
 	// instead of opening a second tab.
 	LegacyTabs []string
+	// LegacyPanes are pane labels an earlier env rule produced for this name
+	// (the pre-GC_TEMPLATE agent prefix). They are tried after the hint so a
+	// pane started before the rule changed stays discoverable.
+	LegacyPanes []string
 	// Mode selects the resolution behavior. The zero value is ResolveCached.
 	Mode ResolveMode
 }
@@ -265,7 +269,7 @@ func (b *Binder) Resolve(ctx context.Context, req ResolveRequest) (Binding, bool
 	case ResolveLive:
 		return b.resolveLive(ctx, req.Name)
 	case ResolveFresh:
-		return b.resolveFresh(ctx, req.Name, req.Hint, req.LegacyTabs)
+		return b.resolveFresh(ctx, req.Name, req.Hint, req.LegacyTabs, req.LegacyPanes)
 	default:
 		cands := b.lookup(req.Name)
 		if len(cands) == 0 {
@@ -283,7 +287,7 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 	cands := b.lookup(name)
 	if len(cands) == 0 {
 		// Nothing cached: fall back to the label scan a fresh resolve performs.
-		bd, ok, err := b.resolveFresh(ctx, name, Binding{}, nil)
+		bd, ok, err := b.resolveFresh(ctx, name, Binding{}, nil, nil)
 		if err != nil || !ok {
 			return Binding{}, false, err
 		}
@@ -300,7 +304,7 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 		if !ok {
 			// The stored address is stale; rediscover the pane under the
 			// labels it had, so a recreated instance still counts as alive.
-			if got, ok, err = b.scan(ctx, bd.Name, bd, nil); err != nil {
+			if got, ok, err = b.scan(ctx, bd.Name, bd, nil, nil); err != nil {
 				return Binding{}, false, err
 			}
 		}
@@ -368,7 +372,7 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 // its stored (or name-derived) labels. Any other view error is returned as is
 // and leaves the stored binding alone. A name with no pane is reported as false
 // with a nil error.
-func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding, legacy []string) (Binding, bool, error) {
+func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding, legacy, legacyPanes []string) (Binding, bool, error) {
 	var stale []Binding
 	var hint Binding
 	for _, bd := range b.lookup(name) {
@@ -399,7 +403,7 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 			scanName, scanHint = hint.Name, hint
 		}
 	}
-	got, ok, err := b.scan(ctx, scanName, scanHint, legacy)
+	got, ok, err := b.scan(ctx, scanName, scanHint, legacy, legacyPanes)
 	if err != nil {
 		// Rex could not answer the scan: keep the stale records so a retry
 		// still sees that a binding existed.
@@ -437,7 +441,7 @@ func stillBound(view rex.SessionView, bd Binding, town string) bool {
 // hint supplies the labels an earlier record used, so a pane recreated under
 // env-derived labels is found again; empty fields fall back to the labels the
 // name implies.
-func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legacy []string) (Binding, bool, error) {
+func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string) (Binding, bool, error) {
 	sid, ok, err := b.FindSession(ctx)
 	if err != nil || !ok {
 		return Binding{}, false, err
@@ -478,12 +482,16 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	// that label ("rig--rig--worker" is labelled "rig--worker" and sits in
 	// "Rig: rig"), so a bare label is only accepted as the expected pane label
 	// from the hint or record above.
-	identity := " (" + string(name) + ")"
-	suffixMatch := func(label string) bool {
-		return strings.HasSuffix(label, identity)
-	}
 	paneMatches := func(label string) bool {
-		return label == pane || suffixMatch(label)
+		if label == pane || identityMatch(name, label) {
+			return true
+		}
+		for _, legacyPane := range legacyPanes {
+			if label == legacyPane {
+				return true
+			}
+		}
+		return false
 	}
 	accept := func(tab string, w rex.Window, blk rex.Block) (Binding, bool, error) {
 		bd := Binding{
@@ -514,7 +522,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 				continue
 			}
 			for _, blk := range w.Blocks {
-				if suffixMatch(blk.Label) {
+				if identityMatch(name, blk.Label) {
 					return accept(tab, w, blk)
 				}
 			}
@@ -536,7 +544,7 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 	if hint.TabLabel == "" {
 		for _, w := range view.Windows {
 			for _, blk := range w.Blocks {
-				if suffixMatch(blk.Label) {
+				if identityMatch(name, blk.Label) {
 					return accept(w.Label, w, blk)
 				}
 			}

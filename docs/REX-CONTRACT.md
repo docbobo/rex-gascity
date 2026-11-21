@@ -812,7 +812,12 @@ Pane labels are display-only and outside the durable contract (GCREX-5qel):
 agent `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR` segment after the first `/`.
 A blank session name or agent keeps the name-derived label, town-level panes
 keep theirs, and an over-long label is clamped to 128 runes without cutting the
-parenthesised session name. The launch label, the discovery hint and the
+parenthesised session name. An unaliased pool seat's suffix is its bead id,
+written `#<bead id>` (`gc.implementation-worker (#mc-wisp-kvqib)`), so it never
+reads as a session name: a short-form label matches only when
+`Sanitize(agent)+"-"+bead id` is the whole session name, never by a bare suffix.
+A shortened agent ends in `…`, so a clamped label names no session and
+discovery never matches it. The launch label, the discovery hint and the
 recorded label all derive from the pool-routing-projected env (`launch.Project`),
 so routing a rewrite of `BEADS_ACTOR` cannot make them disagree. Discovery
 re-derives the same label, and a record-less scan with no start env matches the
