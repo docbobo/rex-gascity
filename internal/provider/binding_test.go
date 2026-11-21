@@ -677,6 +677,23 @@ func TestSaveKeepingSurvivorsKeepsAnotherLaunchesProvisional(t *testing.T) {
 	}
 }
 
+func TestSaveKeepingSurvivorsReplacesAFinishedRecord(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	finished := indigoBinding() // a start that committed: BlockID is set
+	finished.Attempt = "launch-a"
+	store.Save(finished)
+
+	scanned := indigoBinding()
+	scanned.BlockID = "block:dog-1b"
+	if err := binder.saveKeepingSurvivors(scanned); err != nil {
+		t.Fatalf("saveKeepingSurvivors = %v", err)
+	}
+	saved, _ := store.Load(scanned.Name)
+	if saved.BlockID != "block:dog-1b" {
+		t.Fatalf("saved = %+v; want the scanned record", saved)
+	}
+}
+
 func TestDropStaleIfUnchanged(t *testing.T) {
 	withSurvivor := indigoBinding()
 	withSurvivor.Survivors = []Survivor{{PID: 300}}

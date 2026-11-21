@@ -473,7 +473,7 @@ func (b *Binder) saveKeepingSurvivors(bd Binding) error {
 // start: that launch's final write is conditional on the attempt it wrote.
 // Otherwise it merges the stored survivor set into bd.
 func keepOtherLaunch(cur, bd Binding) Binding {
-	if cur.Attempt != "" && cur.Attempt != bd.Attempt {
+	if cur.BlockID == "" && cur.Attempt != "" && cur.Attempt != bd.Attempt {
 		return cur
 	}
 	bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
