@@ -78,6 +78,13 @@ func (t *memTable[K, V]) put(k K, v V) {
 	t.m[k] = v
 }
 
+// update applies fn to the value under k and stores the result.
+func (t *memTable[K, V]) update(k K, fn func(V) V) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.m[k] = fn(t.m[k])
+}
+
 func (t *memTable[K, V]) remove(k K) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -122,6 +129,11 @@ func (s *memStore[K, V]) Read(k K) (V, bool, error) {
 
 func (s *memStore[K, V]) Write(k K, v V) error {
 	s.t.put(k, v)
+	return nil
+}
+
+func (s *memStore[K, V]) Mutate(k K, fn func(V) V) error {
+	s.t.update(k, fn)
 	return nil
 }
 

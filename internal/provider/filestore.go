@@ -175,6 +175,23 @@ func (s *fileStore[K, V, R]) Write(k K, v V) error {
 	return s.t.write(k, s.enc(k, v))
 }
 
+func (s *fileStore[K, V, R]) Mutate(k K, fn func(V) V) error {
+	s.t.mu.Lock()
+	defer s.t.mu.Unlock()
+	var r R
+	ok, err := readJSON(s.t.path(k), &r)
+	if err != nil {
+		return err
+	}
+	var v V
+	if ok && (s.present == nil || s.present(r)) {
+		if v, err = s.dec(r); err != nil {
+			return err
+		}
+	}
+	return writeJSON(s.t.path(k), s.enc(k, fn(v)))
+}
+
 func (s *fileStore[K, V, R]) Drop(k K) error { return s.t.remove(k) }
 
 // List decodes every record directly under the store's dir. Missing and

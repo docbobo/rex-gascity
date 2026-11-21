@@ -448,6 +448,47 @@ func (b *Binder) dropStaleIfUnchanged(bd Binding) {
 	_ = b.store.Drop(bd.Name)
 }
 
+// saveKeepingSurvivors writes bd but keeps any survivor another writer
+// recorded under the same name, or any survivor the record already held. A
+// stop can record a survivor while a scan runs: the scan's pre-stop snapshot
+// is not a reason to forget a pid whose pane is gone. The store applies the
+// merge under its lock, so the read-modify-write cannot interleave.
+func (b *Binder) saveKeepingSurvivors(bd Binding) error {
+	if ms, ok := b.store.(interface {
+		Mutate(SessionName, func(Binding) Binding) error
+	}); ok {
+		return ms.Mutate(bd.Name, func(cur Binding) Binding {
+			bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
+			return bd
+		})
+	}
+	cur, _, err := b.store.Read(bd.Name)
+	if err != nil {
+		return err
+	}
+	bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
+	return b.store.Write(bd.Name, bd)
+}
+
+// mergeSurvivors returns own plus every survivor of other that is not already
+// in own, deduplicated by pid and start time.
+func mergeSurvivors(own, other []Survivor) []Survivor {
+	out := own
+	for _, s := range other {
+		dup := false
+		for _, have := range out {
+			if have.PID == s.PID && have.Start == s.Start {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // stillBound reports whether view still holds the binding's block under its
 // stored tab and pane labels (falling back to the name-derived labels for
 // legacy records).
@@ -606,7 +647,7 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 				bd.CreatedAt = hint.CreatedAt
 				bd.Adopted = hint.Adopted
 			}
-			_ = b.store.Write(bd.Name, bd)
+			_ = b.saveKeepingSurvivors(bd)
 		}
 		return bd, true
 	}

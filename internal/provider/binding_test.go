@@ -641,6 +641,23 @@ func TestRecordIfCurrentKeepsAnotherLaunchesProvisionalBinding(t *testing.T) {
 	}
 }
 
+func TestSaveKeepingSurvivorsKeepsTheStoredSet(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	stored := indigoBinding()
+	stored.Survivors = []Survivor{{PID: 300}}
+	store.Save(stored)
+
+	fresh := indigoBinding() // the scan snapshot, taken before the stop wrote 300
+	fresh.BlockID = "block:dog-1b"
+	if err := binder.saveKeepingSurvivors(fresh); err != nil {
+		t.Fatalf("saveKeepingSurvivors = %v", err)
+	}
+	saved, _ := store.Load(fresh.Name)
+	if saved.BlockID != "block:dog-1b" || len(saved.Survivors) != 1 || saved.Survivors[0].PID != 300 {
+		t.Fatalf("saved = %+v; want the fresh record with pid 300", saved)
+	}
+}
+
 func TestDropStaleIfUnchanged(t *testing.T) {
 	withSurvivor := indigoBinding()
 	withSurvivor.Survivors = []Survivor{{PID: 300}}

@@ -40,6 +40,21 @@ func (c *compositeStore[K, V]) Write(k K, v V) error {
 	return c.stores[0].Write(k, v)
 }
 
+// Mutate applies fn to the canonical store. With no stores it is a no-op.
+func (c *compositeStore[K, V]) Mutate(k K, fn func(V) V) error {
+	if len(c.stores) == 0 {
+		return nil
+	}
+	if ms, ok := c.stores[0].(interface{ Mutate(K, func(V) V) error }); ok {
+		return ms.Mutate(k, fn)
+	}
+	cur, _, err := c.stores[0].Read(k)
+	if err != nil {
+		return err
+	}
+	return c.stores[0].Write(k, fn(cur))
+}
+
 // Drop applies to every store and joins the errors.
 func (c *compositeStore[K, V]) Drop(k K) error {
 	var errs []error
