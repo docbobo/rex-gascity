@@ -458,16 +458,26 @@ func (b *Binder) saveKeepingSurvivors(bd Binding) error {
 		Mutate(SessionName, func(Binding) Binding) error
 	}); ok {
 		return ms.Mutate(bd.Name, func(cur Binding) Binding {
-			bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
-			return bd
+			return keepOtherLaunch(cur, bd)
 		})
 	}
 	cur, _, err := b.store.Read(bd.Name)
 	if err != nil {
 		return err
 	}
-	bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
+	bd = keepOtherLaunch(cur, bd)
 	return b.store.Write(bd.Name, bd)
+}
+
+// keepOtherLaunch refuses to replace a provisional record written by another
+// start: that launch's final write is conditional on the attempt it wrote.
+// Otherwise it merges the stored survivor set into bd.
+func keepOtherLaunch(cur, bd Binding) Binding {
+	if cur.Attempt != "" && cur.Attempt != bd.Attempt {
+		return cur
+	}
+	bd.Survivors = mergeSurvivors(bd.Survivors, cur.Survivors)
+	return bd
 }
 
 // mergeSurvivors returns own plus every survivor of other that is not already

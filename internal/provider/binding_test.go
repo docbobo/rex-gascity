@@ -658,6 +658,25 @@ func TestSaveKeepingSurvivorsKeepsTheStoredSet(t *testing.T) {
 	}
 }
 
+func TestSaveKeepingSurvivorsKeepsAnotherLaunchesProvisional(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	provisional := indigoBinding()
+	provisional.BlockID = ""
+	provisional.Attempt = "launch-a"
+	store.Save(provisional)
+
+	scanned := indigoBinding() // a scan for the same name, from another launch
+	scanned.BlockID = "block:dog-1b"
+	scanned.Attempt = "launch-b"
+	if err := binder.saveKeepingSurvivors(scanned); err != nil {
+		t.Fatalf("saveKeepingSurvivors = %v", err)
+	}
+	saved, _ := store.Load(scanned.Name)
+	if saved.Attempt != "launch-a" || saved.BlockID != "" {
+		t.Fatalf("saved = %+v; want launch-a's provisional record", saved)
+	}
+}
+
 func TestDropStaleIfUnchanged(t *testing.T) {
 	withSurvivor := indigoBinding()
 	withSurvivor.Survivors = []Survivor{{PID: 300}}
