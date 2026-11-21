@@ -148,9 +148,10 @@ func (p *Provider) observeIdentity(n SessionName) map[string]string {
 
 // Observe answers `observe <name>`: absent when nothing holds the name,
 // running or dead for the box that holds it, unknown when Rex cannot be
-// reached. It is a read and never mutates the session; a vanished record is
-// left for the next Start or Stop to replace.
-func (p *Provider) Observe(ctx context.Context, name string, _ []string) (ObserveAnswer, error) {
+// reached. names are gc's process-name hints from stdin, with which a running
+// box reports its agent. It is a read and never mutates the session; a vanished
+// record is left for the next Start or Stop to replace.
+func (p *Provider) Observe(ctx context.Context, name string, names []string) (ObserveAnswer, error) {
 	ctx, cancel := observeBudget(ctx)
 	defer cancel()
 	n := SessionName(name)
@@ -201,7 +202,35 @@ func (p *Provider) Observe(ctx context.Context, name string, _ []string) (Observ
 	if state == ObserveDead {
 		ans.Agent = "dead"
 	}
+	// Agent liveness is a verdict gc acts on, so only a certain answer is
+	// reported (RPP-OBSERVE-006): the box root's process snapshot must both be
+	// readable and hold one of the names.
+	if state == ObserveRunning && len(names) > 0 && holder.BlockID == bd.BlockID {
+		gcBin := bd.GCBin
+		if gcBin == "" {
+			gcBin = gcBinBasename(map[string]string{"GC_BIN": os.Getenv("GC_BIN")})
+		}
+		if root := p.foregroundPID(ctx, bd); root > 0 {
+			if agent, pid := p.agentState(ctx, root, expandProcessNames(names, gcBin)); agent != agentUnknown {
+				ans.Agent = agent
+				if pid > 0 {
+					ans.AgentPID = strconv.Itoa(pid)
+				}
+			}
+		}
+	}
 	return ans, nil
+}
+
+// foregroundPID is the pid of the box's foreground process, the root of the
+// agent subtree. It answers 0 when Rex cannot name it, which makes the agent
+// unknown rather than dead.
+func (p *Provider) foregroundPID(ctx context.Context, bd Binding) int {
+	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
+	if err != nil || info.Foreground == nil {
+		return 0
+	}
+	return info.Foreground.PID
 }
 
 // observeUnreadable reports a Rex answer Observe cannot get: the backend is

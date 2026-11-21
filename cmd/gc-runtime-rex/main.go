@@ -415,15 +415,16 @@ func opStop(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 }
 
 // opObserve answers `observe <name>`. Its stdin is newline-separated process
-// names; the provider reads the name's own process list, so the input is
-// drained and ignored.
+// names by which gc identifies the agent; the provider matches them against the
+// box's process subtree, so they must reach it (RPP-OBSERVE-006).
 func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
 	// gc writes a few process names and closes the pipe; the bound only stops a
 	// runaway writer from holding the op open.
-	if _, err := io.Copy(io.Discard, io.LimitReader(stdin, 64<<10)); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(stdin, 64<<10))
+	if err != nil {
 		return fmt.Errorf("read process names: %w", err)
 	}
-	ans, err := p.Observe(ctx, args[0], nil)
+	ans, err := p.Observe(ctx, args[0], strings.Fields(string(raw)))
 	if err != nil {
 		return err
 	}
