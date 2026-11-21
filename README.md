@@ -93,6 +93,12 @@ make check
 make conformance
 ```
 
+CI runs `pack/tests/conformance.sh --binary bin/gc-runtime-rex` against a
+pinned gc commit. No rex is installed. Conformance needs none and leaves no
+session behind. To also run the suite with a real rex CLI, dispatch the
+workflow with `ci_rex: true`. This installs a pinned preview archive. The
+default is off.
+
 The pack also ships a `gc doctor` check named `rex:rex-binary`. It reports a
 missing provider binary or `rex` CLI with a remediation instead of leaving the
 city's agents in an opaque `unknown` state:

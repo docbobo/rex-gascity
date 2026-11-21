@@ -36,7 +36,7 @@ check: build ## Build and run gc runtime check against testdata/city
 	PATH="$(abspath $(BIN_DIR)):$$PATH" GC_REX_CITY="$(GC_REX_CITY)" gc runtime check rex --city "$(CITY_DIR)"
 
 conformance: build ## Build and run gc runtime conformance against testdata/city
-	PATH="$(abspath $(BIN_DIR)):$$PATH" GC_REX_CITY="$(GC_REX_CITY)" gc runtime conformance rex --city "$(CITY_DIR)"
+	./pack/tests/conformance.sh --binary "$(abspath $(BIN))"
 
 clean: ## Remove build artifacts
 	rm -rf "$(BIN_DIR)"
