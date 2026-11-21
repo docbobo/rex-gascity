@@ -36,6 +36,19 @@ jobs:
       - name: Run pack checks
         run: bash pack/tests/verify.sh
 
+  landing-guard:
+    # A child PR cannot carry the epic's .1/.3/.4/.5 keys: those land only
+    # when the epic branch reaches main. So this gate runs on a PR into main,
+    # where the full epic line is present, and needs the whole history.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run landing guard
+        run: bash pack/tests/landing.sh
+
   conformance:
     name: Conformance
     runs-on: ubuntu-24.04
