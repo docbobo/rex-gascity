@@ -711,3 +711,59 @@ func TestObserveAnswersUnknownWithinBound(t *testing.T) {
 		t.Errorf("Observe took %v, want under the 4 s probe bound", elapsed)
 	}
 }
+
+// TestObserveAgentFromProcessSnapshot proves RPP-OBSERVE-006's wire contract: a
+// running box reports its agent when one of gc's names is in the box's process
+// subtree, and omits it, never calling it dead, when the snapshot cannot be
+// read or holds no match.
+func TestObserveAgentFromProcessSnapshot(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	runner := &provider.FakeRunner{}
+	readable := true
+	runner.Handle = func(_ context.Context, c provider.RunCall) (string, error) {
+		if c.Name != "ps" {
+			return "", nil
+		}
+		if !readable {
+			return "", errors.New("ps: no snapshot")
+		}
+		if len(c.Args) == 2 { // ps -axo pid=,comm=
+			return "100 sleep\n101 sh\n", nil
+		}
+		return "100 1 sleep 300\n101 100 sh -c run\n", nil
+	}
+	p := provider.New("acme", fake, provider.WithRunner(runner))
+	name := "Indigo--dog-1"
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+	}
+
+	ans, err := p.Observe(ctx, name, []string{"sleep"})
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if ans.Agent != "alive" || ans.AgentPID != "100" {
+		t.Errorf("agent = %q pid = %q, want alive and 100", ans.Agent, ans.AgentPID)
+	}
+
+	none, err := p.Observe(ctx, name, []string{"gc-rpp-no-such-process"})
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if none.Agent != "dead" || none.AgentPID != "" {
+		t.Errorf("agent = %q pid = %q, want dead and no pid", none.Agent, none.AgentPID)
+	}
+
+	readable = false
+	unreadable, err := p.Observe(ctx, name, []string{"sleep"})
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if unreadable.Agent != "" || unreadable.AgentPID != "" {
+		t.Errorf("agent = %q pid = %q, want an omitted agent for an unreadable snapshot", unreadable.Agent, unreadable.AgentPID)
+	}
+}
