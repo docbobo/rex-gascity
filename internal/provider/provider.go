@@ -823,12 +823,40 @@ func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) e
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
 //
-// The per-name lock serializes a stop with a concurrent start of the same name;
-// the brief city-wide state lock guards the store mutations.
+// The per-name lock serializes a stop with a concurrent start of the same name.
+// Every record a stop mutates belongs to that one name, so no city-wide state
+// lock is needed: the close, the reap and the re-read run while stops and starts
+// of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	return p.withNameLock(ctx, SessionName(name), func() error {
-		return p.withStateLock(ctx, func() error { return p.stop(ctx, name) })
-	})
+	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
+}
+
+// stopUnderPrimaryLock runs stop with the lock of every record's own name that
+// answers to the caller's as well as the caller's lock. An alias and its
+// primary names map to different lock files, so a start of one of them would
+// otherwise run beside this stop and write a replacement record that the stop's
+// retirement then clears. Every such name is locked, not just the first stored
+// candidate: ResolveFresh skips a stale candidate and can retire a later live
+// one. The locks are taken in caller-then-primary order, sorted to a fixed order
+// among themselves, and a primary stop takes no second lock, so no two paths
+// take them in opposite order.
+func (p *Provider) stopUnderPrimaryLock(ctx context.Context, name string) error {
+	n := SessionName(name)
+	var primaries []SessionName
+	for _, bd := range p.binder.lookup(n) {
+		if bd.Name != n && !slices.Contains(primaries, bd.Name) {
+			primaries = append(primaries, bd.Name)
+		}
+	}
+	slices.Sort(primaries)
+	var lock func(i int) error
+	lock = func(i int) error {
+		if i == len(primaries) {
+			return p.stop(ctx, name)
+		}
+		return p.withNameLock(ctx, primaries[i], func() error { return lock(i + 1) })
+	}
+	return lock(0)
 }
 
 func (p *Provider) stop(ctx context.Context, name string) error {
@@ -1041,10 +1069,21 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 	if err != nil {
 		return "", err
 	}
-	if out == "" && info.LastExit != nil {
+	if out == "" {
 		// A dead box's screen is the only record of why it died, so a capture
-		// that wrote nothing is unreadable, never a blank screen.
-		return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+		// that wrote nothing is unreadable, never a blank screen. The program
+		// can exit between the two calls, so an empty capture re-reads the
+		// process state before the blank screen is accepted; a re-read that
+		// fails leaves the earlier answer standing.
+		dead := info.LastExit != nil
+		if !dead {
+			if after, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID); err == nil {
+				dead = after.LastExit != nil
+			}
+		}
+		if dead {
+			return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+		}
 	}
 	if lines <= 0 {
 		return out, nil

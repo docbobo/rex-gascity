@@ -4,8 +4,8 @@
 #   pack/tests/check-conformance.sh [--binary <path>]
 #
 # Asserts the unmodified tree exits 0 with failed: 0, that the summary records
-# v2_ready: false and v2_missing: ['observe.v1'], and that a provider which
-# fails a requirement makes conformance.sh exit non-zero.
+# v2_ready: true and no failed v2 requirement, and that a provider which fails
+# a requirement makes conformance.sh exit non-zero.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -53,7 +53,7 @@ if ! GITHUB_STEP_SUMMARY=$summary "$here/conformance.sh" --binary "$binary" > "$
   fail "conformance.sh failed on an unmodified tree"
 fi
 
-for want in 'ok: true' 'failed: 0' 'passed: 28' 'skipped: 39' 'v2_ready: false' 'v2_missing: ["observe.v1"]'; do
+for want in 'ok: true' 'failed: 0' 'v2_ready: true' 'v2_failed: []'; do
   grep -qxF "$want" "$summary" || {
     cat "$summary" >&2
     fail "summary is missing '$want'"

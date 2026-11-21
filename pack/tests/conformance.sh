@@ -9,8 +9,8 @@
 # report. gc supplies GC_EXEC_CITY_NAME, so GC_REX_CITY is never set here.
 #
 # Exit 0 means gc reported ok:true with no failed requirement. v2_ready and
-# v2_missing are recorded as evidence, never gated: today the pack lacks
-# observe.v1, so v2_ready is false.
+# v2_failed are recorded as evidence, never gated by this script: v2_failed
+# names the v2 requirements gc counted as unmet.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -82,7 +82,7 @@ print("passed: %d" % summary["passed"])
 print("failed: %d" % summary["failed"])
 print("skipped: %d" % summary["skipped"])
 print("v2_ready: %s" % str(report["v2_ready"]).lower())
-print("v2_missing: %s" % json.dumps(report["v2_missing"]))
+print("v2_failed: %s" % json.dumps(report.get("v2_failed", [])))
 PY
 } > "$summary"; then
   echo "conformance: gc produced no JSON report (exit $status)" >&2

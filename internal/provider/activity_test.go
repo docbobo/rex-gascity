@@ -268,3 +268,53 @@ func TestGetLastActivityIgnoresRecordFromOtherIdentity(t *testing.T) {
 		t.Errorf("stored identity = %q, want %q", again.Identity, activityBlock)
 	}
 }
+
+// TestInventoryLastActivityMatchesGetLastActivity proves a working box's
+// inventory entry reports the same current time get-last-activity reports, not
+// a stale stored stamp: a consumer comparing last_activity with an idle timeout
+// must not read an active agent as idle.
+func TestInventoryLastActivityMatchesGetLastActivity(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	store := provider.NewMemoryStore()
+	activity := provider.NewMemoryActivityStore()
+	p := provider.New("acme", fake, provider.WithBindingStore(store), provider.WithActivityStore(activity))
+	if err := p.Start(ctx, activityName, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	stale := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// An old start time and an old store stamp: neither can carry a working
+	// box's current time, so only the program_status rule can.
+	bd, ok := store.Load(provider.SessionName(activityName))
+	if !ok {
+		t.Fatalf("no binding stored for %s", activityName)
+	}
+	bd.CreatedAt = stale
+	store.Save(bd)
+	activity.Save(provider.SessionName(activityName), provider.ActivityRecord{Identity: string(bd.BlockID), At: stale})
+	fake.ProgramStatuses = map[rex.BlockID]rex.ProgramStatus{
+		bd.BlockID: {Records: []rex.ProgramStatusRecord{{ID: "a", State: "working", UpdatedAt: stale}}},
+	}
+
+	inv, err := p.Inventory(ctx)
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if len(inv.Sessions) != 1 {
+		t.Fatalf("sessions = %+v, want one running box", inv.Sessions)
+	}
+	at, err := time.Parse(time.RFC3339Nano, inv.Sessions[0].LastActivity)
+	if err != nil {
+		t.Fatalf("last_activity = %q: %v", inv.Sessions[0].LastActivity, err)
+	}
+	got, err := p.GetLastActivity(ctx, activityName)
+	if err != nil {
+		t.Fatalf("GetLastActivity: %v", err)
+	}
+	if got.Source != provider.ActivityProgramStatus {
+		t.Fatalf("GetLastActivity source = %q, want program_status", got.Source)
+	}
+	if diff := at.Sub(got.At); diff > time.Minute || diff < -time.Minute {
+		t.Errorf("last_activity = %v, want get-last-activity's %v", at, got.At)
+	}
+}

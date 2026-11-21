@@ -70,17 +70,12 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 		return LastActivity{Source: ActivityNone}, nil
 	}
 
-	status, err := p.client.BlockProgramStatus(ctx, binding.SessionID, binding.BlockID)
+	at, ok, err := p.statusActivity(ctx, binding)
 	if err != nil {
 		return LastActivity{}, err
 	}
-	latest, state, present := newestProgramStatus(status.Records)
-	inputAt := p.inputFloor(binding)
-	if present && (state == "working" || state == "blocked") {
-		return LastActivity{At: laterOf(time.Now().UTC(), inputAt), Source: ActivityProgramStatus}, nil
-	}
-	if !latest.IsZero() {
-		return LastActivity{At: laterOf(latest, inputAt), Source: ActivityProgramStatus}, nil
+	if ok {
+		return LastActivity{At: at, Source: ActivityProgramStatus}, nil
 	}
 
 	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
@@ -103,6 +98,32 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 	rec.At = now
 	p.activityWrite(binding.Name, rec)
 	return LastActivity{At: laterOf(now, rec.InputAt), Source: ActivityFormatPoll}, nil
+}
+
+// statusActivity reports what a program_status record answers for binding: now
+// when the newest state is working or blocked, so a silent but busy program is
+// not mistaken for idle, else the newest record's own time. In both cases a
+// recorded pack-input time from the same incarnation is a floor. It reports
+// false when the box has no record, which leaves the caller to its store or
+// its screen. It is the read half of GetLastActivity, shared with inventory so
+// both report the same time for a box that has reported one.
+func (p *Provider) statusActivity(ctx context.Context, binding Binding) (time.Time, bool, error) {
+	status, err := p.client.BlockProgramStatus(ctx, binding.SessionID, binding.BlockID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	latest, state, present := newestProgramStatus(status.Records)
+	if !present {
+		return time.Time{}, false, nil
+	}
+	inputAt := p.inputFloor(binding)
+	if state == "working" || state == "blocked" {
+		return laterOf(time.Now().UTC(), inputAt), true, nil
+	}
+	if latest.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return laterOf(latest, inputAt), true, nil
 }
 
 // newestProgramStatus returns the newest program_status record's updated time
