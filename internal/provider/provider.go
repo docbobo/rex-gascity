@@ -947,7 +947,10 @@ func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []pa
 	}
 	binding.Survivors = survivorRecords(left)
 	survived := &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
-	if err := p.binder.Record(binding); err != nil {
+	// A start may have replaced the binding while this reap ran. Record only
+	// while the stored binding is still the one we reaped: a replacement owns
+	// the name and must not carry the old pane's survivors.
+	if _, err := p.binder.RecordIfCurrent(binding); err != nil {
 		// The stop fails either way: the record that would name these pids for
 		// the next retry was not saved.
 		return errors.Join(err, survived)

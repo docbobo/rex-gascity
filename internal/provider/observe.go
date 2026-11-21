@@ -448,7 +448,7 @@ func (p *Provider) withSameBinding(ctx context.Context, name string, bd Binding,
 	same := false
 	err := p.withStateLock(ctx, func() error {
 		got, ok := p.Binding(name)
-		if !ok || got.BlockID != bd.BlockID || got.WindowID != bd.WindowID || !got.CreatedAt.Equal(bd.CreatedAt) {
+		if !ok || !bd.sameIncarnation(got) {
 			return nil
 		}
 		same = true

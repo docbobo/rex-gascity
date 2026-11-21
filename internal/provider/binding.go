@@ -634,10 +634,34 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 	return Binding{}, false
 }
 
+// sameIncarnation reports whether other records the same pane: the same block
+// and window, created at the same time. A start that replaced the binding
+// leaves a different incarnation.
+func (b Binding) sameIncarnation(other Binding) bool {
+	return b.BlockID == other.BlockID && b.WindowID == other.WindowID && b.CreatedAt.Equal(other.CreatedAt)
+}
+
 // Record stores binding, replacing any earlier one for the same name. The
 // caller must handle the error: an unsaved record leaves a pane or a survivor
 // set no later stop can name.
 func (b *Binder) Record(binding Binding) error { return b.store.Write(binding.Name, binding) }
+
+// RecordIfCurrent stores binding only when the record under its name still
+// describes the same incarnation. A start that replaced the binding leaves a
+// different record, and a stale survivor write must not overwrite it. A
+// provisional record has no block id yet and is not a replacement: the same
+// start's final record will replace it after the launch. It reports whether
+// the write happened.
+func (b *Binder) RecordIfCurrent(binding Binding) (bool, error) {
+	current, ok, err := b.store.Read(binding.Name)
+	if err != nil {
+		return false, err
+	}
+	if !ok || (current.BlockID != "" && !binding.sameIncarnation(current)) {
+		return false, nil
+	}
+	return true, b.store.Write(binding.Name, binding)
+}
 
 // Forget drops the stored binding that answers to name, clearing the whole
 // primary record including its aliases. An alias drops the primary it names.

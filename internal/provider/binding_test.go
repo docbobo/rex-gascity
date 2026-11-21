@@ -551,3 +551,37 @@ func TestScanFindsPaneInLegacySession(t *testing.T) {
 		t.Errorf("Resolve = %+v, want block:dog-1 in session:legacy", got)
 	}
 }
+
+// TestRecordIfCurrentKeepsAReplacementBinding proves a stale survivor write
+// cannot replace a binding a concurrent start installed under the same name.
+func TestRecordIfCurrentKeepsAReplacementBinding(t *testing.T) {
+	binder, store, _ := newTestBinder(t)
+	old := indigoBinding()
+	if err := store.Write(old.Name, old); err != nil {
+		t.Fatal(err)
+	}
+	newer := old
+	newer.BlockID = "block:dog-2"
+	if err := store.Write(newer.Name, newer); err != nil {
+		t.Fatal(err)
+	}
+	stale := old
+	stale.Survivors = []Survivor{{PID: 4242, Name: "worker"}}
+	wrote, err := binder.RecordIfCurrent(stale)
+	if err != nil {
+		t.Fatalf("RecordIfCurrent: %v", err)
+	}
+	if wrote {
+		t.Fatal("RecordIfCurrent wrote a stale survivor record over a replacement binding")
+	}
+	got, ok := store.Load(newer.Name)
+	if !ok {
+		t.Fatal("replacement binding is gone")
+	}
+	if got.BlockID != newer.BlockID {
+		t.Fatalf("stored binding = %q, want the replacement %q", got.BlockID, newer.BlockID)
+	}
+	if len(got.Survivors) != 0 {
+		t.Fatalf("stored binding carries stale survivors: %v", got.Survivors)
+	}
+}
