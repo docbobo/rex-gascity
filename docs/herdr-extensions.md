@@ -2,8 +2,9 @@
 
 Decisions for the runtime extensions and handshake tokens that
 `runtime-herdr-core` has and our Rex provider does not. This is the design
-half of GCREX-28; implementation lives in GCREX-28.2 and is scoped by the
-**accepted** rows below.
+half of GCREX-28; implementation landed as GCREX-101 (tracer), GCREX-105
+(isolation and activity) and GCREX-111 (unconditional declaration) and is
+scoped by the **accepted** rows below.
 
 - Evidence base: [`docs/provider-herdr-parity.md`](provider-herdr-parity.md),
   which compares us against `gastownhall/gascity-packs` `runtime-herdr-core`
@@ -62,10 +63,13 @@ declared, and by Fact 3 a profile token must not be declared without the
 whole profile. That is why the accepted set is the `observe.v1` profile as one
 bundle — `observe`, `inventory` and `kill-object` — and nothing else.
 
-These decisions are provisional: GCREX-29 (Rex-only candidates), GCREX-30
-(whether a city-owned server makes `server-stop` and `watch-startup`
-worthwhile) and GCREX-31 (Rex CLI facts shaping `copy-to` and `watch-startup`)
-are still To Do. Revisit the affected rows when those inputs land.
+These decisions were provisional on three inputs. GCREX-29 (Rex-only
+candidates) and GCREX-31 (Rex CLI facts shaping `copy-to` and
+`watch-startup`) landed. Their evidence is in
+[`docs/research/rex-provider-extensions.md`](research/rex-provider-extensions.md)
+and GCREX-31's probes. Neither changes a verdict below. GCREX-30 (whether a
+city-owned server makes `server-stop` and `watch-startup` worthwhile) is the
+remaining input. Revisit those rows when it lands.
 
 ## Decision summary
 
@@ -284,7 +288,7 @@ A deferred extension needs no design now. When its trigger fires, open a
 follow-up task that: accepts the extension, adds the design section here, and
 scopes GCREX-28.2-style implementation with the same gate/token rule. The
 deferred set is `copy-to`, streaming `watch-startup`, `tty attach`, and — for
-tokens — `input-outcome`, `conformance-faults`.
+tokens — `conformance-faults`.
 
 ## Consequences for GCREX-28.2
 
@@ -320,3 +324,7 @@ tokens — `input-outcome`, `conformance-faults`.
   "deliberate gaps" paragraph drops them from the never-sent list (AC 4).
 - Everything else in the decision summary stays deferred or rejected and is
   out of GCREX-28.2's scope.
+- Verified on the installed edge gc (`edge-20261118`): `make check` passes
+  22/22, and `make conformance` reports 48 passed, 0 failed, 19 skipped and
+  `v2_ready: true`. On gc 1.5.1 the non-baseline tokens stay inert, so the
+  baseline handshake is unchanged apart from them.
