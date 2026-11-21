@@ -59,7 +59,7 @@ func handshake() string {
 	if !observeV1Enabled() {
 		return base
 	}
-	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1"]}`
+	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}`
 }
 
 // buildVersion is the version the `version` op reports. A pack build may set
