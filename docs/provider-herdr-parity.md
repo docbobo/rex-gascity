@@ -888,6 +888,8 @@ GCREX-5 — RPP v0 delivery; handshake and unimplemented-op list
 `docs/plans/native-rex-provider.md:391,415` — future `Attach` via focus; do not declare `tty.attach`
 
 **Follow-ups.**
+`docs/plans/city-owned-rex-server.md` — GCREX-30 experiments. A city-owned server is reachable with `rex hosts add` and `-S <label>`. The Rex app cannot be pointed at it (unverified). So the hint text is wrong for that mode and must name the address instead.
+
 - If a real attach is wanted, spike `rex attach`/pty passthrough, then declare `tty.attach` only after `gc runtime conformance` accepts it (gap).
 - Keep `docs/REX-CONTRACT.md` §9 and `docs/rex-provider.md` aligned with the hint behavior if the op changes (gap).
 
@@ -1102,6 +1104,8 @@ GCREX-8 — removed `server-lifecycle` from the plan's capability list.
 `docs/REX-CONTRACT.md` §9 (not-in-baseline list, ~line 255-262) and §11 D3 (line 400).
 `docs/plans/native-rex-provider.md` §0 D3 (line 83), and Known gaps "Server lifecycle" (line 438), "Shared server" (line 644).
 `docs/research/rex-session-provider.md:150, 286, 314` — earlier research that proposed `server-lifecycle`; rejected.
+
+`docs/plans/city-owned-rex-server.md` — GCREX-30 experiments on `rex server run`. A city-owned server makes this op implementable behind an ownership record (state dir, instance id, pid). The note recommends a staged revision of D3. The default stays the shared server and this op stays absent.
 
 **Follow-ups.** None. Do not declare `server-lifecycle` or add a `server-stop` handler. City teardown stays on `stop` (`block.close`, then the guarded removal of an empty canonical session).
 
