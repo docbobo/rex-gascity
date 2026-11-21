@@ -126,15 +126,17 @@ func observeCreated(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// observeIdentity reads the start-config identity the provider seeded into the
-// meta sidecar before the launch. It returns nil when a key cannot be read: the
-// wire reads null as "not yet readable" (rule 5), and a partial identity must
-// not pass for the whole one, which would end the read early with keys missing.
-// It returns an empty set only when every key was readable and the start config
-// carried no identity.
+// observeIdentity reads the identity the meta sidecar holds for the box. It
+// serves the same keys Start seeds and get-meta answers, so observe reports one
+// identity with get-meta, including a value an operator set-meta'd after the
+// launch. It returns nil when a key cannot be read: the wire reads null as "not
+// yet readable" (rule 5), and a partial identity must not pass for the whole
+// one, which would end the read early with keys missing. It returns an empty
+// set only when every key was readable and the start config carried no
+// identity.
 func (p *Provider) observeIdentity(n SessionName) map[string]string {
 	id := map[string]string{}
-	for _, key := range startIdentityMetaKeys {
+	for _, key := range startMetaKeys() {
 		v, ok, err := p.metaGet(n, key)
 		if err != nil {
 			return nil
