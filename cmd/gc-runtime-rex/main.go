@@ -372,10 +372,10 @@ func printBool(w io.Writer, b bool) {
 }
 
 // seedProcessNames fills GT_PROCESS_NAMES from the start config's
-// process_names when env leaves it unset, as gc's fresh start does (gc v1.5.1
-// internal/runtime/exec/observe.go:142-150,355-362): trimmed, non-empty,
-// comma-separated. An env value always wins. observe.v1-only, so flag-off
-// starts carry the same env as before.
+// process_names when env leaves it unset, as gc's tmux adapter does for its
+// sessions (gc v1.5.1 internal/runtime/tmux/adapter.go:179-180,186-194):
+// trimmed, non-empty, comma-separated. An env value always wins.
+// observe.v1-only, so flag-off starts carry the same env as before.
 func seedProcessNames(cfg *startConfig) {
 	if !observeV1Enabled() || strings.TrimSpace(cfg.Env["GT_PROCESS_NAMES"]) != "" {
 		return

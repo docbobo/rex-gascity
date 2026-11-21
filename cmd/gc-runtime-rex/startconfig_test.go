@@ -31,7 +31,7 @@ func TestStartFreshOnlyExits73(t *testing.T) {
 // process_names reach the metadata sidecar as GT_PROCESS_NAMES, the value
 // observe.v1's liveness reads from the box's own record, once for every start
 // and only when the profile is on. gc sends the names as a start-config field,
-// not in env, on a non-fresh start (gc v1.5.1 internal/runtime/exec/json.go:32).
+// not in env, on a non-fresh start (gc v1.5.1 internal/runtime/exec/json.go:31).
 func TestStartPersistsProcessNamesAsIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -53,9 +53,9 @@ func TestStartPersistsProcessNamesAsIdentity(t *testing.T) {
 	}
 }
 
-// TestStartEnvProcessNamesWinOverTheConfigField keeps gc's fresh-start contract:
-// when env already carries GT_PROCESS_NAMES, the start-config field must not
-// replace it (gc v1.5.1 internal/runtime/exec/observe.go:355-362).
+// TestStartEnvProcessNamesWinOverTheConfigField keeps gc's tmux adapter
+// contract: when env already carries GT_PROCESS_NAMES, the start-config field
+// must not replace it (gc v1.5.1 internal/runtime/tmux/adapter.go:179-180).
 func TestStartEnvProcessNamesWinOverTheConfigField(t *testing.T) {
 	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, _ := newHarness(t)

@@ -606,6 +606,7 @@ func TestInventoryIncompleteWhenLivenessUnavailable(t *testing.T) {
 		t.Errorf("sessions = %+v, want one entry with no state", inv.Sessions)
 	}
 }
+
 // TestObserveIdentityIsGetMetaIdentity proves RPP-OBSERVE-008: observe reports
 // the one identity get-meta serves, including the process names observe.v1's
 // liveness reads, and a set-meta of an identity key lands in the next observe.
