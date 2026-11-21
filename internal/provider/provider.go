@@ -820,12 +820,12 @@ func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) e
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
 //
-// The per-name lock serializes a stop with a concurrent start of the same name;
-// the brief city-wide state lock guards the store mutations.
+// The per-name lock serializes a stop with a concurrent start of the same name.
+// Every record a stop mutates belongs to that one name, so no city-wide state
+// lock is needed: the close, the reap and the re-read run while stops and starts
+// of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	return p.withNameLock(ctx, SessionName(name), func() error {
-		return p.withStateLock(ctx, func() error { return p.stop(ctx, name) })
-	})
+	return p.withNameLock(ctx, SessionName(name), func() error { return p.stop(ctx, name) })
 }
 
 func (p *Provider) stop(ctx context.Context, name string) error {
