@@ -86,11 +86,11 @@ carries every method's full input and output schema.
 
 | Method | Input | Output | Use |
 |---|---|---|---|
-| `process` | — | `{last_exit: {exit_code, error?} \| null, child, foreground, ancestors[], home}`; each process `{pid, user_id, user, name, path, invoked_path, argv0, script?, cwd}` (`script` is set for interpreters such as node) | `process-alive`; agent-exit detection (`last_exit`) |
+| `process` | — | `{last_exit: {exit_code, error?} \| null, child, foreground, ancestors[], home}`. Each process is `{pid, user_id, user, name, path, invoked_path, argv0, script?, cwd}`, where `script` is set for interpreters such as node. `ancestors` is omitted, not `[]`, when the pane's process has no ancestor (GCREX-31) | `process-alive` and agent-exit detection (`last_exit`) |
 | `format` | `{format: text\|html\|vt, trim, unwrap, extra_charsets, extra_cursor, extra_hyperlink, max_bytes}` | `content` always. With `max_bytes` set, `total` is always present and **either** `id` (more remains; `eof` is absent) **or** `eof: true` (complete). With no `max_bytes`, the whole capture comes in one reply or the call fails `too_large` | `peek`; send output; exec output |
 | `blob_read` | `{id?, offset?, max_bytes?}` | `{id, data, total, eof}` — all four always present. `id` 0/omitted reads the newest result, `offset` defaults to 0, `max_bytes` defaults to 49152 and is clamped to 983040; results are kept ~5 minutes, then `not_found` | `peek` paging; large events |
 | `write` | `{data}` | `{bytes_written}` | type text (`nudge`) |
-| `clear` | — | — | `clear-scrollback` (no-op while a full-screen program runs) |
+| `clear` | — | — | `clear-scrollback` (no-op while a full-screen program runs). It drops both the scrollback and the visible screen, so a later `format` is blank. Attached clients stay (GCREX-31) |
 | `reset` | — | — | hard reset of a terminal (fallback) |
 | `program_status` | — | `{records[] {id, state: idle\|working\|done\|blocked\|error, kind, …}}` — programs report via **OSC 7501** | agent state; idle detection |
 | `input_mode` | — | `{echo, canonical, signals, …}` | detect a password/raw prompt |
@@ -481,6 +481,107 @@ else
   echo "  GC_SRC unset; set it to the gc checkout to re-check the capabilities, exit codes and op table"
 fi
 ```
+
+### 10.1 Probe results (GCREX-31)
+
+Run on 2026-11-21 with rex `0.1.0-preview.21` (commit `202b1b3`,
+`api_revision` 18) against the local server. Each probe used one scratch
+session, killed by its exact id. `session.destroy` was not called.
+
+**Exit codes (§8).**
+
+| Command | Exit | Observed |
+|---|---|---|
+| `rex api call session.view '{"session_id":"session:00000000-0000-0000-0000-000000000000"}'` | 3 | `Error: stream response "control-1" failed: session session:00000000-… not found (status=404 code=session_not_found)` |
+| the same id through `block.method` with `format` | 3 | the same `session_not_found` message |
+| `REX_SERVER=unix:///tmp/nonexistent-rex-31.sock rex api call session.view '{"session_id":"<valid uuid>"}'` | 4 | `Error: no Rex server is running at /tmp/nonexistent-rex-31.sock. …` |
+| that `REX_SERVER` with `rex block inspect block:dead --json` | 4 | the same message |
+| that `REX_SERVER` with `rex send-key -s <uuid> -b block:<uuid> enter` | 4 | the same message |
+| that `REX_SERVER` with `rex api call block.method '{"session_id":…,"block_id":…,"method":"clear","args":{}}'` | 4 | the same message |
+| `REX_SERVER=unix:///tmp/not-a-rex-socket-31`, a path that is a regular file | 4 | the same message, so a wrong socket type is a transport failure |
+| `rex api call session.view '{"session_id":"session:x"}'` | 2 | `Error: invalid session_id: invalid session ID UUID: invalid UUID length: 1`. The argument check runs before the connection connects, so this exit says nothing about the server. |
+
+Exit 3 is a 404 `not_found` and never a transport failure. A server that is
+down or unreachable exits 4. Our `ErrSessionNotFound` mapping of exit 3 is
+therefore correct for a down server. One residual: `blob_read` for an expired
+result also exits 3 (`not found: no result is stored`), so a page that expires
+mid-`peek` reads as not-found. The result hold is about five minutes, longer
+than the 30 s op deadline, so gc cannot reach that window.
+
+**`clear` then `format`.** Pane 80×24. It held 200 `SCROLL-<n>` lines and a
+1.2 MB line of `x`.
+
+```bash
+rex block call -s "$SID" -b "$BID" clear                       # stdout {}
+rex block call -s "$SID" -b "$BID" format '{"format":"text","trim":true}'
+rex api call session.list_clients "{\"session_id\":\"$SID\"}"
+```
+
+Before the clear, `format` without `max_bytes` failed `too_large`. After the
+clear (exit 0): `format` returned 1012 bytes of blank rows, `total: 1011`,
+with no `SCROLL-` and no `xxxx`. `session.list_clients` listed the app client
+`Rex` with the same id before and after. The cli client id changed because
+each `rex` call connects again. So `clear` wipes both the scrollback and the
+visible screen, and it detaches no client.
+
+**`format` coverage.** Pane 80×24, then `seq 1 200 | sed s/^/SCROLL-/`.
+
+```bash
+rex block call -s "$SID" -b "$BID" format '{"format":"text","trim":true,"max_bytes":1000000}'
+```
+
+The reply was `{"total":2221,"eof":true}` with 2206 content bytes and 206
+non-empty rows. `SCROLL-1` was present, and `SCROLL-200` was the last. So
+`format` returns scrollback plus the viewport, not the viewport alone.
+
+**Large capture.** A pane that printed one 1 200 000-byte line of `x`.
+
+```bash
+rex block call -s "$SID" -b "$BID" format '{"format":"text"}'                  # exit 1
+rex block call -s "$SID" -b "$BID" format '{"format":"text","trim":true,"max_bytes":983040}'
+rex block call -s "$SID" -b "$BID" blob_read '{"id":1,"offset":970860,"max_bytes":983040}'
+```
+
+Without `max_bytes` the call printed `Error: stream response "control-4"
+failed: control response exceeds 1048576 bytes (status=413 code=too_large)`
+on stderr, nothing on stdout, and exited 1. `max_bytes: 0` behaves the same
+as an absent field. With `max_bytes: 983040` the reply was
+`{"id":1,"total":1217315}` with 970 860 content bytes and no `eof`. The
+`blob_read` page carried 246 443 data bytes and `eof: true`. So the two
+pages cover the 1 217 315-byte capture.
+
+**`send-key` with a good key and a bad key.** The pane ran
+`sh -c 'echo READY; read line; echo GOT:$line'`. A `write` typed `MIXED` with
+no newline.
+
+```bash
+rex send-key -s "$SID" -b "$READ_BID" enter ctrl+                 # exit 2
+rex send-key -s "$SID" -b "$READ_BID" ctrl+bogus                 # exit 2
+rex send-key -s "$SID" -b "$READ_BID" enter                      # exit 0
+```
+
+`enter ctrl+` printed `Error: invalid key "ctrl+": invalid key binding
+"ctrl+"`. `ctrl+bogus` printed `Error: invalid key "ctrl+bogus": unknown key
+"bogus"`. After each failure the pane still showed `READY` and `MIXED`, with
+no `GOT:`. The later `enter` exited 0 and the pane showed `GOT:MIXED`. So the
+CLI validates every key before it connects and sends nothing when one key is
+bad. The whole key list is atomic on the CLI path the provider uses.
+
+**`process` on a node script.**
+
+```bash
+rex window new -s "$SID" --focus=false -- node /tmp/gcrex31-agent.js
+rex block call -s "$SID" -b "$NODE_BID" process
+```
+
+The reply had `last_exit: null` and `foreground: {pid: 6383, name: "node",
+path: "…/nodejs-slim-24.22.2/bin/node", invoked_path: "…/bin/node",
+argv0: "node", script: "/tmp/gcrex31-agent.js", cwd: "/private/tmp"}`. It
+had no `ancestors` key. So a pane started as `node agent.js` reports `node`
+as `name` and as `argv0`, and the script path only in `script`. A name-only
+match misses it, and the `script` basename match is required (GCREX-47). A
+fish pane in the same probe reported `name: "fish"` and `argv0: "-fish"`,
+so `argv0` may carry a leading dash.
 
 ## 11. Decisions confirmed (plan D0–D6)
 
