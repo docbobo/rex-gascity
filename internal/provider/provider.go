@@ -75,6 +75,11 @@ func (e *InputOutcomeError) Unwrap() error { return e.Err }
 const (
 	submitKey    = "enter"
 	interruptKey = "ctrl+c"
+	// startCleanupTimeout bounds the detached cleanup of a failed launch.
+	// context.WithoutCancel keeps the work after caller cancellation but also
+	// drops the deadline; without this bound the cleanup could wait out the
+	// state lock and Rex calls while it holds the city-wide lock.
+	startCleanupTimeout = 30 * time.Second
 )
 
 // CopyFile is one gc `copy_files` entry: Src is the source path and RelDst is
@@ -730,7 +735,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// session because the launch was in flight will not run again: remove
 		// the empty city session here, or it outlives its last pane
 		// (GCREX-31 review). The launch lock is released by now.
-		cleanupCtx := context.WithoutCancel(ctx)
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), startCleanupTimeout)
+		defer cancelCleanup()
 		if derr := p.withStateLock(cleanupCtx, func() error {
 			return p.destroyEmptyCitySession(cleanupCtx, sid)
 		}); derr != nil {
