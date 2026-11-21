@@ -78,6 +78,11 @@ func (e *InputOutcomeError) Unwrap() error { return e.Err }
 const (
 	submitKey    = "enter"
 	interruptKey = "ctrl+c"
+	// startCleanupTimeout bounds the detached cleanup of a failed launch.
+	// context.WithoutCancel keeps the work after caller cancellation but also
+	// drops the deadline; without this bound the cleanup could wait out the
+	// state lock and Rex calls while it holds the city-wide lock.
+	startCleanupTimeout = 30 * time.Second
 )
 
 // CopyFile is one gc `copy_files` entry: Src is the source path and RelDst is
@@ -462,6 +467,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	})
 	cfg.Env = plan.Env
 	seeded := false
+	// keepProvisional stays true when a failed launch could not remove the
+	// empty city session. A later Stop then still finds the session id.
+	keepProvisional := false
 	defer func() {
 		if err == nil || !seeded {
 			return
@@ -474,7 +482,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
 			return
 		}
-		p.binder.Forget(n)
+		if !keepProvisional {
+			p.binder.Forget(n)
+		}
 	}()
 	// The env-derived labels let Resolve rediscover a live pane whose sidecar
 	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
@@ -653,6 +663,16 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 	var launched startResult
 	launchStart := time.Now()
 	launch := func() error {
+		// The shared launch lock is held across the view read and the
+		// create/split call, so a stop of any name can tell that a pane is
+		// still to come even while the session view shows no window yet
+		// (GCREX-31 review). It is cross-process, and the kernel drops it if
+		// this process dies.
+		releaseLaunch, err := p.beginLaunch(ctx, sid)
+		if err != nil {
+			return err
+		}
+		defer releaseLaunch()
 		return p.withTabLock(ctx, tab, func() error {
 			view, err := p.client.SessionView(ctx, sid)
 			if err != nil {
@@ -714,6 +734,20 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		}
 	}
 	if err != nil {
+		// A failed launch leaves no pane, and the stop that skipped this
+		// session because the launch was in flight will not run again: remove
+		// the empty city session here, or it outlives its last pane
+		// (GCREX-31 review). The launch lock is released by now.
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), startCleanupTimeout)
+		defer cancelCleanup()
+		if derr := p.withStateLock(cleanupCtx, func() error {
+			return p.destroyEmptyCitySession(cleanupCtx, sid)
+		}); derr != nil {
+			// Keep the provisional record: the deferred handler must not
+			// forget it. A later Stop retries the removal.
+			keepProvisional = true
+			p.warnf("start %s: remove the empty city session %s: %v", n, sid, derr)
+		}
 		return startResult{}, err
 	}
 	launched.launchDur = time.Since(launchStart)
@@ -907,8 +941,24 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if err := p.clearIncarnations(n, stored.Name); err != nil {
 			return err
 		}
-		// The survivors are gone and the metadata is clear, so the record can
-		// go with them. Resolve keeps a stale record that still names one.
+		// The pane went on its own and this stop found none, but it still
+		// leaves the last pane: remove the empty city session (GCREX-31). The
+		// state lock is already held. A failed removal keeps the record, or the
+		// retry would lose the session id it needs (GCREX-31 review).
+		if err := p.destroyEmptyCitySession(ctx, stored.SessionID); err != nil {
+			// ResolveFresh dropped the stale record before this destroy, so
+			// put it back: the retry reads the session id from it (GCREX-31
+			// review).
+			if hadStored {
+				if recErr := p.binder.Record(stored); recErr != nil {
+					return errors.Join(err, recErr)
+				}
+			}
+			return err
+		}
+		// The survivors are gone, the metadata is clear and the session is
+		// removed, so the record can go with them. Resolve keeps a stale
+		// record that still names a survivor.
 		p.binder.Forget(n)
 		return nil
 	}
@@ -970,9 +1020,58 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 	if err := p.clearIncarnations(n, binding.Name); err != nil {
 		return err
 	}
+	// The pane is closed and its incarnations are clear: remove the canonical
+	// city session when it is now empty (GCREX-31). The state lock is held
+	// for the check and the removal, so a concurrent Start cannot lose a pane
+	// (it recreates the session on ErrNotFound). The record goes only after a
+	// successful removal: a failed one must keep the session id for the retry
+	// (GCREX-31 review).
+	if err := p.destroyEmptyCitySession(ctx, binding.SessionID); err != nil {
+		return err
+	}
 	p.binder.Forget(binding.Name)
 	if alreadyClosed {
 		return errBlockGone
+	}
+	return nil
+}
+
+// destroyEmptyCitySession removes this city's canonical gc:<city> session once
+// its last pane is gone (GCREX-31). The caller holds the state lock. This
+// function takes the session's launch lock before it reads the view, so no
+// launch can add a pane between the empty check and the removal. It fails
+// closed: a session with any window, a label that is not the canonical one (a
+// legacy, foreign or other-city session), or any Rex error keeps the session
+// and returns the error.
+func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
+	if sid == "" {
+		return nil
+	}
+	// The launch lock comes first: a launch holds it shared across its
+	// SessionView and NewWindow/NewSplit, so an empty view below cannot go
+	// stale under us. Rex removes a tab with its last block
+	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
+	// is a true empty session.
+	release, busy, lockErr := p.tryLaunchLock(sid)
+	if lockErr != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
+	}
+	if busy {
+		return nil
+	}
+	defer release()
+	view, err := p.client.SessionView(ctx, sid)
+	if errors.Is(err, rex.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, err)
+	}
+	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
+		return nil
+	}
+	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
 	}
 	return nil
 }

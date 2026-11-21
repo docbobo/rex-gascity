@@ -385,8 +385,8 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 		t.Log("not attached: no app client, or the agent's tab is not the active window")
 	}
 
-	// AC #5: Stop removes the pane and never destroys the city session (GCREX-65
-	// skip branch: a server-wide Rex app client is listed on every session).
+	// AC #5: Stop removes the pane, and with it the now-empty city session
+	// (GCREX-31).
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if out, err := p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
 		t.Errorf("Peek after Stop = %q, %v; want empty, ErrNoScreen", out, err)
 	}
-	e2eExpectSessionSurvivesStop(ctx, t, b1.SessionID, city)
+	e2eExpectSessionGoneAfterStop(ctx, t, city)
 }
 
 // e2eP3WriteStale overwrites name's sidecar binding with bogus window and
@@ -422,26 +422,21 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 	}
 }
 
-// e2eExpectSessionSurvivesStop checks the GCREX-65 teardown rule after the last
-// agent of a city is stopped: the live probe (docs/REX-CONTRACT.md §12) lists a
-// server-wide Rex app client on every session, including an unattended scratch
-// one, so the approved skip branch applies and Stop never calls session.destroy.
-func e2eExpectSessionSurvivesStop(ctx context.Context, t *testing.T, sid rex.SessionID, city string) {
+// e2eExpectSessionGoneAfterStop checks the GCREX-31 teardown rule after the
+// last pane of a city is stopped: the provider removes the canonical gc:<city>
+// session behind its fail-closed empty check.
+func e2eExpectSessionGoneAfterStop(ctx context.Context, t *testing.T, city string) {
 	t.Helper()
 	sessions, err := cli.New().ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
 	for _, s := range sessions {
-		if s.Label != "gc:"+city {
-			continue
+		if s.Label == "gc:"+city {
+			t.Errorf("session gc:%s (%s) still listed after Stop; Stop must remove it once empty", city, s.ID)
+			return
 		}
-		if s.ID != sid {
-			t.Errorf("session gc:%s survives as %s, want the original %s; Stop destroyed and Start recreated it", city, s.ID, sid)
-		}
-		return
 	}
-	t.Errorf("session gc:%s (%s) gone after Stop; Stop must not destroy the city session", city, sid)
 }
 
 // e2eHasSession reports whether a Rex session labelled label exists.
@@ -557,7 +552,7 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	e2eExpectSessionSurvivesStop(ctx, t, b.SessionID, city)
+	e2eExpectSessionGoneAfterStop(ctx, t, city)
 }
 
 // TestE2EParallelStarts starts four agents in one rig concurrently, as gc
@@ -639,8 +634,5 @@ func TestE2EParallelStarts(t *testing.T) {
 			t.Errorf("Stop %s: %v", name, err)
 		}
 	}
-	e2eExpectSessionSurvivesStop(ctx, t, first.SessionID, city)
-	if left := e2eWindowsLabelled(ctx, t, first.SessionID, "Rig: Indigo"); len(left) != 0 {
-		t.Errorf("tab Rig: Indigo still present after stopping all agents: %+v", left)
-	}
+	e2eExpectSessionGoneAfterStop(ctx, t, city)
 }

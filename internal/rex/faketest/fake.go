@@ -73,11 +73,12 @@ type Fake struct {
 	// block, so tests can assert the provider scopes the call correctly.
 	BlockCalls []BlockCall
 
-	CreatedSessions []string
-	CreatedWindows  []CreatedWindow
-	CreatedSplits   []CreatedSplit
-	ClosedBlocks    []rex.BlockID
-	SentKeys        []SentKeys
+	CreatedSessions   []string
+	CreatedWindows    []CreatedWindow
+	CreatedSplits     []CreatedSplit
+	ClosedBlocks      []rex.BlockID
+	DestroyedSessions []rex.SessionID
+	SentKeys          []SentKeys
 
 	// WriteErr, ProcessErr and SendKeysErr, when set, are returned by those
 	// methods.
@@ -85,9 +86,10 @@ type Fake struct {
 	ProcessErr  error
 	SendKeysErr error
 
-	// CloseBlockErr, when set, is returned by CloseBlock before it changes
-	// anything.
-	CloseBlockErr error
+	// CloseBlockErr and DestroySessionErr, when set, are returned by those
+	// methods before they change anything.
+	CloseBlockErr     error
+	DestroySessionErr error
 
 	// ListSessionsCalls and SessionViewCalls count calls to those methods.
 	ListSessionsCalls int
@@ -198,6 +200,32 @@ func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID)
 		windows = append(windows, w)
 	}
 	f.View.Windows = windows
+	return nil
+}
+
+// DestroySession removes the session and its view, as Rex does. An unknown
+// session answers rex.ErrNotFound.
+func (f *Fake) DestroySession(_ context.Context, sid rex.SessionID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.DestroySessionErr != nil {
+		return f.DestroySessionErr
+	}
+	kept := f.Sessions[:0]
+	found := false
+	for _, s := range f.Sessions {
+		if s.ID == sid {
+			found = true
+			continue
+		}
+		kept = append(kept, s)
+	}
+	if !found {
+		return rex.ErrNotFound
+	}
+	f.Sessions = kept
+	delete(f.Views, sid)
+	f.DestroyedSessions = append(f.DestroyedSessions, sid)
 	return nil
 }
 

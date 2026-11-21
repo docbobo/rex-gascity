@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -255,17 +256,11 @@ func TestStopClosesOnlyTheStoppedPane(t *testing.T) {
 	if len(fake.ClosedBlocks) != 1 {
 		t.Errorf("closed = %v, want only the stopped pane", fake.ClosedBlocks)
 	}
-	if len(fake.Sessions) == 0 {
-		t.Errorf("sessions = %v, want the session left in place", fake.Sessions)
+	if len(fake.Sessions) != 1 {
+		t.Errorf("sessions = %v, want the session with the live pane left in place", fake.Sessions)
 	}
-}
-
-func TestStopKeepsSessionWithAttachedApp(t *testing.T) {
-	fake, p := teardownStarted(t, teardownDog)
-	fake.Clients = []rex.ClientInfo{{ID: "client:1", Kind: "cli", Name: "rex"}, {ID: "client:2", Kind: "app", Name: "Rex"}}
-
-	if err := p.Stop(context.Background(), teardownDog); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none while a live pane remains", fake.DestroyedSessions)
 	}
 }
 
@@ -281,8 +276,11 @@ func TestStopNeverDestroysLegacyLabelledSession(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if len(fake.Sessions) == 0 {
-		t.Errorf("sessions = %v, want the adopted session left in place", fake.Sessions)
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want the legacy session kept", fake.DestroyedSessions)
+	}
+	if len(fake.Sessions) != 1 || fake.Sessions[0].ID != "session:gc:oldacme" || fake.Sessions[0].Label != "gc:oldacme" {
+		t.Errorf("sessions = %v, want the adopted session unchanged", fake.Sessions)
 	}
 }
 
@@ -310,13 +308,16 @@ func TestStopKeepsDuplicateCanonicalSessions(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if len(fake.Sessions) != 2 {
-		t.Errorf("sessions = %v, want both canonical sessions left in place", fake.Sessions)
+	// Only the exact session the stop used is a removal candidate, so the
+	// duplicate stays: removing by label could destroy another server's shell.
+	if len(fake.Sessions) != 1 || fake.Sessions[0].ID != "session:dup" {
+		t.Errorf("sessions = %v, want only the untouched duplicate left", fake.Sessions)
 	}
 }
 
 // destroyedBeforeLaunch models the city session vanishing after Start found it
-// but before Start's launch read the view (an operator, another process).
+// but before Start's launch read the view: a concurrent Stop of the last pane
+// in another rig removes the empty session, or an operator does (GCREX-31).
 type destroyedBeforeLaunch struct {
 	*faketest.Fake
 	once sync.Once
@@ -408,5 +409,177 @@ func TestStopUnreachableWithBindingKeepsError(t *testing.T) {
 	}
 	if len(fake.ClosedBlocks) != 0 {
 		t.Errorf("closed = %v, want none", fake.ClosedBlocks)
+	}
+}
+
+// gatedLaunch pauses NewWindow while gate is set, so a test can run a stop in
+// the launch window before the new pane commits (GCREX-31 review: the stop and
+// start TOCTOU).
+type gatedLaunch struct {
+	*faketest.Fake
+	gate        atomic.Bool
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
+}
+
+func (g *gatedLaunch) NewWindow(ctx context.Context, sid rex.SessionID, label string, spec rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
+	g.wait()
+	return g.Fake.NewWindow(ctx, sid, label, spec)
+}
+
+func (g *gatedLaunch) NewSplit(ctx context.Context, sid rex.SessionID, anchor rex.BlockID, direction, side string, spec rex.LaunchSpec) (rex.BlockID, error) {
+	g.wait()
+	return g.Fake.NewSplit(ctx, sid, anchor, direction, side, spec)
+}
+
+func (g *gatedLaunch) wait() {
+	if g.gate.Load() {
+		g.once.Do(func() { close(g.entered) })
+		<-g.release
+	}
+}
+
+// TestStopDoesNotDestroySessionDuringLaunch pins the fix for the stop/start
+// race: the city session looks empty to a stop in another dispatcher process
+// while a launch has not committed its window yet, but the session must
+// survive so the launch does not fill a removed session.
+func TestStopDoesNotDestroySessionDuringLaunch(t *testing.T) {
+	dir := t.TempDir()
+	fake := &gatedLaunch{
+		Fake:    faketest.New(),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	// Two providers over one state dir, as two dispatcher processes are: the
+	// launch lock is the only thing they share.
+	newProvider := func() *provider.Provider {
+		return provider.New("acme", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
+	}
+	starter, stopper := newProvider(), newProvider()
+	teardownStart(t, starter, teardownDog) // one live pane, in the dog rig tab
+
+	fake.gate.Store(true)
+	started := make(chan error, 1)
+	go func() { started <- starter.Start(context.Background(), teardownCat, teardownCfg) }()
+	t.Cleanup(func() { fake.releaseOnce.Do(func() { close(fake.release) }) })
+	<-fake.entered
+
+	// The cat launch holds no window yet, so the stop sees an empty session.
+	if err := stopper.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	fake.releaseOnce.Do(func() { close(fake.release) })
+	if err := <-started; err != nil {
+		t.Fatalf("Start %s: %v", teardownCat, err)
+	}
+
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none while a launch is in flight", fake.DestroyedSessions)
+	}
+	if len(fake.Sessions) != 1 {
+		t.Errorf("sessions = %v, want the city session kept", fake.Sessions)
+	}
+	if _, ok := starter.Binding(teardownCat); !ok {
+		t.Error("no binding for the launched pane")
+	}
+}
+
+// TestStopNoPaneKeepsBindingWhenDestroyFails pins the no-pane half of the
+// forget-before-destroy bug: ResolveFresh drops the stale record before the
+// destroy, so a failed destroy must write it back or the retry has no session
+// id to remove.
+func TestStopNoPaneKeepsBindingWhenDestroyFails(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	bd, ok := p.Binding(teardownDog)
+	if !ok {
+		t.Fatal("no binding after Start")
+	}
+	// The pane goes on its own, which is the no-pane stop path.
+	if err := fake.CloseBlock(context.Background(), bd.SessionID, bd.BlockID); err != nil {
+		t.Fatalf("CloseBlock: %v", err)
+	}
+	fake.DestroySessionErr = errors.New("destroy down")
+
+	if err := p.Stop(context.Background(), teardownDog); err == nil {
+		t.Fatal("Stop = nil, want the destroy error")
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none", fake.DestroyedSessions)
+	}
+
+	fake.DestroySessionErr = nil
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("retry Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 1 {
+		t.Errorf("destroyed = %v, want the retry to remove the empty session", fake.DestroyedSessions)
+	}
+}
+
+// viewErrAfterClose fails SessionView once a block has closed, so the failure
+// lands in the empty-session check, after the stop's own resolve.
+type viewErrAfterClose struct {
+	*faketest.Fake
+	closed atomic.Bool
+	boom   atomic.Bool
+}
+
+func (v *viewErrAfterClose) CloseBlock(ctx context.Context, sid rex.SessionID, block rex.BlockID) error {
+	if err := v.Fake.CloseBlock(ctx, sid, block); err != nil {
+		return err
+	}
+	v.closed.Store(true)
+	return nil
+}
+
+func (v *viewErrAfterClose) SessionView(ctx context.Context, sid rex.SessionID) (rex.SessionView, error) {
+	if v.closed.Load() && v.boom.Load() {
+		return rex.SessionView{}, errors.New("session view down")
+	}
+	return v.Fake.SessionView(ctx, sid)
+}
+
+// TestStopKeepsBindingWhenEmptySessionCheckFails pins the fix for forgetting
+// the binding before the destroy: a failed check must keep the session id a
+// retry needs, or the empty session is never removed.
+func TestStopKeepsBindingWhenEmptySessionCheckFails(t *testing.T) {
+	fake := &viewErrAfterClose{Fake: faketest.New()}
+	fake.boom.Store(true)
+	p := provider.New("acme", fake)
+	teardownStart(t, p, teardownDog)
+
+	if err := p.Stop(context.Background(), teardownDog); err == nil {
+		t.Fatal("Stop = nil, want the empty-session check error")
+	}
+	if _, ok := p.Binding(teardownDog); !ok {
+		t.Error("binding forgotten although the session was not removed")
+	}
+	if len(fake.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none", fake.DestroyedSessions)
+	}
+
+	fake.boom.Store(false)
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("retry Stop: %v", err)
+	}
+	if len(fake.DestroyedSessions) != 1 {
+		t.Errorf("destroyed = %v, want the retry to remove the empty session", fake.DestroyedSessions)
+	}
+	if _, ok := p.Binding(teardownDog); ok {
+		t.Error("binding still stored after the retry")
+	}
+}
+
+func TestStopToleratesSessionGoneAtDestroy(t *testing.T) {
+	fake, p := teardownStarted(t, teardownDog)
+	fake.DestroySessionErr = rex.ErrNotFound
+
+	if err := p.Stop(context.Background(), teardownDog); err != nil {
+		t.Fatalf("Stop = %v, want nil for a session another client removed", err)
+	}
+	if _, ok := p.Binding(teardownDog); ok {
+		t.Error("binding still stored after Stop")
 	}
 }

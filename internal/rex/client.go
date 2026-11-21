@@ -155,6 +155,10 @@ type Event struct {
 // method per Rex operation, never a generic run(args...).
 type Client interface {
 	CreateSession(ctx context.Context, label string) (SessionID, error)
+	// DestroySession closes every window and block in the session. It is
+	// destructive: the caller must first prove the session is its own and
+	// empty (GCREX-31).
+	DestroySession(ctx context.Context, sessionID SessionID) error
 	NewWindow(ctx context.Context, sessionID SessionID, label string, spec LaunchSpec) (WindowID, BlockID, error)
 	NewSplit(ctx context.Context, sessionID SessionID, anchor BlockID, direction, side string, spec LaunchSpec) (BlockID, error)
 	CloseBlock(ctx context.Context, sessionID SessionID, blockID BlockID) error
