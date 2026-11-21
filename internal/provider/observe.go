@@ -385,11 +385,14 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 			// A previous stop may have recorded survivors it could not reap
 			// before the pane vanished, so the record is their only name: reap
 			// them before retiring it, or a retry answers gone over live pids.
-			if _, err := p.withSameBinding(ctx, name, bd, func() error {
-				if err := p.reapSurvivors(ctx, bd, survivorProcs(bd.Survivors)); err != nil {
+			if _, err := p.withSameBinding(ctx, name, bd, func(cur Binding) error {
+				// The state-lock read may carry survivors a canonical Stop
+				// recorded after the check above; reaping the earlier snapshot
+				// would leave them and then delete their only record.
+				if err := p.reapSurvivors(ctx, cur, survivorProcs(cur.Survivors)); err != nil {
 					return err
 				}
-				return p.retireStale(bd)
+				return p.retireStale(cur)
 			}); err != nil {
 				return "", err
 			}
@@ -415,7 +418,7 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	// under the state lock that the record still names this object before the
 	// close, so a stop or start of the canonical name (a different name lock)
 	// cannot swap the binding in between.
-	same, err := p.withSameBinding(ctx, name, bd, func() error {
+	same, err := p.withSameBinding(ctx, name, bd, func(Binding) error {
 		return p.stopBinding(ctx, SessionName(name), bd)
 	})
 	if errors.Is(err, errBlockGone) {
@@ -438,9 +441,10 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 // records bd: same block and window and the same creation time. A start that
 // took the name since the caller's check leaves a different binding, and fn
 // does not run. Start writes its provisional binding under the state lock, so
-// a replacement cannot land between the check and the mutation. It reports
-// whether fn ran.
-func (p *Provider) withSameBinding(ctx context.Context, name string, bd Binding, fn func() error) (bool, error) {
+// a replacement cannot land between the check and the mutation. fn receives
+// the record read under the lock, which can carry state (survivors) the
+// caller's earlier copy does not. It reports whether fn ran.
+func (p *Provider) withSameBinding(ctx context.Context, name string, bd Binding, fn func(Binding) error) (bool, error) {
 	same := false
 	err := p.withStateLock(ctx, func() error {
 		got, ok := p.Binding(name)
@@ -448,7 +452,7 @@ func (p *Provider) withSameBinding(ctx context.Context, name string, bd Binding,
 			return nil
 		}
 		same = true
-		return fn()
+		return fn(got)
 	})
 	return same, err
 }

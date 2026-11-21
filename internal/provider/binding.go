@@ -573,6 +573,10 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 			LaunchMode: hint.LaunchMode,
 			GCBin:      hint.GCBin,
 			WorkDir:    hint.WorkDir,
+			// The pending survivor set is cleanup state, not identity: a
+			// replacement pane keeps it, or the stop forgets pids a closed
+			// pane no longer reports.
+			Survivors: hint.Survivors,
 		}
 		if save {
 			if hint.BlockID != blk.ID {

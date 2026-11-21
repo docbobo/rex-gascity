@@ -460,8 +460,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		}
 		// A failed launch or a canceled start must not leave a seeded identity
 		// or a provisional binding behind. Stop clears the same keys on the
-		// successful retire path.
+		// successful retire path. A survivor record is the only name for a
+		// descendant the retire could not reap, so it stays.
 		_ = p.clearStartIdentity(n)
+		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
+			return
+		}
 		p.binder.Forget(n)
 	}()
 	// The env-derived labels let Resolve rediscover a live pane whose sidecar
@@ -650,8 +654,11 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				if err != nil {
 					return err
 				}
-				if err := p.record(ctx, n, sid, w.ID, block, "split", cfg); err != nil {
-					return err
+				if block != "" {
+					bd := p.newBinding(n, sid, w.ID, block, "split", cfg)
+					if err := p.binder.Record(bd); err != nil {
+						return p.discardLaunch(ctx, bd, err)
+					}
 				}
 				launched = startResult{sessionID: sid, blockID: block}
 				return nil
@@ -667,8 +674,11 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			if err != nil {
 				return err
 			}
-			if err := p.record(ctx, n, sid, wid, block, "window", cfg); err != nil {
-				return err
+			if block != "" {
+				bd := p.newBinding(n, sid, wid, block, "window", cfg)
+				if err := p.binder.Record(bd); err != nil {
+					return p.discardLaunch(ctx, bd, err)
+				}
 			}
 			launched = startResult{sessionID: sid, blockID: block}
 			return nil
@@ -736,13 +746,10 @@ func rectArea(r [4]float64) (float64, bool) {
 	return w * h, true
 }
 
-// record stores a binding for a new pane, started in the given mode ("window"
-// or "split"). A pane with no block ID is not recorded.
-func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string, cfg Config) error {
-	if block == "" {
-		return nil
-	}
-	return p.binder.Record(Binding{
+// newBinding builds the record for a new pane, started in the given mode
+// ("window" or "split").
+func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode string, cfg Config) Binding {
+	return Binding{
 		Name:           n,
 		SessionID:      sid,
 		SessionLabel:   rexSessionLabel(p.city),
@@ -756,7 +763,26 @@ func (p *Provider) record(_ context.Context, n SessionName, sid rex.SessionID, w
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
 		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
-	})
+	}
+}
+
+// discardLaunch retires a pane NewSplit or NewWindow created whose final record
+// failed: the pane would otherwise run on after the deferred cleanup forgets
+// its binding, and a retry would adopt it with no start identity. It reuses
+// stopBinding's order (snapshot the tree, close, re-read, reap) and reports
+// cause joined with any retire failure.
+func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) error {
+	tree, err := p.paneSubtree(ctx, bd)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if err := p.client.CloseBlock(ctx, bd.SessionID, bd.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return errors.Join(cause, err)
+	}
+	if after, readErr := p.paneSubtree(ctx, bd); readErr == nil {
+		tree = unionProcs(tree, after)
+	}
+	return errors.Join(cause, p.reapSurvivors(ctx, bd, tree))
 }
 
 // Stop closes the agent's pane and leaves the city session and other rigs
