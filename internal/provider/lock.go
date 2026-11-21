@@ -107,7 +107,7 @@ func withFlock(ctx context.Context, path string, fn func() error) error {
 // withFlockShared is withFlock with a shared lock: holders exclude an exclusive
 // holder but not each other.
 func withFlockShared(ctx context.Context, path string) (func(), error) {
-	return flock(context.Background(), path, syscall.LOCK_SH)
+	return flock(ctx, path, syscall.LOCK_SH)
 }
 
 // flock takes an flock on path in mode, creating the parent directory and the
@@ -165,7 +165,10 @@ func flockExclusiveNow(path string) (release func(), held bool, err error) {
 		return nil, false, err
 	}
 	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EINTR) {
+	for errors.Is(err, syscall.EINTR) {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	}
+	if errors.Is(err, syscall.EWOULDBLOCK) {
 		_ = f.Close()
 		return nil, true, nil
 	}

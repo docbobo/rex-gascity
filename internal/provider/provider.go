@@ -992,15 +992,29 @@ func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Bindi
 }
 
 // destroyEmptyCitySession removes this city's canonical gc:<city> session once
-// its last pane is gone (GCREX-31). The caller holds the state lock across the
-// view check and the removal, so no other provider process can add a pane in
-// between. It fails closed: a session with any window, a label that is not the
-// canonical one (a legacy, foreign or other-city session), or any Rex error
-// keeps the session and returns the error.
+// its last pane is gone (GCREX-31). The caller holds the state lock. This
+// function takes the session's launch lock before it reads the view, so no
+// launch can add a pane between the empty check and the removal. It fails
+// closed: a session with any window, a label that is not the canonical one (a
+// legacy, foreign or other-city session), or any Rex error keeps the session
+// and returns the error.
 func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
 	if sid == "" {
 		return nil
 	}
+	// The launch lock comes first: a launch holds it shared across its
+	// SessionView and NewWindow/NewSplit, so an empty view below cannot go
+	// stale under us. Rex removes a tab with its last block
+	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
+	// is a true empty session.
+	release, busy, lockErr := p.tryLaunchLock(sid)
+	if lockErr != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
+	}
+	if busy {
+		return nil
+	}
+	defer release()
 	view, err := p.client.SessionView(ctx, sid)
 	if errors.Is(err, rex.ErrNotFound) {
 		return nil
@@ -1011,21 +1025,6 @@ func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionI
 	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
 		return nil
 	}
-	// A launch on this session has no window yet, so the view above cannot
-	// see the pane it is about to create (GCREX-31 review). Its shared launch
-	// lock is the cross-process signal; if this process already holds it, the
-	// stop cannot take it exclusively and answers not-empty, which is the safe
-	// side. Rex removes a tab with its last block
-	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
-	// is a true empty session otherwise.
-	release, busy, lockErr := p.tryLaunchLock(sid)
-	if lockErr != nil {
-		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
-	}
-	if busy {
-		return nil
-	}
-	defer release()
 	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
 	}
