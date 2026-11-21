@@ -1,6 +1,6 @@
 [pack]
 name = "rex"
-version = "0.1.0"
+version = "0.2.0"
 schema = 2
 description = "Gas City runtime pack for Rex: a native Rex session provider speaking RPP v0."
 

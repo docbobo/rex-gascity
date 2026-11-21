@@ -449,3 +449,66 @@ func TestPreStartCwdFallsBackWhenWorkDirMissing(t *testing.T) {
 		t.Errorf("pre_start cwd = %q, want %q", got, "/")
 	}
 }
+
+// TestPreStartWaitsForBackgroundChild pins the timing a hook that backgrounds
+// its work and exits relies on: the child holds the output pipe, so the hook
+// runs to completion and its work dir exists before the launch is checked.
+func TestPreStartWaitsForBackgroundChild(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "worktree")
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  work,
+		PreStart: []string{"(sleep 0.3; mkdir -p " + work + ") &"},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v (the background child must finish before the check)", err)
+	}
+	if len(fake.CreatedWindows) == 0 {
+		t.Error("launch did not happen after a backgrounded pre_start")
+	}
+}
+
+// TestPreStartCancelKillsBackgroundChild pins the grace branch of
+// runPreStart: once cmd.Wait has seen the shell exit, cmd.Cancel no longer
+// runs, so a backgrounded child that still holds the output pipe must be
+// killed by hand. Without that kill the child survives the cancellation.
+func TestPreStartCancelKillsBackgroundChild(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "alive")
+	// The child writes ready before its delay, so the cancel lands after the
+	// background subshell exists. A fixed delay can cancel too early and let the
+	// absent marker pass without the grace-branch kill.
+	ready := filepath.Join(root, "ready")
+	fake := faketest.New()
+	p := provider.New("acme", fake,
+		provider.WithStartBudget(10*time.Second),
+		provider.WithPreStartHookTimeout(10*time.Second))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for i := 0; i < 500; i++ {
+			if _, err := os.Stat(ready); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	cfg := provider.Config{
+		Argv:     []string{"pi"},
+		WorkDir:  root,
+		PreStart: []string{"(echo ready > " + ready + "; sleep 0.6; echo alive > " + marker + ") &"},
+	}
+	if err := p.Start(ctx, "pi-mc-wisp-abc", cfg); err == nil {
+		t.Fatal("Start succeeded, want a canceled start")
+	}
+	time.Sleep(time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the backgrounded child survived the cancellation and wrote its marker")
+	}
+}

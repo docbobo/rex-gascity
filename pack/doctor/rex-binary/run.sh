@@ -100,12 +100,12 @@ if [ -z "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not installed"
   provider_detail="\`$command_name\` is not on PATH"
-  remediation="Install it with \`gc doctor --fix\` (builds the pack's module, stamped with version $declared_version), then put \$(go env GOBIN) on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too. Without a Go toolchain: \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@v$declared_version\`."
+  remediation="Install it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\` (downloads the v$declared_version release asset for this platform and verifies its checksum), then put its directory on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too. A source checkout can use \`sh $pack_dir/install.sh --from-source\` instead."
 elif [ ! -x "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not executable"
   provider_detail="$provider_path is not executable"
-  remediation="Install the provider binary and make it executable."
+  remediation="Reinstall it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`."
 else
   handshake=$("$provider_path" protocol 2>/dev/null) || handshake=""
   if printf '%s' "$handshake" | grep -Eq '"version"[[:space:]]*:[[:space:]]*0'; then
@@ -122,7 +122,7 @@ else
         provider_status=warn
         provider_message="the rex runtime provider version could not be determined"
         provider_detail="provider: $provider_path (version could not be determined)"
-        remediation="The provider did not report a module version (a binary built without module/VCS info reports the placeholder \"(devel)\", and an older binary has no \`version\` op). Install a released build, or rebuild with -ldflags \"-X main.buildVersion=$declared_version\"."
+        remediation="The provider reported no version (a source build reports the module pseudo-version or \"(devel)\", and an older binary has no \`version\` op). Install the release asset with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`."
       elif [ "$normalized_reported" = "$normalized_declared" ]; then
         provider_detail="provider: $provider_path (version $reported_version)"
         if printf '%s' "$version_json" | grep -Eq '"modified"[[:space:]]*:[[:space:]]*true'; then
@@ -132,14 +132,14 @@ else
         provider_status=error
         provider_message="the rex runtime provider version does not match the pack"
         provider_detail="provider: $provider_path reports version $reported_version, but the pack declares $declared_version"
-        remediation="Install the provider that matches pack version $declared_version with \`gc doctor --fix\` (builds the pack's commit, stamped with version $declared_version), or \`go install github.com/docbobo/rex-gascity/cmd/gc-runtime-rex@v$normalized_declared\`. Then put \$(go env GOBIN) on PATH."
+        remediation="Install the provider that matches pack version $declared_version with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`. The check compares versions only, so it cannot detect a same-version build from a different commit."
       fi
     fi
   else
     provider_status=error
     provider_message="the rex runtime provider did not answer the RPP handshake"
     provider_detail="\`$provider_path protocol\` did not print an RPP v0 handshake"
-    remediation="Reinstall the provider binary; it must answer \`protocol\` with an RPP v0 handshake."
+    remediation="Reinstall it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`; a released build answers \`protocol\` with an RPP v0 handshake."
   fi
 fi
 
