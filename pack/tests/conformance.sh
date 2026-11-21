@@ -82,7 +82,7 @@ print("passed: %d" % summary["passed"])
 print("failed: %d" % summary["failed"])
 print("skipped: %d" % summary["skipped"])
 print("v2_ready: %s" % str(report["v2_ready"]).lower())
-print("v2_failed: %s" % json.dumps(report["v2_failed"]))
+print("v2_failed: %s" % json.dumps(report.get("v2_failed", [])))
 PY
 } > "$summary"; then
   echo "conformance: gc produced no JSON report (exit $status)" >&2
