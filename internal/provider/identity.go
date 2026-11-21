@@ -2,7 +2,6 @@ package provider
 
 import (
 	"errors"
-	"os"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -27,17 +26,9 @@ var startIdentityMetaKeys = []string{
 	"GC_PROVIDER",
 }
 
-// observeV1Enabled mirrors the dispatcher's GCREX_OBSERVE_V1 switch. Flag-off
-// Start must leave observe.v1's own metadata unset, as it did before the profile.
-func observeV1Enabled() bool { return os.Getenv("GCREX_OBSERVE_V1") == "1" }
-
 // startMetaKeys is the identity set this process seeds and clears.
-// GT_PROCESS_NAMES only exists for observe.v1's process classification, so it
-// is gated: flag-off Start must not add it or have cleanup delete it.
+// GT_PROCESS_NAMES exists for observe.v1's process classification.
 func startMetaKeys() []string {
-	if !observeV1Enabled() {
-		return startIdentityMetaKeys
-	}
 	return append(append([]string{}, startIdentityMetaKeys...), "GT_PROCESS_NAMES")
 }
 

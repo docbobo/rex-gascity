@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -15,6 +16,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -854,12 +857,40 @@ func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) e
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
 //
-// The per-name lock serializes a stop with a concurrent start of the same name;
-// the brief city-wide state lock guards the store mutations.
+// The per-name lock serializes a stop with a concurrent start of the same name.
+// Every record a stop mutates belongs to that one name, so no city-wide state
+// lock is needed: the close, the reap and the re-read run while stops and starts
+// of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
-	return p.withNameLock(ctx, SessionName(name), func() error {
-		return p.withStateLock(ctx, func() error { return p.stop(ctx, name) })
-	})
+	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
+}
+
+// stopUnderPrimaryLock runs stop with the lock of every record's own name that
+// answers to the caller's as well as the caller's lock. An alias and its
+// primary names map to different lock files, so a start of one of them would
+// otherwise run beside this stop and write a replacement record that the stop's
+// retirement then clears. Every such name is locked, not just the first stored
+// candidate: ResolveFresh skips a stale candidate and can retire a later live
+// one. The locks are taken in caller-then-primary order, sorted to a fixed order
+// among themselves, and a primary stop takes no second lock, so no two paths
+// take them in opposite order.
+func (p *Provider) stopUnderPrimaryLock(ctx context.Context, name string) error {
+	n := SessionName(name)
+	var primaries []SessionName
+	for _, bd := range p.binder.lookup(n) {
+		if bd.Name != n && !slices.Contains(primaries, bd.Name) {
+			primaries = append(primaries, bd.Name)
+		}
+	}
+	slices.Sort(primaries)
+	var lock func(i int) error
+	lock = func(i int) error {
+		if i == len(primaries) {
+			return p.stop(ctx, name)
+		}
+		return p.withNameLock(ctx, primaries[i], func() error { return lock(i + 1) })
+	}
+	return lock(0)
 }
 
 func (p *Provider) stop(ctx context.Context, name string) error {
@@ -1137,10 +1168,21 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 	if err != nil {
 		return "", err
 	}
-	if out == "" && info.LastExit != nil {
+	if out == "" {
 		// A dead box's screen is the only record of why it died, so a capture
-		// that wrote nothing is unreadable, never a blank screen.
-		return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+		// that wrote nothing is unreadable, never a blank screen. The program
+		// can exit between the two calls, so an empty capture re-reads the
+		// process state before the blank screen is accepted; a re-read that
+		// fails leaves the earlier answer standing.
+		dead := info.LastExit != nil
+		if !dead {
+			if after, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID); err == nil {
+				dead = after.LastExit != nil
+			}
+		}
+		if dead {
+			return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
+		}
 	}
 	if lines <= 0 {
 		return out, nil
@@ -1367,19 +1409,76 @@ func runPreStart(ctx context.Context, command, workDir string, env []string) err
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	cmd.Dir = preStartCwd(workDir)
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	// Run the hook in its own process group so a cancel kills the whole
+	// group: killing only the shell leaves a child (e.g. sleep) holding the
+	// output pipe open.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+
+	var out lockedBuffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		// A live ctx keeps the wait open, so a hook that backgrounds its work
+		// and exits still runs until that work closes the pipe. Only a
+		// cancelled hook is bounded, so a child that escaped the process group
+		// cannot hold the start past the hook deadline.
+		select {
+		case err = <-done:
+		case <-time.After(preStartCancelGrace):
+			// cmd.Cancel stops running once cmd.Wait has seen the shell exit,
+			// so a child that escaped the process group would survive it and
+			// keep the output pipe open. Kill the group again; ESRCH only
+			// means it is already gone.
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			err = ctx.Err()
+		}
+	}
 	if err != nil {
 		// A cancelled or timed-out ctx means the command did not fail on its
 		// own; surface that so the caller can name the timeout or cancellation.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = ctxErr
 		}
-		if len(out) > 0 {
-			return fmt.Errorf("%s: %w\n%s", command, err, out)
+		if got := out.String(); got != "" {
+			return fmt.Errorf("%s: %w\n%s", command, err, got)
 		}
 		return fmt.Errorf("%s: %w", command, err)
 	}
 	return nil
+}
+
+// preStartCancelGrace bounds the pipe wait after a pre_start hook's context
+// ends. The group kill normally closes the pipes at once; the grace covers a
+// child that left the process group.
+const preStartCancelGrace = 200 * time.Millisecond
+
+// lockedBuffer collects a command's output while a copy goroutine may still
+// write into it after runPreStart stops waiting.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // runPreStartWithTimeout runs one pre_start hook under a per-hook timeout. A

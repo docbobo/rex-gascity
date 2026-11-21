@@ -12,6 +12,10 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
+// fakePID is above Linux pid_max so no real host process matches it; a
+// low pid like 42 can be a kernel thread and make kill return EPERM.
+const fakePID = 1 << 22
+
 func TestPaneLabelFor(t *testing.T) {
 	tests := []struct {
 		name string
@@ -515,7 +519,7 @@ func TestRecordlessCrossTabDiscovery(t *testing.T) {
 			Blocks: []rex.Block{{ID: block, Label: label}},
 		}}}
 		f.Processes = map[rex.BlockID]rex.ProcessInfo{
-			block: {Foreground: &rex.Process{PID: 42, Name: "pi"}},
+			block: {Foreground: &rex.Process{PID: fakePID, Name: "pi"}},
 		}
 		return f
 	}
@@ -563,7 +567,7 @@ func TestRecordlessBareLabelNotAdoptedGlobally(t *testing.T) {
 				Blocks: []rex.Block{{ID: block, Label: label}},
 			}}}
 			f.Processes = map[rex.BlockID]rex.ProcessInfo{
-				block: {Foreground: &rex.Process{PID: 42, Name: "pi"}},
+				block: {Foreground: &rex.Process{PID: fakePID, Name: "pi"}},
 			}
 			return f
 		}
@@ -610,7 +614,7 @@ func TestTabScopedBareLabelNotAdopted(t *testing.T) {
 			Blocks: []rex.Block{{ID: block, Label: label}},
 		}}}
 		f.Processes = map[rex.BlockID]rex.ProcessInfo{
-			block: {Foreground: &rex.Process{PID: 42, Name: "pi"}},
+			block: {Foreground: &rex.Process{PID: fakePID, Name: "pi"}},
 		}
 		return f
 	}

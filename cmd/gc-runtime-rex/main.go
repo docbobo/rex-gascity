@@ -41,8 +41,8 @@ const (
 
 // handshake is the protocol op's reply. It declares only what is implemented:
 // no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
-// observe.v1 is a switch: GCREX_OBSERVE_V1=1 declares it until GCREX-111
-// retires the switch.
+// observe.v1 is declared unconditionally (GCREX-111): the profile is
+// implemented and proven by gc runtime conformance.
 // idle-boundary gates the `idle` snapshot op (GCREX-63); gc 1.5.1 has no such
 // token and ignores it. carrier.ops says gc drives the five session ops
 // (nudge, peek, send-keys, interrupt, clear-scrollback) instead of exec, and
@@ -55,11 +55,7 @@ const (
 // has no input-outcome vocabulary and ignores the token, so 80 stays a plain
 // error there — the same answer it gives an undeclared pack.
 func handshake() string {
-	const base = `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}`
-	if !observeV1Enabled() {
-		return base
-	}
-	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1"]}`
+	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}`
 }
 
 // buildVersion is the version the `version` op reports. A pack build may set
@@ -215,19 +211,6 @@ var ops = map[string]opSpec{
 	"kill-object":       {1, "kill-object <name>", opKillObject},
 }
 
-// observeV1Ops are the ops the observe.v1 token declares. The token is the
-// only authorization: with the switch off they are unknown (RPP v0 exit 2),
-// so a caller never gets an answer from an undeclared capability.
-var observeV1Ops = map[string]bool{
-	"observe":     true,
-	"inventory":   true,
-	"kill-object": true,
-}
-
-// observeV1Enabled gates observe.v1, both its handshake token and its ops, so
-// the two cannot disagree until GCREX-111 retires the switch.
-func observeV1Enabled() bool { return os.Getenv("GCREX_OBSERVE_V1") == "1" }
-
 // inputOutcomeOps are the four driving ops whose failures are typed by
 // input-outcome (gc internal/runtime/exec/outcome.go, inputOutcomeOp).
 var inputOutcomeOps = map[string]bool{
@@ -271,7 +254,6 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		return exitOK
 	}
 	spec, known := ops[op]
-	known = known && (!observeV1Ops[op] || observeV1Enabled())
 	if !known {
 		if unimplemented[op] {
 			fmt.Fprintf(stderr, "gc-runtime-rex: operation %q not implemented\n", op)
@@ -372,12 +354,11 @@ func printBool(w io.Writer, b bool) {
 }
 
 // seedProcessNames fills GT_PROCESS_NAMES from the start config's
-// process_names when env leaves it unset, as gc's tmux adapter does for its
-// sessions (gc v1.5.1 internal/runtime/tmux/adapter.go:179-180,186-194):
-// trimmed, non-empty, comma-separated. An env value always wins.
-// observe.v1-only, so flag-off starts carry the same env as before.
+// process_names when env leaves it unset, as gc's fresh start does (gc v1.5.1
+// internal/runtime/exec/observe.go:142-150,355-362): trimmed, non-empty,
+// comma-separated. An env value always wins.
 func seedProcessNames(cfg *startConfig) {
-	if !observeV1Enabled() || strings.TrimSpace(cfg.Env["GT_PROCESS_NAMES"]) != "" {
+	if strings.TrimSpace(cfg.Env["GT_PROCESS_NAMES"]) != "" {
 		return
 	}
 	var names []string
@@ -441,15 +422,16 @@ func opStop(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 }
 
 // opObserve answers `observe <name>`. Its stdin is newline-separated process
-// names; the provider reads the name's own process list, so the input is
-// drained and ignored.
+// names by which gc identifies the agent; the provider matches them against the
+// box's process subtree, so they must reach it (RPP-OBSERVE-006).
 func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
 	// gc writes a few process names and closes the pipe; the bound only stops a
 	// runaway writer from holding the op open.
-	if _, err := io.Copy(io.Discard, io.LimitReader(stdin, 64<<10)); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(stdin, 64<<10))
+	if err != nil {
 		return fmt.Errorf("read process names: %w", err)
 	}
-	ans, err := p.Observe(ctx, args[0], nil)
+	ans, err := p.Observe(ctx, args[0], processNames(raw))
 	if err != nil {
 		return err
 	}
@@ -568,6 +550,19 @@ func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.R
 		return nil
 	}
 	return p.SendKeys(ctx, args[0], keys...)
+}
+
+// processNames reads one process name per line, the shape gc writes to observe
+// and process-alive. A name can contain spaces, so the split is on newlines,
+// and blank lines carry no name.
+func processNames(raw []byte) []string {
+	var names []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a

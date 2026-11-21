@@ -81,10 +81,9 @@ func assertFailure(t *testing.T, r result, code int) {
 const dog = "Indigo--dog-1"
 
 func TestProtocolHandshake(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "")
 	h, _ := newHarness(t)
 	r := h.must("", "protocol")
-	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome"]}` + "\n"
+	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}` + "\n"
 	if r.stdout != want {
 		t.Fatalf("stdout = %q, want %q", r.stdout, want)
 	}
@@ -102,24 +101,24 @@ func TestProtocolHandshake(t *testing.T) {
 	for _, c := range hs["capabilities"].([]any) {
 		caps = append(caps, c.(string))
 	}
-	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome"}) {
+	if !slices.Equal(caps, []string{"report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome", "observe.v1", "city-scoped"}) {
 		t.Errorf("capabilities = %v", caps)
 	}
 }
 
-// TestObserveV1HandshakeGated proves the token is a switch: the handshake
-// declares observe.v1 only when GCREX_OBSERVE_V1=1.
-func TestObserveV1HandshakeGated(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "")
-	h, _ := newHarness(t)
-	r := h.must("", "protocol")
-	if strings.Contains(r.stdout, "observe.v1") {
-		t.Errorf("handshake declares observe.v1 without GCREX_OBSERVE_V1=1: %q", r.stdout)
-	}
-	t.Setenv("GCREX_OBSERVE_V1", "1")
-	r = h.must("", "protocol")
-	if !strings.Contains(r.stdout, `"observe.v1"`) {
-		t.Errorf("handshake does not declare observe.v1 with GCREX_OBSERVE_V1=1: %q", r.stdout)
+// TestHandshakeDeclaresObserveV1 proves GCREX-111 retired the switch: the
+// handshake declares observe.v1 with no environment set, and a leftover
+// GCREX_OBSERVE_V1 value changes nothing.
+func TestHandshakeDeclaresObserveV1(t *testing.T) {
+	for _, flag := range []string{"", "0", "1"} {
+		t.Run("GCREX_OBSERVE_V1="+flag, func(t *testing.T) {
+			t.Setenv("GCREX_OBSERVE_V1", flag)
+			h, _ := newHarness(t)
+			r := h.must("", "protocol")
+			if !strings.Contains(r.stdout, `"observe.v1"`) {
+				t.Errorf("handshake does not declare observe.v1: %q", r.stdout)
+			}
+		})
 	}
 }
 
@@ -128,7 +127,6 @@ func TestObserveV1HandshakeGated(t *testing.T) {
 // and the start env's identity for a started box (RPP-OBSERVE-003), a
 // truthful inventory, and gone for an object that names no box.
 func TestObserveInventoryKillObjectOps(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, _ := newHarness(t)
 
 	type object struct {
@@ -182,18 +180,12 @@ func TestObserveInventoryKillObjectOps(t *testing.T) {
 }
 
 func TestUnknownAndUnimplementedOps(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "")
 	h, _ := newHarness(t)
-	// The observe.v1 ops are declared only behind the switch: with it off
-	// they are as unknown as any op this dispatcher does not have.
 	for _, args := range [][]string{
 		{"nosuchop", dog},
 		{"exec", dog},
 		{"provision", dog},
 		{"watch-startup", dog},
-		{"observe", dog},
-		{"inventory"},
-		{"kill-object", dog},
 		{},
 	} {
 		r := h.run("echo hi", args...)
@@ -355,7 +347,6 @@ func TestPeekNoScreenWhenRexUnavailable(t *testing.T) {
 // the profile: v2 runs peek whatever is-running says, so a box whose program
 // exited still answers its screen with exit 0.
 func TestObserveV1PeekReadsADeadBox(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, fake := newHarness(t)
 	h.start(dog)
 	block := rex.BlockID("block:dog-1")
@@ -371,7 +362,6 @@ func TestObserveV1PeekReadsADeadBox(t *testing.T) {
 // empty success" for a dead box: a capture that wrote nothing is a plain
 // non-zero failure, not exit 0 with an empty screen and not exit 66.
 func TestObserveV1PeekDeadBoxEmptyCaptureIsAFailure(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, fake := newHarness(t)
 	h.start(dog)
 	block := rex.BlockID("block:dog-1")
@@ -384,7 +374,6 @@ func TestObserveV1PeekDeadBoxEmptyCaptureIsAFailure(t *testing.T) {
 // clause: a box that has rendered nothing yet answers exit 0, not 66 and not a
 // failure.
 func TestObserveV1PeekRunningBlankScreenSucceeds(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, fake := newHarness(t)
 	h.start(dog)
 	fake.Formats = map[rex.BlockID]string{"block:dog-1": ""}
@@ -396,7 +385,6 @@ func TestObserveV1PeekRunningBlankScreenSucceeds(t *testing.T) {
 // TestObserveV1PeekNoScreenAfterStop covers the conformance probe's last step:
 // a stopped name must answer exit 66, never an empty success.
 func TestObserveV1PeekNoScreenAfterStop(t *testing.T) {
-	t.Setenv("GCREX_OBSERVE_V1", "1")
 	h, _ := newHarness(t)
 	h.start(dog)
 	h.must("", "stop", dog)
@@ -1216,5 +1204,15 @@ func TestNudgeUnconfirmedExitsZeroWithOutcome(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no *-nudge-unconfirmed.json under %s, want the diagnostic kept", base)
+	}
+}
+
+// TestProcessNamesSplitsOnLines proves observe's stdin reader keeps a name that
+// contains spaces, which the exact-match snapshot matcher needs.
+func TestProcessNamesSplitsOnLines(t *testing.T) {
+	got := processNames([]byte("my agent\nclaude\n\n  \ncodex \n"))
+	want := []string{"my agent", "claude", "codex"}
+	if !slices.Equal(got, want) {
+		t.Errorf("processNames = %q, want %q", got, want)
 	}
 }

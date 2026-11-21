@@ -310,6 +310,39 @@ func TestPeekDeadBoxEmptyCaptureIsAFailure(t *testing.T) {
 	}
 }
 
+// TestPeekEmptyCaptureAfterExitIsAFailure proves the empty-capture check reads
+// the process state again after the capture: a program that exits between
+// BlockProcess and BlockFormat leaves a stale running state behind, and its
+// blank capture must not pass as a running blank screen.
+func TestPeekEmptyCaptureAfterExitIsAFailure(t *testing.T) {
+	fake := faketest.New()
+	p := provider.New("acme", fake)
+	name := "Indigo--dog-1"
+	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	exited := false
+	fake.FormatFunc = func(rex.BlockID) string {
+		// The program exits while the capture renders.
+		exited = true
+		return ""
+	}
+	fake.ProcessFunc = func(rex.BlockID) rex.ProcessInfo {
+		if exited {
+			return rex.ProcessInfo{LastExit: &rex.ExitStatus{}}
+		}
+		return rex.ProcessInfo{}
+	}
+
+	out, err := p.Peek(context.Background(), name)
+	if err == nil {
+		t.Fatalf("Peek = %q, want a failure for a box that died during the capture", out)
+	}
+	if errors.Is(err, provider.ErrNoScreen) {
+		t.Errorf("Peek err = %v, want an unreadable-capture failure, not ErrNoScreen", err)
+	}
+}
+
 // TestPeekRunningBlankScreenSucceeds proves a running box that has rendered
 // nothing yet is an empty screen, not a failure: RPP-OBSERVE-016 reads a
 // running box's peek as a success.
