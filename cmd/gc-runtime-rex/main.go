@@ -168,6 +168,7 @@ type startConfig struct {
 type opSpec struct {
 	required int
 	usage    string
+	method   string // provider method the handler invokes; "" when it calls none
 	handle   func(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, stdout io.Writer) error
 }
 
@@ -188,27 +189,27 @@ var keyedOps = map[string]bool{
 }
 
 var ops = map[string]opSpec{
-	"start":             {1, "start <name>", opStart},
-	"stop":              {1, "stop <name>", opStop},
-	"attach":            {1, "attach <name>", opAttach},
-	"is-running":        {1, "is-running <name>", opIsRunning},
-	"interrupt":         {1, "interrupt <name>", opInterrupt},
-	"nudge":             {1, "nudge <name>", opNudge},
-	"send-keys":         {1, "send-keys <name> [keys...]", opSendKeys},
-	"clear-scrollback":  {1, "clear-scrollback <name>", opClearScrollback},
-	"process-alive":     {1, "process-alive <name>", opProcessAlive},
-	"peek":              {1, "peek <name> [lines]", opPeek},
-	"list-running":      {0, "list-running [prefix]", opListRunning},
-	"get-last-activity": {1, "get-last-activity <name>", opGetLastActivity},
-	"idle":              {1, "idle <name>", opIdle},
-	"program-status":    {1, "program-status <name>", opProgramStatus},
-	"is-attached":       {1, "is-attached <name>", opIsAttached},
-	"set-meta":          {2, "set-meta <name> <key>", opSetMeta},
-	"get-meta":          {2, "get-meta <name> <key>", opGetMeta},
-	"remove-meta":       {2, "remove-meta <name> <key>", opRemoveMeta},
-	"observe":           {1, "observe <name>", opObserve},
-	"inventory":         {0, "inventory", opInventory},
-	"kill-object":       {1, "kill-object <name>", opKillObject},
+	"start":             {1, "start <name>", "StartNew", opStart},
+	"stop":              {1, "stop <name>", "Stop", opStop},
+	"attach":            {1, "attach <name>", "", opAttach},
+	"is-running":        {1, "is-running <name>", "IsRunning", opIsRunning},
+	"interrupt":         {1, "interrupt <name>", "Interrupt", opInterrupt},
+	"nudge":             {1, "nudge <name>", "Nudge", opNudge},
+	"send-keys":         {1, "send-keys <name> [keys...]", "SendKeys", opSendKeys},
+	"clear-scrollback":  {1, "clear-scrollback <name>", "ClearScrollback", opClearScrollback},
+	"process-alive":     {1, "process-alive <name>", "ProcessAlive", opProcessAlive},
+	"peek":              {1, "peek <name> [lines]", "PeekLines", opPeek},
+	"list-running":      {0, "list-running [prefix]", "ListRunning", opListRunning},
+	"get-last-activity": {1, "get-last-activity <name>", "GetLastActivity", opGetLastActivity},
+	"idle":              {1, "idle <name>", "IdleSnapshot", opIdle},
+	"program-status":    {1, "program-status <name>", "ProgramStatus", opProgramStatus},
+	"is-attached":       {1, "is-attached <name>", "IsAttached", opIsAttached},
+	"set-meta":          {2, "set-meta <name> <key>", "SetMeta", opSetMeta},
+	"get-meta":          {2, "get-meta <name> <key>", "GetMeta", opGetMeta},
+	"remove-meta":       {2, "remove-meta <name> <key>", "RemoveMeta", opRemoveMeta},
+	"observe":           {1, "observe <name>", "Observe", opObserve},
+	"inventory":         {0, "inventory", "Inventory", opInventory},
+	"kill-object":       {1, "kill-object <name>", "KillObject", opKillObject},
 }
 
 // inputOutcomeOps are the four driving ops whose failures are typed by
@@ -266,8 +267,20 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: missing argument; usage: gc-runtime-rex %s\n", op, spec.usage)
 		return exitFail
 	}
-	if keyedOps[op] && rest[1] == "" {
+	// The trace spans the single handler call: the one choke point every
+	// eligible op passes through. protocol, version and unknown ops returned
+	// above and write no line (REQ-003).
+	t := newTracer(provider.CityFromEnv(), stderr)
+	line := traceLine{Op: op, Method: spec.method}
+	if line.Method == "" {
+		line.Method = op
+	}
+	line.Session, line.Agent = traceSession(spec, rest)
+
+	if keyedOps[op] && len(rest) > 1 && rest[1] == "" {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: metadata key must not be empty\n", op)
+		line.Outcome, line.ExitCode = "error", exitFail
+		t.record(stderr, line)
 		return exitFail
 	}
 
@@ -275,38 +288,56 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 	city, ns, err := provider.NamespaceForCaller()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
+		line.Outcome, line.ExitCode = "error", exitFail
+		t.record(stderr, line)
 		return exitFail
 	}
 	opts := append([]provider.Option{provider.WithNamespace(ns), provider.WithWarnings(stderr)}, d.providerOptions...)
 	prov := provider.New(city, d.newClient(), opts...)
 
 	var out bytes.Buffer
-	if err := spec.handle(ctx, prov, rest, stdin, &out); err != nil {
-		var rejected *provider.KeyRejectedError
-		if errors.As(err, &rejected) {
-			return writeInputOutcome(stdout, stderr, "rejected", rejected.Error())
-		}
-		var outcome *provider.InputOutcomeError
-		if errors.As(err, &outcome) {
-			return writeInputOutcome(stdout, stderr, outcome.Outcome, outcome.Detail)
-		}
-		// A driving op's missing or dead pane is RPP's typed `gone`.
-		if inputOutcomeOps[op] && errors.Is(err, provider.ErrSessionNotFound) {
-			return writeInputOutcome(stdout, stderr, "gone", err.Error())
-		}
-		var coded *exitError
-		if errors.As(err, &coded) {
-			fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, coded.err)
-			return coded.code
-		}
-		fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, err)
-		return exitFail
+	start := time.Now()
+	err = spec.handle(ctx, prov, rest, stdin, &out)
+	line.DurationUS = time.Since(start).Microseconds()
+	if err != nil {
+		code := handlerExitCode(op, err, stdout, stderr)
+		line.Outcome, line.ExitCode = "error", code
+		t.record(stderr, line)
+		return code
 	}
 	if _, err := stdout.Write(out.Bytes()); err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: write output: %v\n", op, err)
+		line.Outcome, line.ExitCode = "error", exitFail
+		t.record(stderr, line)
 		return exitFail
 	}
+	line.Outcome = "ok"
+	t.record(stderr, line)
 	return exitOK
+}
+
+// handlerExitCode maps a handler error to the process exit code and reports
+// it on stderr, so tracing can record the same code the process returns.
+func handlerExitCode(op string, err error, stdout, stderr io.Writer) int {
+	var rejected *provider.KeyRejectedError
+	if errors.As(err, &rejected) {
+		return writeInputOutcome(stdout, stderr, "rejected", rejected.Error())
+	}
+	var outcome *provider.InputOutcomeError
+	if errors.As(err, &outcome) {
+		return writeInputOutcome(stdout, stderr, outcome.Outcome, outcome.Detail)
+	}
+	// A driving op's missing or dead pane is RPP's typed `gone`.
+	if inputOutcomeOps[op] && errors.Is(err, provider.ErrSessionNotFound) {
+		return writeInputOutcome(stdout, stderr, "gone", err.Error())
+	}
+	var coded *exitError
+	if errors.As(err, &coded) {
+		fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, coded.err)
+		return coded.code
+	}
+	fmt.Fprintf(stderr, "gc-runtime-rex: %s: %v\n", op, err)
+	return exitFail
 }
 
 // exitError carries a non-default RPP exit code for an op failure. It is how a

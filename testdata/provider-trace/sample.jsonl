@@ -1,0 +1,8 @@
+{"ts":"2026-11-22T10:00:00.000000000Z","op":"start","method":"StartNew","duration_us":1200,"outcome":"ok","exit_code":0,"city":"my-city","session":"web","agent":"web","v":1}
+{"ts":"2026-11-22T10:00:01.000000000Z","op":"peek","method":"PeekLines","duration_us":300,"outcome":"ok","exit_code":0,"city":"my-city","session":"web","agent":"web","v":1}
+{"ts":"2026-11-22T10:00:02.000000000Z","op":"peek","method":"PeekLines","duration_us":100,"outcome":"ok","exit_code":0,"city":"my-city","session":"web","agent":"web","v":1}
+{"ts":"2026-11-22T10:00:03.000000000Z","op":"peek","method":"PeekLines","duration_us":500,"outcome":"ok","exit_code":0,"city":"my-city","session":"web","agent":"web","v":1}
+{"ts":"2026-11-22T10:00:04.000000000Z","op":"peek","method":"PeekLines","duration_us":200,"outcome":"ok","exit_code":0,"city":"my-city","session":"web","agent":"web","v":1}
+{"ts":"2026-11-22T10:00:05.000000000Z","op":"peek","method":"PeekLines","duration_us":0,"outcome":"error","exit_code":66,"city":"my-city","session":"web","agent":"web","v":1}
+{"ts":"2026-11-22T10:00:06.000000000Z","op":"list-running","method":"ListRunning","duration_us":50,"outcome":"ok","exit_code":0,"city":"my-city","v":1}
+{"ts":"2026-11-22T10:00:07.000000000Z","op":"nudge","method":"Nudge","duration_us":10,"outcome":"ok","exit_code":0,"city":"other-city","session":"web","agent":"web","v":1}
