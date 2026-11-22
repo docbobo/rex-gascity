@@ -25,6 +25,50 @@ var (
 	ErrFail = errors.New("server failure")
 )
 
+// Methods is every api method the fake answers. fakebinary gates `api call`
+// and `api describe` on it, and TestMethodTableMatchesContract compares it
+// with docs/REX-CONTRACT.md section 3.
+var Methods = []string{
+	"server.version",
+	"session.create", "session.destroy", "session.list",
+	"session.list_clients", "session.view",
+	"session.new_window", "session.new_split",
+	"session.focus_block", "session.focus_window",
+	"session.set_block_label", "session.set_window_label", "session.set_label",
+	"block.close", "block.event", "block.method",
+	"target.resolve", "target.complete",
+}
+
+// BlockMethods is every block.method sub-method the fake answers. fakebinary
+// gates block calls on it, and the drift guard compares it with
+// docs/REX-CONTRACT.md section 4.
+var BlockMethods = []string{
+	"process", "format", "blob_read", "write", "clear", "reset",
+	"program_status", "input_mode", "size", "title", "pwd",
+}
+
+// Fault kinds a test can queue per method call.
+const (
+	// FaultError makes the call fail server-side (exit 1) before it runs.
+	FaultError = "error"
+	// FaultUnreachable makes the CLI report no server (exit 4).
+	FaultUnreachable = "unreachable"
+	// FaultLostReply runs the call, then drops the reply (exit 1).
+	FaultLostReply = "lost_reply"
+	// FaultDelay stalls the call before it runs, so a context can cancel it.
+	FaultDelay = "delay"
+	// FaultGarbled runs the call, then writes invalid JSON as the reply.
+	FaultGarbled = "garbled"
+)
+
+// Fault is one scripted misbehaviour for a method call. Count is how many more
+// calls it applies to; 0 or 1 means the next call only.
+type Fault struct {
+	Method string `json:"method"`
+	Kind   string `json:"kind"`
+	Count  int    `json:"count,omitempty"`
+}
+
 // State is the whole fake server.
 type State struct {
 	Revision int64      `json:"revision"`
@@ -133,9 +177,23 @@ func save(dir string, st *State) error {
 	return os.Rename(tmp, filepath.Join(dir, "state.json"))
 }
 
-// Update locks dir, loads the state, runs fn and saves the result. The lock is
-// an exclusive flock on state.lock, so concurrent invocations serialize.
+// Update locks dir, loads the state, runs fn and saves the result.
 func Update(dir string, fn func(*State) error) error {
+	return lock(dir, func() error {
+		st, err := Load(dir)
+		if err != nil {
+			return err
+		}
+		if err := fn(st); err != nil {
+			return err
+		}
+		return save(dir, st)
+	})
+}
+
+// lock runs fn under dir's exclusive flock, so concurrent invocations
+// serialize. State and fault writes share it.
+func lock(dir string, fn func() error) error {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%w: no state dir at %s", ErrNotFound, dir)
 	}
@@ -154,15 +212,80 @@ func Update(dir string, fn func(*State) error) error {
 		return err
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	return fn()
+}
 
-	st, err := Load(dir)
+// AddFaults appends faults to dir's queue. The fake binary consumes them one
+// method call at a time.
+func AddFaults(dir string, faults ...Fault) error {
+	if len(faults) == 0 {
+		return nil
+	}
+	return lock(dir, func() error {
+		cur, err := loadFaults(dir)
+		if err != nil {
+			return err
+		}
+		return saveFaults(dir, append(cur, faults...))
+	})
+}
+
+// TakeFault removes and returns the next queued fault for method, or nil when
+// none is queued. A fault with Count > 1 stays queued with a lower count.
+func TakeFault(dir, method string) (*Fault, error) {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		// No state dir is an unreachable server (exit 4). The method body
+		// reports that, so this must not turn into a not-found lookup miss.
+		return nil, nil
+	}
+	var taken *Fault
+	err := lock(dir, func() error {
+		faults, err := loadFaults(dir)
+		if err != nil {
+			return err
+		}
+		for i, f := range faults {
+			if f.Method != method {
+				continue
+			}
+			taken = &f
+			if f.Count > 1 {
+				faults[i].Count--
+			} else {
+				faults = append(faults[:i], faults[i+1:]...)
+			}
+			return saveFaults(dir, faults)
+		}
+		return nil
+	})
+	return taken, err
+}
+
+func loadFaults(dir string) ([]Fault, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "faults.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var faults []Fault
+	if err := json.Unmarshal(data, &faults); err != nil {
+		return nil, fmt.Errorf("decode faults: %w", err)
+	}
+	return faults, nil
+}
+
+func saveFaults(dir string, faults []Fault) error {
+	data, err := json.Marshal(faults)
 	if err != nil {
 		return err
 	}
-	if err := fn(st); err != nil {
+	tmp := filepath.Join(dir, "faults.json.tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return save(dir, st)
+	return os.Rename(tmp, filepath.Join(dir, "faults.json"))
 }
 
 // Read loads the state under the shared lock. It is Update's read-only twin.
