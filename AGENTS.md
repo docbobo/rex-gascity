@@ -142,3 +142,50 @@ staticcheck, unused) and the exclusion policy. Run the whole repo by hand with:
 ```sh
 golangci-lint run ./...
 ```
+
+## Build workflows
+
+Pick the entrypoint from the artifact that already exists. Do not rerun an
+approved upstream stage. A continuation entrypoint starts at its own stage and
+hands off downstream.
+
+- Idea only: `build-basic`, or `superpowers-build` for the Superpowers skills.
+- Requirements written: `build-from-requirements`.
+- Requirements approved: `build-from-plan`.
+- Plan approved: `build-from-decompose`.
+- Implementation convoy ready: `build-from-convoy`, or `implement` for a
+  convoy-only drain.
+- Implementation evidence ready: `build-from-review`.
+- One bead: plain `gc sling`. A convoy of beads: `implement`.
+- GitHub issue: `github-issue-fix`. Diff or PR: `review` or
+  `github-pr-review`.
+
+Launch only cataloged formulas. The `*-base`, `*-item`, `planning-base`,
+`decomposition-base`, `fix-convoy`, and `superpowers-implementation` entries
+are internal contracts. A parent formula selects them.
+
+### Always publish
+
+Every finished task ends with a pushed branch and an open PR. A local commit or
+worktree does not count as delivery.
+
+Build launches always pass:
+
+    --var push=true --var open_pr=true
+
+Plain `gc sling` work has no publish stage. The worker pushes its branch and
+opens the PR before closing the bead. Record the PR URL in the bead.
+
+If the push or PR fails, do not close the bead. Record the failure in the bead
+and report it blocked.
+
+### Superpowers needs a human gate
+
+Boris approves the design and the written spec. Every `superpowers-build`
+launch passes this variable:
+
+    --var brainstorming_approval_mode=interactive
+
+Leave `interaction_mode` at its `interactive` default. Do not lower it to
+`autonomous` or `headless` for a Superpowers run. If a run cannot reach Boris,
+stop at the gate and report blocked under "Asking for a decision" above.
