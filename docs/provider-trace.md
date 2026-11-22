@@ -69,6 +69,14 @@ the cap can both append and push the file past 128 MiB by at most one line
 each. A destination that is not a regular file (a pipe, a directory) is
 rejected up front with one warning. The op then runs untraced.
 
+The unbounded overshoot is accepted on purpose, not tested. A strict test
+would interleave two writers between the size check and the append. The two
+calls are synchronous here, so a Go test cannot observe that window without a
+dependency-injected stat hook. The requirements do not ask for that hook, so
+the overshoot stays a design property. The tested behavior is narrower: a line
+that fits under the cap is appended (`TestTraceNearCapFitsStillAppends`), and
+a line that does not fit is skipped (`TestTraceCapSkipsLine`).
+
 ## Read the stats
 
 ```sh
