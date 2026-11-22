@@ -360,4 +360,15 @@ wait "$p2" || fail "concurrent call 2 failed"
 [ "$("$binpath" protocol)" = "$handshake" ] \
   || fail "cached binary after concurrent install is not a complete executable"
 
+# Command wiring (REQ-002/REQ-015): the pack must point gc at the committed
+# shim by a pack-relative path. A separator is what makes gc resolve it against
+# the pack dir instead of PATH, so assert the exact value and the separator.
+cmd=$(awk -F'"' '
+  /^[[:space:]]*\[runtimes[^]]*rex[^]]*\][[:space:]]*$/ { s=1; next }
+  /^[[:space:]]*\[/ { s=0 }
+  s && /^[[:space:]]*command[[:space:]]*=/ { print $2; exit }
+' "$repo/pack/pack.toml")
+[ "$cmd" = "bin/gc-runtime-rex" ] || fail "pack.toml command is '$cmd', expected bin/gc-runtime-rex"
+case "$cmd" in */*) : ;; *) fail "command must contain a separator for pack-relative resolution" ;; esac
+
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases
