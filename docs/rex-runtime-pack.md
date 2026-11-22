@@ -130,8 +130,11 @@ The shim caches the release binary at
 and execs it on a hit with no network I/O.
 
 There is no cache eviction in v1. Stale `<version>/<os>-<arch>` directories
-stay in place after an upgrade. Remove them by hand, or set
-`GC_RUNTIME_CACHE_DIR` to a fresh root to reclaim the space.
+stay in place after an upgrade. Remove them by hand.
+
+Changing `GC_RUNTIME_CACHE_DIR` to a fresh root only redirects new lookups and
+installs. It does not remove the old directories. Delete them from the old
+root to reclaim that space.
 
 Only the provider binary is PATH-independent. The `rex` CLI still needs
 `PATH` or `GC_REX_BIN`.

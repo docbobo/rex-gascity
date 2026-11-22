@@ -12,9 +12,9 @@ Nothing in gc installs a pack's runtime provider binary for the city. gc
 `docs/reference/specs/pack-spec.md`. Pack scripts are doctor checks and
 commands. `gc import install` and `gc pack unpack` only write files into the
 pack root and compose. gc anchors a pack-declared runtime `command` at the
-pack directory when it holds a path separator. A bare name is resolved through
-`exec.LookPath` (`internal/config/pack_runtimes.go:83-96`,
-`internal/runtime/exec/exec.go:92-94`).
+pack directory when it holds a path separator (`internal/config/pack_runtimes.go:94-102`).
+A bare name stays as-is and is resolved through `exec.LookPath`
+(`internal/runtime/exec/exec.go:50-53,83`).
 
 This pack points `[runtimes.rex] command` at the shipped shim
 `bin/gc-runtime-rex`, so the provider needs no PATH entry. Before the shim
@@ -50,14 +50,25 @@ installed, run `--fix` or start a session" and downloads nothing. The `--fix`
 above warms the cache now, off the session path.
 
 `gc import install` only materializes the pack. gc does not run the pack
-install step by itself. `gc doctor --fix` runs it. An operator who prefers
-to run it by hand does so from the repository root:
+install step by itself. `gc doctor --fix` runs it into the version-keyed
+cache that the shim reads. That is the path that makes a first session fast,
+and the one the operator flow above uses.
+
+A hand-run `sh pack/install.sh` is a different, optional path. From the
+repository root:
 
 ```sh
 sh pack/install.sh
 ```
 
-From the pack directory itself, the same script is `sh ./install.sh`.
+From the pack directory itself, the same script is `sh ./install.sh`. With no
+`GC_RUNTIME_INSTALL_DIR`, it installs onto PATH, not into the shim's cache
+(see [Where the binary goes](#where-the-binary-goes)). It also waits for the
+fetch with no deadline, as it always did.
+
+A later session still installs into the cache, because the shim reads the
+cache and never execs the PATH copy. Use the hand run only to give another
+tool a provider on PATH.
 
 ## What the fix does
 
@@ -126,8 +137,11 @@ the version-keyed cache first.
 The cache root is
 `${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}`. The
 binary lands at `<root>/<version>/<os>-<arch>/gc-runtime-rex`. There is no
-cache eviction in v1. Remove stale version directories by hand, or set
-`GC_RUNTIME_CACHE_DIR` to a fresh root.
+cache eviction in v1. Remove stale version directories by hand.
+
+Changing `GC_RUNTIME_CACHE_DIR` to a fresh root only redirects new lookups and
+installs. It does not remove the old directories. Delete them from the old
+root to reclaim that space.
 
 The `rex` CLI is a prerequisite. The provider drives it for every session
 operation. `GC_REX_BIN` overrides the PATH lookup. This differs from the
@@ -141,14 +155,18 @@ succeeds only when a published release matches `[pack] version`, its assets
 are reachable, and the cache root is writable.
 
 The shim bounds that fetch to keep it under gc's 30 s `protocol` and 120 s
-`start` deadlines. It clamps `GC_RUNTIME_INSTALL_DEADLINE` to an integer in
-[1, 25] seconds, defaulting to 25. A slow or stalled fetch fails with a
-cause-naming message and the `gc doctor --fix` remedy, not an unexplained gc
-timeout.
+`start` deadlines. It reads `GC_RUNTIME_INSTALL_DEADLINE` as an integer in
+[1, 25] seconds and defaults to 25. A non-numeric or out-of-range value falls
+back to 25. A slow or stalled fetch fails with a cause-naming message and the
+`gc doctor --fix` remedy, not an unexplained gc timeout.
 
 `gc doctor --fix` fetches off gc's deadline with a generous 300 s budget. A
-release too slow for the shim's budget still warms. If even that is not
-enough, set `GC_RUNTIME_INSTALL_DEADLINE` and run the fix hook by hand:
+release too slow for the shim's budget still warms. It honors
+`GC_RUNTIME_INSTALL_DEADLINE` too: the fix hook uses that value when the
+environment sets it, and 300 otherwise. gc passes the environment through to
+the hook (`internal/doctor/pack_checks.go:67-79`).
+
+If even 300 s is not enough, set the variable and run the fix hook by hand:
 
 ```sh
 GC_RUNTIME_INSTALL_DEADLINE=600 sh pack/doctor/rex-binary/fix.sh
