@@ -130,8 +130,9 @@ func TestE2ETraceStartAndPeek(t *testing.T) {
 	}
 	lines = readTrace(t, tracePath)
 	last = lines[len(lines)-1]
-	if last.Op != "set-meta" || last.Method != "SetMeta" || last.Outcome != "error" || last.ExitCode == nil || *last.ExitCode != exitFail {
-		t.Errorf("set-meta line: %+v, want set-meta/SetMeta/error/%d", last, exitFail)
+	// A pre-provider failure names the op, not the provider method (REQ-003).
+	if last.Op != "set-meta" || last.Method != "set-meta" || last.Outcome != "error" || last.ExitCode == nil || *last.ExitCode != exitFail {
+		t.Errorf("set-meta line: %+v, want set-meta/set-meta/error/%d", last, exitFail)
 	}
 
 	// Redaction: a planted start-config secret in the environment never
