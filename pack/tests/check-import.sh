@@ -104,6 +104,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 name=${url##*/}
+# Append each request to FAKE_CURL_LOG when set, so the import-is-enough case
+# can assert "no download" and "first start downloads".
+[ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
 dir=${FAKE_RELEASE_DIR:?}
 # Only the tag with a release serves assets. A URL for any other tag is a 404,
 # as on GitHub when the release does not exist. That is what case C asserts.
@@ -135,7 +138,7 @@ base_path="$work/tools"
 # Link each tool into $work/tools instead of adding its directory. A
 # developer's ~/.local/bin holds rex and gc-runtime-rex beside each other, and
 # a directory on PATH would expose that provider to install.sh.
-tools='sh awk sed grep cut mkdir mktemp mv rm cp chmod dirname cat uname shasum sha256sum git'
+tools='sh awk sed grep cut mkdir mktemp mv rm cp chmod dirname cat uname head ps shasum sha256sum git date sleep tr'
 link_tools() {
   for tool in $tools; do
     resolved=$(command -v "$tool" 2>/dev/null) || continue
@@ -160,10 +163,32 @@ chmod 755 "$dev_tools/gc-runtime-rex"
 leaked=$(PATH=$base_path command -v gc-runtime-rex 2>/dev/null || true)
 [ -z "$leaked" ] || fail "case PATH exposes a provider: $leaked"
 
-# The doctor check also requires the rex CLI. Link it when present, so the
-# doctor assertion runs here as well.
-rex_bin=$(command -v rex 2>/dev/null || true)
-[ -n "$rex_bin" ] && ln -sf "$rex_bin" "$work/tools/rex"
+# The fake rex backend reads FAKEREX_STATE. A missing state dir means "no
+# backend", so create it before the first gc run. The dir is shared across cases.
+mkdir -p "$work/rex-state"
+
+# The fake rex backend and its version-answering wrapper provide `rex` on the
+# case PATH; a developer's real rex must not shadow it. The leak regression
+# above still links the developer's rex onto $dev_tools, off the case PATH.
+# Build the in-repo fake under a hidden name so the wrapper can delegate every
+# non-version op to it.
+go build -o "$work/tools/.fakerex" "$repo/internal/rex/fakerex/fakebinary" ||
+  fail "fake rex build failed"
+rexmin=$(tr -d '[:space:]' < "$repo/pack/rex-min-version")
+cat > "$work/tools/rex" <<EOF
+#!/bin/sh
+if [ "\$1" = version ]; then
+  if [ "\$2" = --json ] || [ "\$2" = -j ]; then
+    "$work/tools/.fakerex" version --json | sed 's/^{/{"rex_version":"$rexmin",/'
+  else
+    printf 'rex %s\n' "$rexmin"
+    "$work/tools/.fakerex" version
+  fi
+  exit 0
+fi
+exec "$work/tools/.fakerex" "\$@"
+EOF
+chmod 0755 "$work/tools/rex"
 
 # new_city <name>: a scratch city plus its own HOME and GC_HOME. The provider
 # install destination is $HOME/.local/bin, so each case gets a clean one.
@@ -174,11 +199,16 @@ new_city() {
   printf '[workspace]\nname = "check-import-%s"\n' "$1" > "$city/city.toml"
   case_path="$home/.local/bin:$base_path"
   case_gc_home=$work/gc-home-$1
+  case_cache=
 }
 
 run_gc() {
   env -i HOME="$home" GC_HOME="$case_gc_home" PATH="$case_path" \
-    FAKE_RELEASE_TAG="$version" FAKE_RELEASE_DIR="$work/release" "$gc_bin" "$@"
+    FAKE_RELEASE_TAG="$version" FAKE_RELEASE_DIR="$work/release" \
+    GC_RUNTIME_CACHE_DIR="${case_cache:-$work/cache-default}" \
+    FAKE_CURL_LOG="${FAKE_CURL_LOG:-}" \
+    FAKEREX_STATE="$work/rex-state" \
+    "$gc_bin" "$@"
 }
 
 # cached_pack: the pack root gc materialized for this city. The source is the
@@ -206,6 +236,22 @@ assert_provider_version() {
   [ -x "$target" ] || fail "$1: install.sh did not write $target"
   "$target" version | grep -q "\"version\":\"$version\"" ||
     fail "$1: installed provider does not report version $version: $("$target" version)"
+}
+
+# uname_platform: map uname -s/-m the way bin/_lib.sh does, so the cache path
+# this check asserts is the one the shim uses.
+uname_platform() {
+  case "$(uname -s)" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    *) fail "unsupported operating system: $(uname -s)" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) fail "unsupported machine: $(uname -m)" ;;
+  esac
+  printf '%s-%s' "$os" "$arch"
 }
 
 lock_has() {
@@ -267,24 +313,53 @@ grep -q "v$unreleased" "$home/install.out" ||
 [ ! -e "$home/.local/bin/gc-runtime-rex" ] ||
   fail "case C: install.sh wrote a provider for an unreleased commit"
 
-# --- doctor, when the rex CLI is available -----------------------------------
+# --- case D: import is enough ------------------------------------------------
 
-if [ -z "$rex_bin" ]; then
-  echo "check-import: skip doctor assertion: rex CLI is not on PATH"
-  echo "check-import: ok"
-  exit 0
-fi
-
-new_city doctor
+new_city coldcache
+case_cache=$work/cache-coldcache
+coldcache=$case_cache
 run_gc import add "$source_url" --name rex --version "$version" \
-  --city "$work/city-doctor" >/dev/null ||
-  fail "doctor: gc import add failed"
-run_gc import install --city "$work/city-doctor" >/dev/null ||
-  fail "doctor: gc import install failed"
-run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-doctor" --fix >/dev/null 2>&1 ||
-  fail "doctor: gc doctor --fix failed"
-assert_provider_version "doctor"
-run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-doctor" >/dev/null ||
-  fail "doctor: rex-gascity-runtime:rex-binary is not green after --fix"
+  --city "$work/city-coldcache" >/dev/null || fail "coldcache: import add failed"
+run_gc import install --city "$work/city-coldcache" >/dev/null ||
+  fail "coldcache: import install failed"
+
+# Cold cache + no provider on PATH: the doctor reports missing with NO download
+# and NO cache write (read-only cold check).
+rm -rf "$coldcache"
+: > "$work/curl.log"
+FAKE_CURL_LOG=$work/curl.log \
+  run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-coldcache" >/dev/null 2>&1 &&
+  fail "coldcache: cold doctor passed before any install"
+[ -s "$work/curl.log" ] && fail "coldcache: cold doctor downloaded"
+[ -z "$(ls "$coldcache" 2>/dev/null)" ] || fail "coldcache: cold doctor wrote to the cache"
+
+# A real gc-selected start installs through the pack-relative command AND runs
+# the conformance lifecycle against the fake rex backend (start/is-running/stop).
+: > "$work/curl.log"
+FAKE_CURL_LOG=$work/curl.log \
+  run_gc runtime check rex --city "$work/city-coldcache" >/dev/null 2>&1 ||
+  fail "coldcache: gc runtime check rex (real start, fake rex backend) failed"
+[ -s "$work/curl.log" ] || fail "coldcache: first real start made no download"
+[ -x "$coldcache/$version/$(uname_platform)/gc-runtime-rex" ] ||
+  fail "coldcache: start did not warm the cache"
+
+# Warm: the rex-binary doctor check is GREEN with no --fix and no new fetch. The
+# green verdict depends on the `rex` wrapper answering the doctor's rex_version
+# probe at >= the pin; the bare fake would come back "version could not be
+# determined".
+: > "$work/curl.log"
+FAKE_CURL_LOG=$work/curl.log \
+  run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-coldcache" >/dev/null 2>&1 ||
+  fail "coldcache: warm rex-binary doctor check was not green after a real start"
+[ -s "$work/curl.log" ] && fail "coldcache: doctor fetched again after a warm start"
+
+# Separately, --fix warms the SAME cache (not $HOME/.local/bin).
+rm -rf "$coldcache"
+run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-coldcache" --fix >/dev/null 2>&1 ||
+  fail "coldcache: --fix failed to warm the cache"
+[ -x "$coldcache/$version/$(uname_platform)/gc-runtime-rex" ] ||
+  fail "coldcache: --fix did not warm the cache the shim uses"
+[ ! -e "$home/.local/bin/gc-runtime-rex" ] ||
+  fail "coldcache: --fix wrote to \$HOME/.local/bin instead of the cache"
 
 echo "check-import: ok"
