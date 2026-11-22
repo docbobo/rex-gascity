@@ -73,6 +73,7 @@ name=${url##*/}
 FAKE_RELEASE_DIR=${FAKE_RELEASE_DIR:-$(dirname "$0")/../release}
 [ -f "$FAKE_RELEASE_DIR/$name" ] || { printf '%s' 404; exit 22; }
 cp "$FAKE_RELEASE_DIR/$name" "$out" || exit 1
+[ -n "${FAKE_CURL_CHMOD:-}" ] && chmod "$FAKE_CURL_CHMOD" "$out"
 printf '%s' 200
 FAKE
 
@@ -193,6 +194,7 @@ run_install() {
       FAKE_RELEASE_DIR="${FAKE_RELEASE_DIR:-$work/release}" \
       FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" \
       FAKE_CURL_HTTP="${FAKE_CURL_HTTP:-200}" FAKE_CURL_MODE="${FAKE_CURL_MODE:-ok}" \
+      FAKE_CURL_CHMOD="${FAKE_CURL_CHMOD:-}" \
       sh "$installer" "$@" 2>&1
   ); then
     return 0
@@ -394,6 +396,25 @@ printf '%s' "$out" | grep -q "refusing to replace" ||
   fail "guard case: error does not report the conflict: $out"
 cmp -s "$target" "$work/guard-good" || fail "guard case: the working provider was replaced"
 assert_provider "$target" guard
+
+# --- guard: a download arrives without execute permission --------------------
+
+# curl and gh write the asset mode 0644. The guard must make its temporary
+# copy executable before probing it, or a working provider refuses every
+# valid install and upgrade.
+home=$work/home-download-mode
+reset_logs
+FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$nogh_path" ||
+  fail "download-mode case: first install failed: $out"
+target=$home/.local/bin/gc-runtime-rex
+before=$(ls -i "$target" | awk '{print $1}')
+reset_logs
+FAKE_CURL_CHMOD=0644 FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$nogh_path" ||
+  fail "download-mode case: a non-executable download blocked a valid reinstall: $out"
+printf '%s' "$out" | grep -q "already installed" ||
+  fail "download-mode case: reinstall did not report success: $out"
+after=$(ls -i "$target" | awk '{print $1}')
+[ "$before" = "$after" ] || fail "download-mode case: reinstall replaced the binary"
 
 # --- repair: a matching but non-executable binary ---------------------------
 
