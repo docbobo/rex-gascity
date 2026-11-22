@@ -91,7 +91,11 @@ func (t *tracer) record(stderr io.Writer, l traceLine) {
 	if t == nil {
 		return
 	}
-	l.TS = time.Now().UTC().Format(time.RFC3339Nano)
+	// ts is the call start, set by the caller before the handler runs. Keep
+	// it when present; fall back to now for a direct record call (REQ-004).
+	if l.TS == "" {
+		l.TS = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	l.City = t.city
 	l.V = traceVersion
 	data, err := json.Marshal(l)

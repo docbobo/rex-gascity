@@ -271,7 +271,7 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 	// eligible op passes through. protocol, version and unknown ops returned
 	// above and write no line (REQ-003).
 	t := newTracer(provider.CityFromEnv(), stderr)
-	line := traceLine{Op: op, Method: spec.method}
+	line := traceLine{TS: time.Now().UTC().Format(time.RFC3339Nano), Op: op, Method: spec.method}
 	if line.Method == "" {
 		line.Method = op
 	}

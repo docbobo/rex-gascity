@@ -116,3 +116,30 @@ func TestTraceSessionOmission(t *testing.T) {
 		})
 	}
 }
+
+// TestTraceRecordKeepsStartTS proves REQ-004: ts is the start of the call, so a
+// caller-provided TS must survive record instead of being overwritten at append
+// time.
+func TestTraceRecordKeepsStartTS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.jsonl")
+	t.Setenv("GC_REX_TRACE", path)
+	var stderr bytes.Buffer
+	tr := newTracer("c", &stderr)
+	if tr == nil {
+		t.Fatalf("newTracer: nil; stderr %q", stderr.String())
+	}
+	const ts = "2026-11-22T12:00:00.123456789Z"
+	tr.record(&stderr, traceLine{TS: ts, Op: "peek", Method: "PeekLines", Outcome: "ok"})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var got traceLine
+	if err := json.Unmarshal(bytes.TrimSpace(data), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.TS != ts {
+		t.Errorf("ts = %q, want the caller-provided start %q", got.TS, ts)
+	}
+}
