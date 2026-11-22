@@ -5,10 +5,12 @@
 # The docs are the input, not the fixture: the fences are extracted and run in
 # order. A command that cannot run is a docs bug, so this fails on it.
 #
-# The git remote is a local repository with tags v0.2.0 and v0.3.0. The
-# fixture pack sits at the repository root, because gc only parses /tree/ in
-# github.com URLs. fake curl serves the release assets; fake gh fails, so the
-# curl path is the one under test. No network, no Go toolchain.
+# The git remote is a local repository with two tags: the base version from
+# pack/pack.toml, and the next patch version. The second tag proves that an
+# exact pin ignores a newer release. The fixture pack sits at the repository
+# root, because gc only parses /tree/ in github.com URLs. fake curl serves the
+# release assets; fake gh fails, so the curl path is the one under test. No
+# network, no Go toolchain.
 #
 # Usage: sh pack/tests/check-docs.sh
 # Exits non-zero with a one-line reason on the first failed assertion.
@@ -18,6 +20,15 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 readme=$repo/docs/rex-runtime-pack.md
 guide=$repo/docs/rex-binary-install.md
 pack=$repo/pack
+# The docs fences pin the current pack version, so the fixture takes that tag
+# from pack.toml and adds a newer tag too. A version bump must not need an edit
+# here, and the newer tag must not be picked for an exact pin.
+base=$(awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $2; exit}' \
+  "$pack/pack.toml")
+[ -n "$base" ] || fail "pack/pack.toml declares no [pack] version"
+last=${base##*.}
+last=${last#"${last%%[!0]*}"}
+next=${base%.*}.$(( ${last:-0} + 1 ))
 pack_url=https://github.com/docbobo/rex-gascity/tree/main/pack
 
 fail() {
@@ -137,7 +148,7 @@ release() { # release <version>
 }
 
 git init -q "$work/tree" || fail "cannot init the fixture repository"
-for version in 0.2.0 0.3.0; do
+for version in "$base" "$next"; do
   release "$version"
 done
 remote=file://$work/tree
@@ -206,8 +217,9 @@ name = "%s"
 
   installed=$city/home/.local/bin/gc-runtime-rex
   [ -x "$installed" ] || fail "$name left no provider in HOME/.local/bin"
-  "$installed" version | grep -q '"version":"0.3.0"' ||
-    fail "$name left a provider that is not the 0.3.0 upgrade"
+  # The last fence pins $base exactly, so the newer $next tag must be ignored.
+  "$installed" version | grep -q "\"version\":\"$base\"" ||
+    fail "$name left a provider that is not $base"
 }
 
 run_doc "$readme" readme 4
