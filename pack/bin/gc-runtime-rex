@@ -1,0 +1,123 @@
+#!/bin/sh
+# gc runtime provider entry point for rex. pack.toml sets
+# [runtimes.rex] command = "bin/gc-runtime-rex"; the separator makes gc run
+# this shipped file relative to the pack dir instead of searching PATH. On a
+# cache hit it execs the cached release binary with no network I/O; on a miss
+# it installs the matching release into the version-keyed cache by reusing
+# install.sh, under a self-imposed deadline, then execs it. stdout is the RPP
+# channel and must stay clean, so all install output is redirected to stderr.
+# POSIX sh.
+set -eu
+
+me=gc-runtime-rex
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+pack_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+pack_toml=$pack_dir/pack.toml
+. "$script_dir/_lib.sh"
+
+# [pack] version — same awk extractor as install.sh:37-43 (kept inline; Q3).
+version=$(
+  awk -F'"' '
+    /^[[:space:]]*\[pack\][[:space:]]*$/ { in_pack = 1; next }
+    /^[[:space:]]*\[/ { in_pack = 0 }
+    in_pack && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
+  ' "$pack_toml" 2>/dev/null || true
+)
+[ -n "$version" ] || { echo "$me: $pack_toml declares no [pack] version" >&2; exit 1; }
+
+# Platform + cache path. REQ-007 wants a failed first use to LEAD with the shim's
+# own identifying line, THEN the underlying cause. _lib.sh prints the rejected
+# OS/arch to stderr, so capture it (2>&1; on failure gc_runtime_bin_dir writes
+# nothing to stdout, so the capture holds only the cause) and emit the $me prefix
+# BEFORE re-printing it. stdout is untouched.
+if plat_out=$(gc_runtime_bin_dir "$version" 2>&1); then
+  bin_dir=$plat_out
+else
+  echo "$me: no release asset resolves for this platform (pack version $version)." >&2
+  [ -n "$plat_out" ] && echo "$me: $plat_out" >&2   # the _lib.sh cause, AFTER the prefix
+  exit 1
+fi
+binary=$bin_dir/gc-runtime-rex
+
+# Cache hit: exec immediately, no network, no stdout noise. Require a regular
+# file: a searchable directory also passes -x, and neither exec nor gc doctor's
+# fix can repair that state.
+if [ -f "$binary" ] && [ -x "$binary" ]; then
+  exec "$binary" "$@"
+fi
+
+# Cache miss: install into the cache dir under a self-imposed deadline, kept
+# below gc's 30 s protocol handshake budget, so a stalled fetch surfaces a
+# cause-naming message here instead of an unexplained gc timeout. gc's deadline
+# is not changed.
+#
+# Budget: clamp GC_RUNTIME_INSTALL_DEADLINE to an integer in [1, 25]. A
+# non-numeric or over-budget value cannot push the first-use wait past gc's 30 s
+# protocol budget — the cap is validated, not trusted. Strip leading zeros
+# first: install.sh does shell arithmetic on this value, which reads "08" as an
+# octal prefix and aborts before any fetch.
+deadline=${GC_RUNTIME_INSTALL_DEADLINE:-25}
+case $deadline in
+  ''|*[!0-9]*) deadline=25 ;;
+esac
+while :; do
+  case $deadline in
+    0?*) deadline=${deadline#0} ;;
+    *) break ;;
+  esac
+done
+[ "$deadline" -ge 1 ] && [ "$deadline" -le 25 ] || deadline=25
+
+# REQ-018: the shim promises a BOUNDED first use. install.sh deliberately
+# degrades to an unbounded foreground fetch when it has no sleep for its
+# watchdog (a direct-installer fallback). A cold shim install may not take that
+# path: with no timer the bound cannot be met, so refuse before fetching and
+# name the cause and the out-of-band remedy. A warm hit above needs no timer.
+if ! command -v sleep >/dev/null 2>&1; then
+  echo "$me: cannot bound this first-use install of the rex runtime provider v$version: 'sleep' is not on PATH, so a slow fetch could outlive gc's start/protocol deadline." >&2
+  echo "$me: warm the cache out of band with 'gc doctor --fix' (a larger budget, off gc's deadline), then retry; or add 'sleep' to PATH." >&2
+  exit 1
+fi
+
+# install.sh bounds its OWN network fetches: it runs each curl/gh fetch as a
+# direct background child and reaps that child by PID on a per-fetch budget (see
+# install.sh's run_bounded). A direct child's PID is signalable with no job
+# control, no controlling terminal, and no new dependency — unlike a
+# process-group kill (set -m), which a non-interactive dash turns OFF ("can't
+# access tty; job control turned off"), leaving the install in the parent group
+# so "kill -TERM -$inst" never reaches a stalled curl, which then outlives the
+# budget. So the shim runs install.sh in the FOREGROUND under POSIX sh and relies
+# on NO job control: the installer cannot run away because its unbounded steps
+# are bounded too: the fetch by install.sh's run_bounded watchdog, and the
+# 'inventory' guard probe by the same budget. install.sh's local work
+# (awk/cp/chmod/mv) is bounded by nature. GC_RUNTIME_INSTALL_DEADLINE is the
+# installer's whole-fetch budget; its stdout is folded to stderr so the RPP channel stays pristine, and
+# it stages to a .$$ temp removed on any exit (install.sh EXIT trap) and
+# mv-renames atomically (install.sh:186-196), so a half-written binary is never
+# exec'd. The sleep precondition above guarantees the watchdog can run.
+#
+# REQ-007: a failed first use must LEAD with the shim's own identifying line, not
+# the installer's raw output. install.sh writes its diagnostics to stderr, so emit
+# a $me prefix line FIRST (announcing the cold install), and only then run the
+# installer — whose output follows the prefix, with the shim's failure/remedy
+# lines after it. stdout is never touched.
+echo "$me: rex runtime provider v$version not cached; installing into $bin_dir (first use)..." >&2
+if GC_RUNTIME_INSTALL_DIR=$bin_dir GC_RUNTIME_INSTALL_DEADLINE=$deadline \
+    sh "$pack_dir/install.sh" 1>&2; then rc=0; else rc=$?; fi
+
+if [ "$rc" -ne 0 ]; then
+  # install.sh exits 124 when it reaped a stalled fetch at the budget; surface
+  # that as the deadline case with the out-of-band --fix remedy.
+  if [ "$rc" -eq 124 ]; then
+    echo "$me: installing the rex runtime provider v$version exceeded the ${deadline}s first-use budget (slow or stalled fetch)." >&2
+    echo "$me: warm the cache out of band with 'gc doctor --fix' (a larger budget, off gc's start/protocol deadline), then retry; for a very slow link run 'GC_RUNTIME_INSTALL_DEADLINE=<secs> sh pack/doctor/rex-binary/fix.sh', which warms this exact cache dir." >&2
+  else
+    echo "$me: could not install the rex runtime provider v$version for the cache at $bin_dir." >&2
+    echo "$me: the install error is above (offline, private repo, unknown platform, or checksum mismatch)." >&2
+    echo "$me: if this was a slow first fetch, warm the cache with 'gc doctor --fix' and retry." >&2
+  fi
+  exit 1
+fi
+[ -f "$binary" ] && [ -x "$binary" ] || { echo "$me: install reported success but $binary is missing, not a regular file, or not executable" >&2; exit 1; }
+
+exec "$binary" "$@"

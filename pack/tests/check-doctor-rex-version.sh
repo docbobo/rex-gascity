@@ -1,9 +1,10 @@
 #!/bin/sh
 # Proves the rex-binary doctor check fails when the installed rex CLI is older
 # than the pack/rex-min-version pin, and passes when it is equal or newer. The
-# pack doctor script also checks the provider binary, so the test puts a fake
-# gc-runtime-rex on PATH that reports the pack's declared version. Only the rex
-# CLI version varies between cases.
+# pack doctor script also checks the provider binary, so the test warms the
+# version-keyed cache the shim and doctor share with a fake gc-runtime-rex that
+# reports the pack's declared version. Only the rex CLI version varies between
+# cases.
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -48,6 +49,17 @@ esac
 EOF
 chmod +x "$tmp/gc-runtime-rex" "$tmp/rex"
 
+# The doctor probes the CACHED binary (the pack shim's cache), not PATH. Place
+# the fake provider at the version-keyed cache path the shim/doctor compute.
+plat=$(
+  . "$pack_dir/bin/_lib.sh"
+  gc_runtime_platform
+) || { echo "check-doctor-rex-version: cannot resolve the host platform" >&2; exit 1; }
+cache=$tmp/cache
+bindir=$cache/$declared/$plat
+mkdir -p "$bindir"
+cp "$tmp/gc-runtime-rex" "$bindir/gc-runtime-rex"
+
 fail() {
   echo "check-doctor-rex-version: $*" >&2
   exit 1
@@ -55,7 +67,7 @@ fail() {
 
 # run_case VERSION EXPECTED_EXIT: prints the doctor output.
 run_case() {
-  out=$(PATH="$tmp:$PATH" GC_REX_BIN="$tmp/rex" FAKE_REX_VERSION="$1" \
+  out=$(GC_RUNTIME_CACHE_DIR="$cache" GC_REX_BIN="$tmp/rex" FAKE_REX_VERSION="$1" \
     sh "$doctor" 2>&1) && status=0 || status=$?
   [ "$status" -eq "$2" ] || fail "rex $1: exit $status, want $2 (output: $out)"
   printf '%s' "$out"

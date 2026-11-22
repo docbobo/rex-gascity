@@ -31,6 +31,7 @@ test: ## Run unit tests across all packages
 
 test-e2e: ## Run the fake-backed e2e suites (no rex on PATH needed)
 	REX_E2E=fake go test ./internal/provider ./cmd/gc-runtime-rex -run TestE2E -v
+	sh pack/tests/check-import.sh
 
 verify: ## Run the pack check scripts (pack/tests/verify.sh)
 	bash pack/tests/verify.sh

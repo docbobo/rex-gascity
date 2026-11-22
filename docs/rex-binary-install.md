@@ -11,10 +11,15 @@ Nothing in gc installs a pack's runtime provider binary for the city. gc
 `v1.5.1` defines no build or install hook in
 `docs/reference/specs/pack-spec.md`. Pack scripts are doctor checks and
 commands. `gc import install` and `gc pack unpack` only write files into the
-pack root and compose. gc resolves a declared runtime's bare command name
-through `exec.LookPath` (`internal/runtime/exec/exec.go:50-53`). A fresh city
-has the pack but no `gc-runtime-rex` on PATH, so every rex session fails to
-start.
+pack root and compose. gc anchors a pack-declared runtime `command` at the
+pack directory when it holds a path separator (`internal/config/pack_runtimes.go:94-102`).
+A bare name stays as-is and is resolved through `exec.LookPath`
+(`internal/runtime/exec/exec.go:50-53,83`).
+
+This pack points `[runtimes.rex] command` at the shipped shim
+`bin/gc-runtime-rex`, so the provider needs no PATH entry. Before the shim
+existed, a fresh city had the pack but no `gc-runtime-rex` on PATH, so every rex
+session failed to start.
 
 gc executes a pack check's fix as `exec.Command(FixScript)`. It sets
 `cmd.Dir = c.PackDir` and puts `GC_PACK_DIR` in the environment. A non-zero
@@ -28,11 +33,9 @@ the `pack/` subdirectory as the pack root:
 
 ```sh
 gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.01
-export PATH="$HOME/.local/bin:$PATH"
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
-gc-runtime-rex version
 gc import check
 ```
 
@@ -41,15 +44,31 @@ The tag `v2026.11.01` must exist before the import, and it comes from
 takes the bare version. A public repository needs no git credentials. A private
 repository needs them for `git ls-remote` and the fetch.
 
+Import is enough. The provider runs on the first session with no `--fix` and no
+`PATH` change. `gc doctor` verifies read-only: a cold cache reports "not yet
+installed, run `--fix` or start a session" and downloads nothing. The `--fix`
+above warms the cache now, off the session path.
+
 `gc import install` only materializes the pack. gc does not run the pack
-install step by itself. `gc doctor --fix` runs it. An operator who prefers
-to run it by hand does so from the repository root:
+install step by itself. `gc doctor --fix` runs it into the version-keyed
+cache that the shim reads. That is the path that makes a first session fast,
+and the one the operator flow above uses.
+
+A hand-run `sh pack/install.sh` is a different, optional path. From the
+repository root:
 
 ```sh
 sh pack/install.sh
 ```
 
-From the pack directory itself, the same script is `sh ./install.sh`.
+From the pack directory itself, the same script is `sh ./install.sh`. With no
+`GC_RUNTIME_INSTALL_DIR`, it installs onto PATH, not into the shim's cache
+(see [Where the binary goes](#where-the-binary-goes)). It also waits for the
+fetch with no deadline, as it always did.
+
+A later session still installs into the cache, because the shim reads the
+cache and never execs the PATH copy. Use the hand run only to give another
+tool a provider on PATH.
 
 ## What the fix does
 
@@ -72,7 +91,9 @@ install needs no Go toolchain and no source checkout.
    method.
 4. Verifies the sha256 with `sha256sum` (Linux) or `shasum -a 256` (macOS)
    before it installs anything. A mismatch aborts and prints both hashes.
-5. Installs to the directory of the `gc-runtime-rex` already on PATH, else
+5. Installs into `GC_RUNTIME_INSTALL_DIR` when it is set. That is the
+   version-keyed cache the shim and `gc doctor --fix` use. Otherwise it
+   installs to the directory of the `gc-runtime-rex` already on PATH, else
    `$HOME/.local/bin` (see below). It copies through a temp file in the same
    directory, then applies `chmod 0755` and `mv`. A running process keeps
    its inode. A repeat install of the same release leaves the file alone and
@@ -95,25 +116,66 @@ script change.
 
 ## Where the binary goes
 
-One destination: the directory of the provider already on PATH, else
-`$HOME/.local/bin`. The script never chooses between `GOBIN` and
-`~/.local/bin`. It also never writes inside the pack, for two reasons. gc
-only looks on PATH. Also, `updatePack` in
+`GC_RUNTIME_INSTALL_DIR` chooses the destination. When it is set, the script
+installs there. The shim and `gc doctor --fix` set it to the version-keyed
+cache. Otherwise the script installs to the directory of the provider already
+on PATH, else `$HOME/.local/bin`. It never chooses `GOBIN`.
+
+The script never writes the provider binary inside the pack. `updatePack` in
 `internal/config/pack_fetch.go:76-83` discards local files with
-`git checkout --force .` and `git clean -fd`.
+`git checkout --force .` and `git clean -fd`. The script also excludes the
+shipped `pack/bin/gc-runtime-rex` from default destination selection, so a
+PATH that holds `pack/bin` cannot overwrite the tracked file.
 
-## PATH and the rex CLI
+## PATH, the cache, and the rex CLI
 
-`pack.toml` declares `[runtimes.rex] command = "gc-runtime-rex"`, a bare
-name, so gc resolves the provider through PATH. The install directory must be
-on that PATH. A supervisor or controller starts the city with its own
-environment. The directory must be on its PATH too, not only on an
-interactive shell's PATH.
+`pack.toml` declares `[runtimes.rex] command = "bin/gc-runtime-rex"`. gc
+anchors that path at the pack directory, so the provider needs no PATH entry.
+The shim execs the cached release binary on a hit. On a miss it installs into
+the version-keyed cache first.
+
+The cache root is
+`${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}`. The
+binary lands at `<root>/<version>/<os>-<arch>/gc-runtime-rex`. There is no
+cache eviction in v1. Remove stale version directories by hand.
+
+Changing `GC_RUNTIME_CACHE_DIR` to a fresh root only redirects new lookups and
+installs. It does not remove the old directories. Delete them from the old
+root to reclaim that space.
 
 The `rex` CLI is a prerequisite. The provider drives it for every session
 operation. `GC_REX_BIN` overrides the PATH lookup. This differs from the
 `cloudflare` runtime, which has no external binary. The doctor check reports
 a missing CLI with its own remediation.
+
+## First use and recovery
+
+A cold first use installs the release on the session's start path. It
+succeeds only when a published release matches `[pack] version`, its assets
+are reachable, and the cache root is writable.
+
+The shim bounds that fetch to keep it under gc's 30 s `protocol` and 120 s
+`start` deadlines. It reads `GC_RUNTIME_INSTALL_DEADLINE` as an integer in
+[1, 25] seconds and defaults to 25. A non-numeric or out-of-range value falls
+back to 25. A slow or stalled fetch fails with a cause-naming message and the
+`gc doctor --fix` remedy, not an unexplained gc timeout.
+
+`gc doctor --fix` fetches off gc's deadline with a generous 300 s budget. A
+release too slow for the shim's budget still warms. It honors
+`GC_RUNTIME_INSTALL_DEADLINE` too: the fix hook uses that value when the
+environment sets it, and 300 otherwise. gc passes the environment through to
+the hook (`internal/doctor/pack_checks.go:67-79`).
+
+If even 300 s is not enough, set the variable and run the fix hook by hand:
+
+```sh
+GC_RUNTIME_INSTALL_DEADLINE=600 sh pack/doctor/rex-binary/fix.sh
+```
+
+That hook computes the version-keyed cache dir from `bin/_lib.sh` and installs
+there, so the next session cache-hits with no fetch. A bare
+`GC_RUNTIME_INSTALL_DEADLINE=<secs> sh pack/install.sh` is not the recovery
+path. It installs onto PATH, not into the cache, and leaves the shim cold.
 
 ## `sha:` imports and versions
 

@@ -129,6 +129,8 @@ release() { # release <version>
   cp "$pack/install.sh" "$work/tree/install.sh"
   rm -rf "$work/tree/doctor"
   cp -R "$pack/doctor" "$work/tree/doctor"
+  rm -rf "$work/tree/bin"
+  cp -R "$pack/bin" "$work/tree/bin"
   (
     cd "$work/tree" || exit 1
     git add -A
@@ -177,8 +179,8 @@ split_fences() { # split_fences <name> -> prints the number of fences
   printf '%s' "$n"
 }
 
-run_doc() { # run_doc <doc> <name> <minimum fences>
-  doc=$1 name=$2 minimum=$3
+run_doc() { # run_doc <doc> <name> <minimum fences> [expect a hand-run install]
+  doc=$1 name=$2 minimum=$3 manual=${4:-}
   : > "$work/$name.list"
   extract "$doc" "$name"
   grep -q '```' "$work/$name.list" || fail "$name has no sh fence"
@@ -191,7 +193,8 @@ run_doc() { # run_doc <doc> <name> <minimum fences>
   printf '[city]
 name = "%s"
 ' "$name" > "$city/city.toml"
-  cp -R "$work/tree/doctor" "$work/tree/install.sh" "$work/tree/pack.toml" "$city/pack/"
+  cp -R "$work/tree/doctor" "$work/tree/bin" "$work/tree/install.sh" \
+    "$work/tree/pack.toml" "$city/pack/"
 
   i=0
   while [ "$i" -lt "$count" ]; do
@@ -215,14 +218,33 @@ name = "%s"
     i=$((i + 1))
   done
 
-  installed=$city/home/.local/bin/gc-runtime-rex
-  [ -x "$installed" ] || fail "$name left no provider in HOME/.local/bin"
-  # The last fence pins $base exactly, so the newer $next tag must be ignored.
-  "$installed" version | grep -q "\"version\":\"$base\"" ||
+  # The flow's `gc doctor --fix` fence warms the version-keyed cache. gc runs
+  # the provider through the pack's shipped bin/gc-runtime-rex shim, not PATH.
+  # The fence env above leaves GC_RUNTIME_CACHE_DIR and XDG_CACHE_HOME unset, so
+  # the root is $HOME/.cache. The last import fence pins $base exactly, so the
+  # newer $next tag must be ignored.
+  cached=$city/home/.cache/rex-gascity/$base/$os-$arch/gc-runtime-rex
+  [ -x "$cached" ] || fail "$name left no provider in the version-keyed cache"
+  "$cached" version | grep -q "\"version\":\"$base\"" ||
     fail "$name left a provider that is not $base"
+
+  # A hand-run `sh pack/install.sh` fence installs onto PATH, not into the
+  # cache: assert its target directly, or the fence could pass and leave no
+  # binary where the doc says it goes.
+  if [ -n "$manual" ]; then
+    found=$(grep -c '^sh pack/install\.sh$' "$work/$name.list" || true)
+    [ "$found" -eq 1 ] ||
+      fail "$name has $found hand-run install fences, expected 1"
+    want=$(awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $2; exit}' \
+      "$city/pack/pack.toml")
+    installed=$city/home/.local/bin/gc-runtime-rex
+    [ -x "$installed" ] || fail "$name manual install left no provider on PATH"
+    "$installed" version | grep -q "\"version\":\"$want\"" ||
+      fail "$name manual install left a provider that is not $want"
+  fi
 }
 
 run_doc "$readme" readme 4
-run_doc "$guide" guide 3
+run_doc "$guide" guide 3 manual
 
 echo "check-docs: ok"

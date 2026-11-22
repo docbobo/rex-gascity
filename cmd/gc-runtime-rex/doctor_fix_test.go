@@ -124,7 +124,7 @@ func fixLayout(t *testing.T, version string) (packDir, home, binDir, releaseDir 
 	home = filepath.Join(root, "home")
 	binDir = filepath.Join(root, "bin")
 	releaseDir = filepath.Join(root, "release")
-	for _, d := range []string{checkDir, home, binDir, releaseDir} {
+	for _, d := range []string{checkDir, filepath.Join(packDir, "bin"), home, binDir, releaseDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
@@ -140,6 +140,11 @@ func fixLayout(t *testing.T, version string) (packDir, home, binDir, releaseDir 
 	writeExecutable(t, filepath.Join(packDir, "install.sh"), installBytes)
 	writeExecutable(t, filepath.Join(checkDir, "fix.sh"), fixBytes)
 	writeExecutable(t, filepath.Join(binDir, "curl"), []byte(fakeCurl))
+	libBytes, err := os.ReadFile(filepath.Join("..", "..", "pack", "bin", "_lib.sh"))
+	if err != nil {
+		t.Fatalf("read _lib.sh: %v", err)
+	}
+	writeExecutable(t, filepath.Join(packDir, "bin", "_lib.sh"), libBytes)
 	if err := os.WriteFile(filepath.Join(packDir, "pack.toml"),
 		[]byte("[pack]\nname = \"rex\"\nversion = \""+version+"\"\nschema = 2\n"), 0o644); err != nil {
 		t.Fatalf("write pack.toml: %v", err)
@@ -150,15 +155,23 @@ func fixLayout(t *testing.T, version string) (packDir, home, binDir, releaseDir 
 	return packDir, home, binDir, releaseDir
 }
 
+// cacheBinPath is the version-keyed cache binary fix.sh must warm, laid out as
+// pack/bin/_lib.sh lays it out: $HOME/.cache/rex-gascity/<version>/<os>-<arch>.
+func cacheBinPath(t *testing.T, home, version string) string {
+	t.Helper()
+	return filepath.Join(home, ".cache", "rex-gascity", version,
+		runtime.GOOS+"-"+runtime.GOARCH, "gc-runtime-rex")
+}
+
 // isolatedPath puts binDir first and then a shim directory holding only the
 // tools the fix needs. A real /usr/bin would let a host gc-runtime-rex decide
-// the install destination. The test expects ~/.local/bin.
+// the install destination, and the fix warms the version-keyed cache under HOME.
 func isolatedPath(t *testing.T, binDir string) string {
 	t.Helper()
 	shim := t.TempDir()
 	for _, name := range []string{
 		"sh", "uname", "dirname", "mktemp", "awk", "cut", "cat", "mkdir",
-		"cp", "chmod", "mv", "rm", "sed", "sha256sum", "shasum",
+		"cp", "chmod", "mv", "rm", "sed", "sha256sum", "shasum", "date", "sleep",
 	} {
 		src, err := exec.LookPath(name)
 		if err != nil {
@@ -189,14 +202,15 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 	t.Run("installs the release asset", func(t *testing.T) {
 		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
 		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
-			"PATH":         isolatedPath(t, binDir),
-			"HOME":         home,
-			"FAKE_RELEASE": releaseDir,
-			"FAKE_HTTP":    "200",
+			"PATH":           isolatedPath(t, binDir),
+			"HOME":           home,
+			"XDG_CACHE_HOME": filepath.Join(home, ".cache"),
+			"FAKE_RELEASE":   releaseDir,
+			"FAKE_HTTP":      "200",
 		}, 0)
-		bin := filepath.Join(home, ".local", "bin", "gc-runtime-rex")
+		bin := cacheBinPath(t, home, "0.1.0")
 		if _, err := os.Stat(bin); err != nil {
-			t.Fatalf("binary not installed at %s: %v\noutput:\n%s", bin, err, out)
+			t.Fatalf("cache binary not installed at %s: %v\noutput:\n%s", bin, err, out)
 		}
 		version, err := exec.Command(bin, "version").Output()
 		if err != nil {
@@ -215,18 +229,34 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 		}
 	})
 
+	t.Run("honors a decimal deadline override with leading zeros", func(t *testing.T) {
+		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
+		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
+			"PATH":                        isolatedPath(t, binDir),
+			"HOME":                        home,
+			"XDG_CACHE_HOME":              filepath.Join(home, ".cache"),
+			"FAKE_RELEASE":                releaseDir,
+			"FAKE_HTTP":                   "200",
+			"GC_RUNTIME_INSTALL_DEADLINE": "0308",
+		}, 0)
+		if _, err := os.Stat(cacheBinPath(t, home, "0.1.0")); err != nil {
+			t.Fatalf("leading-zero override did not warm the cache: %v\noutput:\n%s", err, out)
+		}
+	})
+
 	t.Run("falls back to gh when curl cannot read the release", func(t *testing.T) {
 		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
 		writeExecutable(t, filepath.Join(binDir, "gh"), []byte(fakeGH))
 		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
-			"PATH":         isolatedPath(t, binDir),
-			"HOME":         home,
-			"FAKE_RELEASE": releaseDir,
-			"FAKE_HTTP":    "404",
+			"PATH":           isolatedPath(t, binDir),
+			"HOME":           home,
+			"XDG_CACHE_HOME": filepath.Join(home, ".cache"),
+			"FAKE_RELEASE":   releaseDir,
+			"FAKE_HTTP":      "404",
 		}, 0)
-		bin := filepath.Join(home, ".local", "bin", "gc-runtime-rex")
+		bin := cacheBinPath(t, home, "0.1.0")
 		if _, err := os.Stat(bin); err != nil {
-			t.Fatalf("gh fallback did not install the provider: %v\noutput:\n%s", err, out)
+			t.Fatalf("gh fallback did not warm the cache: %v\noutput:\n%s", err, out)
 		}
 	})
 
@@ -238,22 +268,24 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 			t.Fatalf("write checksums.txt: %v", err)
 		}
 		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
-			"PATH":         isolatedPath(t, binDir),
-			"HOME":         home,
-			"FAKE_RELEASE": releaseDir,
-			"FAKE_HTTP":    "200",
+			"PATH":           isolatedPath(t, binDir),
+			"HOME":           home,
+			"XDG_CACHE_HOME": filepath.Join(home, ".cache"),
+			"FAKE_RELEASE":   releaseDir,
+			"FAKE_HTTP":      "200",
 		}, 1)
 		if !strings.Contains(out, "sha256") {
 			t.Fatalf("output %q does not name the checksum failure", out)
 		}
-		if _, err := os.Stat(filepath.Join(home, ".local", "bin", "gc-runtime-rex")); err == nil {
+		if _, err := os.Stat(cacheBinPath(t, home, "0.1.0")); err == nil {
 			t.Fatal("a binary was installed despite a checksum failure")
 		}
 	})
 
 	t.Run("a stub asset does not replace a working provider", func(t *testing.T) {
 		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
-		bin := filepath.Join(home, ".local", "bin", "gc-runtime-rex")
+		// The fix warms the cache; that cached binary is what the shim execs.
+		bin := cacheBinPath(t, home, "0.1.0")
 		if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
@@ -329,6 +361,18 @@ func snapshotBinDir(t *testing.T, dir string) string {
 	return strings.Join(lines, "\n")
 }
 
+// envWithout drops every KEY=... entry so an override replaces the inherited
+// value instead of becoming a duplicate the child may resolve the wrong way.
+func envWithout(env []string, key string) []string {
+	kept := env[:0:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, key+"=") {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
 // runFix executes fix.sh from the pack directory, as gc does
 // (internal/doctor/pack_checks.go PackScriptCheck.Fix: exec.Command(script),
 // cmd.Dir = pack dir), and returns combined stdout and stderr.
@@ -340,7 +384,7 @@ func runFix(t *testing.T, script, packDir string, extra map[string]string, wantC
 	// and the provider would call that session's API instead of answering from
 	// local state. The installer needs only what extra names.
 	for k, v := range extra {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		cmd.Env = append(envWithout(cmd.Env, k), k+"="+v)
 	}
 	out, err := cmd.CombinedOutput()
 	code := 0
