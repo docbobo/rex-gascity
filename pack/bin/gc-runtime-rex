@@ -49,14 +49,33 @@ fi
 # cause-naming message here instead of an unexplained gc timeout. gc's deadline
 # is not changed.
 #
-# Budget: clamp GC_RUNTIME_INSTALL_DEADLINE to a positive integer in [1, 25]. A
+# Budget: clamp GC_RUNTIME_INSTALL_DEADLINE to an integer in [1, 25]. A
 # non-numeric or over-budget value cannot push the first-use wait past gc's 30 s
-# protocol budget — the cap is validated, not trusted.
+# protocol budget — the cap is validated, not trusted. Strip leading zeros
+# first: install.sh does shell arithmetic on this value, which reads "08" as an
+# octal prefix and aborts before any fetch.
 deadline=${GC_RUNTIME_INSTALL_DEADLINE:-25}
 case $deadline in
   ''|*[!0-9]*) deadline=25 ;;
-  *) [ "$deadline" -ge 1 ] && [ "$deadline" -le 25 ] || deadline=25 ;;
 esac
+while :; do
+  case $deadline in
+    0?*) deadline=${deadline#0} ;;
+    *) break ;;
+  esac
+done
+[ "$deadline" -ge 1 ] && [ "$deadline" -le 25 ] || deadline=25
+
+# REQ-018: the shim promises a BOUNDED first use. install.sh deliberately
+# degrades to an unbounded foreground fetch when it has no sleep for its
+# watchdog (a direct-installer fallback). A cold shim install may not take that
+# path: with no timer the bound cannot be met, so refuse before fetching and
+# name the cause and the out-of-band remedy. A warm hit above needs no timer.
+if ! command -v sleep >/dev/null 2>&1; then
+  echo "$me: cannot bound this first-use install of the rex runtime provider v$version: 'sleep' is not on PATH, so a slow fetch could outlive gc's start/protocol deadline." >&2
+  echo "$me: warm the cache out of band with 'gc doctor --fix' (a larger budget, off gc's deadline), then retry; or add 'sleep' to PATH." >&2
+  exit 1
+fi
 
 # install.sh bounds its OWN network fetches: it runs each curl/gh fetch as a
 # direct background child and reaps that child by PID on a per-fetch budget (see
@@ -72,7 +91,7 @@ esac
 # budget; its stdout is folded to stderr so the RPP channel stays pristine, and
 # it stages to a .$$ temp removed on any exit (install.sh EXIT trap) and
 # mv-renames atomically (install.sh:186-196), so a half-written binary is never
-# exec'd.
+# exec'd. The sleep precondition above guarantees the watchdog can run.
 #
 # REQ-007: a failed first use must LEAD with the shim's own identifying line, not
 # the installer's raw output. install.sh writes its diagnostics to stderr, so emit

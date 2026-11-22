@@ -213,21 +213,24 @@ run_shim() {           # run_shim <extra-env...>  -- captures stdout only
     sh "$shim" protocol
 }
 
-# Cold cache: first call installs; the exec'd binary answers protocol on stdout;
-# install chatter stays on stderr.
-rm -rf "$cache"; : > "$work/curl.log"
-stdout=$(run_shim FAKE_CURL_LOG="$work/curl.log" 2>"$work/err.log") \
+# Cold cache: the first call installs. The executed binary answers protocol on
+# stdout with EXACTLY the RPP handshake. Install chatter stays on stderr.
+handshake='{"version":0,"capabilities":["report-attachment"]}'
+rm -rf "$cache"; rm -f "$work/curl.log" "$work/gh.log"
+stdout=$(run_shim FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" 2>"$work/err.log") \
   || fail "cold shim call failed: $(cat "$work/err.log")"
-printf '%s' "$stdout" | grep -q '"version":0' || fail "shim stdout did not carry the RPP handshake"
-printf '%s' "$stdout" | grep -qi 'install' && fail "install chatter leaked onto stdout"
+[ "$stdout" = "$handshake" ] || fail "cold shim stdout was not exactly the RPP handshake: [$stdout]"
 [ -s "$work/curl.log" ] || fail "cold call made no download"
+[ -e "$work/gh.log" ] && fail "cold call used the gh fallback after curl succeeded"
 [ -x "$binpath" ] || fail "cold call did not cache $binpath"
 
-# Warm cache: second call makes NO network request.
-: > "$work/curl.log"
-stdout=$(run_shim FAKE_CURL_LOG="$work/curl.log" 2>/dev/null) || fail "warm shim call failed"
-printf '%s' "$stdout" | grep -q '"version":0' || fail "warm call did not exec the cached binary"
-[ -s "$work/curl.log" ] && fail "warm call downloaded (curl.log non-empty)"
+# Warm cache: the second call makes NO network request and emits the exact handshake.
+rm -f "$work/curl.log" "$work/gh.log"
+stdout=$(run_shim FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" 2>/dev/null) \
+  || fail "warm shim call failed"
+[ "$stdout" = "$handshake" ] || fail "warm call did not exec the cached binary: [$stdout]"
+[ -e "$work/curl.log" ] && fail "warm call used a network transport (curl)"
+[ -e "$work/gh.log" ] && fail "warm call used a network transport (gh)"
 
 # Bad checksum: use a DISPOSABLE tampered release dir; the shared $work/release
 # stays intact and nothing in the working tree is touched.
@@ -285,8 +288,49 @@ run_shim GC_RUNTIME_INSTALL_DEADLINE=20 >/dev/null 2>&1 || fail "fast cold insta
 elapsed=$(( $(date +%s) - start ))
 [ "$elapsed" -lt 10 ] || fail "fast install was held open by the watchdog ($elapsed s ~ the 20 s budget)"
 
+# Budget normalization: the shim must strip a leading zero from 08 (8 s, in
+# range) before handing it to shell arithmetic. Passed through raw, install.sh's
+# $(( )) reads it as octal and aborts before any fetch.
+rm -rf "$cache"
+start=$(date +%s)
+if err=$(run_shim GC_RUNTIME_INSTALL_DEADLINE=08 FAKE_CURL_SLEEP=30 2>&1 >/dev/null); then
+  fail "shim accepted a leading-zero budget without timing out"
+fi
+elapsed=$(( $(date +%s) - start ))
+printf '%s' "$err" | grep -q 'value too great' && fail "leading-zero budget reached shell arithmetic as octal: $err"
+printf '%s' "$err" | grep -q 'exceeded the 8s first-use budget' || fail "leading-zero budget was not normalized to 8s: $err"
+[ "$elapsed" -lt 15 ] || fail "leading-zero budget did not bound the fetch ($elapsed s)"
+
+# Restricted PATH (REQ-018): install.sh deliberately falls back to an UNBOUNDED
+# foreground fetch when it has no sleep for a watchdog. That fallback is for the
+# direct installer. The shim's cold-fetch policy must stay bounded, so with no
+# timer it refuses BEFORE any fetch and still names the cause and the remedy.
+# Build a PATH with every tool the installer needs EXCEPT sleep, so that an
+# unbounded install would otherwise succeed. The fix must refuse before it runs.
+rm -rf "$cache"; nosleep=$work/tools-nosleep; rm -rf "$nosleep"; mkdir -p "$nosleep"
+for t in sh dirname awk mkdir mktemp cp chmod mv rm sed cut sha256sum shasum date; do
+  p=$(command -v "$t" 2>/dev/null) || continue
+  ln -sf "$p" "$nosleep/$t"
+done
+cp "$fake_tools/uname" "$nosleep/uname"; chmod 755 "$nosleep/uname"
+cp "$fake_tools/curl" "$nosleep/curl"
+[ -e "$nosleep/sha256sum" ] || [ -e "$nosleep/shasum" ] \
+  || fail "cannot build a no-sleep PATH: no sha256 tool"
+rm -f "$work/nosleep-curl.log"
+if err=$(env PATH="$nosleep" HOME="$work/home" GC_RUNTIME_CACHE_DIR="$cache" \
+    FAKE_RELEASE_DIR="$work/release" FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
+    FAKE_CURL_LOG="$work/nosleep-curl.log" GC_RUNTIME_INSTALL_DEADLINE=1 \
+    sh "$shim" protocol 2>&1 >/dev/null); then
+  fail "shim ran a cold install with no sleep on PATH (unbounded)"
+fi
+printf '%s\n' "$err" | sed -n '1p' | grep -q '^gc-runtime-rex:' || fail "no-sleep refusal did not LEAD with the shim prefix"
+printf '%s' "$err" | grep -q 'sleep' || fail "no-sleep refusal did not name the missing timer"
+printf '%s' "$err" | grep -q 'gc doctor --fix' || fail "no-sleep refusal did not give the --fix remedy"
+[ -e "$work/nosleep-curl.log" ] && fail "shim attempted a fetch with no bounded timer"
+
 # Both gc entry points share the install path, so BOTH 'protocol' and 'start'
-# surface the same cause-naming timeout + --fix remedy on a stalled fetch.
+# surface the DEADLINE cause and the remedy on a stalled fetch. The generic
+# install-failure text also carries a --fix hint, so the deadline line is checked.
 for op in protocol start; do
   rm -rf "$cache"
   if err=$(env PATH="$fake_tools:$PATH" HOME="$work/home" \
@@ -296,18 +340,24 @@ for op in protocol start; do
       sh "$shim" "$op" 2>&1 >/dev/null); then
     fail "shim ($op) did not fail on a stalled fetch"
   fi
+  printf '%s' "$err" | grep -q 'exceeded the 1s first-use budget' || fail "shim ($op) did not name the deadline cause"
   printf '%s' "$err" | grep -q 'gc doctor --fix' || fail "shim ($op) timeout message lacks the --fix remedy"
 done
 
-# Concurrency: two cold calls together; both end with a complete, runnable
-# cached binary, no partial staging file remains, and the binary runs.
-rm -rf "$cache"
-run_shim >/dev/null 2>&1 & p1=$!
-run_shim >/dev/null 2>&1 & p2=$!
+# Concurrency (REQ-005): two OVERLAPPING cold misses. The checksum fetch is
+# slowed so the second call is still cold when the first is mid-install. Both
+# must therefore hit the installer. Each stages to a distinct .$$ temp and
+# mv-renames. The cache ends with one complete, runnable binary and no residue.
+rm -rf "$cache"; rm -f "$work/curl.log"
+run_shim FAKE_CURL_LOG="$work/curl.log" FAKE_CURL_SLEEP_CHECKSUMS=2 >/dev/null 2>&1 & p1=$!
+run_shim FAKE_CURL_LOG="$work/curl.log" FAKE_CURL_SLEEP_CHECKSUMS=2 >/dev/null 2>&1 & p2=$!
 wait "$p1" || fail "concurrent call 1 failed"
 wait "$p2" || fail "concurrent call 2 failed"
+[ "$(grep -c 'checksums.txt' "$work/curl.log" 2>/dev/null || :)" -ge 2 ] \
+  || fail "concurrent calls did not both take the cold path"
 [ -x "$binpath" ] || fail "concurrent calls left no valid cached binary"
 [ -z "$(ls "$cache/$pv/$plat"/.gc-runtime-rex.* 2>/dev/null)" ] || fail "concurrent install left a partial staging file"
-"$binpath" protocol | grep -q '"version":0' || fail "cached binary after concurrent install is not a complete executable"
+[ "$("$binpath" protocol)" = "$handshake" ] \
+  || fail "cached binary after concurrent install is not a complete executable"
 
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases
