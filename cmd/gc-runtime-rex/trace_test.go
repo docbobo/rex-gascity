@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,16 +12,35 @@ import (
 
 func TestTraceOffWritesNothing(t *testing.T) {
 	t.Setenv("GC_REX_TRACE", "")
-	if tr := newTracer("c", &bytes.Buffer{}); tr != nil {
+	if tr := newTracer(&bytes.Buffer{}); tr != nil {
 		t.Fatalf("newTracer with GC_REX_TRACE unset: got %+v, want nil", tr)
+	}
+}
+
+// TestTraceOffNoAlloc proves REQ-001: with the switch unset, building the
+// tracer costs one environment read and no allocation, even when a city pin is
+// present in the environment.
+func TestTraceOffNoAlloc(t *testing.T) {
+	t.Setenv("GC_REX_TRACE", "")
+	t.Setenv("GC_EXEC_CITY_PATH", "/cities//tracecity")
+	allocs := testing.AllocsPerRun(100, func() {
+		if tr := newTracer(io.Discard); tr != nil {
+			t.Fatalf("newTracer with GC_REX_TRACE unset: got %+v, want nil", tr)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("newTracer off-path allocations = %v, want 0", allocs)
 	}
 }
 
 func TestTraceLiteralPathAppends(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "t.jsonl")
 	t.Setenv("GC_REX_TRACE", path)
+	t.Setenv("GC_EXEC_CITY_NAME", "")
+	t.Setenv("GC_EXEC_CITY_PATH", "")
+	t.Setenv("GC_REX_CITY", "my-city")
 	var stderr bytes.Buffer
-	tr := newTracer("my-city", &stderr)
+	tr := newTracer(&stderr)
 	if tr == nil {
 		t.Fatalf("newTracer: nil; stderr %q", stderr.String())
 	}
@@ -50,8 +70,11 @@ func TestTraceLiteralPathAppends(t *testing.T) {
 func TestTraceDefaultSentinelPath(t *testing.T) {
 	t.Setenv("GC_REX_STATE_DIR", t.TempDir())
 	t.Setenv("GC_REX_TRACE", "1")
+	t.Setenv("GC_EXEC_CITY_NAME", "")
+	t.Setenv("GC_EXEC_CITY_PATH", "")
+	t.Setenv("GC_REX_CITY", "sentinel-city")
 	var stderr bytes.Buffer
-	tr := newTracer("sentinel-city", &stderr)
+	tr := newTracer(&stderr)
 	if tr == nil {
 		t.Fatalf("newTracer: nil; stderr %q", stderr.String())
 	}
@@ -68,7 +91,7 @@ func TestTraceRejectsPipe(t *testing.T) {
 	t.Setenv("GC_REX_TRACE", "/dev/null")
 	var stderr bytes.Buffer
 	// /dev/null is a character device: not a regular file.
-	if tr := newTracer("c", &stderr); tr != nil {
+	if tr := newTracer(&stderr); tr != nil {
 		t.Fatalf("newTracer on /dev/null: got %+v, want nil", tr)
 	}
 	if !strings.Contains(stderr.String(), "not a regular file") {
@@ -83,7 +106,7 @@ func TestTraceCapSkipsLine(t *testing.T) {
 	}
 	t.Setenv("GC_REX_TRACE", path)
 	var stderr bytes.Buffer
-	tr := newTracer("c", &stderr)
+	tr := newTracer(&stderr)
 	tr.record(&stderr, traceLine{Op: "peek", Method: "PeekLines", Outcome: "ok"})
 
 	info, err := os.Stat(path)
@@ -124,7 +147,7 @@ func TestTraceRecordKeepsStartTS(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "t.jsonl")
 	t.Setenv("GC_REX_TRACE", path)
 	var stderr bytes.Buffer
-	tr := newTracer("c", &stderr)
+	tr := newTracer(&stderr)
 	if tr == nil {
 		t.Fatalf("newTracer: nil; stderr %q", stderr.String())
 	}
