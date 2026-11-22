@@ -83,10 +83,14 @@ Method keys are the API method names (`session.create`) or CLI names
 ## Conformance still runs the real rex
 
 The fake is a test double, not a substitute for the application. `make
-conformance` and the CI conformance job still install the pinned real rex
-(`REX_PIN` and checksum in `.github/workflows/ci.yml`) and run against it.
-`make test-e2e` is the coverage a contributor gets without Rex. Conformance
-remains the gate on the real CLI and server.
+conformance` builds the provider and runs `pack/tests/conformance.sh`, which
+drives the real rex CLI. Install the rex CLI and put it on PATH first. The
+Makefile target does not install it.
+
+The CI conformance job installs the pinned real rex (`REX_PIN` and checksum in
+`.github/workflows/ci.yml`) before it runs the same script. `make test-e2e` is
+the coverage a contributor gets without Rex. Conformance remains the gate on
+the real CLI and server.
 
 The fake's own contract test (`internal/rex/fakerex/contract_test.go`) reads
 `docs/REX-CONTRACT.md`. It fails when the fake and the pinned contract drift.
