@@ -52,12 +52,12 @@ The pack is the `pack/` subdirectory, so the source is a tree URL:
 
 ```sh
 gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex \
-  --version 0.2.0 --city /path/to/my-city
+  --version 2026.11.01 --city /path/to/my-city
 ```
 
-- `--version` takes the bare semver (`0.2.0`), not the tag name. gc lists the
-  remote tags with `git ls-remote` and takes the highest tag that matches the
-  constraint. `--version v0.2.0` matches no tag and fails.
+- `--version` takes the bare version (`2026.11.01`), not the tag name. gc
+  lists the remote tags with `git ls-remote` and takes the highest tag that
+  matches the constraint. `--version v2026.11.01` matches no tag and fails.
 - Push the tag before the import. A version import needs a pushed tag,
   `v<version>`. Without one, gc reports that no tag matches the constraint.
 - `packs.lock` pins the tag commit, so the import is reproducible. A private

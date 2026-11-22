@@ -34,11 +34,11 @@ No pack registry is involved. gc clones the git repository and uses the
 against git tags with `git ls-remote`.
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 0.2.0
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.01
 ```
 
-- `--version` takes the bare semver `0.2.0`. The tag is `v0.2.0`, so
-  `--version v0.2.0` matches no tag.
+- `--version` takes the bare version `2026.11.01`. The tag is `v2026.11.01`,
+  so `--version v2026.11.01` matches no tag.
 - The tag must be pushed before the import.
 - A public repository needs no credentials. A private repository needs git
   credentials for `git ls-remote` and the fetch.
@@ -135,16 +135,16 @@ To upgrade, re-pin the import and reinstall:
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 0.3.0
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.01
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
 ```
 
-To roll back, use the previous version in the same commands. While the
-version is 0.x, a caret constraint tracks a minor line: `--version '^0.2.0'`
-matches 0.2.x and not 0.3.0. `gc import upgrade rex` then moves to the
-newest matching tag.
+To roll back, use the previous version in the same commands. A caret
+constraint tracks the major line: `--version '^2026.11.01'` matches later
+2026 releases and not a 2027 release. `gc import upgrade rex` then moves to
+the newest matching tag.
 
 ## Source checkout
 
@@ -163,10 +163,10 @@ path.
 `pack/release.sh` is the only publisher. CI builds into the draft that the
 script creates and never publishes.
 
-Run `sh pack/release.sh v0.2.0 --dry-run` to print the resolved commit and
-asset names without changing remote state. Run `sh pack/release.sh v0.2.0` to
-create the draft, build, verify, ask, and publish. Run
-`sh pack/release.sh v0.2.0 --resume` to continue an existing draft.
+Run `sh pack/release.sh v2026.11.01 --dry-run` to print the resolved commit and
+asset names without changing remote state. Run `sh pack/release.sh v2026.11.01`
+to create the draft, build, verify, ask, and publish. Run
+`sh pack/release.sh v2026.11.01 --resume` to continue an existing draft.
 
 It refuses a dirty tracked tree, a branch other than `main`, a tag that
 disagrees with `[pack] version`, a tag that points at another commit, and a
