@@ -124,14 +124,24 @@ esac
 # check's read-only contract. Match the shipped shim by its exact resolved path
 # (not any */gc-runtime-rex), compute the same cache path the shim uses via the
 # shared helper, and point the probe there. A cold cache is reported as
-# remediable with no network I/O.
+# remediable with no network I/O. A cache path that cannot be computed is
+# reported as an error and the shim is never exec'd. Other configured
+# executables keep the direct probe.
 cold_cache=
-if [ -n "$declared_version" ] && [ "$provider_path" = "$pack_dir/bin/gc-runtime-rex" ] \
-    && [ -x "$provider_path" ] && [ -r "$pack_dir/bin/_lib.sh" ]; then
-  . "$pack_dir/bin/_lib.sh"
-  if probe_bin_dir=$(gc_runtime_bin_dir "$declared_version" 2>/dev/null); then
-    provider_path=$probe_bin_dir/gc-runtime-rex
-    [ -x "$provider_path" ] || cold_cache=1
+shim_unresolved=
+if [ "$provider_path" = "$pack_dir/bin/gc-runtime-rex" ] && [ -x "$provider_path" ]; then
+  if [ -z "$declared_version" ]; then
+    shim_unresolved="the pack declares no [pack] version, so the shim cache path cannot be computed"
+  elif [ ! -r "$pack_dir/bin/_lib.sh" ]; then
+    shim_unresolved="the shim cache helper \`bin/_lib.sh\` is missing"
+  else
+    . "$pack_dir/bin/_lib.sh"
+    if probe_bin_dir=$(gc_runtime_bin_dir "$declared_version" 2>&1); then
+      provider_path=$probe_bin_dir/gc-runtime-rex
+      [ -x "$provider_path" ] || cold_cache=1
+    else
+      shim_unresolved="the shim cache path cannot be computed: $probe_bin_dir"
+    fi
   fi
 fi
 
@@ -154,7 +164,12 @@ provider_message="the rex runtime provider and rex CLI are installed"
 provider_detail=
 remediation=
 
-if [ -n "$cold_cache" ]; then
+if [ -n "$shim_unresolved" ]; then
+  provider_status=error
+  provider_message="the rex runtime provider cache could not be located"
+  provider_detail="$shim_unresolved"
+  remediation="Run \`gc doctor --fix\` or start a session — the \`bin/gc-runtime-rex\` entry point installs the release into the cache on first use. The check does not run the shim."
+elif [ -n "$cold_cache" ]; then
   provider_status=error
   provider_message="the rex runtime provider is not yet installed"
   provider_detail="no cached binary at $provider_path"
@@ -168,7 +183,11 @@ elif [ ! -x "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not executable"
   provider_detail="$provider_path is not executable"
-  remediation="Reinstall it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`."
+  if [ "$provider_path" = "$pack_dir/bin/gc-runtime-rex" ]; then
+    remediation="Restore the shipped \`bin/gc-runtime-rex\` entry point (for example \`gc import install\` or \`git checkout -- pack/bin/gc-runtime-rex\`). That is pack repair; \`gc doctor --fix\` and session start warm an empty cache and do not repair the pack file."
+  else
+    remediation="Reinstall it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`."
+  fi
 else
   handshake=$("$provider_path" protocol 2>/dev/null) || handshake=""
   if printf '%s' "$handshake" | grep -Eq '"version"[[:space:]]*:[[:space:]]*0'; then

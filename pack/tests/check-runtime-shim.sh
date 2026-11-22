@@ -404,31 +404,104 @@ run_shim FAKE_CURL_LOG="$work/curl.log" >/dev/null 2>&1 || fail "warm shim call 
 # Doctor check (REQ-010, Task 6): the check probes the CACHED binary directly
 # instead of exec'ing the self-installing shim. A cold cache is read-only:
 # no download and no write; the remediation names --fix / the entry point and
-# gives no PATH advice. A warm cache passes with no new fetch.
-doctor=$repo/pack/doctor/rex-binary/run.sh
+# gives no PATH advice. A warm cache passes with no new fetch. A cache path the
+# check cannot compute is reported as an error and the shim is never exec'd.
+#
+# The doctor runs against a COPY of the pack whose shipped shim records each
+# execution. A regression that execs the shim leaves the marker set, so the
+# warm case fails instead of silently passing.
+shim_pack=$work/shim-pack
+rm -rf "$shim_pack"
+mkdir -p "$shim_pack/bin" "$shim_pack/doctor/rex-binary"
+cp "$repo/pack/pack.toml" "$shim_pack/pack.toml"
+cp "$repo/pack/rex-min-version" "$shim_pack/rex-min-version" 2>/dev/null || true
+cp "$repo/pack/bin/_lib.sh" "$shim_pack/bin/_lib.sh"
+cp "$repo/pack/bin/gc-runtime-rex" "$shim_pack/bin/gc-runtime-rex.real"
+cat > "$shim_pack/bin/gc-runtime-rex" <<'WRAP'
+#!/bin/sh
+[ -n "${SHIM_LOG:-}" ] && printf '%s\n' "shim ran" >> "$SHIM_LOG"
+exec "$(dirname -- "$0")/gc-runtime-rex.real" "$@"
+WRAP
+chmod 755 "$shim_pack/bin/gc-runtime-rex" "$shim_pack/bin/gc-runtime-rex.real"
+cp "$repo/pack/doctor/rex-binary/run.sh" "$shim_pack/doctor/rex-binary/run.sh"
+chmod 755 "$shim_pack/doctor/rex-binary/run.sh"
+
+doctor=$shim_pack/doctor/rex-binary/run.sh
 [ -x "$doctor" ] || fail "pack/doctor/rex-binary/run.sh is not executable"
 printf '#!/bin/sh\ncase "${1:-}" in\n  version) case "${2:-}" in\n    --json) printf '\''{"rex_version":"999.0.0"}\\n'\'' ;;\n    *) printf '\''rex 999.0.0\\n'\'' ;;\n  esac ;;\nesac\n' > "$fake_tools/rex-ok"
 chmod 755 "$fake_tools/rex-ok"
 run_check() {          # run_check <extra-env...>  -- captures combined output
   env PATH="$fake_tools:$PATH" HOME="$work/home" \
     GC_RUNTIME_CACHE_DIR="$cache" GC_REX_BIN="$fake_tools/rex-ok" \
+    SHIM_LOG="$work/shim.log" \
     FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
     FAKE_CURL_LOG="$work/curl.log" "$@" \
     sh "$doctor"
 }
 
-rm -rf "$cache"; : > "$work/curl.log"
+rm -rf "$cache"; : > "$work/curl.log"; : > "$work/shim.log"
 if out=$(run_check 2>&1); then fail "cold-cache check unexpectedly passed"; fi
 [ -s "$work/curl.log" ] && fail "cold-cache check performed a download (not read-only)"
 [ -e "$cache" ] && fail "cold-cache check wrote the cache (not read-only)"
-printf '%s' "$out" | grep -qi 'not .*installed\|--fix\|start a session' \
-  || fail "cold-cache remediation did not mention --fix/start-a-session: $out"
+[ -s "$work/shim.log" ] && fail "cold-cache check exec'd the shipped shim"
+printf '%s' "$out" | grep -qi 'not yet installed' \
+  || fail "cold-cache message did not say the provider is not yet installed: $out"
+printf '%s' "$out" | grep -q -- '--fix' \
+  || fail "cold-cache remedy did not name --fix: $out"
+printf '%s' "$out" | grep -qi 'start a session' \
+  || fail "cold-cache remedy did not name session start: $out"
+printf '%s' "$out" | grep -q 'bin/gc-runtime-rex' \
+  || fail "cold-cache remedy did not name the entry point: $out"
 printf '%s' "$out" | grep -qi 'add .*to.*PATH\|on PATH so gc' \
   && fail "cold-cache remediation still gives PATH advice: $out"
 
 run_shim >/dev/null 2>&1 || fail "warm start failed"
-: > "$work/curl.log"
+: > "$work/curl.log"; : > "$work/shim.log"
 run_check >/dev/null 2>&1 || fail "warm-cache check did not pass"
 [ -s "$work/curl.log" ] && fail "warm-cache check fetched again"
+[ -s "$work/shim.log" ] && fail "warm-cache check exec'd the shipped shim instead of the cached binary"
+
+# Unsupported platform: the cache path cannot be computed. The check must report
+# that and must not exec the shim (which would reject the platform).
+rm -rf "$cache"; : > "$work/curl.log"; : > "$work/shim.log"
+if out=$(run_check FAKE_UNAME_S=Linux FAKE_UNAME_M=riscv64 2>&1); then
+  fail "unsupported-platform check unexpectedly passed"
+fi
+[ -s "$work/shim.log" ] && fail "unsupported-platform check exec'd the shipped shim"
+[ -s "$work/curl.log" ] && fail "unsupported-platform check performed a download"
+printf '%s' "$out" | grep -qi 'cache.*could not be located' \
+  || fail "unsupported-platform check did not report the cache lookup failure: $out"
+printf '%s' "$out" | grep -q 'riscv64' \
+  || fail "unsupported-platform check did not name the rejected machine: $out"
+
+# Missing cache helper: the cache path cannot be computed. The check must report
+# that and must not exec the shim.
+mv "$shim_pack/bin/_lib.sh" "$shim_pack/bin/_lib.sh.off"
+rm -rf "$cache"; : > "$work/shim.log"
+if out=$(run_check 2>&1); then fail "missing-helper check unexpectedly passed"; fi
+[ -s "$work/shim.log" ] && fail "missing-helper check exec'd the shipped shim"
+printf '%s' "$out" | grep -qi 'cache.*could not be located' \
+  || fail "missing-helper check did not report the cache lookup failure: $out"
+printf '%s' "$out" | grep -q '_lib.sh' \
+  || fail "missing-helper check did not name the missing helper: $out"
+mv "$shim_pack/bin/_lib.sh.off" "$shim_pack/bin/_lib.sh"
+
+# Non-executable shipped shim: a pack-file problem, not a cache problem. The
+# remedy must name the entry point and distinguish pack repair from warming.
+chmod 644 "$shim_pack/bin/gc-runtime-rex"
+rm -rf "$cache"; : > "$work/shim.log"
+if out=$(run_check 2>&1); then fail "non-executable-shim check unexpectedly passed"; fi
+[ -s "$work/shim.log" ] && fail "non-executable-shim check exec'd the shim"
+printf '%s' "$out" | grep -qi 'not executable' \
+  || fail "non-executable-shim check did not say the shim is not executable: $out"
+printf '%s' "$out" | grep -q 'bin/gc-runtime-rex' \
+  || fail "non-executable-shim remedy did not name the entry point: $out"
+printf '%s' "$out" | grep -q 'gc import install' \
+  || fail "non-executable-shim remedy did not name pack repair: $out"
+printf '%s' "$out" | grep -q -- '--fix' \
+  || fail "non-executable-shim remedy did not name --fix: $out"
+printf '%s' "$out" | grep -qi 'warm.*cache\|cache.*warm' \
+  || fail "non-executable-shim remedy did not distinguish cache warming: $out"
+chmod 755 "$shim_pack/bin/gc-runtime-rex"
 
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases
