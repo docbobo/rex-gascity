@@ -45,9 +45,26 @@ const blobDefault = 49152
 // faultDelay is how long FaultDelay stalls a call.
 const faultDelay = 2 * time.Second
 
+// defaultAPIVersion is the api revision the fake reports when the state does
+// not override it. It is also the top of the CLI's supported server range.
+const defaultAPIVersion = 14
+
 var errUnreachable = errors.New("no Rex server is running")
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+
+// apiRevision reads the server's reported api_revision from the state dir.
+// A missing dir or an unset override falls back to defaultAPIVersion.
+func apiRevision(dir string) int {
+	if dir == "" {
+		return defaultAPIVersion
+	}
+	st, err := fakestate.Load(dir)
+	if err != nil || st.APIVersion == 0 {
+		return defaultAPIVersion
+	}
+	return st.APIVersion
+}
 
 // run dispatches one CLI invocation. The dispatch is separate from main so the
 // helper's tests can drive it in-process if they need to.
@@ -59,12 +76,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var err error
 	switch args[0] {
 	case "version":
+		rev := apiRevision(dir)
 		jsonOut := len(args) > 1 && (args[1] == "--json" || args[1] == "-j")
 		if jsonOut {
-			err = printJSON(stdout, map[string]any{"version": "0.1.0", "api_revision": 14})
+			err = printJSON(stdout, map[string]any{"version": "0.1.0", "api_revision": rev})
 		} else {
 			fmt.Fprintln(stdout, "fakerex 0.1.0")
-			fmt.Fprintln(stdout, "api: revision 14 (supports 0 to 14)")
+			fmt.Fprintf(stdout, "api: revision %d (supports 0 to %d)\n", rev, defaultAPIVersion)
 		}
 	case "api":
 		err = api(dir, args[1:], stdout)
@@ -229,7 +247,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 	}
 	switch method {
 	case "server.version":
-		return map[string]any{"version": "0.1.0", "api_revision": 14}, nil
+		return map[string]any{"version": "0.1.0", "api_revision": apiRevision(dir)}, nil
 	case "session.create":
 		return sessionCreate(dir, str(in, "label"))
 	case "session.destroy":

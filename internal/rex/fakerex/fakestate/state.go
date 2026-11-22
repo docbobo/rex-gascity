@@ -71,9 +71,12 @@ type Fault struct {
 
 // State is the whole fake server.
 type State struct {
-	Revision int64      `json:"revision"`
-	Next     int        `json:"next"`
-	Sessions []*Session `json:"sessions,omitempty"`
+	Revision int64 `json:"revision"`
+	Next     int   `json:"next"`
+	// APIVersion overrides the server's reported api_revision. Zero means the
+	// fake's default (14). Tests set it to drive the version-skew case.
+	APIVersion int        `json:"api_version,omitempty"`
+	Sessions   []*Session `json:"sessions,omitempty"`
 	// Results holds paged block output. The fake keeps one result per call, so
 	// a single counter is enough.
 	Results map[string]int64 `json:"results,omitempty"`

@@ -94,6 +94,29 @@ func TestSurface(t *testing.T) {
 	}
 }
 
+// TestAPIVersionOverride proves the server's api_revision is configurable, so
+// the version-skew case can be driven both matched and mismatched.
+func TestAPIVersionOverride(t *testing.T) {
+	f := fakerex.New(t)
+	f.Update(t, func(st *fakestate.State) { st.APIVersion = 99 })
+
+	out, _, code := f.Exec(t, "version")
+	if code != 0 || !strings.Contains(out, "api: revision 99 (supports 0 to 14)") {
+		t.Fatalf("version = (%q, %d), want the configured revision", out, code)
+	}
+	out, _, code = f.Exec(t, "version", "--json")
+	var ver struct {
+		APIRevision int `json:"api_revision"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &ver) != nil || ver.APIRevision != 99 {
+		t.Fatalf("version --json = (%q, %d)", out, code)
+	}
+	out, _, code = f.Exec(t, "api", "call", "server.version")
+	if code != 0 || !strings.Contains(out, `"api_revision":99`) {
+		t.Errorf("server.version = (%q, %d)", out, code)
+	}
+}
+
 // TestLifecycle drives create/window/split/labels/focus/close/destroy through
 // the real cli.Client, one short-lived process per call.
 func TestLifecycle(t *testing.T) {
