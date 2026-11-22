@@ -367,28 +367,61 @@ func (s *Session) Remove(id string) {
 }
 
 // RemoveLeaf drops the leaf for id from the tree, collapsing its parent split
-// into the surviving sibling.
+// into the surviving sibling. The survivor takes the removed split's rect, and
+// its descendants scale with it. With no removed leaf, all rects stay as they
+// are.
 func RemoveLeaf(n *Node, id string) *Node {
+	n, _ = removeLeaf(n, id)
+	return n
+}
+
+func removeLeaf(n *Node, id string) (*Node, bool) {
 	if n == nil {
-		return nil
+		return nil, false
 	}
 	if n.Split == nil {
 		if n.BlockID == id {
-			return nil
+			return nil, true
 		}
-		return n
+		return n, false
 	}
-	if before := RemoveLeaf(n.Split.Before, id); before == nil {
-		return n.Split.After
-	} else {
+	if before, removed := removeLeaf(n.Split.Before, id); removed {
+		if before == nil {
+			n.Split.After.expand(n.Rect)
+			return n.Split.After, true
+		}
 		n.Split.Before = before
+		return n, true
 	}
-	if after := RemoveLeaf(n.Split.After, id); after == nil {
-		return n.Split.Before
-	} else {
-		n.Split.After = after
+	after, removed := removeLeaf(n.Split.After, id)
+	if !removed {
+		return n, false
 	}
-	return n
+	if after == nil {
+		n.Split.Before.expand(n.Rect)
+		return n.Split.Before, true
+	}
+	n.Split.After = after
+	return n, true
+}
+
+// expand moves and scales the subtree from its own rect onto r, keeping each
+// descendant's relative position and size.
+func (n *Node) expand(r [4]float64) {
+	from := n.Rect
+	n.Rect = r
+	if n.Split == nil || from[2] == 0 || from[3] == 0 {
+		return
+	}
+	sx, sy := r[2]/from[2], r[3]/from[3]
+	for _, child := range []*Node{n.Split.Before, n.Split.After} {
+		child.expand([4]float64{
+			r[0] + (child.Rect[0]-from[0])*sx,
+			r[1] + (child.Rect[1]-from[1])*sy,
+			child.Rect[2] * sx,
+			child.Rect[3] * sy,
+		})
+	}
 }
 
 // Leaf returns the layout leaf for block id, or nil.

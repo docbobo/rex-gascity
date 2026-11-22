@@ -459,3 +459,45 @@ func TestCloseBlockStopsTermIgnoringPane(t *testing.T) {
 	}
 	t.Fatalf("pane %d still runs after close", pid)
 }
+// TestCloseExpandsSurvivingPane proves closing a pane hands the split's rect
+// to the surviving subtree and scales its descendants, so later splits divide
+// the whole window.
+func TestCloseExpandsSurvivingPane(t *testing.T) {
+	f := fakerex.New(t)
+	c, sid, a := start(t, f, "a", "/bin/sh", "-c", "sleep 10")
+	b, err := c.NewSplit(ctx(t), sid, a, "horizontal", "after", spec("b", "/bin/sh", "-c", "sleep 10"))
+	if err != nil {
+		t.Fatalf("NewSplit b: %v", err)
+	}
+	cc, err := c.NewSplit(ctx(t), sid, b, "vertical", "after", spec("c", "/bin/sh", "-c", "sleep 10"))
+	if err != nil {
+		t.Fatalf("NewSplit c: %v", err)
+	}
+	if err := c.CloseBlock(ctx(t), sid, a); err != nil {
+		t.Fatalf("CloseBlock a: %v", err)
+	}
+	leaf := func(id rex.BlockID) fakestate.Node {
+		t.Helper()
+		n := f.State(t).Sessions[0].Windows[0].Layout.Leaf(string(id))
+		if n == nil {
+			t.Fatalf("block %s has no layout leaf", id)
+		}
+		return *n
+	}
+	if got, want := leaf(b).Rect, [4]float64{0, 0, 1, 0.5}; got != want {
+		t.Errorf("b rect = %v, want %v", got, want)
+	}
+	if got, want := leaf(cc).Rect, [4]float64{0, 0.5, 1, 0.5}; got != want {
+		t.Errorf("c rect = %v, want %v", got, want)
+	}
+	next, err := c.NewSplit(ctx(t), sid, b, "horizontal", "after", spec("next", "/bin/sh", "-c", "sleep 10"))
+	if err != nil {
+		t.Fatalf("NewSplit next: %v", err)
+	}
+	if got, want := leaf(b).Rect, [4]float64{0, 0, 0.5, 0.5}; got != want {
+		t.Errorf("b rect after split = %v, want %v", got, want)
+	}
+	if got, want := leaf(next).Rect, [4]float64{0.5, 0, 0.5, 0.5}; got != want {
+		t.Errorf("next rect = %v, want %v", got, want)
+	}
+}
