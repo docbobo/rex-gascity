@@ -730,33 +730,43 @@ rexdir=$work/rex-bin
 mkdir -p "$rexdir"
 ln -sf "$(command -v rex)" "$rexdir/rex"
 
-# No provider on PATH: the check names the installer.
+# No provider yet and no cache: the check probes the CACHED binary and reports
+# a remediable cold cache. It names the --fix / entry-point remedy and does NOT
+# advise editing PATH. The probe is read-only: it must not create the cache.
 home=$work/home-doctor
 mkdir -p "$home"
-# After the fix, ~/.local/bin is on PATH, as an operator's environment has it.
-doctor_path="$home/.local/bin:$rexdir:$nogh_path"
+doctor_path="$rexdir:$nogh_path"
 reset_logs
-if out=$(env -i HOME="$home" PATH="$rexdir:$base_path" \
+if out=$(env -i HOME="$home" PATH="$doctor_path" \
     FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
     FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" \
     "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" --verbose 2>&1); then
   fail "gc doctor passed with no provider installed: $out"
 fi
-printf '%s' "$out" | grep -q "install.sh" || fail "gc doctor does not name pack/install.sh: $out"
+printf '%s' "$out" | grep -qi -- '--fix\|bin/gc-runtime-rex\|start a session' \
+  || fail "gc doctor cold remediation does not name --fix / the entry point: $out"
+printf '%s' "$out" | grep -qi 'add .*to.*PATH\|on PATH so gc' \
+  && fail "gc doctor cold remediation still gives PATH advice: $out"
+[ -e "$home/.cache/rex-gascity" ] &&
+  fail "gc doctor check wrote the cache on a cold read (not read-only)"
 if printf '%s' "$out" | grep -q "go install"; then
   fail "gc doctor still offers a Go build: $out"
 fi
 
-# --fix installs a binary whose version matches pack.toml, then doctor is green.
+# --fix warms the version-keyed cache the shim reads, under HOME (no
+# GC_RUNTIME_CACHE_DIR), not $HOME/.local/bin. The cached provider then makes
+# gc doctor green without any install on the check path.
 reset_logs
 env -i HOME="$home" PATH="$doctor_path" \
   FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
   FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" \
   "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" --fix --verbose > "$work/fix.out" 2>&1 ||
   { cat "$work/fix.out" >&2; fail "gc doctor --fix failed"; }
-target=$home/.local/bin/gc-runtime-rex
-[ -x "$target" ] || fail "gc doctor --fix did not install the provider"
-"$target" version | grep -q "$version" || fail "gc doctor --fix installed a binary that does not match pack.toml"
+cached=$home/.cache/rex-gascity/$version/darwin-arm64/gc-runtime-rex
+[ -x "$cached" ] || fail "gc doctor --fix did not warm the cache: $cached"
+[ ! -e "$home/.local/bin/gc-runtime-rex" ] ||
+  fail "gc doctor --fix wrote to ~/.local/bin, not the cache"
+"$cached" version | grep -q "$version" || fail "cached provider does not report $version"
 out=$(env -i HOME="$home" PATH="$doctor_path" "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" 2>&1) ||
   fail "gc doctor is not green after --fix: $out"
 printf '%s' "$out" | grep -q "rex-gascity-runtime:rex-binary" || fail "gc doctor did not report the rex-gascity-runtime:rex-binary check"

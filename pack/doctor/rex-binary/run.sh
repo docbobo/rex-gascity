@@ -119,6 +119,22 @@ case "$command_name" in
     ;;
 esac
 
+# When the command is THIS pack's self-installing shim, probe the CACHED binary
+# directly: exec'ing the shim on a cold cache would download, breaking this
+# check's read-only contract. Match the shipped shim by its exact resolved path
+# (not any */gc-runtime-rex), compute the same cache path the shim uses via the
+# shared helper, and point the probe there. A cold cache is reported as
+# remediable with no network I/O.
+cold_cache=
+if [ -n "$declared_version" ] && [ "$provider_path" = "$pack_dir/bin/gc-runtime-rex" ] \
+    && [ -x "$provider_path" ] && [ -r "$pack_dir/bin/_lib.sh" ]; then
+  . "$pack_dir/bin/_lib.sh"
+  if probe_bin_dir=$(gc_runtime_bin_dir "$declared_version" 2>/dev/null); then
+    provider_path=$probe_bin_dir/gc-runtime-rex
+    [ -x "$provider_path" ] || cold_cache=1
+  fi
+fi
+
 # Resolve the rex CLI. The provider drives it for every session operation, so
 # it is a prerequisite too. GC_REX_BIN overrides the PATH lookup.
 rex_name=${GC_REX_BIN:-rex}
@@ -138,11 +154,16 @@ provider_message="the rex runtime provider and rex CLI are installed"
 provider_detail=
 remediation=
 
-if [ -z "$provider_path" ]; then
+if [ -n "$cold_cache" ]; then
+  provider_status=error
+  provider_message="the rex runtime provider is not yet installed"
+  provider_detail="no cached binary at $provider_path"
+  remediation="Run \`gc doctor --fix\` to warm the cache, or start a session — the \`bin/gc-runtime-rex\` entry point installs the v$declared_version release into the cache on first use. A failed first run is a download error (offline, private repo, or unknown platform)."
+elif [ -z "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not installed"
   provider_detail="\`$command_name\` is not on PATH"
-  remediation="Install it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\` (downloads the v$declared_version release asset for this platform and verifies its checksum), then put its directory on PATH. A supervisor or controller runs the city with its own PATH, so add that directory to its environment too. A source checkout can use \`sh $pack_dir/install.sh --from-source\` instead."
+  remediation="Install it with \`gc doctor --fix\` — the \`bin/gc-runtime-rex\` entry point installs the v$declared_version release into the cache on first use. A source checkout can use \`sh $pack_dir/install.sh --from-source\` instead."
 elif [ ! -x "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not executable"

@@ -401,4 +401,34 @@ env PATH="$fake_tools:$PATH" HOME="$work/home" \
 run_shim FAKE_CURL_LOG="$work/curl.log" >/dev/null 2>&1 || fail "warm shim call after fix failed"
 [ -s "$work/curl.log" ] && fail "shim fetched again after fix.sh warmed the cache"
 
+# Doctor check (REQ-010, Task 6): the check probes the CACHED binary directly
+# instead of exec'ing the self-installing shim. A cold cache is read-only:
+# no download and no write; the remediation names --fix / the entry point and
+# gives no PATH advice. A warm cache passes with no new fetch.
+doctor=$repo/pack/doctor/rex-binary/run.sh
+[ -x "$doctor" ] || fail "pack/doctor/rex-binary/run.sh is not executable"
+printf '#!/bin/sh\ncase "${1:-}" in\n  version) case "${2:-}" in\n    --json) printf '\''{"rex_version":"999.0.0"}\\n'\'' ;;\n    *) printf '\''rex 999.0.0\\n'\'' ;;\n  esac ;;\nesac\n' > "$fake_tools/rex-ok"
+chmod 755 "$fake_tools/rex-ok"
+run_check() {          # run_check <extra-env...>  -- captures combined output
+  env PATH="$fake_tools:$PATH" HOME="$work/home" \
+    GC_RUNTIME_CACHE_DIR="$cache" GC_REX_BIN="$fake_tools/rex-ok" \
+    FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
+    FAKE_CURL_LOG="$work/curl.log" "$@" \
+    sh "$doctor"
+}
+
+rm -rf "$cache"; : > "$work/curl.log"
+if out=$(run_check 2>&1); then fail "cold-cache check unexpectedly passed"; fi
+[ -s "$work/curl.log" ] && fail "cold-cache check performed a download (not read-only)"
+[ -e "$cache" ] && fail "cold-cache check wrote the cache (not read-only)"
+printf '%s' "$out" | grep -qi 'not .*installed\|--fix\|start a session' \
+  || fail "cold-cache remediation did not mention --fix/start-a-session: $out"
+printf '%s' "$out" | grep -qi 'add .*to.*PATH\|on PATH so gc' \
+  && fail "cold-cache remediation still gives PATH advice: $out"
+
+run_shim >/dev/null 2>&1 || fail "warm start failed"
+: > "$work/curl.log"
+run_check >/dev/null 2>&1 || fail "warm-cache check did not pass"
+[ -s "$work/curl.log" ] && fail "warm-cache check fetched again"
+
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases
