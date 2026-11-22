@@ -1017,9 +1017,11 @@ func startPane(dir string, b *fakestate.Block) (*fakestate.Block, error) {
 
 	// The wrapper records the program's exit code, which outlives this CLI
 	// process; "$@" is the launched argv. The trap keeps a group signal from
-	// killing the wrapper before it can record the exit.
-	const wrapper = `trap 'printf 130 > "$FAKEREX_EXIT"; exit 130' INT TERM
-"$@"; printf '%d' $? > "$FAKEREX_EXIT"`
+	// killing the wrapper before it can record the exit. The record is moved
+	// into place so a poller never reads a half-written file.
+	const wrapper = `put_exit() { printf '%d' "$1" > "$FAKEREX_EXIT.tmp" && mv "$FAKEREX_EXIT.tmp" "$FAKEREX_EXIT"; }
+trap 'put_exit 130; exit 130' INT TERM
+"$@"; put_exit $?`
 	cmd := exec.Command("/bin/sh", append([]string{"-c", wrapper, "fakerex"}, b.Command...)...)
 	cmd.Env = append(os.Environ(), "FAKEREX_EXIT="+fakestate.ExitPath(dir, b.ID))
 	cmd.Dir = b.Cwd
@@ -1052,7 +1054,9 @@ func lastExit(dir string, b *fakestate.Block) any {
 		return nil
 	}
 	code := 0
-	_, _ = fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &code)
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &code); err != nil {
+		return nil
+	}
 	return map[string]any{"exit_code": code}
 }
 
