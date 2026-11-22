@@ -121,6 +121,35 @@ func TestTraceCapSkipsLine(t *testing.T) {
 	}
 }
 
+// TestTraceNearCapFitsStillAppends proves REQ-006/AC-5: a line that fits under
+// the cap is appended, not blocked or skipped, even when the file is near the
+// cap. It is the non-skip counterpart of TestTraceCapSkipsLine.
+func TestTraceNearCapFitsStillAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.jsonl")
+	seed := int64(traceCap - 1024)
+	if err := os.WriteFile(path, make([]byte, seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("GC_REX_TRACE", path)
+	var stderr bytes.Buffer
+	tr := newTracer(&stderr)
+	if tr == nil {
+		t.Fatalf("newTracer: nil; stderr %q", stderr.String())
+	}
+	tr.record(&stderr, traceLine{Op: "peek", Method: "PeekLines", Outcome: "ok"})
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Size() <= seed || info.Size() > traceCap {
+		t.Errorf("size = %d, want > seed %d and <= cap %d", info.Size(), seed, traceCap)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestTraceSessionOmission(t *testing.T) {
 	for _, tc := range []struct {
 		name string
