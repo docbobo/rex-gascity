@@ -197,4 +197,117 @@ lib=$repo/pack/bin/_lib.sh
   printf '%s' "$msg" | grep -q riscv64 || { echo "msg=$msg" >&2; exit 1; }
 ) || fail "gc_runtime_platform did not reject riscv64 naming it"
 
+# --- shim cases -----------------------------------------------------------
+
+shim=$repo/pack/bin/gc-runtime-rex
+[ -x "$shim" ] || fail "pack/bin/gc-runtime-rex is not executable"
+
+cache=$work/cache
+pv=$(pack_version)                 # [pack] version, via the harness helper
+plat=$(host_os)-$(host_arch)
+binpath=$cache/$pv/$plat/gc-runtime-rex
+run_shim() {           # run_shim <extra-env...>  -- captures stdout only
+  env PATH="$fake_tools:$PATH" HOME="$work/home" \
+    FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+    FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" "$@" \
+    sh "$shim" protocol
+}
+
+# Cold cache: first call installs; the exec'd binary answers protocol on stdout;
+# install chatter stays on stderr.
+rm -rf "$cache"; : > "$work/curl.log"
+stdout=$(run_shim FAKE_CURL_LOG="$work/curl.log" 2>"$work/err.log") \
+  || fail "cold shim call failed: $(cat "$work/err.log")"
+printf '%s' "$stdout" | grep -q '"version":0' || fail "shim stdout did not carry the RPP handshake"
+printf '%s' "$stdout" | grep -qi 'install' && fail "install chatter leaked onto stdout"
+[ -s "$work/curl.log" ] || fail "cold call made no download"
+[ -x "$binpath" ] || fail "cold call did not cache $binpath"
+
+# Warm cache: second call makes NO network request.
+: > "$work/curl.log"
+stdout=$(run_shim FAKE_CURL_LOG="$work/curl.log" 2>/dev/null) || fail "warm shim call failed"
+printf '%s' "$stdout" | grep -q '"version":0' || fail "warm call did not exec the cached binary"
+[ -s "$work/curl.log" ] && fail "warm call downloaded (curl.log non-empty)"
+
+# Bad checksum: use a DISPOSABLE tampered release dir; the shared $work/release
+# stays intact and nothing in the working tree is touched.
+rm -rf "$cache"; relbad=$work/release-bad; rm -rf "$relbad"; cp -R "$work/release" "$relbad"
+printf 'tamper\n' >> "$relbad/gc-runtime-rex_${plat%-*}_${plat#*-}"   # os_arch asset
+if err=$(run_shim FAKE_RELEASE_DIR="$relbad" 2>&1 >/dev/null); then fail "shim did not fail on checksum mismatch"; fi
+# REQ-007: the shim's identifying prefix leads the stderr, BEFORE install.sh's
+# own output (the cold-install announcement is the shim's first line).
+printf '%s\n' "$err" | sed -n '1p' | grep -q '^gc-runtime-rex:' || fail "install failure did not LEAD with the shim's gc-runtime-rex: prefix"
+printf '%s' "$err" | grep -q "gc-runtime-rex_${plat%-*}_${plat#*-}" || fail "checksum error did not name the full asset"
+printf '%s' "$err" | grep -q "$pv" || fail "checksum error did not name the version"
+[ -e "$binpath" ] && fail "cache left a binary after a failed install"
+[ -z "$(ls "$cache/$pv/$plat"/.gc-runtime-rex.* 2>/dev/null)" ] || fail "a partial staging file was left behind"
+
+# Unsupported platform: no asset resolves → non-zero; the shim's prefix LEADS,
+# then the _lib.sh cause (the rejected arch) follows.
+rm -rf "$cache"
+if err=$(env PATH="$fake_tools:$PATH" HOME="$work/home" GC_RUNTIME_CACHE_DIR="$cache" \
+    FAKE_UNAME_S=Linux FAKE_UNAME_M=riscv64 sh "$shim" protocol 2>&1 >/dev/null); then
+  fail "shim did not fail on unsupported platform"
+fi
+printf '%s\n' "$err" | sed -n '1p' | grep -q '^gc-runtime-rex:' || fail "unsupported-platform failure did not LEAD with the shim's gc-runtime-rex: prefix"
+printf '%s' "$err" | grep -q riscv64 || fail "unsupported-platform error did not name the rejected arch after the prefix"
+
+# Deadline: a fetch that stalls far past the budget is REAPED BY PID at the
+# budget — install.sh runs the fetch as a direct background child and kills that
+# child (no job control, no tty), so the stalled curl does not outlive the
+# budget. The call returns within a few seconds (near the budget), not after the
+# child's full 30 s sleep, and before gc's 30 s protocol deadline, naming the
+# timeout cause and the gc doctor --fix remedy. GC_RUNTIME_INSTALL_DEADLINE
+# shrinks the budget; FAKE_CURL_SLEEP stalls the fake transport well past it.
+rm -rf "$cache"
+start=$(date +%s)
+if err=$(run_shim GC_RUNTIME_INSTALL_DEADLINE=1 FAKE_CURL_SLEEP=30 2>&1 >/dev/null); then
+  fail "shim did not fail on a stalled fetch"
+fi
+elapsed=$(( $(date +%s) - start ))
+# A budget-sized bound (not merely < 30) proves the stalled fetch child was
+# reaped by PID, not left running while only the install.sh shell was killed.
+[ "$elapsed" -lt 10 ] || fail "stalled fetch was not reaped at the budget ($elapsed s; the child outlived the kill)"
+printf '%s' "$err" | grep -qi 'tim\|deadline\|slow' || fail "timeout message does not name the cause"
+printf '%s' "$err" | grep -q 'gc doctor --fix' || fail "timeout message does not give the --fix remedy"
+# No orphaned child finishes the install after we returned: wait out a moment and
+# prove the cache stayed empty — no binary, no partial staging file.
+sleep 2
+[ -e "$binpath" ] && fail "a reaped install still produced a cached binary after return"
+[ -z "$(ls "$cache/$pv/$plat"/.gc-runtime-rex.* 2>/dev/null)" ] || fail "a reaped install left a partial staging file"
+
+# Fast success is NOT held open: a cold install that finishes well under a large
+# budget returns promptly (install.sh reaps its own per-fetch watchdog), not
+# after the budget.
+rm -rf "$cache"
+start=$(date +%s)
+run_shim GC_RUNTIME_INSTALL_DEADLINE=20 >/dev/null 2>&1 || fail "fast cold install failed"
+elapsed=$(( $(date +%s) - start ))
+[ "$elapsed" -lt 10 ] || fail "fast install was held open by the watchdog ($elapsed s ~ the 20 s budget)"
+
+# Both gc entry points share the install path, so BOTH 'protocol' and 'start'
+# surface the same cause-naming timeout + --fix remedy on a stalled fetch.
+for op in protocol start; do
+  rm -rf "$cache"
+  if err=$(env PATH="$fake_tools:$PATH" HOME="$work/home" \
+      FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+      FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
+      GC_RUNTIME_INSTALL_DEADLINE=1 FAKE_CURL_SLEEP=30 \
+      sh "$shim" "$op" 2>&1 >/dev/null); then
+    fail "shim ($op) did not fail on a stalled fetch"
+  fi
+  printf '%s' "$err" | grep -q 'gc doctor --fix' || fail "shim ($op) timeout message lacks the --fix remedy"
+done
+
+# Concurrency: two cold calls together; both end with a complete, runnable
+# cached binary, no partial staging file remains, and the binary runs.
+rm -rf "$cache"
+run_shim >/dev/null 2>&1 & p1=$!
+run_shim >/dev/null 2>&1 & p2=$!
+wait "$p1" || fail "concurrent call 1 failed"
+wait "$p2" || fail "concurrent call 2 failed"
+[ -x "$binpath" ] || fail "concurrent calls left no valid cached binary"
+[ -z "$(ls "$cache/$pv/$plat"/.gc-runtime-rex.* 2>/dev/null)" ] || fail "concurrent install left a partial staging file"
+"$binpath" protocol | grep -q '"version":0' || fail "cached binary after concurrent install is not a complete executable"
+
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases
