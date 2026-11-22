@@ -589,6 +589,8 @@ func split(w *fakestate.Window, anchor, id, direction, side string) {
 
 func blockClose(dir string, in map[string]any) (any, error) {
 	var reply any
+	var pid int
+	var blockID string
 	err := update(dir, func(st *fakestate.State) error {
 		s, w, b, err := st.Block(str(in, "block_id"))
 		if err != nil {
@@ -597,13 +599,19 @@ func blockClose(dir string, in map[string]any) (any, error) {
 		if boolOf(in, "keep_last") && len(w.Blocks) == 1 {
 			return fmt.Errorf("%w: cannot close the last block in window %s", fakestate.ErrFail, w.ID)
 		}
-		signalPane(b, syscall.SIGTERM)
+		pid, blockID = b.PID, b.ID
 		s.Remove(b.ID)
 		st.Revision++
 		reply = map[string]any{"block_id": b.ID, "revision": st.Revision}
 		return nil
 	})
-	return reply, err
+	if err != nil {
+		return nil, err
+	}
+	// Stop the pane outside the state lock: the record is gone, so nothing
+	// else can reach its process group.
+	stopPane(dir, blockID, pid)
+	return reply, nil
 }
 
 func blockEvent(dir string, in map[string]any) error {
@@ -949,6 +957,24 @@ func signalPane(b *fakestate.Block, sig syscall.Signal) {
 	if b.PID > 0 {
 		_ = syscall.Kill(-b.PID, sig)
 	}
+}
+
+// stopPane ends a closed block's process group. A command that ignores
+// SIGTERM must not outlive its record, so a bounded grace period is followed
+// by SIGKILL. The wait ends early when the wrapper records the exit.
+func stopPane(dir, blockID string, pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(fakestate.ExitPath(dir, blockID)); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 func killSession(dir string, s *fakestate.Session) {

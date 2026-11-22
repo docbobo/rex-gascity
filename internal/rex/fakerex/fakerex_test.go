@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -432,4 +433,29 @@ func TestConcurrentInvocations(t *testing.T) {
 			t.Errorf("session %s = %+v, want one window and block", s.ID, s.Windows)
 		}
 	}
+}
+
+// TestCloseBlockStopsTermIgnoringPane proves block.close does not orphan a pane
+// that ignores SIGTERM: the fake escalates after a bounded grace period.
+func TestCloseBlockStopsTermIgnoringPane(t *testing.T) {
+	f := fakerex.New(t)
+	c, sid, bid := start(t, f, "stubborn", "/bin/sh", "-c", `trap "" TERM; while :; do sleep 0.1; done`)
+	info, err := c.BlockProcess(ctx(t), sid, bid)
+	if err != nil || info.Foreground == nil || info.Foreground.PID <= 0 {
+		t.Fatalf("BlockProcess = (%+v, %v), want the launched pid", info, err)
+	}
+	pid := info.Foreground.PID
+	// Let the shell install its trap before the close signal arrives.
+	time.Sleep(200 * time.Millisecond)
+	if err := c.CloseBlock(ctx(t), sid, bid); err != nil {
+		t.Fatalf("CloseBlock: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pane %d still runs after close", pid)
 }
