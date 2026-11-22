@@ -4,31 +4,26 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/provider"
-	"github.com/docbobo/rex-gascity/internal/rex/cli"
 )
 
 // TestE2ERigSplitGrid starts several agents in one rig on a live Rex server
 // and checks the balanced split policy: every pane keeps a usable share of the
 // tab. The old rule always halved the first pane, so the smallest pane would
-// shrink exponentially. It is opt-in because it mutates the user's Rex server:
+// shrink exponentially. It runs against the fake by default; REX_E2E=1
+// selects the live server, which mutates it:
 //
-//	REX_E2E=1 go test ./internal/provider -run TestE2ERigSplitGrid -v
+//	go test ./internal/provider -run TestE2ERigSplitGrid -v
 func TestE2ERigSplitGrid(t *testing.T) {
-	if os.Getenv("REX_E2E") == "" {
-		t.Skip("set REX_E2E=1 to run against the live Rex server")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	const agents = 8
 	city := fmt.Sprintf("e2e-grid-%d", time.Now().UnixNano())
-	client := cli.New()
+	client, _ := e2eServer(t)
 	p := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
 
 	names := make([]string, agents)
@@ -39,7 +34,7 @@ func TestE2ERigSplitGrid(t *testing.T) {
 		for _, name := range names {
 			_ = p.Stop(ctx, name)
 		}
-		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+		e2eKillCity(ctx, client, city)
 	}()
 
 	for _, name := range names {

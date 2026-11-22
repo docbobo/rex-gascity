@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,19 +23,16 @@ import (
 // the agent prints well past Rex's single-reply cap, so Peek only returns the
 // sentinel at the end if the adapter follows format paging to completion.
 //
-// It is opt-in because it mutates the user's Rex server:
+// It runs against the fake rex server by default, so it needs no Rex app and
+// no rex on PATH. REX_E2E=1 selects the live server, which mutates it:
 //
-//	REX_E2E=1 go test ./internal/provider -run TestE2E -v
+//	go test ./internal/provider -run TestE2E -v
 func TestE2EAgentLifecycle(t *testing.T) {
-	if os.Getenv("REX_E2E") == "" {
-		t.Skip("set REX_E2E=1 to run against the live Rex server")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	city := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
-	client := cli.New()
+	client, _ := e2eServer(t)
 	p := provider.New(city, client)
 
 	const (
@@ -53,7 +49,7 @@ func TestE2EAgentLifecycle(t *testing.T) {
 	defer func() {
 		_ = p.Stop(ctx, name)
 		// Best-effort cleanup of the scratch city session.
-		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+		e2eKillCity(ctx, client, city)
 	}()
 
 	if err := p.Start(ctx, name, provider.Config{
@@ -91,11 +87,11 @@ func TestE2EAgentLifecycle(t *testing.T) {
 	if running {
 		t.Error("IsRunning = true after Stop, want false")
 	}
-	if out, err = p.Peek(ctx, name); err != nil {
-		t.Fatalf("Peek after Stop: %v", err)
-	}
-	if out != "" {
-		t.Errorf("Peek after Stop = %q, want empty", out)
+	// A stopped pane has no screen: peek answers ErrNoScreen, never an empty
+	// screen (provider.go PeekLines, dispatch_test.go
+	// TestObserveV1PeekNoScreenAfterStop).
+	if out, err = p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
+		t.Errorf("Peek after Stop = %q, %v; want empty, ErrNoScreen", out, err)
 	}
 }
 
@@ -119,26 +115,26 @@ func waitForSentinel(ctx context.Context, t *testing.T, p *provider.Provider, na
 
 // TestE2EInputPath drives a live Rex server through the Phase 2 input path:
 // nudge a shell through a command, start a long foreground command, interrupt
-// it, and prove the shell regained control. It is opt-in because it mutates the
-// user's Rex server:
+// it, and prove the shell regained control. It needs a real PTY: the fake's
+// send-key "ctrl+c" is a process-group signal, so it only runs live, against a
+// server it mutates:
 //
 //	REX_E2E=1 go test ./internal/provider -run TestE2EInputPath -v
 func TestE2EInputPath(t *testing.T) {
-	if os.Getenv("REX_E2E") == "" {
-		t.Skip("set REX_E2E=1 to run against the live Rex server")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	client, live := e2eServer(t)
+	if !live {
+		t.Skip("fake-rex has no PTY: ctrl+c is a process-group signal, so the shell cannot regain the terminal")
+	}
 	city := fmt.Sprintf("e2e-in-%d", time.Now().UnixNano())
-	client := cli.New()
 	p := provider.New(city, client)
 
 	const name = "Indigo--dog-1"
 	defer func() {
 		_ = p.Stop(ctx, name)
-		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+		e2eKillCity(ctx, client, city)
 	}()
 
 	if err := p.Start(ctx, name, provider.Config{
@@ -245,29 +241,30 @@ func nudgeUntilOutput(ctx context.Context, t *testing.T, p *provider.Provider, n
 // TestE2EIdentityActivityAttachment drives a live Rex server through the
 // Phase 3 surface: binding identity across a process boundary, stale-binding
 // re-resolution, last activity, attachment, and teardown that leaves the
-// shared city session alone. It is opt-in:
+// shared city session alone. It runs against the fake by default; REX_E2E=1
+// selects the live server, which mutates it:
 //
-//	REX_E2E=1 go test ./internal/provider -run TestE2EIdentityActivityAttachment -v
+//	go test ./internal/provider -run TestE2EIdentityActivityAttachment -v
 func TestE2EIdentityActivityAttachment(t *testing.T) {
-	if os.Getenv("REX_E2E") == "" {
-		t.Skip("set REX_E2E=1 to run against the live Rex server")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	city := fmt.Sprintf("e2e-p3-%d", time.Now().UnixNano())
 	stateDir := t.TempDir()
-	p := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
+	client, _ := e2eServer(t)
+	p := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
 
 	const name = "Indigo--dog-1"
 	defer func() {
 		_ = p.Stop(ctx, name)
-		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+		e2eKillCity(ctx, client, city)
 	}()
 
+	// The shell prints one line so the pane has a screen to read on both
+	// servers: a live block always renders its launch, the fake renders only
+	// what the program writes.
 	if err := p.Start(ctx, name, provider.Config{
-		Argv:    []string{"/bin/sh"},
+		Argv:    []string{"/bin/sh", "-c", "echo PHASE3-READY; exec sleep 120"},
 		WorkDir: os.TempDir(),
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -278,7 +275,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if !ok {
 		t.Fatal("Binding after Start: not found")
 	}
-	p2 := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
+	p2 := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
 	b2, ok := p2.Binding(name)
 	if !ok {
 		t.Fatal("second provider: Binding not found in shared state dir")
@@ -345,7 +342,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IsAttached: %v", err)
 	}
-	clients, err := cli.New().ListClients(ctx, b1.SessionID)
+	clients, err := client.ListClients(ctx, b1.SessionID)
 	if err != nil {
 		t.Fatalf("ListClients: %v", err)
 	}
@@ -360,7 +357,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 		if !hasApp {
 			t.Error("IsAttached = true with no app client on the session")
 		}
-		view, err := cli.New().SessionView(ctx, b1.SessionID)
+		view, err := client.SessionView(ctx, b1.SessionID)
 		if err != nil {
 			t.Fatalf("SessionView: %v", err)
 		}
@@ -396,7 +393,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if out, err := p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
 		t.Errorf("Peek after Stop = %q, %v; want empty, ErrNoScreen", out, err)
 	}
-	e2eExpectSessionGoneAfterStop(ctx, t, city)
+	e2eExpectSessionGoneAfterStop(ctx, t, client, city)
 }
 
 // e2eP3WriteStale overwrites name's sidecar binding with bogus window and
@@ -425,9 +422,9 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 // e2eExpectSessionGoneAfterStop checks the GCREX-31 teardown rule after the
 // last pane of a city is stopped: the provider removes the canonical gc:<city>
 // session behind its fail-closed empty check.
-func e2eExpectSessionGoneAfterStop(ctx context.Context, t *testing.T, city string) {
+func e2eExpectSessionGoneAfterStop(ctx context.Context, t *testing.T, client *cli.Client, city string) {
 	t.Helper()
-	sessions, err := cli.New().ListSessions(ctx)
+	sessions, err := client.ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -440,9 +437,9 @@ func e2eExpectSessionGoneAfterStop(ctx context.Context, t *testing.T, city strin
 }
 
 // e2eHasSession reports whether a Rex session labelled label exists.
-func e2eHasSession(ctx context.Context, t *testing.T, label string) bool {
+func e2eHasSession(ctx context.Context, t *testing.T, client *cli.Client, label string) bool {
 	t.Helper()
-	sessions, err := cli.New().ListSessions(ctx)
+	sessions, err := client.ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -456,9 +453,9 @@ func e2eHasSession(ctx context.Context, t *testing.T, label string) bool {
 
 // e2eWindowsLabelled returns the windows in the session view whose label is
 // label.
-func e2eWindowsLabelled(ctx context.Context, t *testing.T, sessionID rex.SessionID, label string) []rex.Window {
+func e2eWindowsLabelled(ctx context.Context, t *testing.T, client *cli.Client, sessionID rex.SessionID, label string) []rex.Window {
 	t.Helper()
-	view, err := cli.New().SessionView(ctx, sessionID)
+	view, err := client.SessionView(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("SessionView: %v", err)
 	}
@@ -476,25 +473,22 @@ func e2eWindowsLabelled(ctx context.Context, t *testing.T, sessionID rex.Session
 // removes the tab. IsRunning must report false without an error, Peek must
 // return nothing, the city session must survive the self-exit (no Stop ran),
 // the empty rig tab must be gone, and a later Stop must leave the empty
-// canonical session in place (GCREX-65). It is opt-in because it mutates the
-// user's Rex server:
+// canonical session in place (GCREX-65). It runs against the fake by default;
+// REX_E2E=1 selects the live server, which mutates it:
 //
-//	REX_E2E=1 go test ./internal/provider -run TestE2EAgentExitLiveness -v
+//	go test ./internal/provider -run TestE2EAgentExitLiveness -v
 func TestE2EAgentExitLiveness(t *testing.T) {
-	if os.Getenv("REX_E2E") == "" {
-		t.Skip("set REX_E2E=1 to run against the live Rex server")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	city := fmt.Sprintf("e2e-exit-%d", time.Now().UnixNano())
-	p := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
+	client, live := e2eServer(t)
+	p := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
 
 	const name = "Indigo--dog-1"
 	defer func() {
 		_ = p.Stop(ctx, name)
-		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+		e2eKillCity(ctx, client, city)
 	}()
 
 	if err := p.Start(ctx, name, provider.Config{
@@ -525,52 +519,57 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	if out, err := p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
-		t.Errorf("Peek after exit = %q, %v; want empty, ErrNoScreen", out, err)
+	// fake-rex records the program's exit but keeps the block; only real Rex
+	// closes the pane, so this vanished-pane assertion needs the live server.
+	if live {
+		if out, err := p.Peek(ctx, name); !errors.Is(err, provider.ErrNoScreen) || out != "" {
+			t.Errorf("Peek after exit = %q, %v; want empty, ErrNoScreen", out, err)
+		}
 	}
 
 	// Self-exit with no Stop leaves the empty session shell: no pane-exit
 	// watcher destroys it (GCREX-65 Decision 4).
-	if !e2eHasSession(ctx, t, "gc:"+city) {
+	if !e2eHasSession(ctx, t, client, "gc:"+city) {
 		t.Errorf("session gc:%s gone after the agent exited without Stop; it must survive", city)
 	}
 
 	// Closing the last pane removes the rig tab. Allow a moment for the
-	// server to finish the removal.
-	var left []rex.Window
-	deadline = time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if left = e2eWindowsLabelled(ctx, t, b.SessionID, "Rig: Indigo"); len(left) == 0 {
-			break
+	// server to finish the removal. fake-rex keeps the block after the program
+	// exits, so this needs the live server too.
+	if live {
+		var left []rex.Window
+		deadline = time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			if left = e2eWindowsLabelled(ctx, t, client, b.SessionID, "Rig: Indigo"); len(left) == 0 {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if len(left) != 0 {
-		t.Errorf("tab Indigo still present after its last pane closed: %+v", left)
+		if len(left) != 0 {
+			t.Errorf("tab Indigo still present after its last pane closed: %+v", left)
+		}
 	}
 
 	if err := p.Stop(ctx, name); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	e2eExpectSessionGoneAfterStop(ctx, t, city)
+	e2eExpectSessionGoneAfterStop(ctx, t, client, city)
 }
 
 // TestE2EParallelStarts starts four agents in one rig concurrently, as gc
 // does, and checks that topology creation does not race: one rig tab holding
-// four distinct blocks. It is opt-in because it mutates the user's Rex server:
+// four distinct blocks. It runs against the fake by default; REX_E2E=1
+// selects the live server, which mutates it:
 //
-//	REX_E2E=1 go test ./internal/provider -run TestE2EParallelStarts -v
+//	go test ./internal/provider -run TestE2EParallelStarts -v
 func TestE2EParallelStarts(t *testing.T) {
-	if os.Getenv("REX_E2E") == "" {
-		t.Skip("set REX_E2E=1 to run against the live Rex server")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	const agents = 4
 	city := fmt.Sprintf("e2e-par-%d", time.Now().UnixNano())
-	p := provider.New(city, cli.New(), provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
+	client, _ := e2eServer(t)
+	p := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(t.TempDir())))
 
 	names := make([]string, agents)
 	for i := range names {
@@ -580,7 +579,7 @@ func TestE2EParallelStarts(t *testing.T) {
 		for _, name := range names {
 			_ = p.Stop(ctx, name)
 		}
-		_ = exec.CommandContext(ctx, "rex", "session", "kill", "gc:"+city).Run()
+		e2eKillCity(ctx, client, city)
 	}()
 
 	type startResult struct {
@@ -609,7 +608,7 @@ func TestE2EParallelStarts(t *testing.T) {
 	if !ok {
 		t.Fatalf("Binding %s: not found", names[0])
 	}
-	windows := e2eWindowsLabelled(ctx, t, first.SessionID, "Rig: Indigo")
+	windows := e2eWindowsLabelled(ctx, t, client, first.SessionID, "Rig: Indigo")
 	if len(windows) != 1 {
 		t.Fatalf("got %d windows labelled Indigo, want exactly 1: %+v", len(windows), windows)
 	}
@@ -634,5 +633,5 @@ func TestE2EParallelStarts(t *testing.T) {
 			t.Errorf("Stop %s: %v", name, err)
 		}
 	}
-	e2eExpectSessionGoneAfterStop(ctx, t, city)
+	e2eExpectSessionGoneAfterStop(ctx, t, client, city)
 }
