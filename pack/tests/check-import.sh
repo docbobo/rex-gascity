@@ -324,14 +324,23 @@ run_gc import install --city "$work/city-coldcache" >/dev/null ||
   fail "coldcache: import install failed"
 
 # Cold cache + no provider on PATH: the doctor reports missing with NO download
-# and NO cache write (read-only cold check).
+# and NO cache write (read-only cold check). --verbose prints the details that
+# carry the remediation.
 rm -rf "$coldcache"
 : > "$work/curl.log"
-FAKE_CURL_LOG=$work/curl.log \
-  run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-coldcache" >/dev/null 2>&1 &&
+if FAKE_CURL_LOG=$work/curl.log \
+  run_gc doctor --check rex-gascity-runtime:rex-binary --verbose \
+  --city "$work/city-coldcache" >"$work/cold-doctor.out" 2>&1; then
   fail "coldcache: cold doctor passed before any install"
+fi
+grep -q "the rex runtime provider is not yet installed" "$work/cold-doctor.out" ||
+  fail "coldcache: cold doctor does not report the not-yet-installed state: $(cat "$work/cold-doctor.out")"
+grep -q "gc doctor --fix" "$work/cold-doctor.out" ||
+  fail "coldcache: cold doctor remediation does not name gc doctor --fix: $(cat "$work/cold-doctor.out")"
+grep -q "start a session" "$work/cold-doctor.out" ||
+  fail "coldcache: cold doctor remediation does not name starting a session: $(cat "$work/cold-doctor.out")"
 [ -s "$work/curl.log" ] && fail "coldcache: cold doctor downloaded"
-[ -z "$(ls "$coldcache" 2>/dev/null)" ] || fail "coldcache: cold doctor wrote to the cache"
+[ ! -e "$coldcache" ] || fail "coldcache: cold doctor wrote to the cache"
 
 # A real gc-selected start installs through the pack-relative command AND runs
 # the conformance lifecycle against the fake rex backend (start/is-running/stop).
@@ -346,11 +355,16 @@ FAKE_CURL_LOG=$work/curl.log \
 # Warm: the rex-binary doctor check is GREEN with no --fix and no new fetch. The
 # green verdict depends on the `rex` wrapper answering the doctor's rex_version
 # probe at >= the pin; the bare fake would come back "version could not be
-# determined".
+# determined". A warning also exits 0 (only blocking failures change the exit
+# status), so assert the OK line, not the exit status alone.
 : > "$work/curl.log"
-FAKE_CURL_LOG=$work/curl.log \
-  run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-coldcache" >/dev/null 2>&1 ||
-  fail "coldcache: warm rex-binary doctor check was not green after a real start"
+if ! FAKE_CURL_LOG=$work/curl.log \
+  run_gc doctor --check rex-gascity-runtime:rex-binary --verbose \
+  --city "$work/city-coldcache" >"$work/warm-doctor.out" 2>&1; then
+  fail "coldcache: warm rex-binary doctor check failed after a real start: $(cat "$work/warm-doctor.out")"
+fi
+grep -q "the rex runtime provider and rex CLI are installed" "$work/warm-doctor.out" ||
+  fail "coldcache: warm rex-binary doctor check did not report OK: $(cat "$work/warm-doctor.out")"
 [ -s "$work/curl.log" ] && fail "coldcache: doctor fetched again after a warm start"
 
 # Separately, --fix warms the SAME cache (not $HOME/.local/bin).
