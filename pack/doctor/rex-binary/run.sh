@@ -43,26 +43,32 @@ normalize_version() {
   printf '%s' "$v"
 }
 
-# version_rank prints a comparable integer for MAJOR.MINOR.PATCH[-preview.N],
-# or nothing when the string is not that scheme. A release ranks above any
-# preview of the same MAJOR.MINOR.PATCH (999 beats preview.N).
-# ponytail: the packed rank works while patch < 1000 and preview.N < 999.
-# If the scheme grows beyond that, compare fields one at a time instead.
-version_rank() {
-  awk -v raw="$1" '
-    BEGIN {
-      v = raw
-      sub(/^v/, "", v)
-      sub(/\+.*$/, "", v)
-      if (v !~ /^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$/) exit
-      split(v, release, "-")
-      split(release[1], part, ".")
-      n = 999
-      if (release[2] != "") {
-        split(release[2], preview, ".")
-        n = preview[2]
+# version_cmp prints -1, 0 or 1 comparing the first argument against the
+# second as MAJOR.MINOR.PATCH[-preview.N]. It prints nothing when either string
+# is not that scheme. Fields compare one at a time, so no field has a packing
+# limit. A release ranks above any preview of the same MAJOR.MINOR.PATCH.
+version_cmp() {
+  awk -v a="$1" -v b="$2" '
+    function parse(s, v,   rel, pre) {
+      sub(/^v/, "", s)
+      sub(/\+.*$/, "", s)
+      if (s !~ /^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$/) return 0
+      split(s, rel, "-")
+      split(rel[1], v, ".")
+      v[4] = 999
+      if (rel[2] != "") {
+        split(rel[2], pre, ".")
+        v[4] = pre[2]
       }
-      printf "%d", part[1] * 1000000000 + part[2] * 1000000 + part[3] * 1000 + n
+      return 1
+    }
+    BEGIN {
+      if (!parse(a, av) || !parse(b, bv)) exit
+      for (i = 1; i <= 4; i++) {
+        if (av[i] + 0 < bv[i] + 0) { printf "-1"; exit }
+        if (av[i] + 0 > bv[i] + 0) { printf "1"; exit }
+      }
+      printf "0"
     }
   '
 }
@@ -206,14 +212,13 @@ else
     if [ -z "$installed_version" ]; then
       installed_version=$("$rex_path" version 2>/dev/null | head -n 1 | sed -n 's/^rex[[:space:]][[:space:]]*\([^[:space:]]*\).*/\1/p') || installed_version=
     fi
-    installed_rank=$(version_rank "$installed_version")
-    min_rank=$(version_rank "$min_version")
-    if [ -z "$installed_rank" ] || [ -z "$min_rank" ]; then
+    installed_rank=$(version_cmp "$installed_version" "$min_version")
+    if [ -z "$installed_rank" ]; then
       rex_status=warn
       rex_message="the rex CLI version could not be determined"
       rex_detail="rex: $rex_path (version could not be determined)"
       rex_remediation="The CLI reported no version. Update Rex so \`rex version --json\` prints a rex_version field."
-    elif [ "$installed_rank" -lt "$min_rank" ]; then
+    elif [ "$installed_rank" = -1 ]; then
       rex_status=error
       rex_message="the rex CLI is too old"
       rex_detail="rex: $rex_path reports version $installed_version, but the pack requires at least $min_version"
