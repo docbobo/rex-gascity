@@ -15,8 +15,13 @@
 # op) warns rather than errors, because the binary still handshakes; a
 # determined but different version is an error. A local `go install` from an
 # untagged tree reports a module pseudo-version, which will not match the
-# declared release version; build with `make build` (or `-ldflags
+# declared release version. Build with `make build` (or `-ldflags
 # "-X main.buildVersion=<version>"`) to stamp the pack's version.
+#
+# The rex CLI is compared against the pack's rex-min-version pin, not equality:
+# a newer CLI passes. The version comes from `rex version --json`'s rex_version
+# field, or the first line of `rex version` ("rex 0.1.0-preview.21") when
+# --json is unsupported. An older CLI is an error. An undeterminable one warns.
 #
 # Pack doctor protocol: exit 0 OK, 1 warning, 2 error; the first stdout line
 # is the message and later lines are details. Read-only: it never starts a
@@ -38,11 +43,37 @@ normalize_version() {
   printf '%s' "$v"
 }
 
-# The runtime command and the declared version. Fall back to the known binary
-# name if pack.toml cannot be read, so the check still reports something
-# useful; a missing declared version skips the comparison.
+# version_rank prints a comparable integer for MAJOR.MINOR.PATCH[-preview.N],
+# or nothing when the string is not that scheme. A release ranks above any
+# preview of the same MAJOR.MINOR.PATCH (999 beats preview.N).
+# ponytail: the packed rank works while patch < 1000 and preview.N < 999.
+# If the scheme grows beyond that, compare fields one at a time instead.
+version_rank() {
+  awk -v raw="$1" '
+    BEGIN {
+      v = raw
+      sub(/^v/, "", v)
+      sub(/\+.*$/, "", v)
+      if (v !~ /^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$/) exit
+      split(v, release, "-")
+      split(release[1], part, ".")
+      n = 999
+      if (release[2] != "") {
+        split(release[2], preview, ".")
+        n = preview[2]
+      }
+      printf "%d", part[1] * 1000000000 + part[2] * 1000000 + part[3] * 1000 + n
+    }
+  '
+}
+
+# The runtime command, the declared version, and the rex CLI minimum. Fall
+# back to the known binary name if pack.toml cannot be read, so the check
+# still reports something useful. A missing declared version skips the
+# provider comparison and a missing minimum skips the CLI comparison.
 command_name=
 declared_version=
+min_version=
 if [ -r "$pack_toml" ]; then
   command_name=$(
     awk -F'"' '
@@ -58,6 +89,11 @@ if [ -r "$pack_toml" ]; then
       in_pack && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
     ' "$pack_toml"
   )
+fi
+# The rex CLI minimum lives in its own file: gc decodes pack.toml strictly and
+# rejects an unknown key under [runtimes.rex], so the pin cannot sit there.
+if [ -r "$pack_dir/rex-min-version" ]; then
+  min_version=$(tr -d '[:space:]' < "$pack_dir/rex-min-version") || min_version=
 fi
 if [ -z "$command_name" ]; then
   command_name=gc-runtime-rex
@@ -146,15 +182,46 @@ fi
 # --- rex CLI -----------------------------------------------------------------
 
 rex_status=ok
+rex_message=
 rex_detail=
+rex_remediation=
 if [ -z "$rex_path" ]; then
   rex_status=error
+  rex_message="the rex CLI is not installed"
   rex_detail="\`$rex_name\` is not on PATH"
+  rex_remediation="Install Rex (https://rex.dev) and put \`rex\` on PATH, or set GC_REX_BIN to its path."
 elif [ ! -x "$rex_path" ]; then
   rex_status=error
+  rex_message="the rex CLI is not executable"
   rex_detail="$rex_path is not executable"
+  rex_remediation="Reinstall Rex (https://rex.dev) or set GC_REX_BIN to an executable."
 else
   rex_detail="rex: $rex_path"
+  if [ -n "$min_version" ]; then
+    installed_version=
+    version_json=$("$rex_path" version --json 2>/dev/null) || version_json=
+    if [ -n "$version_json" ]; then
+      installed_version=$(printf '%s\n' "$version_json" | sed -n 's/.*"rex_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    fi
+    if [ -z "$installed_version" ]; then
+      installed_version=$("$rex_path" version 2>/dev/null | head -n 1 | sed -n 's/^rex[[:space:]][[:space:]]*\([^[:space:]]*\).*/\1/p') || installed_version=
+    fi
+    installed_rank=$(version_rank "$installed_version")
+    min_rank=$(version_rank "$min_version")
+    if [ -z "$installed_rank" ] || [ -z "$min_rank" ]; then
+      rex_status=warn
+      rex_message="the rex CLI version could not be determined"
+      rex_detail="rex: $rex_path (version could not be determined)"
+      rex_remediation="The CLI reported no version. Update Rex so \`rex version --json\` prints a rex_version field."
+    elif [ "$installed_rank" -lt "$min_rank" ]; then
+      rex_status=error
+      rex_message="the rex CLI is too old"
+      rex_detail="rex: $rex_path reports version $installed_version, but the pack requires at least $min_version"
+      rex_remediation="Update Rex to $min_version or newer."
+    else
+      rex_detail="rex: $rex_path (version $installed_version)"
+    fi
+  fi
 fi
 
 # --- report, worst finding first --------------------------------------------
@@ -168,9 +235,9 @@ if [ "$provider_status" = error ]; then
 fi
 
 if [ "$rex_status" = error ]; then
-  echo "the rex CLI is not installed"
+  echo "$rex_message"
   echo "$rex_detail"
-  echo "Install Rex (https://rex.dev) and put \`rex\` on PATH, or set GC_REX_BIN to its path."
+  if [ -n "$rex_remediation" ]; then echo "$rex_remediation"; fi
   echo "$provider_detail"
   exit 2
 fi
@@ -179,7 +246,21 @@ if [ "$provider_status" = warn ]; then
   echo "$provider_message"
   echo "$provider_detail"
   if [ -n "$remediation" ]; then echo "$remediation"; fi
+  if [ "$rex_status" = warn ]; then
+    echo "$rex_message"
+    echo "$rex_detail"
+    if [ -n "$rex_remediation" ]; then echo "$rex_remediation"; fi
+  else
+    echo "$rex_detail"
+  fi
+  exit 1
+fi
+
+if [ "$rex_status" = warn ]; then
+  echo "$rex_message"
   echo "$rex_detail"
+  if [ -n "$rex_remediation" ]; then echo "$rex_remediation"; fi
+  echo "$provider_detail"
   exit 1
 fi
 
