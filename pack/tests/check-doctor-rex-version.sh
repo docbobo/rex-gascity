@@ -77,6 +77,11 @@ run_case 0.1.0-preview.999 0 >/dev/null
 # A release ranks above any preview of the same MAJOR.MINOR.PATCH.
 run_case "${min_version%%-*}" 0 >/dev/null
 
+# Version fields compare one at a time: a large patch never outranks a newer
+# minor component, which fixed multipliers used to get wrong.
+run_case 0.0.1000 2 >/dev/null
+run_case 0.1.0-preview.1000 0 >/dev/null
+
 # With --json unsupported, the `rex version` first line is the fallback.
 cat >"$tmp/rex" <<'EOF'
 #!/bin/sh
