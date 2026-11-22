@@ -30,6 +30,19 @@ version=$(
 )
 [ -n "$version" ] || fail "pack.toml declares no [pack] version"
 
+# The release assets are not stubs. install.sh refuses to replace a working
+# provider with one that cannot answer inventory, so the assets delegate every
+# other op to a real provider built from source. That needs the repo's Go
+# toolchain; the installers under test do not.
+command -v go >/dev/null 2>&1 ||
+  fail "go is required to build the provider the release assets delegate to"
+real_provider=$work/gc-runtime-rex
+(cd "$repo" && go build -o "$real_provider" ./cmd/gc-runtime-rex) ||
+  fail "cannot build ./cmd/gc-runtime-rex"
+fake_rex=$work/rex
+(cd "$repo" && go build -o "$fake_rex" ./internal/rex/fakerex/fakebinary) ||
+  fail "cannot build the fake rex"
+
 # --- fake toolchain ---------------------------------------------------------
 
 mkdir -p "$work/tools" "$work/tools-nogh" "$work/release"
@@ -111,16 +124,32 @@ chmod 755 "$work/tools/curl" "$work/tools/gh" "$work/tools/uname" "$work/tools/s
 # tools-nogh: the public path must work with curl alone.
 cp "$work/tools/curl" "$work/tools/uname" "$work/tools/sha256" "$work/tools-nogh/"
 
-# A release asset: answers the two ops the doctor check reads.
+# A release asset: serves the two ops the doctor check reads itself and
+# delegates the rest to the real provider, so install.sh's inventory guard
+# accepts it.
 make_asset() {
   cat > "$1" <<ASSET
 #!/bin/sh
 case "\$1" in
   protocol) printf '%s\n' '{"version":0,"capabilities":["report-attachment"]}' ;;
   version) printf '%s\n' '{"version":"$version"}' ;;
-  *) exit 2 ;;
+  *) exec "$real_provider" "\$@" ;;
 esac
 ASSET
+  chmod 755 "$1"
+}
+
+# A stub asset: the pre-fix asset shape. It answers protocol and version and
+# exits 2 for everything else, which fails the installer's inventory guard.
+make_stub() {
+  cat > "$1" <<STUB
+#!/bin/sh
+case "\$1" in
+  protocol) printf '%s\n' '{"version":0,"capabilities":["report-attachment"]}' ;;
+  version) printf '%s\n' '{"version":"$version"}' ;;
+  *) exit 2 ;;
+esac
+STUB
   chmod 755 "$1"
 }
 
@@ -176,6 +205,25 @@ reset_logs() {
   : > "$work/gh.log"
 }
 
+# assert_provider <path> <label>: the installed provider answers the ops the
+# supervisor calls every cycle, not only the two the doctor check reads.
+# inventory and observe are read-only and need only the fake rex on PATH.
+assert_provider() {
+  bindir=$work/assert-bin
+  mkdir -p "$bindir"
+  ln -sf "$fake_rex" "$bindir/rex"
+  ah=$work/assert-home-$2
+  mkdir -p "$ah"
+  inv=$(env -i HOME="$ah" PATH="$bindir" FAKEREX_STATE="$ah/state" "$1" inventory 2>&1) ||
+    fail "$2: installed provider does not answer inventory: $inv"
+  printf '%s' "$inv" | grep -q '"complete":true' ||
+    fail "$2: inventory is not a complete payload: $inv"
+  obs=$(env -i HOME="$ah" PATH="$bindir" FAKEREX_STATE="$ah/state" "$1" observe probe-session 2>&1) ||
+    fail "$2: installed provider does not answer observe: $obs"
+  printf '%s' "$obs" | grep -q '"state":' ||
+    fail "$2: observe is not a session state: $obs"
+}
+
 # --- arch and os mapping ----------------------------------------------------
 
 for pair in "Darwin arm64 darwin arm64" "Darwin x86_64 darwin amd64" \
@@ -189,6 +237,7 @@ for pair in "Darwin arm64 darwin arm64" "Darwin x86_64 darwin amd64" \
   target=$home/.local/bin/gc-runtime-rex
   [ -x "$target" ] || fail "install for $us/$um did not write $target"
   "$target" version | grep -q "$version" || fail "installed $us/$um binary does not report $version"
+  assert_provider "$target" "$us-$um"
   grep -q "/v$version/gc-runtime-rex_${os}_${arch}$" "$work/curl.log" ||
     fail "installer for $us/$um did not request the ${os}_${arch} asset: $(cat "$work/curl.log")"
   [ ! -s "$work/gh.log" ] || fail "public install for $us/$um used gh instead of curl"
@@ -220,6 +269,7 @@ FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$reuse:$nogh_path" ||
   fail "install failed when reusing an existing install directory: $out"
 "$reuse/gc-runtime-rex" version | grep -q "$version" ||
   fail "install did not replace the provider in the directory command -v reports"
+assert_provider "$reuse/gc-runtime-rex" reuse
 [ ! -e "$home/.local/bin/gc-runtime-rex" ] || fail "install wrote to ~/.local/bin although a provider was on PATH"
 
 # --- relative PATH entry ----------------------------------------------------
@@ -316,6 +366,35 @@ after=$(ls -i "$target" | awk '{print $1}')
 [ "$before" = "$after" ] || fail "repeat install replaced the binary (inode $before -> $after)"
 printf '%s' "$out" | grep -q "already installed" || fail "repeat install does not report success"
 
+# --- replace guard: a working provider survives a stub release --------------
+
+# A stub asset answers protocol and version but not inventory. Replacing a
+# working provider with it turns every supervisor cycle into a failure, so
+# the installer reports the conflict and leaves the provider in place.
+home=$work/home-guard
+reset_logs
+FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$nogh_path" ||
+  fail "guard case: first install failed: $out"
+target=$home/.local/bin/gc-runtime-rex
+cp "$target" "$work/guard-good"
+stubdir=$work/release-stub
+cp -R "$work/release/." "$stubdir/"
+make_stub "$stubdir/gc-runtime-rex_darwin_arm64"
+hex=$("$work/tools/sha256" "$stubdir/gc-runtime-rex_darwin_arm64")
+awk -v name=gc-runtime-rex_darwin_arm64 -v hex="$hex" '
+  $2 == name { $1 = hex }
+  { print }
+' "$stubdir/checksums.txt" > "$stubdir/checksums.txt.new"
+mv "$stubdir/checksums.txt.new" "$stubdir/checksums.txt"
+reset_logs
+if FAKE_RELEASE_DIR=$stubdir FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$nogh_path"; then
+  fail "guard case: install replaced a working provider with a stub asset: $out"
+fi
+printf '%s' "$out" | grep -q "refusing to replace" ||
+  fail "guard case: error does not report the conflict: $out"
+cmp -s "$target" "$work/guard-good" || fail "guard case: the working provider was replaced"
+assert_provider "$target" guard
+
 # --- repair: a matching but non-executable binary ---------------------------
 
 home=$work/home-repair
@@ -338,10 +417,8 @@ if ! command -v gc >/dev/null 2>&1; then
   echo "check-installer: skip doctor path: gc is not on PATH"
   exit 0
 fi
-if ! command -v rex >/dev/null 2>&1; then
-  echo "check-installer: skip doctor path: rex CLI is not on PATH"
-  exit 0
-fi
+# The fake rex stands in for the CLI. It needs no install and answers the
+# session state observe reads, so this path runs wherever gc is present.
 
 city=$work/city
 mkdir -p "$city"
@@ -350,7 +427,7 @@ printf '[workspace]\nname = "installer-check"\n\n[imports.rex]\nsource = "%s"\n'
 gc_bin=$(command -v gc)
 rexdir=$work/rex-bin
 mkdir -p "$rexdir"
-ln -sf "$(command -v rex)" "$rexdir/rex"
+ln -sf "$fake_rex" "$rexdir/rex"
 
 # No provider on PATH: the check names the installer.
 home=$work/home-doctor
@@ -379,6 +456,7 @@ env -i HOME="$home" PATH="$doctor_path" \
 target=$home/.local/bin/gc-runtime-rex
 [ -x "$target" ] || fail "gc doctor --fix did not install the provider"
 "$target" version | grep -q "$version" || fail "gc doctor --fix installed a binary that does not match pack.toml"
+assert_provider "$target" doctor
 out=$(env -i HOME="$home" PATH="$doctor_path" "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" 2>&1) ||
   fail "gc doctor is not green after --fix: $out"
 printf '%s' "$out" | grep -q "rex-gascity-runtime:rex-binary" || fail "gc doctor did not report the rex-gascity-runtime:rex-binary check"

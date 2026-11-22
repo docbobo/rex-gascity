@@ -180,6 +180,17 @@ actual=$(sha256_of "$tmp/$asset")
 [ "$actual" = "$expected" ] ||
   die "sha256 mismatch for $asset: release checksums.txt has $expected, download has $actual"
 
+# Never replace a working provider with an asset that cannot answer
+# inventory. A stub (a test fixture or a broken release) answers only
+# protocol and version; installing it turns every supervisor cycle into an
+# inventory/observe failure. Report the conflict instead.
+answers_inventory() {
+  [ -x "$1" ] && "$1" inventory >/dev/null 2>&1
+}
+if answers_inventory "$target" && ! answers_inventory "$tmp/$asset"; then
+  die "$target answers inventory, but $asset does not; refusing to replace a working gc-runtime-rex (remove $target first to force the install)"
+fi
+
 if [ -f "$target" ] && [ -x "$target" ] && [ "$(sha256_of "$target")" = "$expected" ]; then
   echo "gc-runtime-rex $version is already installed at $target"
 else
