@@ -150,6 +150,17 @@ if [ -n "${GC_RUNTIME_INSTALL_DEADLINE:-}" ]; then
   bounded=1
   install_deadline=$GC_RUNTIME_INSTALL_DEADLINE
   case $install_deadline in ''|*[!0-9]*) install_deadline=30 ;; esac
+  # Shell arithmetic reads a leading zero as an octal prefix, so an operator's
+  # "0308" would abort before any fetch. Strip the zeros: the digits are
+  # decimal, and the hook keeps its own (larger) value rather than the shim's
+  # [1,25] clamp.
+  while :; do
+    case $install_deadline in
+      0?*) install_deadline=${install_deadline#0} ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$install_deadline" ] || install_deadline=0
 else
   bounded=; install_deadline=30   # unused while unbounded
 fi

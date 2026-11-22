@@ -164,6 +164,21 @@ func TestRexBinaryDoctorFix(t *testing.T) {
 		}
 	})
 
+	t.Run("honors a decimal deadline override with leading zeros", func(t *testing.T) {
+		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
+		out := runFix(t, filepath.Join(packDir, "doctor", "rex-binary", "fix.sh"), packDir, map[string]string{
+			"PATH":                        isolatedPath(t, binDir),
+			"HOME":                        home,
+			"XDG_CACHE_HOME":              filepath.Join(home, ".cache"),
+			"FAKE_RELEASE":                releaseDir,
+			"FAKE_HTTP":                   "200",
+			"GC_RUNTIME_INSTALL_DEADLINE": "0308",
+		}, 0)
+		if _, err := os.Stat(cacheBinPath(t, home, "0.1.0")); err != nil {
+			t.Fatalf("leading-zero override did not warm the cache: %v\noutput:\n%s", err, out)
+		}
+	})
+
 	t.Run("falls back to gh when curl cannot read the release", func(t *testing.T) {
 		packDir, home, binDir, releaseDir := fixLayout(t, "0.1.0")
 		writeExecutable(t, filepath.Join(binDir, "gh"), []byte(fakeGH))
