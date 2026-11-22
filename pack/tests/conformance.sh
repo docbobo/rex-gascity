@@ -13,6 +13,12 @@
 # names the v2 requirements gc counted as unmet.
 set -eu
 
+# A run from inside a Rex session inherits REX_SERVER, REX_SESSION, REX_BLOCK
+# and GC_REX_CITY. They point the provider at the caller's live server and
+# make is-attached and kill-object see foreign clients and sessions, so drop
+# them: this run must test its own scratch city.
+unset REX_SERVER REX_SESSION REX_BLOCK GC_REX_CITY
+
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 pack=$(CDPATH= cd -- "$here/.." && pwd)
 gc=${GC_BIN:-gc}

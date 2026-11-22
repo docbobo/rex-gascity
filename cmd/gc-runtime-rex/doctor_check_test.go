@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// fakeDoctorProvider answers the two ops the rex:rex-binary check uses:
+// fakeDoctorProvider answers the two ops the rex-gascity-runtime:rex-binary check uses:
 // `protocol` with an RPP v0 handshake, and `version` with FAKE_VERSION_JSON.
 // FAKE_VERSION_EXIT makes `version` fail instead, standing in for an older
 // binary that has no `version` op.

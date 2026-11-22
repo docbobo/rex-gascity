@@ -361,7 +361,7 @@ reset_logs
 if out=$(env -i HOME="$home" PATH="$rexdir:$base_path" \
     FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
     FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" \
-    "$gc_bin" doctor --check rex:rex-binary --city "$city" --verbose 2>&1); then
+    "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" --verbose 2>&1); then
   fail "gc doctor passed with no provider installed: $out"
 fi
 printf '%s' "$out" | grep -q "install.sh" || fail "gc doctor does not name pack/install.sh: $out"
@@ -374,13 +374,13 @@ reset_logs
 env -i HOME="$home" PATH="$doctor_path" \
   FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
   FAKE_CURL_LOG="$work/curl.log" FAKE_GH_LOG="$work/gh.log" \
-  "$gc_bin" doctor --check rex:rex-binary --city "$city" --fix --verbose > "$work/fix.out" 2>&1 ||
+  "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" --fix --verbose > "$work/fix.out" 2>&1 ||
   { cat "$work/fix.out" >&2; fail "gc doctor --fix failed"; }
 target=$home/.local/bin/gc-runtime-rex
 [ -x "$target" ] || fail "gc doctor --fix did not install the provider"
 "$target" version | grep -q "$version" || fail "gc doctor --fix installed a binary that does not match pack.toml"
-out=$(env -i HOME="$home" PATH="$doctor_path" "$gc_bin" doctor --check rex:rex-binary --city "$city" 2>&1) ||
+out=$(env -i HOME="$home" PATH="$doctor_path" "$gc_bin" doctor --check rex-gascity-runtime:rex-binary --city "$city" 2>&1) ||
   fail "gc doctor is not green after --fix: $out"
-printf '%s' "$out" | grep -q "rex:rex-binary" || fail "gc doctor did not report the rex:rex-binary check"
+printf '%s' "$out" | grep -q "rex-gascity-runtime:rex-binary" || fail "gc doctor did not report the rex-gascity-runtime:rex-binary check"
 
 echo "check-installer: ok"

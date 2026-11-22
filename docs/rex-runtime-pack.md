@@ -8,7 +8,7 @@ The provider is distributed as a prebuilt binary on the pack's GitHub
 releases. A normal install needs no Go toolchain and no repository checkout.
 
 This file is enough for a new operator to reach a green
-`gc doctor --check rex:rex-binary`. The repository's
+`gc doctor --check rex-gascity-runtime:rex-binary`. The repository's
 [`rex-binary-install.md`](rex-binary-install.md) has the
 internals.
 
@@ -54,8 +54,8 @@ environment of the supervisor or controller that runs the city:
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
 gc import install
-gc doctor --check rex:rex-binary --fix
-gc doctor --check rex:rex-binary
+gc doctor --check rex-gascity-runtime:rex-binary --fix
+gc doctor --check rex-gascity-runtime:rex-binary
 gc-runtime-rex protocol
 gc import check
 ```
@@ -66,7 +66,7 @@ pack's `doctor/rex-binary/fix.sh`, which runs `pack/install.sh`. Run
 `sh pack/install.sh` yourself from the repository root if you prefer, or
 `sh ./install.sh` from the pack directory.
 
-A green `gc doctor --check rex:rex-binary` means the provider handshakes,
+A green `gc doctor --check rex-gascity-runtime:rex-binary` means the provider handshakes,
 its version matches `pack.toml`, and the `rex` CLI resolves. A full
 `gc doctor` also checks the other components of the city.
 
@@ -137,8 +137,8 @@ To upgrade, re-pin the import and reinstall:
 gc import remove rex
 gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 0.3.0
 gc import install
-gc doctor --check rex:rex-binary --fix
-gc doctor --check rex:rex-binary
+gc doctor --check rex-gascity-runtime:rex-binary --fix
+gc doctor --check rex-gascity-runtime:rex-binary
 ```
 
 To roll back, use the previous version in the same commands. While the
@@ -205,4 +205,4 @@ scope for GCREX-120. GitHub artifact attestations are a later option.
 | `sha256 mismatch` | The download is corrupt. Run the install again. |
 | `unsupported operating system` or `unsupported machine` | No asset exists for the host. Use macOS or Linux on amd64 or arm64. |
 | `... is not on PATH` warning | Add the named directory to `PATH`, including the supervisor's environment. |
-| Doctor reports a version mismatch | Re-run `gc doctor --check rex:rex-binary --fix`. The release for `pack.toml`'s version is the only accepted build. |
+| Doctor reports a version mismatch | Re-run `gc doctor --check rex-gascity-runtime:rex-binary --fix`. The release for `pack.toml`'s version is the only accepted build. |

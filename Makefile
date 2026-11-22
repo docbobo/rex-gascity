@@ -3,7 +3,7 @@ BIN := $(BIN_DIR)/gc-runtime-rex
 CITY_DIR ?= testdata/city
 GC_REX_CITY ?= rex-verify
 
-# The version the pack declares, stamped into the binary so the rex:rex-binary
+# The version the pack declares, stamped into the binary so the rex-gascity-runtime:rex-binary
 # doctor check can compare the installed provider against pack.toml. A build
 # without this stamp reports its module pseudo-version, which will not match.
 PACK_VERSION ?= $(shell awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $$2; exit}' pack/pack.toml)

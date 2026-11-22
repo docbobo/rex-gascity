@@ -65,7 +65,7 @@ func handshake() string {
 var buildVersion string
 
 // versionReport is the `version` op's reply: the build identity the
-// rex:rex-binary doctor check compares against the pack's declared version.
+// rex-gascity-runtime:rex-binary doctor check compares against the pack's declared version.
 // Version is empty when the build carries no module version (a local build
 // reports the Go placeholder "(devel)", which is not a version).
 type versionReport struct {

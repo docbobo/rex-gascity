@@ -281,10 +281,10 @@ run_gc import add "$source_url" --name rex --version "$version" \
   fail "doctor: gc import add failed"
 run_gc import install --city "$work/city-doctor" >/dev/null ||
   fail "doctor: gc import install failed"
-run_gc doctor --check rex:rex-binary --city "$work/city-doctor" --fix >/dev/null 2>&1 ||
+run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-doctor" --fix >/dev/null 2>&1 ||
   fail "doctor: gc doctor --fix failed"
 assert_provider_version "doctor"
-run_gc doctor --check rex:rex-binary --city "$work/city-doctor" >/dev/null ||
-  fail "doctor: rex:rex-binary is not green after --fix"
+run_gc doctor --check rex-gascity-runtime:rex-binary --city "$work/city-doctor" >/dev/null ||
+  fail "doctor: rex-gascity-runtime:rex-binary is not green after --fix"
 
 echo "check-import: ok"

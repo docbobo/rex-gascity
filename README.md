@@ -71,7 +71,7 @@ Then install the pack and the provider binary:
 
 ```sh
 gc import install --city /path/to/my-city
-gc doctor --check rex:rex-binary --city /path/to/my-city --fix
+gc doctor --check rex-gascity-runtime:rex-binary --city /path/to/my-city --fix
 ```
 
 To release:
@@ -147,12 +147,12 @@ session path shells out to `rex`, and the suite leaves no session behind. The
 archive is pinned by commit and checksum, so a newer preview never changes what
 CI tests.
 
-The pack also ships a `gc doctor` check named `rex:rex-binary`. It reports a
+The pack also ships a `gc doctor` check named `rex-gascity-runtime:rex-binary`. It reports a
 missing provider binary or `rex` CLI with a remediation instead of leaving the
 city's agents in an opaque `unknown` state:
 
 ```sh
-gc doctor --check rex:rex-binary --city /path/to/city
+gc doctor --check rex-gascity-runtime:rex-binary --city /path/to/city
 ```
 
 The check resolves the runtime command from `pack/pack.toml` (a bare name on

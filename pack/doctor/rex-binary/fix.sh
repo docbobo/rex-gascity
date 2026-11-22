@@ -1,5 +1,5 @@
 #!/bin/sh
-# gc doctor --fix remediation for the rex:rex-binary check: install the release
+# gc doctor --fix remediation for the rex-gascity-runtime:rex-binary check: install the release
 # asset that the pack version names. gc runs a fix with cwd at the pack
 # directory and GC_PACK_DIR/GC_CITY_PATH/GC_PACK_STATE_DIR in the environment
 # (internal/doctor/pack_checks.go, PackScriptCheck.Fix).

@@ -30,8 +30,8 @@ the `pack/` subdirectory as the pack root:
 gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 0.2.0
 export PATH="$HOME/.local/bin:$PATH"
 gc import install
-gc doctor --check rex:rex-binary --fix
-gc doctor --check rex:rex-binary
+gc doctor --check rex-gascity-runtime:rex-binary --fix
+gc doctor --check rex-gascity-runtime:rex-binary
 gc-runtime-rex version
 gc import check
 ```
@@ -129,8 +129,8 @@ To upgrade, re-pin the import and reinstall:
 gc import remove rex
 gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 0.3.0
 gc import install
-gc doctor --check rex:rex-binary --fix
-gc doctor --check rex:rex-binary
+gc doctor --check rex-gascity-runtime:rex-binary --fix
+gc doctor --check rex-gascity-runtime:rex-binary
 ```
 
 To roll back, import the previous tag and rerun the same commands.

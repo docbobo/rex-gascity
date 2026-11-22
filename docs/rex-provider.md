@@ -127,11 +127,11 @@ Always verify that the output includes `resolved runtime "rex" from pack ...`. I
 
 ### Doctor Check
 
-The pack registers a `gc doctor` check named `rex:rex-binary` (from
+The pack registers a `gc doctor` check named `rex-gascity-runtime:rex-binary` (from
 `pack/doctor/rex-binary/`). Run it directly, or as part of the full sweep:
 
 ```sh
-gc doctor --check rex:rex-binary --city /path/to/city
+gc doctor --check rex-gascity-runtime:rex-binary --city /path/to/city
 gc doctor --city /path/to/city
 ```
 
