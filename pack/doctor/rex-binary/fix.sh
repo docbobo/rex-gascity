@@ -34,6 +34,22 @@ fi
 # GENEROUS budget: a slow release the shim timed out on can finish here, and the
 # fetch stays bounded rather than hanging forever. Honor an operator override so
 # an even slower link can be given more.
+#
+# install.sh enforces that budget with a `sleep` watchdog; with no `sleep` on
+# PATH it degrades to an UNBOUNDED foreground fetch. That fallback is for a
+# manual run, not for --fix: a stalled fetch would hang the fix forever. Refuse
+# before the fetch instead, naming the cause. --from-source installs a local
+# build and never fetches, so it stays allowed.
+case " $* " in
+  *" --from-source "*) ;;
+  *)
+    command -v sleep >/dev/null 2>&1 || {
+      echo "rex-binary fix: cannot bound the install: 'sleep' is not on PATH, so a stalled fetch would hang this fix past its budget. Add 'sleep' to PATH, or install a build with 'sh $pack_dir/install.sh --from-source'." >&2
+      exit 1
+    }
+    ;;
+esac
+
 export GC_RUNTIME_INSTALL_DIR="$bin_dir"
 export GC_RUNTIME_INSTALL_DEADLINE="${GC_RUNTIME_INSTALL_DEADLINE:-300}"
 exec sh "$pack_dir/install.sh" "$@"

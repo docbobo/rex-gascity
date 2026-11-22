@@ -1,7 +1,7 @@
 # The rex runtime pack
 
 A Gas City runtime pack for [Rex](https://rex.dev). It registers one runtime,
-`rex`, whose provider binary `gc-runtime-rex` speaks RPP v0 and drives the
+`rex`. Its provider binary `gc-runtime-rex` speaks RPP v0 and drives the
 `rex` CLI.
 
 The provider is distributed as a prebuilt binary on the pack's GitHub
@@ -66,8 +66,10 @@ gc import check
 read-only. It probes the cached binary and never downloads. On a cold cache it
 reports "not yet installed, run `--fix` or start a session". `gc doctor --fix`
 runs the pack's `doctor/rex-binary/fix.sh`, which warms that same cache without
-waiting for a session. Run `sh pack/install.sh` yourself from the repository
-root if you prefer, or `sh ./install.sh` from the pack directory.
+waiting for a session. Only that cache counts as a repair. A manual
+`sh pack/install.sh` writes a PATH copy instead of warming the cache, so the
+next check still reports the provider as missing. Use the manual script only to
+put the provider on `PATH`.
 
 A green `gc doctor --check rex-gascity-runtime:rex-binary` means the provider handshakes,
 its version matches `pack.toml`, and the `rex` CLI resolves. A full

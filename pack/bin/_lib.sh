@@ -3,14 +3,32 @@
 # pack/doctor/rex-binary/fix.sh so both compute the SAME cache path. Sourcing
 # this file only defines functions; it has no side effects. POSIX sh.
 
-# gc_runtime_cache_root: print the cache root. GC_RUNTIME_CACHE_DIR wins; else
-# ${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity.
+# gc_runtime_cache_root: print the ABSOLUTE cache root. GC_RUNTIME_CACHE_DIR
+# wins; else ${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity. Returns 1 with the
+# cause on stderr when no root resolves, so a caller never mistakes a
+# diagnostic line for a path.
 gc_runtime_cache_root() {
   if [ -n "${GC_RUNTIME_CACHE_DIR:-}" ]; then
-    printf '%s' "$GC_RUNTIME_CACHE_DIR"
-  else
-    printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity"
+    # A relative override means a different directory for each caller: the shim
+    # runs from the agent work dir, gc runs --fix from the pack dir. Reject it
+    # rather than anchor it, because no single base is right for both.
+    case $GC_RUNTIME_CACHE_DIR in
+      /*) printf '%s' "$GC_RUNTIME_CACHE_DIR"; return 0 ;;
+    esac
+    echo "GC_RUNTIME_CACHE_DIR must be an absolute path (got: $GC_RUNTIME_CACHE_DIR)" >&2
+    return 1
   fi
+  if [ -n "${XDG_CACHE_HOME:-}" ]; then
+    case $XDG_CACHE_HOME in
+      /*) printf '%s/rex-gascity' "$XDG_CACHE_HOME"; return 0 ;;
+    esac
+    # XDG says a relative value is invalid; ignore it and use HOME instead.
+  fi
+  if [ -n "${HOME:-}" ]; then
+    printf '%s' "$HOME/.cache/rex-gascity"; return 0
+  fi
+  echo "cannot locate the rex runtime cache: set an absolute GC_RUNTIME_CACHE_DIR, XDG_CACHE_HOME, or HOME" >&2
+  return 1
 }
 
 # gc_runtime_platform: print "<os>-<arch>" for the release asset, or print a
@@ -35,5 +53,6 @@ gc_runtime_platform() {
 # Returns 1 (platform error already on stderr) when the platform is unsupported.
 gc_runtime_bin_dir() {
   _plat=$(gc_runtime_platform) || return 1
-  printf '%s/%s/%s' "$(gc_runtime_cache_root)" "$1" "$_plat"
+  _root=$(gc_runtime_cache_root) || return 1
+  printf '%s/%s/%s' "$_root" "$1" "$_plat"
 }

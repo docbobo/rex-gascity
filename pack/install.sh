@@ -69,14 +69,25 @@ else
     [ -n "${HOME:-}" ] || die "HOME is not set; cannot choose the default install directory"
     target_dir=$HOME/.local/bin
   fi
-  # The FALLBACK can be a link to the shipped shim too (~/.local/bin -> pack/bin).
-  # Resolve the final choice physically before any write.
-  target_dir_phys=$(CDPATH= cd -- "$target_dir" 2>/dev/null && pwd -P) || target_dir_phys=$target_dir
-  [ "$target_dir_phys" != "$pack_bin" ] ||
-    die "refusing to install into $target_dir: it is the pack's shipped shim directory; set GC_RUNTIME_INSTALL_DIR or remove it from PATH"
 fi
 target=$target_dir/gc-runtime-rex
 mkdir -p "$target_dir" || die "cannot create $target_dir"
+
+# Guard the FINAL destination for EVERY branch, including an explicit
+# GC_RUNTIME_INSTALL_DIR: that dir can be pack/bin or an alias of it, and
+# --from-source would pass it to go install as GOBIN and replace the tracked
+# shim. Compare PHYSICAL identities (pwd -P), so a PATH entry or alias that is a
+# symlink to pack/bin is caught too.
+target_dir_phys=$(CDPATH= cd -- "$target_dir" 2>/dev/null && pwd -P) || die "cannot resolve $target_dir"
+[ "$target_dir_phys" != "$pack_bin" ] ||
+  die "refusing to install into $target_dir: it is the pack's shipped shim directory; choose another directory"
+
+# A directory at the target path passes -x, so the shim would try to execute it,
+# and mv would move the staged file INSIDE it and report success. Refuse and
+# name the entry to remove.
+if [ -d "$target" ]; then
+  die "$target is a directory, not the provider binary; remove that directory, then retry"
+fi
 
 warn_path() {
   shadow=
@@ -165,16 +176,19 @@ else
   bounded=; install_deadline=30   # unused while unbounded
 fi
 
-# Detect a working clock ONCE while bounded. Without date, fall back to a
-# per-fetch slice so the fetches still share the budget. The slice is ALWAYS
-# defined: a later clock read can fail too, and fetch_budget must still have a
-# valid duration (a negative or empty one makes `sleep` fail and the watchdog
-# never signals the child).
-fetch_slice=$(( install_deadline / 3 )); [ "$fetch_slice" -gt 0 ] || fetch_slice=1
+# The at-most-3 fetches (checksums, asset, gh fallback) share ONE budget. With a
+# working clock each fetch gets the time that is left. A clock that worked at the
+# start and LATER fails must not restart the budget: the remaining time is
+# unknown, so next_fetch_budget returns 1 and the bounded install stops with a
+# cause. Without a clock at all, each fetch gets an equal share of what earlier
+# fetches left, so the slices together never exceed the budget (a 1 s floor on
+# every slice would let three attempts outlast a budget smaller than 3).
 if [ -n "$bounded" ] && fetch_start=$(date +%s 2>/dev/null) && [ -n "$fetch_start" ]; then
   have_clock=1
 else
   have_clock=; fetch_start=
+  clockless_left=$install_deadline
+  clockless_attempts=3
 fi
 
 # Detect sleep ONCE while bounded. Without it the watchdog cannot run, so the
@@ -185,17 +199,30 @@ else
   have_sleep=
 fi
 
-# fetch_budget: seconds left in the shared budget. A missing or non-numeric
-# clock reading falls back to fetch_start (keep the full budget) and then to
-# the slice, so a later `date` failure never yields an invalid duration.
-fetch_budget() {
-  [ -n "$have_clock" ] || { printf '%s' "$fetch_slice"; return; }
-  now=$(date +%s 2>/dev/null) || now=
-  case $now in ''|*[!0-9]*) now=${fetch_start:-} ;; esac
-  [ -n "$now" ] || { printf '%s' "$fetch_slice"; return; }
-  left=$(( fetch_start + install_deadline - now ))
-  [ "$left" -gt 0 ] || left=1
-  printf '%s' "$left"
+# next_fetch_budget: set budget_for_next to the seconds for the next fetch, or
+# return 1 when a working clock became unreadable. budget_for_next=0 means the
+# budget is exhausted: run_bounded reaps without launching the request.
+budget_for_next=0
+next_fetch_budget() {
+  if [ -n "$have_clock" ]; then
+    now=$(date +%s 2>/dev/null) || now=
+    case $now in ''|*[!0-9]*) return 1 ;; esac
+    budget_for_next=$(( fetch_start + install_deadline - now ))
+  else
+    if [ "$clockless_attempts" -le 0 ]; then budget_for_next=0; return 0; fi
+    budget_for_next=$(( (clockless_left + clockless_attempts - 1) / clockless_attempts ))
+    clockless_left=$(( clockless_left - budget_for_next ))
+    clockless_attempts=$(( clockless_attempts - 1 ))
+  fi
+  [ "$budget_for_next" -gt 0 ] || budget_for_next=0
+  return 0
+}
+
+# A lost clock stops the bounded install with the cause instead of giving the
+# next fetch a fresh budget that could outlive gc's handshake deadline.
+next_fetch_budget_or_die() {
+  next_fetch_budget ||
+    die "cannot read the clock (date) partway through a bounded install; the remaining fetch budget is unknown, so the install stops instead of restarting the ${install_deadline}s budget (unset GC_RUNTIME_INSTALL_DEADLINE for an unbounded manual install)"
 }
 
 # run_bounded <secs> <cmd...>: run a fetch with a watchdog. Unbounded, or with
@@ -203,10 +230,13 @@ fetch_budget() {
 # direct background child so its PID is killable without job control. The fetch
 # keeps the caller's stdout/stderr redirections; the watchdog and its sleep run
 # under /dev/null so an orphaned sleep never holds the caller's pipe open.
-# Returns 124 when the watchdog reaped the fetch.
+# Returns 124 when the watchdog reaped the fetch, and without launching at all
+# when the shared budget is exhausted.
 run_bounded() {
   _secs=$1; shift
   if [ -z "$bounded" ] || [ -z "$have_sleep" ]; then "$@"; return $?; fi
+  case $_secs in ''|*[!0-9]*) _secs=0 ;; esac
+  [ "$_secs" -gt 0 ] || return 124
   "$@" </dev/null &
   _child=$!
   ( sleep "$_secs"; kill -TERM "$_child" 2>/dev/null
@@ -227,8 +257,9 @@ run_bounded() {
 fetch_curl() {
   failed_url=$2
   _codef=$tmp/.code.$$
+  next_fetch_budget_or_die
   _rc=0
-  run_bounded "$(fetch_budget)" curl -sSL -o "$1" -w '%{http_code}' "$2" 2>"$tmp/.curlerr" >"$_codef" || _rc=$?
+  run_bounded "$budget_for_next" curl -sSL -o "$1" -w '%{http_code}' "$2" 2>"$tmp/.curlerr" >"$_codef" || _rc=$?
   if [ "$_rc" -eq 124 ]; then
     rm -f "$_codef"
     curl_code=000; return 124
@@ -277,7 +308,8 @@ if command -v curl >/dev/null 2>&1; then
 fi
 if [ -z "$downloaded" ] && command -v gh >/dev/null 2>&1; then
   _rc=0
-  run_bounded "$(fetch_budget)" gh release download "v$version" -R "$repo" \
+  next_fetch_budget_or_die
+  run_bounded "$budget_for_next" gh release download "v$version" -R "$repo" \
     -p "$asset" -p checksums.txt --dir "$tmp" --clobber || _rc=$?
   [ "$_rc" -eq 124 ] && die_budget "$asset"
   if [ "$_rc" -eq 0 ]; then
@@ -322,11 +354,31 @@ chmod 0755 "$tmp/$asset" || die "cannot make $tmp/$asset executable"
 # inventory. A stub (a test fixture or a broken release) answers only
 # protocol and version; installing it turns every supervisor cycle into an
 # inventory/observe failure. Report the conflict instead.
+#
+# Both probes run under the same budget as the fetches: a provider published by
+# a concurrent cold install could otherwise block this installer past gc's
+# deadline. Returns 0 when the binary answers, 1 when it does not, and 2 when the
+# probe hit the budget — a timeout does NOT show that the provider is a stub.
 answers_inventory() {
-  [ -x "$1" ] && "$1" inventory >/dev/null 2>&1
+  _bin=$1
+  [ -f "$_bin" ] && [ -x "$_bin" ] || return 1
+  next_fetch_budget_or_die
+  _rc=0; run_bounded "$budget_for_next" "$_bin" inventory >/dev/null 2>&1 || _rc=$?
+  case $_rc in
+    0) return 0 ;;
+    124) return 2 ;;
+    *) return 1 ;;
+  esac
 }
-if answers_inventory "$target" && ! answers_inventory "$tmp/$asset"; then
-  die "$target answers inventory, but $asset does not; refusing to replace a working gc-runtime-rex (remove $target first to force the install)"
+_rc=0; answers_inventory "$target" || _rc=$?
+[ "$_rc" -ne 2 ] ||
+  die "$target did not answer 'inventory' inside the ${install_deadline}s budget; an unresponsive provider is not a stub, so nothing is replaced (raise GC_RUNTIME_INSTALL_DEADLINE to probe it)"
+if [ "$_rc" -eq 0 ]; then
+  _rc=0; answers_inventory "$tmp/$asset" || _rc=$?
+  [ "$_rc" -ne 1 ] ||
+    die "$target answers inventory, but $asset does not; refusing to replace a working gc-runtime-rex (remove $target first to force the install)"
+  [ "$_rc" -ne 2 ] ||
+    die "$asset did not answer 'inventory' inside the ${install_deadline}s budget; cannot prove it is not a stub, so the working $target is kept (raise GC_RUNTIME_INSTALL_DEADLINE to probe it)"
 fi
 
 if [ -f "$target" ] && [ -x "$target" ] && [ "$(sha256_of "$target")" = "$expected" ]; then

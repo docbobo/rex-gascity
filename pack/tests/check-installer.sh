@@ -26,20 +26,27 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/check-installer.XXXXXX")
 # live ~/.local/bin/gc-runtime-rex and broke the city runtime. Snapshot every
 # real destination before the run and fail when the run changes one.
 guard_providers=$(command -v gc-runtime-rex || true)
+# Snapshot BOTH candidate directories even when they do not exist yet: a run
+# that CREATES $HOME/.local/bin and installs there must be caught, not silently
+# skipped. One path per line keeps a directory with spaces in its name intact
+# (a word-split list would break it into two paths).
 guard_dirs=
 if [ -n "${HOME:-}" ]; then
-  for d in "$HOME/.local/bin" "$HOME/bin"; do
-    if [ -d "$d" ]; then guard_dirs="$guard_dirs $d"; fi
-  done
+  guard_dirs="$HOME/.local/bin
+$HOME/bin"
 fi
 guard_snapshot() {
+  _ifs=$IFS; IFS='
+'
   for p in $guard_providers; do
     printf 'provider %s\n' "$p"
     ls -ld "$p" 2>/dev/null || echo absent
     cksum "$p" 2>/dev/null || true
   done
   for d in $guard_dirs; do
-    printf 'dir %s\n' "$d"
+    [ -n "$d" ] || continue
+    if [ -d "$d" ]; then printf 'dir %s present\n' "$d"; else printf 'dir %s absent\n' "$d"; fi
+    [ -d "$d" ] || continue
     for f in "$d"/*; do
       if [ -e "$f" ] || [ -L "$f" ]; then
         ls -ld "$f" 2>/dev/null || true
@@ -47,6 +54,7 @@ guard_snapshot() {
       fi
     done
   done
+  IFS=$_ifs
 }
 guard_snapshot > "$work/guard-before"
 trap '
@@ -339,6 +347,30 @@ FAKE_CURL_HTTP=200 run_install Darwin arm64 "$home" "$reuse:$nogh_path" ||
   fail "install did not replace the provider in the directory command -v reports"
 assert_provider "$reuse/gc-runtime-rex" reuse
 [ ! -e "$home/.local/bin/gc-runtime-rex" ] || fail "install wrote to ~/.local/bin although a provider was on PATH"
+
+# An explicit GC_RUNTIME_INSTALL_DIR must not overwrite the pack's shipped shim:
+# --from-source passes that directory to go install as GOBIN, and the inventory
+# guard never runs. The physical identity is compared, so an alias is caught too.
+shim_before=$(cksum "$repo/pack/bin/gc-runtime-rex")
+if FAKE_CURL_HTTP=200 GC_RUNTIME_INSTALL_DIR="$repo/pack/bin" \
+    run_install Darwin arm64 "$work/home-shimdir" "$nogh_path"; then
+  fail "install accepted the shipped shim directory as GC_RUNTIME_INSTALL_DIR"
+fi
+printf '%s' "$out" | grep -qi 'shipped shim' \
+  || fail "shim-directory refusal did not name the shipped shim: $out"
+[ "$(cksum "$repo/pack/bin/gc-runtime-rex")" = "$shim_before" ] \
+  || fail "the shipped shim changed after a refused install"
+
+# A directory at the target path passes -x (the shim would try to execute it) and
+# mv would move the staged file INSIDE it and report success. Refuse by name.
+dirtarget=$work/dir-target
+mkdir -p "$dirtarget/gc-runtime-rex"
+if FAKE_CURL_HTTP=200 GC_RUNTIME_INSTALL_DIR="$dirtarget" \
+    run_install Darwin arm64 "$work/home-dirtarget" "$nogh_path"; then
+  fail "install accepted a directory at the provider target path"
+fi
+printf '%s' "$out" | grep -q 'is a directory' \
+  || fail "directory-at-target refusal did not name the directory: $out"
 
 # --- relative PATH entry ----------------------------------------------------
 
@@ -737,12 +769,15 @@ elapsed=$(( $(date +%s) - start ))
 [ "$rc" -eq 124 ] || fail "shared-budget case: exited $rc, want 124: [$out]"
 [ "$elapsed" -lt 9 ] || fail "shared-budget case: the fetches did not share one budget ($elapsed s; a per-fetch budget needs 5+6)"
 [ "$elapsed" -ge 5 ] || fail "shared-budget case: the slow checksums did not delay the run ($elapsed s)"
-printf '%s' "$out" | grep -q 'gc-runtime-rex_darwin_arm64' ||
-  fail "shared-budget case: the asset request never ran: [$out]"
+# die_budget names the asset even when the CHECKSUMS request timed out, so match
+# the "fetching <asset> for release" phrase: only the asset timeout prints it.
+printf '%s' "$out" | grep -q 'fetching gc-runtime-rex_darwin_arm64 for release' ||
+  fail "shared-budget case: the ASSET request never ran (a checksums timeout also names the asset): [$out]"
 
-# A clock that answers ONCE and then fails must still bound the fetch: fetch_budget
-# falls back to the full budget, so `sleep` gets a valid duration and the watchdog
-# signals the child (a set -u 'parameter not set' would escape the bound).
+# PR39 review: a clock that answered at the start and LATER fails must STOP the
+# bounded install. Restarting the budget would let the fetches outlive gc's 30 s
+# handshake. The installer exits with the cause and never asks for a fetch; it
+# must not fall back to a full or sliced budget.
 flick=$work/tools-flickdate; rm -rf "$flick"; mkdir -p "$flick"
 real_date=$(command -v date)
 cat > "$flick/date" <<FLICKEOF
@@ -766,12 +801,14 @@ out=$(env -i HOME="$work/home-flick" PATH="$flick:$nogh_path" \
     FAKE_CURL_SLEEP_ASSET=30 GC_RUNTIME_INSTALL_DIR="$work/cache" \
     GC_RUNTIME_INSTALL_DEADLINE=4 sh "$installer" 2>&1) || rc=$?
 elapsed=$(( $(date +%s) - start ))
-[ "$rc" -eq 124 ] || fail "flickering-clock case: exited $rc, want 124: [$out]"
+[ "$rc" -ne 0 ] || fail "flickering-clock case: the lost clock did not stop the install: [$out]"
+printf '%s' "$out" | grep -qi 'clock' ||
+  fail "flickering-clock case: the cause did not name the clock: [$out]"
 printf '%s' "$out" | grep -q 'unbound variable\|parameter not set' &&
-  fail "flickering clock left the budget duration unset: [$out]"
-printf '%s' "$out" | grep -q 'gc-runtime-rex_darwin_arm64' ||
-  fail "flickering-clock case: the asset fetch never ran: [$out]"
-[ "$elapsed" -lt 10 ] || fail "flickering-clock case: the watchdog did not bound the fetch ($elapsed s)"
+  fail "flickering clock left a budget variable unset: [$out]"
+[ ! -s "$work/curl.log" ] ||
+  fail "flickering-clock case: a fetch ran after the clock was lost: [$(cat "$work/curl.log")]"
+[ "$elapsed" -lt 5 ] || fail "flickering-clock case: the install was not stopped promptly ($elapsed s)"
 
 rm -rf "$work/cache-manual"; reset_logs
 if ! out=$(env -i HOME="$work/home-manual" PATH="$nd_path" \
@@ -791,6 +828,45 @@ if env -i HOME="$work/home-manual" PATH="$nd_path" \
   fail "a bounded install did not reap a slow fetch"
 fi
 [ ! -e "$work/cache-manual/gc-runtime-rex" ] || fail "a reaped install wrote the target"
+
+# The existing-provider 'inventory' probe shares the fetch budget. A provider
+# left blocking by a concurrent cold install must not hang this installer past
+# gc's deadline, and a timed-out probe is NOT treated as a stub.
+blockdir=$work/block-bin; rm -rf "$blockdir"; mkdir -p "$blockdir"
+printf '#!/bin/sh\nsleep 30\n' > "$blockdir/gc-runtime-rex"
+chmod 755 "$blockdir/gc-runtime-rex"
+start=$(date +%s)
+if out=$(env -i HOME="$work/home-block" PATH="$nogh_path" \
+    FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
+    FAKE_CURL_LOG="$work/curl.log" FAKE_CURL_HTTP=200 \
+    GC_RUNTIME_INSTALL_DIR="$blockdir" GC_RUNTIME_INSTALL_DEADLINE=4 \
+    sh "$installer" 2>&1); then
+  fail "install did not stop on a blocking inventory probe"
+fi
+elapsed=$(( $(date +%s) - start ))
+printf '%s' "$out" | grep -q 'inventory' ||
+  fail "blocking-probe timeout did not name the probe: $out"
+printf '%s' "$out" | grep -q 'refusing to replace a working gc-runtime-rex' &&
+  fail "a PROBE TIMEOUT was reported as a stub, so nothing would install: $out"
+[ "$elapsed" -lt 12 ] || fail "the inventory probe was not bounded ($elapsed s)"
+
+# PR39 review: without a clock the fetch slices share what earlier fetches left.
+# The old 1 s floor gave every attempt its own second, so 3 attempts could outlast
+# a budget under 3 s. With deadline=1 the fast checksums fetch spends the budget,
+# so the asset request must not launch at all.
+rm -rf "$work/cache-noclk"; reset_logs
+rc=0
+out=$(env -i HOME="$work/home-noclk" PATH="$nd_path" \
+    FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
+    FAKE_CURL_LOG="$work/curl.log" FAKE_CURL_HTTP=200 \
+    GC_RUNTIME_INSTALL_DIR="$work/cache-noclk" \
+    GC_RUNTIME_INSTALL_DEADLINE=1 sh "$installer" 2>&1) || rc=$?
+[ "$rc" -eq 124 ] || fail "clock-less slice case: exited $rc, want 124: [$out]"
+printf '%s' "$out" | grep -q 'exceeded the 1s budget' ||
+  fail "clock-less slice case: the cause did not name the spent budget: [$out]"
+grep -q 'gc-runtime-rex_darwin_arm64' "$work/curl.log" 2>/dev/null &&
+  fail "clock-less slice case: the asset launched after the budget was spent"
+[ ! -e "$work/cache-noclk/gc-runtime-rex" ] || fail "clock-less slice case: wrote the target"
 
 # REQ-020: a bounded install without sleep degrades to unbounded, not fail-open.
 nosleep=$work/sysbin-nosleep; rm -rf "$nosleep"; mkdir -p "$nosleep"

@@ -207,8 +207,11 @@ pv=$(pack_version)                 # [pack] version, via the harness helper
 plat=$(host_os)-$(host_arch)
 binpath=$cache/$pv/$plat/gc-runtime-rex
 run_shim() {           # run_shim <extra-env...>  -- captures stdout only
+  # Clear an inherited GC_RUNTIME_INSTALL_DEADLINE: an operator export must not
+  # decide these cases. A case override after "$@" still wins.
   env PATH="$fake_tools:$PATH" HOME="$work/home" \
     FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+    GC_RUNTIME_INSTALL_DEADLINE= \
     FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" "$@" \
     sh "$shim" protocol
 }
@@ -376,6 +379,7 @@ case "$cmd" in */*) : ;; *) fail "command must contain a separator for pack-rela
 rm -rf "$cache"
 env PATH="$fake_tools:$PATH" HOME="$work/home" \
   FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+  GC_RUNTIME_INSTALL_DEADLINE= \
   FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
   sh "$repo/pack/doctor/rex-binary/fix.sh" >/dev/null 2>&1 \
   || fail "fix.sh failed"
@@ -393,7 +397,7 @@ fi
 env PATH="$fake_tools:$PATH" HOME="$work/home" \
   FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
   FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
-  FAKE_CURL_SLEEP_ASSET=3 \
+  GC_RUNTIME_INSTALL_DEADLINE= FAKE_CURL_SLEEP_ASSET=3 \
   sh "$repo/pack/doctor/rex-binary/fix.sh" >/dev/null 2>&1 \
   || fail "fix.sh did not recover a slow release the shim could not fetch in time"
 [ -x "$binpath" ] || fail "fix.sh did not warm the cache after the shim timed out"
@@ -433,7 +437,7 @@ chmod 755 "$fake_tools/rex-ok"
 run_check() {          # run_check <extra-env...>  -- captures combined output
   env PATH="$fake_tools:$PATH" HOME="$work/home" \
     GC_RUNTIME_CACHE_DIR="$cache" GC_REX_BIN="$fake_tools/rex-ok" \
-    SHIM_LOG="$work/shim.log" \
+    SHIM_LOG="$work/shim.log" GC_RUNTIME_INSTALL_DEADLINE= \
     FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
     FAKE_CURL_LOG="$work/curl.log" "$@" \
     sh "$doctor"
@@ -503,5 +507,37 @@ printf '%s' "$out" | grep -q -- '--fix' \
 printf '%s' "$out" | grep -qi 'warm.*cache\|cache.*warm' \
   || fail "non-executable-shim remedy did not distinguish cache warming: $out"
 chmod 755 "$shim_pack/bin/gc-runtime-rex"
+
+# A "./bin/..." spelling must resolve to the SAME shipped shim. Before the fix
+# the "./" survived, the identity check missed, and the check EXEC'd the shim,
+# which downloaded and installed during a read-only cold-cache check.
+sed 's|^command = .*|command = "./bin/gc-runtime-rex"|' \
+  "$repo/pack/pack.toml" > "$shim_pack/pack.toml"
+grep -q '^command = "./bin/gc-runtime-rex"' "$shim_pack/pack.toml" \
+  || fail "test harness bug: the ./bin command was not written"
+rm -rf "$cache"; : > "$work/curl.log"; : > "$work/shim.log"
+if out=$(run_check 2>&1); then fail "dot-slash cold-cache check unexpectedly passed"; fi
+[ -s "$work/shim.log" ] && fail "dot-slash cold-cache check exec'd the shipped shim"
+[ -s "$work/curl.log" ] && fail "dot-slash cold-cache check performed a download"
+[ -e "$cache" ] && fail "dot-slash cold-cache check wrote the cache (not read-only)"
+printf '%s' "$out" | grep -qi 'not yet installed' \
+  || fail "dot-slash cold-cache message did not say the provider is not yet installed: $out"
+cp "$repo/pack/pack.toml" "$shim_pack/pack.toml"
+
+# gc doctor --fix must not hang on a stalled fetch with no sleep on PATH.
+# fix.sh refuses BEFORE the fetch; the unbounded installer fallback stays
+# reserved for a direct, manual install.
+rm -rf "$cache"; rm -f "$work/nosleep-curl.log"
+if out=$(env PATH="$nosleep" HOME="$work/home" GC_RUNTIME_CACHE_DIR="$cache" \
+    FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_INSTALL_DEADLINE= \
+    FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
+    FAKE_CURL_LOG="$work/nosleep-curl.log" \
+    sh "$repo/pack/doctor/rex-binary/fix.sh" 2>&1); then
+  fail "fix.sh ran with no sleep on PATH (unbounded fetch)"
+fi
+printf '%s' "$out" | grep -q 'sleep' \
+  || fail "no-sleep fix refusal did not name the missing timer: $out"
+[ -e "$work/nosleep-curl.log" ] && fail "no-sleep fix attempted a fetch"
+[ -e "$cache" ] && fail "no-sleep fix warmed a cache"
 
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases

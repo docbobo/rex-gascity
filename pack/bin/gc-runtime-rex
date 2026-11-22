@@ -39,8 +39,10 @@ else
 fi
 binary=$bin_dir/gc-runtime-rex
 
-# Cache hit: exec immediately, no network, no stdout noise.
-if [ -x "$binary" ]; then
+# Cache hit: exec immediately, no network, no stdout noise. Require a regular
+# file: a searchable directory also passes -x, and neither exec nor gc doctor's
+# fix can repair that state.
+if [ -f "$binary" ] && [ -x "$binary" ]; then
   exec "$binary" "$@"
 fi
 
@@ -85,10 +87,11 @@ fi
 # access tty; job control turned off"), leaving the install in the parent group
 # so "kill -TERM -$inst" never reaches a stalled curl, which then outlives the
 # budget. So the shim runs install.sh in the FOREGROUND under POSIX sh and relies
-# on NO job control: the installer cannot run away because its only unbounded
-# step, the fetch, is itself bounded, and its local work (awk/cp/chmod/mv) is
-# bounded by nature. GC_RUNTIME_INSTALL_DEADLINE is the installer's whole-fetch
-# budget; its stdout is folded to stderr so the RPP channel stays pristine, and
+# on NO job control: the installer cannot run away because its unbounded steps
+# are bounded too: the fetch by install.sh's run_bounded watchdog, and the
+# 'inventory' guard probe by the same budget. install.sh's local work
+# (awk/cp/chmod/mv) is bounded by nature. GC_RUNTIME_INSTALL_DEADLINE is the
+# installer's whole-fetch budget; its stdout is folded to stderr so the RPP channel stays pristine, and
 # it stages to a .$$ temp removed on any exit (install.sh EXIT trap) and
 # mv-renames atomically (install.sh:186-196), so a half-written binary is never
 # exec'd. The sleep precondition above guarantees the watchdog can run.
@@ -115,6 +118,6 @@ if [ "$rc" -ne 0 ]; then
   fi
   exit 1
 fi
-[ -x "$binary" ] || { echo "$me: install reported success but $binary is missing or not executable" >&2; exit 1; }
+[ -f "$binary" ] && [ -x "$binary" ] || { echo "$me: install reported success but $binary is missing, not a regular file, or not executable" >&2; exit 1; }
 
 exec "$binary" "$@"

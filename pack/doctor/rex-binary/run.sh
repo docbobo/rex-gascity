@@ -30,8 +30,8 @@ set -eu
 
 # Locate the pack directory from this script, not from the cwd: gc's cwd for a
 # pack check is not guaranteed. The script sits at <pack>/doctor/rex-binary/.
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-pack_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+pack_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd -P)
 pack_toml="$pack_dir/pack.toml"
 
 # normalize_version strips a leading `v` and any `+build-metadata` suffix, so
@@ -105,6 +105,21 @@ if [ -z "$command_name" ]; then
   command_name=gc-runtime-rex
 fi
 
+# phys_path <path>: print the physical absolute path, or the argument unchanged
+# when its directory cannot be resolved. A "./bin/..." spelling, a symlinked
+# pack dir, or an alias must not hide the shipped shim's identity. Uses only
+# shell builtins: the doctor PATH is minimal and may have no dirname/basename.
+phys_path() {
+  case $1 in
+    */*) _pdir=${1%/*}; _pbase=${1##*/} ;;
+    *) _pdir=.; _pbase=$1 ;;
+  esac
+  [ -n "$_pdir" ] || _pdir=/
+  [ -n "$_pbase" ] || _pbase=$1
+  _pdir=$(CDPATH= cd -- "$_pdir" 2>/dev/null && pwd -P) || { printf '%s' "$1"; return 0; }
+  printf '%s/%s' "$_pdir" "$_pbase"
+}
+
 # Resolve the runtime command. A separator means a path relative to the pack
 # directory (or an absolute path); otherwise gc resolves it through PATH.
 case "$command_name" in
@@ -119,6 +134,14 @@ case "$command_name" in
     ;;
 esac
 
+# Normalize to a physical path BEFORE comparing identities: a config of
+# "./bin/gc-runtime-rex" keeps its "./" and would otherwise string-mismatch the
+# shipped shim, exec it, and download on a cold cache.
+pack_shim=$(phys_path "$pack_dir/bin/gc-runtime-rex")
+if [ -n "$provider_path" ]; then
+  provider_path=$(phys_path "$provider_path")
+fi
+
 # When the command is THIS pack's self-installing shim, probe the CACHED binary
 # directly: exec'ing the shim on a cold cache would download, breaking this
 # check's read-only contract. Match the shipped shim by its exact resolved path
@@ -129,17 +152,25 @@ esac
 # executables keep the direct probe.
 cold_cache=
 shim_unresolved=
-if [ "$provider_path" = "$pack_dir/bin/gc-runtime-rex" ] && [ -x "$provider_path" ]; then
+shim_unresolved_kind=
+if [ "$provider_path" = "$pack_shim" ] && [ -x "$provider_path" ]; then
   if [ -z "$declared_version" ]; then
+    shim_unresolved_kind=pack
     shim_unresolved="the pack declares no [pack] version, so the shim cache path cannot be computed"
   elif [ ! -r "$pack_dir/bin/_lib.sh" ]; then
+    shim_unresolved_kind=pack
     shim_unresolved="the shim cache helper \`bin/_lib.sh\` is missing"
   else
     . "$pack_dir/bin/_lib.sh"
-    if probe_bin_dir=$(gc_runtime_bin_dir "$declared_version" 2>&1); then
+    if ! gc_runtime_platform >/dev/null 2>&1; then
+      shim_unresolved_kind=platform
+      _plat_err=$(gc_runtime_platform 2>&1) || true
+      shim_unresolved="no release asset resolves for this platform: $_plat_err"
+    elif probe_bin_dir=$(gc_runtime_bin_dir "$declared_version" 2>&1); then
       provider_path=$probe_bin_dir/gc-runtime-rex
-      [ -x "$provider_path" ] || cold_cache=1
+      [ -f "$provider_path" ] && [ -x "$provider_path" ] || cold_cache=1
     else
+      shim_unresolved_kind=cache
       shim_unresolved="the shim cache path cannot be computed: $probe_bin_dir"
     fi
   fi
@@ -168,7 +199,14 @@ if [ -n "$shim_unresolved" ]; then
   provider_status=error
   provider_message="the rex runtime provider cache could not be located"
   provider_detail="$shim_unresolved"
-  remediation="Run \`gc doctor --fix\` or start a session — the \`bin/gc-runtime-rex\` entry point installs the release into the cache on first use. The check does not run the shim."
+  case "$shim_unresolved_kind" in
+    platform)
+      remediation="No rex runtime release asset exists for this platform. Use a supported platform (darwin or linux, amd64 or arm64), or install a build with \`sh $pack_dir/install.sh --from-source\`. Warming the cache cannot help." ;;
+    pack)
+      remediation="This is pack repair, not a cache warm: restore the pack files (for example \`gc import install\`, or \`git checkout -- pack\`), because \`gc doctor --fix\` and a session start both need \`bin/_lib.sh\` to find the cache." ;;
+    *)
+      remediation="Fix the cache location, then run \`gc doctor --fix\`: set an absolute \`GC_RUNTIME_CACHE_DIR\`, or set \`XDG_CACHE_HOME\` or \`HOME\`." ;;
+  esac
 elif [ -n "$cold_cache" ]; then
   provider_status=error
   provider_message="the rex runtime provider is not yet installed"
@@ -178,12 +216,12 @@ elif [ -z "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not installed"
   provider_detail="\`$command_name\` is not on PATH"
-  remediation="Install it with \`gc doctor --fix\` — the \`bin/gc-runtime-rex\` entry point installs the v$declared_version release into the cache on first use. A source checkout can use \`sh $pack_dir/install.sh --from-source\` instead."
+  remediation="This command is resolved through PATH, so warming the cache cannot help: install \`gc-runtime-rex\` somewhere on PATH (for example \`sh $pack_dir/install.sh\`, which writes to the provider on PATH or \`~/.local/bin\`), or point the pack's runtime command at the shipped shim \`bin/gc-runtime-rex\`, which installs into its own cache on first use."
 elif [ ! -x "$provider_path" ]; then
   provider_status=error
   provider_message="the rex runtime provider binary is not executable"
   provider_detail="$provider_path is not executable"
-  if [ "$provider_path" = "$pack_dir/bin/gc-runtime-rex" ]; then
+  if [ "$provider_path" = "$pack_shim" ]; then
     remediation="Restore the shipped \`bin/gc-runtime-rex\` entry point (for example \`gc import install\` or \`git checkout -- pack/bin/gc-runtime-rex\`). That is pack repair; \`gc doctor --fix\` and session start warm an empty cache and do not repair the pack file."
   else
     remediation="Reinstall it with \`gc doctor --fix\` or \`sh $pack_dir/install.sh\`."
