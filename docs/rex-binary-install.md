@@ -175,15 +175,25 @@ reason. One case is an unsupported OS or machine. Others are no
 the tag (404, with the private repository rule) and a network failure. A
 missing `checksums.txt` entry and a sha256 mismatch complete the list.
 
+The installer also refuses to replace a working provider with an asset that
+cannot answer `inventory`. A stub asset, or a release that only names its
+version, turns every supervisor cycle into a failed call. The fix reports
+that conflict and names the installed file to remove first.
+
 ## Tests
 
 - `cmd/gc-runtime-rex/doctor_fix_test.go` drives the real `fix.sh` the way
   gc does. It puts fake `curl` and `gh` scripts on PATH. It covers the
-  install, the gh fallback after a curl 404, and the checksum abort.
+  install, the gh fallback after a curl 404, and the checksum abort. The
+  release assets delegate every other op to a provider built from source,
+  so the test proves the installed binary answers `inventory` and
+  `observe`. One more case proves a stub asset does not replace a working
+  provider.
 - `pack/tests/check-installer.sh` covers the installer seam end to end. It
   includes the arch mapping and the install directory. It also includes the
   PATH shadow warning and the private repository fallback. The last part is
-  the `gc doctor --fix` path.
+  the `gc doctor --fix` path. That path uses a fake `rex`, so it needs no
+  rex install; only `gc` must be on PATH.
 - `pack/tests/check-import.sh` covers the import flow against a local bare
   repository and a fake `curl`. It imports by tag. It also imports the
   released commit as a `sha` version. One more assertion covers a commit
