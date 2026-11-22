@@ -279,6 +279,7 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 
 	if keyedOps[op] && len(rest) > 1 && rest[1] == "" {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: metadata key must not be empty\n", op)
+		line.Method = op // pre-provider failure: method is the op name (REQ-003)
 		line.Outcome, line.ExitCode = "error", exitFail
 		t.record(stderr, line)
 		return exitFail
@@ -288,6 +289,7 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 	city, ns, err := provider.NamespaceForCaller()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc-runtime-rex: %s: state dir: %v\n", op, err)
+		line.Method = op // pre-provider failure: method is the op name (REQ-003)
 		line.Outcome, line.ExitCode = "error", exitFail
 		t.record(stderr, line)
 		return exitFail
