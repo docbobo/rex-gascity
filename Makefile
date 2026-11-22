@@ -9,7 +9,7 @@ GC_REX_CITY ?= rex-verify
 PACK_VERSION ?= $(shell awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $$2; exit}' pack/pack.toml)
 LDFLAGS ?= -X main.buildVersion=$(PACK_VERSION)
 
-.PHONY: help build install hooks vet test verify check conformance clean
+.PHONY: help build install hooks vet test test-e2e verify check conformance clean
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-14s %s\n", $$1, $$2}' Makefile
@@ -28,6 +28,9 @@ vet: ## Run go vet across all packages
 
 test: ## Run unit tests across all packages
 	go test ./...
+
+test-e2e: ## Run the fake-backed e2e suites (no rex on PATH needed)
+	REX_E2E=fake go test ./internal/provider ./cmd/gc-runtime-rex -run TestE2E -v
 
 verify: ## Run the pack check scripts (pack/tests/verify.sh)
 	bash pack/tests/verify.sh

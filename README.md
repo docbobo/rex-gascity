@@ -206,24 +206,29 @@ make help            # list targets
 make build           # build bin/gc-runtime-rex
 make vet             # go vet ./...
 make test            # go test ./...
+make test-e2e        # fake-rex e2e suites; no rex install needed
 make check           # gc runtime check against testdata/city
 make conformance     # gc runtime conformance against testdata/city
 make hooks           # enable the versioned git hooks in .githooks
 ```
 
-Live tests talk to a real Rex server and are gated behind `REX_E2E`:
+The provider e2e tests run against the in-repo fake `rex` by default, so they
+need no install. `REX_E2E=1` selects a real Rex server instead:
 
 ```sh
 REX_E2E=1 go test ./internal/provider -run TestE2E -v
 REX_E2E=1 go test ./cmd/gc-runtime-rex -run TestE2E -v
 ```
 
-They create and close real sessions and panes on the configured server. Point them at a server you are willing to modify.
+Live mode creates and closes real sessions and panes on the configured server.
+Point it at a server you are willing to modify. See
+[`docs/fake-rex.md`](docs/fake-rex.md) for what the fake covers.
 
 ## Documentation
 
 - [`docs/rex-runtime-pack.md`](docs/rex-runtime-pack.md) — operator quickstart for the runtime pack: import, install, auth, upgrades, release flow.
 - [`docs/rex-provider.md`](docs/rex-provider.md) — provider reference: install, pack and city configuration, identity mapping, state and environment.
+- [`docs/fake-rex.md`](docs/fake-rex.md) — the test fake: coverage, limits, scripted faults, and the live-server escape hatch.
 - [`docs/REX-CONTRACT.md`](docs/REX-CONTRACT.md) — the pinned Rex CLI/API surface and the RPP v0 baseline.
 - [`docs/plans/native-rex-provider.md`](docs/plans/native-rex-provider.md) — design and phase plan.
 - [`docs/rex-pilot-phase5.md`](docs/rex-pilot-phase5.md) — pilot results and the promotion decision.

@@ -36,6 +36,12 @@ jobs:
       - name: Run pack checks
         run: bash pack/tests/verify.sh
 
+      # The provider e2e suites run against the in-repo fake rex, so this job
+      # covers them without downloading the real application. Conformance still
+      # runs the pinned rex.
+      - name: Fake-backed e2e
+        run: make test-e2e
+
   conformance:
     name: Conformance
     runs-on: ubuntu-24.04
