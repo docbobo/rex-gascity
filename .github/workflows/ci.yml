@@ -90,7 +90,19 @@ jobs:
           echo "$RUNNER_TEMP/rex-bin" >> "$GITHUB_PATH"
           version=$("$RUNNER_TEMP/rex-bin/rex" version)
           echo "$version"
-          echo "$version" | grep -q "$REX_PIN" || { echo "rex is not the pinned $REX_PIN" >&2; exit 1; }
+          if ! echo "$version" | grep -q "$REX_PIN"
+          then
+            echo "rex is not the pinned $REX_PIN" >&2
+            exit 1
+          fi
+          # pack/rex-min-version must equal REX_PIN, so the doctor check and
+          # the conformance pin cannot drift apart.
+          min_version=$(tr -d '[:space:]' < pack/rex-min-version)
+          if [ "$min_version" != "$REX_PIN" ]
+          then
+            echo "pack/rex-min-version ($min_version) does not match REX_PIN ($REX_PIN)" >&2
+            exit 1
+          fi
 
       - name: Check the conformance harness
         run: pack/tests/check-conformance.sh --binary bin/gc-runtime-rex
