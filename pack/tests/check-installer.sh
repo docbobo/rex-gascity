@@ -868,6 +868,30 @@ grep -q 'gc-runtime-rex_darwin_arm64' "$work/curl.log" 2>/dev/null &&
   fail "clock-less slice case: the asset launched after the budget was spent"
 [ ! -e "$work/cache-noclk/gc-runtime-rex" ] || fail "clock-less slice case: wrote the target"
 
+# PR39 review: a bounded, CLOCK-LESS reinstall must reserve slices for BOTH
+# inventory probes as well as the fetches. With three slices the existing
+# provider's probe spent the last one, so the CANDIDATE probe timed out and a
+# working target blocked its own replacement. A working target must reinstall
+# (here: already current) and must stay intact.
+reinstall=$work/cache-noclk-reinstall; rm -rf "$reinstall"; mkdir -p "$reinstall"
+cp "$work/release/gc-runtime-rex_darwin_arm64" "$reinstall/gc-runtime-rex"
+chmod 755 "$reinstall/gc-runtime-rex"
+before=$("$work/tools/sha256" "$reinstall/gc-runtime-rex")
+reset_logs
+rc=0
+out=$(env -i HOME="$work/home-noclk-reinstall" PATH="$nd_path" \
+    FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 FAKE_RELEASE_DIR="$work/release" \
+    FAKE_CURL_LOG="$work/curl.log" FAKE_CURL_HTTP=200 \
+    GC_RUNTIME_INSTALL_DIR="$reinstall" \
+    GC_RUNTIME_INSTALL_DEADLINE=20 sh "$installer" 2>&1) || rc=$?
+[ "$rc" -eq 0 ] ||
+  fail "clock-less reinstall case: exited $rc, want 0: [$out]"
+printf '%s' "$out" | grep -q 'cannot prove it is not a stub' &&
+  fail "clock-less reinstall case: the candidate probe never ran: [$out]"
+after=$("$work/tools/sha256" "$reinstall/gc-runtime-rex")
+[ "$before" = "$after" ] || fail "clock-less reinstall case: the working target changed"
+assert_provider "$reinstall/gc-runtime-rex" noclk-reinstall
+
 # REQ-020: a bounded install without sleep degrades to unbounded, not fail-open.
 nosleep=$work/sysbin-nosleep; rm -rf "$nosleep"; mkdir -p "$nosleep"
 for t in sh awk sed grep cut mkdir mktemp mv rm cp chmod dirname cat \

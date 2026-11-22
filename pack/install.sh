@@ -176,19 +176,23 @@ else
   bounded=; install_deadline=30   # unused while unbounded
 fi
 
-# The at-most-3 fetches (checksums, asset, gh fallback) share ONE budget. With a
-# working clock each fetch gets the time that is left. A clock that worked at the
-# start and LATER fails must not restart the budget: the remaining time is
-# unknown, so next_fetch_budget returns 1 and the bounded install stops with a
-# cause. Without a clock at all, each fetch gets an equal share of what earlier
-# fetches left, so the slices together never exceed the budget (a 1 s floor on
-# every slice would let three attempts outlast a budget smaller than 3).
+# The at-most-3 fetches (checksums, asset, gh fallback) AND the at-most-2
+# inventory probes share ONE budget. With a working clock each fetch gets the
+# time that is left. A clock that worked at the start and LATER fails must not
+# restart the budget: the remaining time is unknown, so next_fetch_budget
+# returns 1 and the bounded install stops with a cause. Without a clock at all,
+# each step gets an equal share of what earlier steps left, so the slices
+# together never exceed the budget (a 1 s floor on every slice would let the
+# steps outlast a budget smaller than their count). The count reserves every
+# possible step: a reinstall runs both probes after up to three fetches, and a
+# short count would let the CANDIDATE probe time out and keep a working target
+# from its own replacement.
 if [ -n "$bounded" ] && fetch_start=$(date +%s 2>/dev/null) && [ -n "$fetch_start" ]; then
   have_clock=1
 else
   have_clock=; fetch_start=
   clockless_left=$install_deadline
-  clockless_attempts=3
+  clockless_attempts=5
 fi
 
 # Detect sleep ONCE while bounded. Without it the watchdog cannot run, so the
