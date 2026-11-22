@@ -86,9 +86,11 @@ func TestSurface(t *testing.T) {
 		t.Errorf("api describe unknown = exit %d, stderr %q, want 3", code, stderr)
 	}
 
-	out, _, code = f.Exec(t, "api", "call", "server.status")
+	// server.status stayed out of the fake: it is not in the contract doc, so
+	// the drift guard would flag it. server.version covers the same reply shape.
+	out, _, code = f.Exec(t, "api", "call", "server.version")
 	if code != 0 || !strings.Contains(out, `"api_revision":14`) {
-		t.Errorf("server.status = (%q, %d)", out, code)
+		t.Errorf("server.version = (%q, %d)", out, code)
 	}
 }
 

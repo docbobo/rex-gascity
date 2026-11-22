@@ -27,8 +27,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex/fakerex/fakestate"
 )
@@ -39,6 +41,9 @@ const formatCap = 983040
 
 // blobDefault is blob_read's default page size, clamped to formatCap.
 const blobDefault = 49152
+
+// faultDelay is how long FaultDelay stalls a call.
+const faultDelay = 2 * time.Second
 
 var errUnreachable = errors.New("no Rex server is running")
 
@@ -140,53 +145,95 @@ func api(dir string, args []string, stdout io.Writer) error {
 		if !knownMethod(args[1]) {
 			return fmt.Errorf("%w: no such method %q", fakestate.ErrNotFound, args[1])
 		}
-		reply, err := call(dir, args[1], argv)
-		if err != nil {
-			return err
+		key := args[1]
+		if key == "block.method" {
+			key += "." + str(argv, "method")
 		}
-		if reply == nil {
-			return nil
-		}
-		return printJSON(stdout, reply)
+		return callWithFault(dir, key, stdout, func() (any, error) {
+			return call(dir, args[1], argv)
+		})
 	default:
 		return fmt.Errorf("%w: unknown api verb %q", fakestate.ErrBadRequest, args[0])
 	}
 }
 
 func knownMethod(m string) bool {
-	_, ok := methods[m]
-	return ok
+	return slices.Contains(fakestate.Methods, m)
 }
 
-var methods = map[string]bool{
-	"server.version": true, "server.status": true,
-	"session.create": true, "session.destroy": true, "session.list": true,
-	"session.list_clients": true, "session.view": true,
-	"session.new_window": true, "session.new_split": true,
-	"session.focus_block": true, "session.focus_window": true,
-	"session.set_block_label": true, "session.set_window_label": true,
-	"session.set_label": true,
-	"block.close":       true, "block.event": true, "block.method": true,
-	"target.resolve": true,
+// callWithFault runs one method body with any scripted fault for key applied.
+// A pre-fault replaces the call; a post-fault spoils the reply after the body
+// ran, so tests can separate a failed request from a lost reply.
+func callWithFault(dir, key string, stdout io.Writer, body func() (any, error)) error {
+	fault, err := fakestate.TakeFault(dir, key)
+	if err != nil {
+		return err
+	}
+	if fault != nil {
+		switch fault.Kind {
+		case fakestate.FaultError:
+			return fmt.Errorf("%w: scripted failure for %s", fakestate.ErrFail, key)
+		case fakestate.FaultUnreachable:
+			return errUnreachable
+		case fakestate.FaultDelay:
+			time.Sleep(faultDelay)
+		}
+	}
+	reply, err := body()
+	if err != nil {
+		return err
+	}
+	if fault != nil {
+		switch fault.Kind {
+		case fakestate.FaultLostReply:
+			return fmt.Errorf("%w: reply to %s was lost", fakestate.ErrFail, key)
+		case fakestate.FaultGarbled:
+			_, err := io.WriteString(stdout, "{\"unterminated\": \n")
+			return err
+		}
+	}
+	if reply == nil {
+		return nil
+	}
+	return printJSON(stdout, reply)
+}
+
+// idPrefix is the id syntax Rex validates client-side before a call. A JSON
+// argument with the wrong prefix is a usage error (exit 2), not a lookup miss.
+var idPrefix = map[string]string{
+	"session_id": "session:",
+	"block_id":   "block:",
+	"anchor_id":  "block:",
+	"window_id":  "window:",
+}
+
+func validateIDs(in map[string]any) error {
+	for key, prefix := range idPrefix {
+		s, ok := in[key].(string)
+		if !ok || s == "" {
+			continue
+		}
+		if !strings.HasPrefix(s, prefix) {
+			return fmt.Errorf("%w: %s %q must start with %q", fakestate.ErrBadRequest, key, s, prefix)
+		}
+	}
+	return nil
 }
 
 func call(dir, method string, in map[string]any) (any, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("%w: FAKEREX_STATE is unset", errUnreachable)
 	}
+	if err := validateIDs(in); err != nil {
+		return nil, err
+	}
 	switch method {
 	case "server.version":
 		return map[string]any{"version": "0.1.0", "api_revision": 14}, nil
-	case "server.status":
-		st, err := load(dir)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"version": "0.1.0", "api_revision": 14, "sessions": len(st.Sessions)}, nil
 	case "session.create":
 		return sessionCreate(dir, str(in, "label"))
 	case "session.destroy":
-		return nil, update(dir, func(st *fakestate.State) error {
+		return setterReply(dir, func(st *fakestate.State) error {
 			s, err := st.Session(str(in, "session_id"))
 			if err != nil {
 				return err
@@ -203,7 +250,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 		}
 		sessions := make([]map[string]any, 0, len(st.Sessions))
 		for _, s := range st.Sessions {
-			sessions = append(sessions, map[string]any{"id": s.ID, "label": s.Label})
+			sessions = append(sessions, map[string]any{"session_id": s.ID, "label": s.Label})
 		}
 		return map[string]any{"sessions": sessions}, nil
 	case "session.list_clients":
@@ -232,7 +279,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 	case "session.new_split":
 		return newSplit(dir, in)
 	case "session.focus_block":
-		return nil, update(dir, func(st *fakestate.State) error {
+		return setterReply(dir, func(st *fakestate.State) error {
 			s, err := st.Session(str(in, "session_id"))
 			if err != nil {
 				return err
@@ -249,7 +296,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 			return fmt.Errorf("%w: block %s", fakestate.ErrNotFound, str(in, "block_id"))
 		})
 	case "session.focus_window":
-		return nil, update(dir, func(st *fakestate.State) error {
+		return setterReply(dir, func(st *fakestate.State) error {
 			s, err := st.Session(str(in, "session_id"))
 			if err != nil {
 				return err
@@ -263,7 +310,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 			return fmt.Errorf("%w: window %s", fakestate.ErrNotFound, str(in, "window_id"))
 		})
 	case "session.set_block_label":
-		return nil, update(dir, func(st *fakestate.State) error {
+		return setterReply(dir, func(st *fakestate.State) error {
 			_, _, b, err := st.Block(str(in, "block_id"))
 			if err != nil {
 				return err
@@ -272,7 +319,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 			return nil
 		})
 	case "session.set_window_label":
-		return nil, update(dir, func(st *fakestate.State) error {
+		return setterReply(dir, func(st *fakestate.State) error {
 			s, err := st.Session(str(in, "session_id"))
 			if err != nil {
 				return err
@@ -286,7 +333,7 @@ func call(dir, method string, in map[string]any) (any, error) {
 			return fmt.Errorf("%w: window %s", fakestate.ErrNotFound, str(in, "window_id"))
 		})
 	case "session.set_label":
-		return nil, update(dir, func(st *fakestate.State) error {
+		return setterReply(dir, func(st *fakestate.State) error {
 			s, err := st.Session(str(in, "session_id"))
 			if err != nil {
 				return err
@@ -297,14 +344,30 @@ func call(dir, method string, in map[string]any) (any, error) {
 	case "block.close":
 		return blockClose(dir, in)
 	case "block.event":
-		return nil, blockEvent(dir, in)
+		return setterReply(dir, func(st *fakestate.State) error { return blockEvent(dir, in) })
 	case "block.method":
 		args, _ := in["args"].(map[string]any)
 		return blockMethod(dir, str(in, "session_id"), str(in, "block_id"), str(in, "method"), args)
-	case "target.resolve":
+	case "target.resolve", "target.complete":
 		return targetResolve(dir, in)
 	}
 	return nil, fmt.Errorf("%w: no such method %q", fakestate.ErrNotFound, method)
+}
+
+// setterReply runs one mutation and answers with Rex's ack shape, {"revision":N}.
+// cli.Client ignores the body of these calls; the reply exists so the fake's
+// wire shape matches the real server.
+func setterReply(dir string, fn func(*fakestate.State) error) (any, error) {
+	var reply any
+	err := update(dir, func(st *fakestate.State) error {
+		if err := fn(st); err != nil {
+			return err
+		}
+		st.Revision++
+		reply = map[string]any{"revision": st.Revision}
+		return nil
+	})
+	return reply, err
 }
 
 func load(dir string) (*fakestate.State, error) {
@@ -541,8 +604,8 @@ func blockEvent(dir string, in map[string]any) error {
 }
 
 func blockMethod(dir, sid, bid, method string, args map[string]any) (any, error) {
-	if sid == "" || bid == "" {
-		return nil, fmt.Errorf("%w: session_id and block_id are required", fakestate.ErrBadRequest)
+	if bid == "" {
+		return nil, fmt.Errorf("%w: block_id is required", fakestate.ErrBadRequest)
 	}
 	r, err := readState(dir)
 	if err != nil {
@@ -552,7 +615,9 @@ func blockMethod(dir, sid, bid, method string, args map[string]any) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	if s.ID != sid {
+	// An empty session is the caller's own pane session in Rex; the fake has
+	// no calling pane, so the block's session stands in.
+	if sid != "" && s.ID != sid {
 		return nil, fmt.Errorf("%w: block %s is not in session %s", fakestate.ErrNotFound, bid, sid)
 	}
 	switch method {
@@ -725,21 +790,19 @@ func blockCmd(dir string, args []string, stdout io.Writer) error {
 				}
 			}
 		}
-		if sid == "" || bid == "" || method == "" {
-			return fmt.Errorf("%w: block call needs -s, -b and a method", fakestate.ErrBadRequest)
+		if bid == "" || method == "" {
+			return fmt.Errorf("%w: block call needs -b and a method", fakestate.ErrBadRequest)
+		}
+		if !slices.Contains(fakestate.BlockMethods, method) {
+			return fmt.Errorf("%w: no such block method %q", fakestate.ErrNotFound, method)
 		}
 		argv, err := callArgs(raw)
 		if err != nil {
 			return err
 		}
-		reply, err := blockMethod(dir, sid, bid, method, argv)
-		if err != nil {
-			return err
-		}
-		if reply == nil {
-			return nil
-		}
-		return printJSON(stdout, reply)
+		return callWithFault(dir, "block.method."+method, stdout, func() (any, error) {
+			return blockMethod(dir, sid, bid, method, argv)
+		})
 	case "inspect":
 		if len(args) < 2 {
 			return fmt.Errorf("%w: block inspect needs a block id", fakestate.ErrBadRequest)
@@ -762,7 +825,7 @@ func blockCmd(dir string, args []string, stdout io.Writer) error {
 	return fmt.Errorf("%w: unknown block verb %q", fakestate.ErrBadRequest, args[0])
 }
 
-var blockMethods = []string{"process", "format", "blob_read", "write", "clear", "program_status", "size", "title", "pwd", "input_mode", "reset"}
+var blockMethods = fakestate.BlockMethods
 
 func sendKey(dir string, args []string) error {
 	var sid, bid string
@@ -785,10 +848,12 @@ func sendKey(dir string, args []string) error {
 			keys = append(keys, rest[i])
 		}
 	}
-	if sid == "" || bid == "" {
-		return fmt.Errorf("%w: send-key needs -s and -b", fakestate.ErrBadRequest)
+	if bid == "" {
+		return fmt.Errorf("%w: send-key needs -b", fakestate.ErrBadRequest)
 	}
-	return sendKeys(dir, sid, bid, keys)
+	return callWithFault(dir, "send-key", nil, func() (any, error) {
+		return nil, sendKeys(dir, sid, bid, keys)
+	})
 }
 
 func sendKeys(dir, sid, bid string, keys []string) error {
@@ -803,7 +868,7 @@ func sendKeys(dir, sid, bid string, keys []string) error {
 	if err != nil {
 		return err
 	}
-	if s.ID != sid {
+	if s.ID != sid && sid != "" {
 		return fmt.Errorf("%w: block %s is not in session %s", fakestate.ErrNotFound, bid, sid)
 	}
 	for _, key := range keys {

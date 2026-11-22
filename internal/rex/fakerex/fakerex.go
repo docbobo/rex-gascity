@@ -97,6 +97,30 @@ func (f *Fake) Exec(t *testing.T, args ...string) (stdout, stderr string, code i
 	return "", "", -1
 }
 
+// Fault kinds a test can queue with Fault.
+const (
+	FaultError       = fakestate.FaultError
+	FaultUnreachable = fakestate.FaultUnreachable
+	FaultLostReply   = fakestate.FaultLostReply
+	FaultDelay       = fakestate.FaultDelay
+	FaultGarbled     = fakestate.FaultGarbled
+)
+
+// Fault queues one scripted fault for the next call to method. Method keys are
+// an api method ("session.create"), a block sub-method
+// ("block.method.format"), or "send-key".
+func (f *Fake) Fault(t *testing.T, method, kind string) {
+	f.FaultN(t, method, kind, 1)
+}
+
+// FaultN is Fault for the next count calls.
+func (f *Fake) FaultN(t *testing.T, method, kind string, count int) {
+	t.Helper()
+	if err := fakestate.AddFaults(f.Dir, fakestate.Fault{Method: method, Kind: kind, Count: count}); err != nil {
+		t.Fatalf("queue fault %s/%s: %v", method, kind, err)
+	}
+}
+
 // Update applies fn to the state under the fake's file lock. Tests use it to
 // seed things the CLI cannot create, such as attached clients or program
 // status records.
