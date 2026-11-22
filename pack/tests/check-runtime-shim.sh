@@ -371,4 +371,34 @@ cmd=$(awk -F'"' '
 [ "$cmd" = "bin/gc-runtime-rex" ] || fail "pack.toml command is '$cmd', expected bin/gc-runtime-rex"
 case "$cmd" in */*) : ;; *) fail "command must contain a separator for pack-relative resolution" ;; esac
 
+# Doctor fix (REQ-009): `gc doctor --fix` must warm the SAME version-keyed
+# cache the shim execs, through the shared _lib.sh, not install onto PATH.
+rm -rf "$cache"
+env PATH="$fake_tools:$PATH" HOME="$work/home" \
+  FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+  FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
+  sh "$repo/pack/doctor/rex-binary/fix.sh" >/dev/null 2>&1 \
+  || fail "fix.sh failed"
+[ -x "$binpath" ] || fail "fix.sh did not warm the cache the shim uses"
+
+# Recovery path (REQ-018): a shim call under the TIGHT first-use budget times
+# out on a slow release; fix.sh runs out of band with a generous budget and
+# warms the SAME cache; the next shim call then fetches nothing.
+rm -rf "$cache"; : > "$work/curl.log"
+if run_shim GC_RUNTIME_INSTALL_DEADLINE=1 FAKE_CURL_SLEEP_ASSET=3 \
+    FAKE_CURL_LOG="$work/curl.log" >/dev/null 2>&1; then
+  fail "slow release did not time out under the shim's tight 1 s budget"
+fi
+[ -x "$binpath" ] && fail "a timed-out shim call still cached a binary"
+env PATH="$fake_tools:$PATH" HOME="$work/home" \
+  FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+  FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
+  FAKE_CURL_SLEEP_ASSET=3 \
+  sh "$repo/pack/doctor/rex-binary/fix.sh" >/dev/null 2>&1 \
+  || fail "fix.sh did not recover a slow release the shim could not fetch in time"
+[ -x "$binpath" ] || fail "fix.sh did not warm the cache after the shim timed out"
+: > "$work/curl.log"
+run_shim FAKE_CURL_LOG="$work/curl.log" >/dev/null 2>&1 || fail "warm shim call after fix failed"
+[ -s "$work/curl.log" ] && fail "shim fetched again after fix.sh warmed the cache"
+
 echo "check-runtime-shim: ok"   # moved to the end as later tasks append cases
