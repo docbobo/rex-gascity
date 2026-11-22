@@ -46,15 +46,17 @@ type tracer struct {
 	city string
 }
 
-// newTracer reads GC_REX_TRACE once. It returns nil when tracing is off. A
-// destination it cannot use as a regular file (a pipe, a directory) is
-// rejected with one stderr warning and tracing stays off; the op runs
-// untraced (REQ-006).
-func newTracer(city string, stderr io.Writer) *tracer {
+// newTracer reads GC_REX_TRACE once. It returns nil when tracing is off, before
+// it resolves the city, so the off path costs one environment read and no
+// allocation (REQ-001). A destination it cannot use as a regular file (a pipe,
+// a directory) is rejected with one stderr warning and tracing stays off; the
+// op runs untraced (REQ-006).
+func newTracer(stderr io.Writer) *tracer {
 	path := os.Getenv(traceEnv)
 	if path == "" {
 		return nil
 	}
+	city := provider.CityFromEnv()
 	if path == "1" || path == "on" {
 		dir, err := provider.StateDir(city)
 		if err != nil {
