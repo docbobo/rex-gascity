@@ -104,7 +104,7 @@ func TestRexBinaryDoctorCheckVersionComparison(t *testing.T) {
 
 // TestRexBinaryDoctorCheckBadRexBin pins the failing rex-CLI case: GC_REX_BIN
 // names a path that is not executable, so the check must report the rex CLI
-// missing and say how to fix it, not accept the bad value.
+// not executable and say how to fix it, not accept the bad value.
 func TestRexBinaryDoctorCheckBadRexBin(t *testing.T) {
 	scriptBytes, err := os.ReadFile(filepath.Join("..", "..", "pack", "doctor", "rex-binary", "run.sh"))
 	if err != nil {
@@ -138,7 +138,7 @@ func TestRexBinaryDoctorCheckBadRexBin(t *testing.T) {
 	if ee.ExitCode() != 2 {
 		t.Fatalf("exit = %d, want 2\noutput:\n%s", ee.ExitCode(), out)
 	}
-	for _, want := range []string{"the rex CLI is not installed", "set GC_REX_BIN to its path"} {
+	for _, want := range []string{"the rex CLI is not executable", "set GC_REX_BIN to an executable"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("output %q does not contain %q", out, want)
 		}
