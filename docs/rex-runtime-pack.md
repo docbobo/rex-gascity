@@ -19,8 +19,9 @@ internals.
   lookup. This pack drives an external binary. A pure-Go runtime such as
   `cloudflare` does not.
 - macOS or Linux on amd64 or arm64. Windows has no release asset.
-- Write access to the install directory: the directory of the
-  `gc-runtime-rex` already on `PATH`, else `$HOME/.local/bin`.
+- Write access to the runtime cache directory:
+  `${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}`.
+  The first session (or `gc doctor --fix`) installs the provider there.
 
 ```sh
 command -v gc
@@ -48,23 +49,25 @@ gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex -
 
 ## Install
 
-Put the install directory on `PATH` first, in the shell and in the
-environment of the supervisor or controller that runs the city:
+Import is enough. `gc import install` writes the pack files. The pack's
+`[runtimes.rex] command` points at the shipped shim `bin/gc-runtime-rex`, which
+gc runs relative to the pack directory. On the first rex session the shim
+installs the matching release into the version-keyed cache and execs it. No
+`gc doctor --fix` and no `PATH` edit are needed.
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
-gc-runtime-rex protocol
 gc import check
 ```
 
-`gc import install` writes the pack files. It does not install the provider
-binary, because gc has no pack install hook. `gc doctor --fix` runs the
-pack's `doctor/rex-binary/fix.sh`, which runs `pack/install.sh`. Run
-`sh pack/install.sh` yourself from the repository root if you prefer, or
-`sh ./install.sh` from the pack directory.
+`gc doctor --check rex-gascity-runtime:rex-binary` verifies the provider
+read-only. It probes the cached binary and never downloads. On a cold cache it
+reports "not yet installed, run `--fix` or start a session". `gc doctor --fix`
+runs the pack's `doctor/rex-binary/fix.sh`, which warms that same cache without
+waiting for a session. Run `sh pack/install.sh` yourself from the repository
+root if you prefer, or `sh ./install.sh` from the pack directory.
 
 A green `gc doctor --check rex-gascity-runtime:rex-binary` means the provider handshakes,
 its version matches `pack.toml`, and the `rex` CLI resolves. A full
@@ -93,10 +96,14 @@ directory, applies `chmod 0755`, then renames it. A running provider keeps
 its inode. A repeat install of the same version reports success and replaces
 nothing in use.
 
-One destination: the directory `command -v gc-runtime-rex` reports, else
-`$HOME/.local/bin`. The script never installs into `GOBIN` or inside the pack,
-because gc rewrites the pack directory on install. A copy of
-`gc-runtime-rex` earlier on `PATH` produces a warning that names it.
+`pack/install.sh` picks one destination. When the shim or `gc doctor --fix`
+runs it, `GC_RUNTIME_INSTALL_DIR` names the version-keyed cache. Run by hand
+with no such variable, it installs to the directory `command -v
+gc-runtime-rex` reports, else `$HOME/.local/bin`.
+
+It never installs into `GOBIN` or inside the pack, because gc rewrites the
+pack directory on install. A copy of `gc-runtime-rex` earlier on `PATH`
+produces a warning that names it.
 
 ## Auth
 
@@ -112,13 +119,22 @@ The fallback is automatic, so making the repository public needs no script
 change. The failure text names the case. A 401 or 404 with no `gh` is an
 auth or visibility problem. A transport error is a network problem.
 
-## PATH
+## PATH and the cache
 
-`pack.toml` declares `[runtimes.rex] command = "gc-runtime-rex"`, a bare
-name. gc resolves it through `PATH`. The install directory must be on the
-`PATH` of the process that runs the city. A supervisor or controller starts
-with its own environment, so set `PATH` there as well, not only in an
-interactive shell.
+`pack.toml` declares `[runtimes.rex] command = "bin/gc-runtime-rex"`. The
+path separator makes gc resolve it relative to the pack directory, not through
+`PATH`. The provider needs no `PATH` entry.
+
+The shim caches the release binary at
+`${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/<version>/<os>-<arch>`
+and execs it on a hit with no network I/O.
+
+There is no cache eviction in v1. Stale `<version>/<os>-<arch>` directories
+stay in place after an upgrade. Remove them by hand, or set
+`GC_RUNTIME_CACHE_DIR` to a fresh root to reclaim the space.
+
+Only the provider binary is PATH-independent. The `rex` CLI still needs
+`PATH` or `GC_REX_BIN`.
 
 ## Versions and upgrades
 

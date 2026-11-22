@@ -129,6 +129,8 @@ release() { # release <version>
   cp "$pack/install.sh" "$work/tree/install.sh"
   rm -rf "$work/tree/doctor"
   cp -R "$pack/doctor" "$work/tree/doctor"
+  rm -rf "$work/tree/bin"
+  cp -R "$pack/bin" "$work/tree/bin"
   (
     cd "$work/tree" || exit 1
     git add -A
@@ -191,7 +193,8 @@ run_doc() { # run_doc <doc> <name> <minimum fences>
   printf '[city]
 name = "%s"
 ' "$name" > "$city/city.toml"
-  cp -R "$work/tree/doctor" "$work/tree/install.sh" "$work/tree/pack.toml" "$city/pack/"
+  cp -R "$work/tree/doctor" "$work/tree/bin" "$work/tree/install.sh" \
+    "$work/tree/pack.toml" "$city/pack/"
 
   i=0
   while [ "$i" -lt "$count" ]; do
@@ -215,10 +218,13 @@ name = "%s"
     i=$((i + 1))
   done
 
-  installed=$city/home/.local/bin/gc-runtime-rex
-  [ -x "$installed" ] || fail "$name left no provider in HOME/.local/bin"
+  # A cold first use installs into the version-keyed cache, not onto PATH: gc
+  # runs the pack's shipped bin/gc-runtime-rex shim. The fence env above leaves
+  # GC_RUNTIME_CACHE_DIR and XDG_CACHE_HOME unset, so the root is $HOME/.cache.
+  cached=$city/home/.cache/rex-gascity/$base/$os-$arch/gc-runtime-rex
+  [ -x "$cached" ] || fail "$name left no provider in the version-keyed cache"
   # The last fence pins $base exactly, so the newer $next tag must be ignored.
-  "$installed" version | grep -q "\"version\":\"$base\"" ||
+  "$cached" version | grep -q "\"version\":\"$base\"" ||
     fail "$name left a provider that is not $base"
 }
 
