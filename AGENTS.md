@@ -111,6 +111,13 @@ called done.
 
 An existing test may be the proof when it already fails for the bug. Name it.
 
+The provider e2e suites run against the in-repo fake `rex`
+(`internal/rex/fakerex`), so they need no Rex install. Run them with
+`make test-e2e`. `make test` also runs them, because the fake is the default
+when `REX_E2E` is unset. `REX_E2E=1` (or `REX_E2E=live`) selects the live
+server and is the explicit escape hatch, not the normal path. See
+`docs/fake-rex.md` for what the fake covers and what it does not.
+
 Docs, comments, formatting, and script wiring do not need a new test when the
 behavior does not change. Say "no behavior change" in the notes. Name the check
 that covers it: `pack/tests/verify.sh`, `actionlint`, or `shellcheck`.
