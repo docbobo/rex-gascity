@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -28,6 +30,7 @@ type retireClient struct {
 	processN    int
 	failProcess map[int]error
 	onClose     func()
+	onProcess   func(n int)
 }
 
 func (c *retireClient) reset() {
@@ -51,9 +54,14 @@ func (c *retireClient) got() []string {
 func (c *retireClient) BlockProcess(ctx context.Context, sid rex.SessionID, block rex.BlockID) (rex.ProcessInfo, error) {
 	c.mu.Lock()
 	c.processN++
-	err := c.failProcess[c.processN]
+	n := c.processN
+	err := c.failProcess[n]
 	c.calls = append(c.calls, "process")
+	onProcess := c.onProcess
 	c.mu.Unlock()
+	if onProcess != nil {
+		onProcess(n)
+	}
 	if err != nil {
 		return rex.ProcessInfo{}, err
 	}
@@ -83,6 +91,12 @@ func (c *retireClient) DestroySession(ctx context.Context, sid rex.SessionID) er
 // reset), the provider and the started binding. A nil host is an empty
 // process table.
 func retireSetup(t *testing.T, host *prochost.Fake, opts ...Option) (*retireClient, *Provider, Binding) {
+	return retireSetupIn(t, host, "", opts...)
+}
+
+// retireSetupIn is retireSetup with a work dir for the started binding, so a
+// test can make the drain diagnostic write.
+func retireSetupIn(t *testing.T, host *prochost.Fake, workDir string, opts ...Option) (*retireClient, *Provider, Binding) {
 	t.Helper()
 	if host == nil {
 		host = &prochost.Fake{}
@@ -90,7 +104,7 @@ func retireSetup(t *testing.T, host *prochost.Fake, opts ...Option) (*retireClie
 	c := &retireClient{Fake: faketest.New(), failProcess: map[int]error{}}
 	p := New("acme", c, append([]Option{WithProcessHost(host)}, opts...)...)
 	ctx := context.Background()
-	if err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}}); err != nil {
+	if err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}, WorkDir: workDir}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := p.SetMeta(ctx, reapDog, "suspended", "yes"); err != nil {
@@ -102,6 +116,38 @@ func retireSetup(t *testing.T, host *prochost.Fake, opts ...Option) (*retireClie
 	}
 	c.reset()
 	return c, p, bd
+}
+
+// gitWorkDir builds a git work tree with one modified tracked file, so the
+// drain diagnostic writes a file.
+func gitWorkDir(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available; the drain diagnostic needs it")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func wantRexCalls(t *testing.T, c *retireClient, want ...string) {
@@ -194,10 +240,19 @@ func TestRetirePolicyTable(t *testing.T) {
 }
 
 // TestRetireStopPolicyRunsTheFixedOrder pins the step order (REQ-002,
-// REQ-005): snapshot, close, re-read, then the empty-session check and
-// destroy, and the record and sidecar go last.
+// REQ-005): the diagnostic, snapshot, close, re-read, then the empty-session
+// check and destroy, and the record and sidecar go last. The diagnostic must
+// exist by the first snapshot.
 func TestRetireStopPolicyRunsTheFixedOrder(t *testing.T) {
-	c, p, bd := retireSetup(t, nil)
+	repo := gitWorkDir(t)
+	state := t.TempDir()
+	c, p, bd := retireSetupIn(t, nil, repo, WithNamespace(NewNamespaceForDirs(state)))
+	var diagAtSnapshot []string
+	c.onProcess = func(n int) {
+		if n == 1 {
+			diagAtSnapshot, _ = filepath.Glob(filepath.Join(state, "diagnostics", "*.json"))
+		}
+	}
 	res, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy())
 	if err != nil {
 		t.Fatalf("retire: %v", err)
@@ -206,6 +261,9 @@ func TestRetireStopPolicyRunsTheFixedOrder(t *testing.T) {
 		t.Error("alreadyClosed = true after a clean close")
 	}
 	wantRexCalls(t, c, "process", "close", "process", "view", "destroy")
+	if len(diagAtSnapshot) != 1 {
+		t.Errorf("diagnostics at the first snapshot = %v, want one: the diagnostic must run before the snapshot", diagAtSnapshot)
+	}
 	if bindingKept(p) {
 		t.Error("binding kept after a clean retire")
 	}
@@ -295,6 +353,55 @@ func TestRetireSurvivorKeepsTheRecord(t *testing.T) {
 	}
 	if !metaKept(t, p) {
 		t.Error("meta cleared although descendants survive")
+	}
+}
+
+// TestRetireReapsRecordedSurvivors is REQ-009.4: a retry whose pane reads
+// nothing still reaps the survivor an earlier retirement recorded, and the
+// failed reap keeps the record.
+func TestRetireReapsRecordedSurvivors(t *testing.T) {
+	reapShortWaits(t)
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
+		return reapTable([4]string{"300", "1", "S", "bun"}), nil
+	}}
+	c, p, bd := retireSetup(t, host)
+	bd.Survivors = []Survivor{{PID: 300, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("record the survivor: %v", err)
+	}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy())
+	var surv *survivorError
+	if !errors.As(err, &surv) {
+		t.Fatalf("retire = %v, want a survivorError", err)
+	}
+	if !slices.Contains(signalLog(host), "terminated:300") {
+		t.Errorf("signals = %v, want the recorded survivor signalled", signalLog(host))
+	}
+	wantRexCalls(t, c, "process", "close", "process")
+	got, ok := p.Binding(reapDog)
+	if !ok || len(got.Survivors) != 1 || got.Survivors[0].PID != 300 {
+		t.Errorf("binding = %+v, %v; want it kept with the recorded survivor", got, ok)
+	}
+	if !metaKept(t, p) {
+		t.Error("meta cleared although the recorded survivor lives")
+	}
+}
+
+// TestRetireAlreadyClosedOnlyOnSuccess is REQ-007: a close Rex answers with
+// ErrNotFound is not reported as alreadyClosed when a later step fails.
+func TestRetireAlreadyClosedOnlyOnSuccess(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.CloseBlockErr = rex.ErrNotFound
+	p.activity = dropFailActivity{Store: p.activity, err: errRetireBoom}
+	res, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy())
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("retire = %v, want the clear error", err)
+	}
+	if res.alreadyClosed {
+		t.Error("alreadyClosed = true although the retirement failed after the close")
+	}
+	if !bindingKept(p) {
+		t.Error("binding forgotten after a failed retirement")
 	}
 }
 
