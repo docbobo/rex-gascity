@@ -945,12 +945,9 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		_, err = p.retire(ctx, n, stored, stopNoPanePolicy(hadStored))
 		return err
 	}
-	err = p.stopBinding(ctx, n, binding)
-	if errors.Is(err, errBlockGone) {
-		// Stop stays idempotent: the pane was already closed by another client,
-		// and the cleanup above has finished the retirement.
-		return nil
-	}
+	// Stop stays idempotent: a pane another client already closed
+	// (retireResult.alreadyClosed) is a finished retirement, not an error.
+	_, err = p.retire(ctx, n, binding, stopPolicy())
 	return err
 }
 
