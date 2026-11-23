@@ -739,6 +739,22 @@ func (b *Binder) RecordIfCurrent(binding Binding) (bool, error) {
 	return true, b.store.Write(binding.Name, binding)
 }
 
+// ForgetIfCurrent drops the stored binding only when it still records
+// binding's incarnation. A start that replaced the binding while a lock-free
+// retirement ran leaves a different record, and the retirement's Forget must
+// not drop it. binding is the incarnation argument: it names the exact pane
+// the caller retired. It reports whether the record was dropped.
+func (b *Binder) ForgetIfCurrent(binding Binding) (bool, error) {
+	current, ok, err := b.store.Read(binding.Name)
+	if err != nil || !ok || !binding.sameIncarnation(current) {
+		return false, err
+	}
+	if err := b.store.Drop(binding.Name); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Forget drops the stored binding that answers to name, clearing the whole
 // primary record including its aliases. An alias drops the primary it names.
 func (b *Binder) Forget(name SessionName) {

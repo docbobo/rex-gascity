@@ -81,7 +81,9 @@ type retirePolicy struct {
 	// starts, and the retry reads the session id from it (GCREX-31 review).
 	// Errors are joined.
 	reRecordOnDestroyFail bool
-	// forget selects the stored binding dropped last.
+	// forget selects the stored binding dropped last. forgetBinding drops the
+	// record only while it still is bd's incarnation (ForgetIfCurrent).
+	// forgetCaller drops the caller's record without that guard.
 	forget forgetMode
 }
 
@@ -146,6 +148,16 @@ func stopNoPanePolicy(hadStored bool) retirePolicy {
 // Any step's error returns at once, so a later step never runs after a
 // failure and the record is never forgotten after one. retire takes no lock
 // itself; destroyEmptyCitySession takes the launch lock.
+//
+// Caller contract: retire takes no per-name lock, so the caller MUST hold the
+// per-name lock of every name it retires (caller and bd.Name) for the whole
+// call. The clear and destroy steps mutate per-name state and are not
+// incarnation-guarded. forgetBinding is guarded: bd is the incarnation
+// argument, and ForgetIfCurrent drops the record only while it still records
+// that pane, so a caller that lost the lock race cannot drop a start's
+// replacement binding. forgetCaller carries no such guard, and no clear or
+// destroy race is closed. The guard does not make a lock-free caller safe; it
+// closes the forgetBinding half of the race the review named.
 func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, pol retirePolicy) (retireResult, error) {
 	var res retireResult
 	if pol.diagnostic {
@@ -220,7 +232,11 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 	switch pol.forget {
 	case forgetNone:
 	case forgetBinding:
-		p.binder.Forget(bd.Name)
+		// bd is the incarnation argument: a start that replaced the record
+		// during this retirement keeps its binding.
+		if _, err := p.binder.ForgetIfCurrent(bd); err != nil {
+			return res, err
+		}
 	case forgetCaller:
 		p.binder.Forget(caller)
 	}

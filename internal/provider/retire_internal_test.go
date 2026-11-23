@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -499,6 +500,32 @@ func TestRetireLeavesAReplacementRecordUntouched(t *testing.T) {
 	got, ok := p.Binding(reapDog)
 	if !ok || got.BlockID != "block:replacement" || len(got.Survivors) != 0 {
 		t.Errorf("binding = %+v, %v; want the replacement unchanged", got, ok)
+	}
+}
+
+// TestRetireForgetKeepsAReplacementRecord is the retire.go:179 follow-up: a
+// start that replaced the binding during the lock-free retirement must not
+// have its record dropped by the final Forget. The retired binding is the
+// incarnation argument, so Forget drops only the record it retired.
+func TestRetireForgetKeepsAReplacementRecord(t *testing.T) {
+	_, p, bd := retireSetup(t, nil)
+	replacement := bd
+	replacement.BlockID = "block:replacement"
+	replacement.WindowID = "window:replacement"
+	replacement.CreatedAt = bd.CreatedAt.Add(time.Minute)
+	if err := p.binder.Record(replacement); err != nil {
+		t.Fatalf("record the replacement: %v", err)
+	}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, retirePolicy{forget: forgetBinding})
+	if err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	got, ok := p.Binding(reapDog)
+	if !ok {
+		t.Fatal("the replacement binding was dropped by the retirement's Forget")
+	}
+	if got.BlockID != replacement.BlockID {
+		t.Errorf("binding block = %q, want the replacement %q", got.BlockID, replacement.BlockID)
 	}
 }
 
