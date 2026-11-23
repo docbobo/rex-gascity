@@ -3,9 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -95,16 +93,12 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 		}
 	}
 	var signals []string
-	p.runner = &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
+	p.processHost = &reapTestHost{runner: &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
 		if c.Name != "ps" {
 			return "", nil
 		}
 		return reapTable([4]string{"300", "1", "S", "bun"}), nil
-	}}
-	p.signal = func(pid int, sig os.Signal) error {
-		signals = append(signals, sig.String()+":"+strconv.Itoa(pid))
-		return nil
-	}
+	}}, signals: &signals}
 
 	_, err := p.KillObject(ctx, "Rig--dog-1", KillObjectRequest{Object: observeObjectFor(bd), Mode: "corpse"})
 	if err == nil {

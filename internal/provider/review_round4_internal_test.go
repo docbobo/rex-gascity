@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 
@@ -23,8 +22,7 @@ func TestStartFailsWhilePendingSurvivorsSurvive(t *testing.T) {
 	fake := faketest.New()
 	store := &failOnceRecordStore{MemoryStore: NewMemoryStore()}
 	p := New("acme", fake, WithBindingStore(store))
-	p.signal = func(int, os.Signal) error { return nil }
-	p.runner = &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
+	p.processHost = &reapTestHost{runner: &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
 		if c.Name != "ps" {
 			return "", nil
 		}
@@ -33,7 +31,7 @@ func TestStartFailsWhilePendingSurvivorsSurvive(t *testing.T) {
 			[4]string{"100", "1", "Z", "claude"},
 			[4]string{"300", "100", "S", "bun"},
 		), nil
-	}}
+	}}, signals: new([]string)}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
 		"block:dog-1": {Foreground: &rex.Process{PID: 100, Name: "claude"}},
 	}

@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/docbobo/rex-gascity/internal/launch"
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
@@ -185,9 +186,11 @@ type Provider struct {
 	// lives on Provider rather than in nudgeConfig.
 	runner Runner
 
-	// signal delivers a signal to a pane descendant during the stop reap.
-	// Tests replace it so no real process is signalled.
-	signal func(pid int, sig os.Signal) error
+	// processHost is the seam over the host process table and signals. The
+	// reap path reads the table and signals through it. The default adapter
+	// reads the table through runner and signals through the real adapter;
+	// tests inject a prochost.Fake with WithProcessHost.
+	processHost prochost.Host
 
 	// nudge holds the nudge and startup-delivery tunables (see nudge.go).
 	// It is a named field, not embedded, so the tunables are not promoted
@@ -300,6 +303,16 @@ func WithWarnings(w io.Writer) Option {
 	}
 }
 
+// WithProcessHost sets the host process seam. A nil host keeps the default
+// adapter over the Runner and signal hook.
+func WithProcessHost(h prochost.Host) Option {
+	return func(p *Provider) {
+		if h != nil {
+			p.processHost = h
+		}
+	}
+}
+
 // New builds a Provider for city, driving client. Without options all state is
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
@@ -310,7 +323,6 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		activity: NewMemoryActivityStore(),
 		meta:     NewMemoryMetaStore(),
 		runner:   ExecRunner{},
-		signal:   osSignal,
 		nudge:    defaultNudgeConfig(),
 
 		startBudget:         defaultStartBudget,
@@ -321,6 +333,9 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	p.townTab = townTabLabel(cityPin())
 	for _, opt := range opts {
 		opt(p)
+	}
+	if p.processHost == nil {
+		p.processHost = processHostAdapter{p}
 	}
 	labels := p.ns.labels
 	if len(labels) == 0 {
@@ -1080,17 +1095,17 @@ func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionI
 // the binding so the retry stop herdr-core allows still has them: the pane is
 // closed by then and reports nothing. It returns the failure to report, nil
 // when the tree is gone.
-func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []paneProc) error {
+func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []prochost.Ident) error {
 	// A survivor recorded by an earlier stop can spawn a child before the
 	// retry, and the closed pane no longer reports that child: read the host
 	// table so the retry reaps what the tree grew, not only what it was given.
 	tree = p.descendants(ctx, tree)
-	left, signalErr := p.reap(ctx, tree)
-	if len(left) == 0 {
-		return nil
-	}
+	left, readErr, signalErr := p.reap(ctx, tree)
 	binding.Survivors = survivorRecords(left)
-	survived := &survivorError{name: string(binding.Name), survivors: left, reason: signalErr}
+	if len(left) == 0 {
+		return errors.Join(readErr, signalErr)
+	}
+	survived := &survivorError{name: string(binding.Name), survivors: left, reason: errors.Join(readErr, signalErr)}
 	// A start may have replaced the binding while this reap ran. Record only
 	// while the stored binding is still the one we reaped: a replacement owns
 	// the name and must not carry the old pane's survivors.

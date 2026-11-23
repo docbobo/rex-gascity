@@ -3,9 +3,9 @@ package provider
 import (
 	"context"
 	"errors"
-	"os"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -247,7 +247,8 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
 	alive := true
 	psCalls := 0
-	p.runner = &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
+	host := p.processHost.(*reapTestHost)
+	host.runner = &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
 		if c.Name != "ps" {
 			return "", nil
 		}
@@ -257,7 +258,7 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 		}
 		return reapTable([4]string{"300", "1", "S", "bun"}), nil
 	}}
-	p.signal = func(pid int, sig os.Signal) error {
+	host.onSignal = func(pid int, sig syscall.Signal) error {
 		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
 		if sig.String() == "terminated" {
 			alive = false
@@ -320,7 +321,7 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	fake := p.client.(*faketest.Fake)
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
-	p.signal = func(pid int, sig os.Signal) error {
+	p.processHost.(*reapTestHost).onSignal = func(pid int, sig syscall.Signal) error {
 		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
 		if pid == 300 && sig.String() == "terminated" {
 			alive = false
@@ -378,7 +379,7 @@ func TestStopSurvivorWriteFailureFailsTheStop(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{"block:dog-1": liveTree}
-	p.signal = func(int, os.Signal) error { return nil }
+	p.processHost = &reapTestHost{runner: runner, signals: new([]string)}
 	store.fail = true
 
 	err := p.Stop(ctx, reapDog)
@@ -408,7 +409,7 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
-	p.signal = func(pid int, sig os.Signal) error {
+	p.processHost.(*reapTestHost).onSignal = func(pid int, sig syscall.Signal) error {
 		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
 		if pid == 300 && sig.String() == "terminated" {
 			alive = false
