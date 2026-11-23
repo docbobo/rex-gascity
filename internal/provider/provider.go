@@ -1103,7 +1103,9 @@ func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []pr
 	left, readErr, signalErr := p.reap(ctx, tree)
 	binding.Survivors = survivorRecords(left)
 	if len(left) == 0 {
-		return errors.Join(readErr, signalErr)
+		// A signal error with nothing left is a success: everything died anyway
+		// (the caller's contract), so the failed signal is not reported.
+		return readErr
 	}
 	survived := &survivorError{name: string(binding.Name), survivors: left, reason: errors.Join(readErr, signalErr)}
 	// A start may have replaced the binding while this reap ran. Record only

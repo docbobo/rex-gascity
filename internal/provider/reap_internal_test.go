@@ -410,6 +410,37 @@ func TestStopKeepsSignallingAfterASignalFailure(t *testing.T) {
 	}
 }
 
+// TestStopTreatsASignalErrorWithNothingLeftAsSuccess is review F1 on PR #46:
+// a failed signal whose process is gone by the next read is a success. The
+// stop must not return the signal error, or it bails before clearing the
+// incarnations and forgetting the binding.
+func TestStopTreatsASignalErrorWithNothingLeftAsSuccess(t *testing.T) {
+	reapShortWaits(t)
+	ctx := context.Background()
+	_, p, host := reapProvider(t, liveTree, func(call int) prochost.Table {
+		if call <= 4 {
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", "bun"},
+			)
+		}
+		// The TERM read the processes alive, the poll proves them gone.
+		return reapTable()
+	})
+	host.OnSignal = func(_ int, _ int, _ syscall.Signal) error { return syscall.EPERM }
+
+	if err := p.Stop(ctx, reapDog); err != nil {
+		t.Fatalf("Stop = %v, want nil: the signalled processes are gone", err)
+	}
+	if len(host.Signals) != 2 {
+		t.Errorf("signals = %v, want one TERM for each of the two captures", signalLog(host))
+	}
+	if _, ok := p.Binding(reapDog); ok {
+		t.Error("binding kept although the tree is gone")
+	}
+}
+
 // TestStopTreatsAVanishedPaneAsAnEmptyTree is review R2: a pane that vanishes
 // between Resolve and BlockProcess is the no-pane case, not a tree we could not
 // read, so the stop proceeds to the close and succeeds.
