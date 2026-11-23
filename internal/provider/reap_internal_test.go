@@ -22,27 +22,38 @@ const reapDog = "Indigo--dog-1"
 // different start time (pid reuse) uses reapTableAt.
 const reapStart = "Fri Nov 20 18:00:00 2026"
 
-func reapTable(rows ...[4]string) string { return reapTableAt(reapStart, rows...) }
+func reapTable(rows ...[4]string) prochost.Table { return reapTableAt(reapStart, rows...) }
 
-func reapTableAt(start string, rows ...[4]string) string {
-	var b strings.Builder
+func reapTableAt(start string, rows ...[4]string) prochost.Table {
+	table := make(prochost.Table, len(rows))
 	for _, r := range rows {
-		b.WriteString(r[0] + " " + r[1] + " " + r[2] + " " + start + " " + r[3] + "\n")
+		pid, _ := strconv.Atoi(r[0])
+		ppid, _ := strconv.Atoi(r[1])
+		table[pid] = prochost.Row{
+			PID:      pid,
+			PPID:     ppid,
+			Zombie:   strings.HasPrefix(r[2], "Z"),
+			Comm:     r[3],
+			Start:    start,
+			Reliable: true,
+		}
 	}
-	return b.String()
+	return table
 }
 
 // reapTestHost is the prochost.Host the internal reap tests inject. Its Table
-// runs the real ps parser over the FakeRunner's answer, so the reapTable
-// fixtures stay the test input. Its Signal records calls and can be overridden.
+// answers the givePs fixture by call number. Its Signal records calls and can
+// be overridden.
 type reapTestHost struct {
-	runner   prochost.CommandRunner
+	givePs   func(call int) prochost.Table
+	calls    int
 	signals  *[]string
 	onSignal func(pid int, sig syscall.Signal) error
 }
 
 func (h *reapTestHost) Table(ctx context.Context, needArgs bool) (prochost.Table, error) {
-	return prochost.NewPSHost(h.runner).Table(ctx, needArgs)
+	h.calls++
+	return h.givePs(h.calls), nil
 }
 
 func (h *reapTestHost) Signal(pid int, sig syscall.Signal) error {
@@ -55,21 +66,12 @@ func (h *reapTestHost) Signal(pid int, sig syscall.Signal) error {
 
 // reapProvider starts reapDog and returns a provider whose panes report the
 // given process tree and whose host process table the givePs func answers.
-func reapProvider(t *testing.T, tree rex.ProcessInfo, givePs func(call int) string) (*faketest.Fake, *Provider, *[]string) {
+func reapProvider(t *testing.T, tree rex.ProcessInfo, givePs func(call int) prochost.Table) (*faketest.Fake, *Provider, *[]string) {
 	t.Helper()
 	ctx := context.Background()
 	fake := faketest.New()
-	runner := &FakeRunner{}
-	psCalls := 0
-	runner.Handle = func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
-		psCalls++
-		return givePs(psCalls), nil
-	}
 	var signals []string
-	host := &reapTestHost{runner: runner, signals: &signals}
+	host := &reapTestHost{givePs: givePs, signals: &signals}
 	p := New("acme", fake, WithProcessHost(host))
 	if err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -101,7 +103,7 @@ var liveTree = rex.ProcessInfo{
 func TestStopFailsWhileDescendantsSurvive(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+	fake, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			// Before the close: pane shell, agent and two descendants.
 			return reapTable(
@@ -166,7 +168,7 @@ func TestStopRetriesTheSurvivorsItRecorded(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+	fake, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			return reapTable(
 				[4]string{"200", "1", "Ss", "/bin/zsh"},
@@ -176,7 +178,7 @@ func TestStopRetriesTheSurvivorsItRecorded(t *testing.T) {
 			)
 		}
 		if !alive {
-			return ""
+			return prochost.Table{}
 		}
 		return reapTable(
 			[4]string{"300", "1", "S", "bun"},
@@ -229,7 +231,7 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	termSent := false
-	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+	fake, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			return reapTable(
 				[4]string{"200", "1", "Ss", "/bin/zsh"},
@@ -238,7 +240,7 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 			)
 		}
 		if termSent {
-			return ""
+			return prochost.Table{}
 		}
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
@@ -276,7 +278,7 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 func TestStopReapsAProcessThePaneStartedAfterTheSnapshot(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+	fake, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			// Before the close: the snapshot's shell, agent and descendant.
 			return reapTable(
@@ -326,7 +328,7 @@ func TestStopMatchesTheProcessTableNameNotRexsName(t *testing.T) {
 	_, p, signals := reapProvider(t, rex.ProcessInfo{
 		Foreground: &rex.Process{PID: 300, Name: "node"},
 		Ancestors:  []rex.Process{{PID: 200, Name: "fish"}},
-	}, func(call int) string {
+	}, func(call int) prochost.Table {
 		if call == 1 {
 			return reapTable(
 				[4]string{"200", "1", "Ss", "-fish"},
@@ -354,7 +356,7 @@ func TestStopMatchesTheProcessTableNameNotRexsName(t *testing.T) {
 func TestStopKeepsAProcessThatRenamedItself(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	_, p, signals := reapProvider(t, liveTree, func(call int) string {
+	_, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			return reapTable(
 				[4]string{"200", "1", "Ss", "/bin/zsh"},
@@ -387,7 +389,7 @@ func TestStopKeepsAProcessThatRenamedItself(t *testing.T) {
 func TestStopDoesNotSignalAReusedPid(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	_, p, signals := reapProvider(t, liveTree, func(call int) string {
+	_, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			return reapTable(
 				[4]string{"200", "1", "Ss", "/bin/zsh"},
@@ -426,9 +428,9 @@ func TestUnionProcsKeepsBothStartsOfAReusedPid(t *testing.T) {
 // TestStopAlreadyDeadSessionScansNoProcessTable is GCREX-50 AC#3: a name with
 // no live pane stops with exit 0 and never touches the process table.
 func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
-	_, p, signals := reapProvider(t, liveTree, func(int) string {
+	_, p, signals := reapProvider(t, liveTree, func(int) prochost.Table {
 		t.Error("process table read for a session with no pane")
-		return ""
+		return prochost.Table{}
 	})
 	fake := p.client.(*faketest.Fake)
 	// The pane is gone: no block in the view and no process to ask about.
@@ -449,7 +451,7 @@ func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
 func TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(call int) string {
+	fake, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			// Before the close: an empty comm and a comm with repeated spaces.
 			return reapTable(
@@ -489,7 +491,7 @@ func TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm(t *testing.T) {
 func TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(int) string { return "" })
+	fake, p, signals := reapProvider(t, liveTree, func(int) prochost.Table { return prochost.Table{} })
 	fake.ProcessErr = errors.New("process: unavailable")
 	if err := p.SetMeta(ctx, reapDog, "suspended", "yes"); err != nil {
 		t.Fatalf("SetMeta: %v", err)
@@ -524,7 +526,7 @@ func TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead(t *testing.T) {
 // captured or signalled.
 func TestPaneSubtreeSkipsAncestorsSiblings(t *testing.T) {
 	ctx := context.Background()
-	_, p, _ := reapProvider(t, liveTree, func(int) string {
+	_, p, _ := reapProvider(t, liveTree, func(int) prochost.Table {
 		return reapTable(
 			[4]string{"200", "1", "Ss", "/bin/zsh"},
 			[4]string{"100", "200", "S+", "claude"},
@@ -556,7 +558,7 @@ func TestPaneSubtreeSkipsAncestorsSiblings(t *testing.T) {
 func TestStopKeepsSignallingAfterASignalFailure(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	_, p, signals := reapProvider(t, liveTree, func(call int) string {
+	_, p, signals := reapProvider(t, liveTree, func(call int) prochost.Table {
 		if call == 1 {
 			return reapTable(
 				[4]string{"200", "1", "Ss", "/bin/zsh"},
@@ -600,9 +602,9 @@ func TestStopKeepsSignallingAfterASignalFailure(t *testing.T) {
 func TestStopTreatsAVanishedPaneAsAnEmptyTree(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(int) string {
+	fake, p, signals := reapProvider(t, liveTree, func(int) prochost.Table {
 		t.Error("process table read for a vanished pane")
-		return ""
+		return prochost.Table{}
 	})
 
 	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: SessionName(reapDog), Mode: ResolveFresh})
@@ -633,7 +635,7 @@ func TestPaneSubtreePinsAForegroundLeaf(t *testing.T) {
 	_, p, _ := reapProvider(t, rex.ProcessInfo{
 		Foreground: &rex.Process{PID: 300, Name: "go"},
 		Ancestors:  []rex.Process{{PID: 200, Name: "zsh"}, {PID: 100, Name: "claude"}},
-	}, func(int) string {
+	}, func(int) prochost.Table {
 		return reapTable(
 			[4]string{"200", "1", "Ss", "/bin/zsh"},
 			[4]string{"100", "200", "S+", "claude"},

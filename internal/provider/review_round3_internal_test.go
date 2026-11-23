@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
@@ -20,7 +21,7 @@ import (
 func TestStopReapsRecordedSurvivorsThroughAReplacementScan(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, rex.ProcessInfo{}, func(int) string {
+	fake, p, signals := reapProvider(t, rex.ProcessInfo{}, func(int) prochost.Table {
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
 	recordSurvivor(t, p, SessionName(reapDog), 300, "bun")
@@ -93,12 +94,9 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 		}
 	}
 	var signals []string
-	p.processHost = &reapTestHost{runner: &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
-		return reapTable([4]string{"300", "1", "S", "bun"}), nil
-	}}, signals: &signals}
+	p.processHost = &reapTestHost{givePs: func(int) prochost.Table {
+		return reapTable([4]string{"300", "1", "S", "bun"})
+	}, signals: &signals}
 
 	_, err := p.KillObject(ctx, "Rig--dog-1", KillObjectRequest{Object: observeObjectFor(bd), Mode: "corpse"})
 	if err == nil {

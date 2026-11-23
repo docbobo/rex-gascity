@@ -3,37 +3,77 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
-// psSnapshot is a Runner answering the two ps calls the agent snapshot reads: a
-// wide pid, ppid, args table and a narrow pid, comm table.
-func psSnapshot(wide, comms string, err error) *provider.FakeRunner {
-	return &provider.FakeRunner{Handle: func(_ context.Context, c provider.RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
+// psSnapshotHost is the host process seam the zombie tests read. The observe
+// read (needArgs) answers the wide and identity snapshot. The reap read answers
+// no rows: a zombie kill closes the pane, so its processes are gone.
+type psSnapshotHost struct {
+	wide, comms string
+	err         error
+	table       prochost.Table // when set, answers the observe read instead
+}
+
+func psSnapshot(wide, comms string, err error) *psSnapshotHost {
+	return &psSnapshotHost{wide: wide, comms: comms, err: err}
+}
+
+func (h *psSnapshotHost) Table(_ context.Context, needArgs bool) (prochost.Table, error) {
+	if h.err != nil {
+		return nil, h.err
+	}
+	if !needArgs {
+		return prochost.Table{}, nil
+	}
+	if h.table != nil {
+		return h.table, nil
+	}
+	return snapshotTable(h.wide, h.comms), nil
+}
+
+func (h *psSnapshotHost) Signal(int, syscall.Signal) error { return nil }
+
+// snapshotTable merges the wide and identity reads into one table.
+func snapshotTable(wide, comms string) prochost.Table {
+	table := prochost.Table{}
+	for _, line := range strings.Split(comms, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
 		}
-		if err != nil {
-			return "", err
+		pid, _ := strconv.Atoi(f[0])
+		table[pid] = prochost.Row{PID: pid, Comm: f[1], Reliable: true}
+	}
+	for _, line := range strings.Split(wide, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
 		}
-		if len(c.Args) == 2 {
-			return comms, nil
-		}
-		return wide, nil
-	}}
+		pid, _ := strconv.Atoi(f[0])
+		ppid, _ := strconv.Atoi(f[1])
+		row := table[pid]
+		row.PID, row.PPID, row.Args, row.Reliable = pid, ppid, strings.Join(f[2:], " "), true
+		table[pid] = row
+	}
+	return table
 }
 
 // zombieStarted starts name under observe.v1 with the meta the zombie check
 // reads and a readable foreground pid.
-func zombieStarted(t *testing.T, runner provider.Runner, env map[string]string) (*faketest.Fake, *provider.Provider) {
+func zombieStarted(t *testing.T, host prochost.Host, env map[string]string) (*faketest.Fake, *provider.Provider) {
 	t.Helper()
 	t.Setenv("GCREX_OBSERVE_V1", "1")
 	fake := faketest.New()
-	p := provider.New("acme", fake, provider.WithRunner(runner))
+	p := provider.New("acme", fake, provider.WithProcessHost(host))
 	name := "Indigo--dog-1"
 	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"sleep", "300"}, Env: env}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -212,15 +252,15 @@ func TestKillObjectZombieKillsWhenAgentPIDIsADescendant(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
 	alive := "100 1 sleep 300\n105 100 gc-rpp-no-such-process\n"
-	runner := psSnapshot(alive, "100 sleep\n105 gc-rpp-no-such-process\n", nil)
-	_, p := zombieStarted(t, runner, env)
+	host := psSnapshot(alive, "100 sleep\n105 gc-rpp-no-such-process\n", nil)
+	_, p := zombieStarted(t, host, env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, []string{"gc-rpp-no-such-process"})
 	if err != nil || ans.Object == nil || ans.AgentPID != "105" {
 		t.Fatalf("Observe = %+v, %v; want the matched descendant pid 105", ans, err)
 	}
 	// The agent exits; the root and the host stay readable.
-	runner.Handle = psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil).Handle
+	host.table = snapshotTable("100 1 sleep 300\n", "100 sleep\n")
 
 	res, err := p.KillObject(ctx, name, provider.KillObjectRequest{Object: *ans.Object, Mode: "zombie", AgentPID: ans.AgentPID})
 	if err != nil {
@@ -262,7 +302,7 @@ func TestKillObjectZombieChangedForAdoptedPane(t *testing.T) {
 	store := provider.NewMemoryStore()
 	p := provider.New("acme", fake,
 		provider.WithBindingStore(store),
-		provider.WithRunner(psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil)))
+		provider.WithProcessHost(psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil)))
 	name := "Indigo--dog-1"
 	if err := p.Start(ctx, name, provider.Config{
 		Argv: []string{"sleep", "300"},

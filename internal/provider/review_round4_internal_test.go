@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
@@ -21,17 +22,13 @@ func TestStartFailsWhilePendingSurvivorsSurvive(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()
 	store := &failOnceRecordStore{MemoryStore: NewMemoryStore()}
-	p := New("acme", fake, WithBindingStore(store))
-	p.processHost = &reapTestHost{runner: &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
+	p := New("acme", fake, WithBindingStore(store), WithProcessHost(&reapTestHost{givePs: func(int) prochost.Table {
 		// The pane's shell is a zombie after the close; pid 300 still runs.
 		return reapTable(
 			[4]string{"100", "1", "Z", "claude"},
 			[4]string{"300", "100", "S", "bun"},
-		), nil
-	}}, signals: new([]string)}
+		)
+	}, signals: new([]string)}))
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
 		"block:dog-1": {Foreground: &rex.Process{PID: 100, Name: "claude"}},
 	}

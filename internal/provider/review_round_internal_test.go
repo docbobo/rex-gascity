@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
@@ -239,7 +240,7 @@ func recordSurvivor(t *testing.T, p *Provider, name SessionName, pid int, proc s
 func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(int) string { return "" })
+	fake, p, signals := reapProvider(t, liveTree, func(int) prochost.Table { return prochost.Table{} })
 	bd := recordSurvivor(t, p, reapDog, 300, "bun")
 	// The pane is gone: the record is now the only name for the survivor.
 	fake.View = rex.SessionView{}
@@ -248,16 +249,13 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	alive := true
 	psCalls := 0
 	host := p.processHost.(*reapTestHost)
-	host.runner = &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
+	host.givePs = func(int) prochost.Table {
 		psCalls++
 		if !alive {
-			return "", nil
+			return prochost.Table{}
 		}
-		return reapTable([4]string{"300", "1", "S", "bun"}), nil
-	}}
+		return reapTable([4]string{"300", "1", "S", "bun"})
+	}
 	host.onSignal = func(pid int, sig syscall.Signal) error {
 		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
 		if sig.String() == "terminated" {
@@ -287,7 +285,7 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 func TestKillObjectFailsWhileRecordedSurvivorsSurvive(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, _ := reapProvider(t, liveTree, func(int) string {
+	fake, p, _ := reapProvider(t, liveTree, func(int) prochost.Table {
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
 	bd := recordSurvivor(t, p, reapDog, 300, "bun")
@@ -309,9 +307,9 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	_, p, signals := reapProvider(t, liveTree, func(int) string {
+	_, p, signals := reapProvider(t, liveTree, func(int) prochost.Table {
 		if !alive {
-			return ""
+			return prochost.Table{}
 		}
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
@@ -363,23 +361,18 @@ func TestStopSurvivorWriteFailureFailsTheStop(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	fake := faketest.New()
-	runner := &FakeRunner{}
-	runner.Handle = func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
+	host := &reapTestHost{givePs: func(int) prochost.Table {
 		return reapTable(
 			[4]string{"200", "1", "Ss", "/bin/zsh"},
 			[4]string{"100", "200", "S+", "claude"},
-		), nil
-	}
+		)
+	}, signals: new([]string)}
 	store := &gatedBindingStore{MemoryStore: NewMemoryStore()}
-	p := New("acme", fake, WithRunner(runner), WithBindingStore(store))
+	p := New("acme", fake, WithProcessHost(host), WithBindingStore(store))
 	if err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{"block:dog-1": liveTree}
-	p.processHost = &reapTestHost{runner: runner, signals: new([]string)}
 	store.fail = true
 
 	err := p.Stop(ctx, reapDog)
@@ -395,9 +388,9 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	_, p, signals := reapProvider(t, liveTree, func(int) string {
+	_, p, signals := reapProvider(t, liveTree, func(int) prochost.Table {
 		if !alive {
-			return ""
+			return prochost.Table{}
 		}
 		return reapTable(
 			[4]string{"300", "1", "S", "bun"},
