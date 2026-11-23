@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/prochost"
@@ -319,17 +320,72 @@ func TestRetireCloseErrorStopsEverything(t *testing.T) {
 	}
 }
 
+// dyingOnTerm builds a host whose table holds rows while alive is true and
+// answers no rows after the first TERM, so a reaped process is gone.
+func dyingOnTerm(alive *bool, rows ...[4]string) *prochost.Fake {
+	host := &prochost.Fake{}
+	host.OnTable = func(int, bool) (prochost.Table, error) {
+		if !*alive {
+			return prochost.Table{}, nil
+		}
+		return reapTable(rows...), nil
+	}
+	host.OnSignal = func(_ int, _ int, sig syscall.Signal) error {
+		if sig == syscall.SIGTERM {
+			*alive = false
+		}
+		return nil
+	}
+	return host
+}
+
 // TestRetireIgnoresAFailedReRead: a post-close read error leaves the
-// pre-close tree authoritative and the retirement continues.
+// pre-close tree authoritative — a process captured before the close is still
+// signalled — and the retirement continues.
 func TestRetireIgnoresAFailedReRead(t *testing.T) {
-	c, p, bd := retireSetup(t, nil)
+	reapShortWaits(t)
+	alive := true
+	host := dyingOnTerm(&alive,
+		[4]string{"200", "1", "Ss", "/bin/zsh"},
+		[4]string{"100", "200", "S+", "claude"},
+		[4]string{"300", "100", "S", "bun"},
+	)
+	c, p, bd := retireSetup(t, host)
+	c.Processes = map[rex.BlockID]rex.ProcessInfo{bd.BlockID: liveTree}
 	c.failProcess[2] = errRetireBoom
 	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
 		t.Fatalf("retire: %v, want the re-read failure ignored", err)
 	}
+	if !slices.Contains(signalLog(host), "terminated:300") {
+		t.Errorf("signals = %v, want the pre-close process signalled after a failed re-read", signalLog(host))
+	}
 	wantRexCalls(t, c, "process", "close", "process", "view", "destroy")
 	if bindingKept(p) {
 		t.Error("binding kept although the retirement finished")
+	}
+}
+
+// TestRetireReapsAProcessTheReReadFoundOnly is the code-quality finding: the
+// post-close re-read adds its processes to the reap. One the pane started
+// after the snapshot, absent from the pre-close tree, is still signalled.
+func TestRetireReapsAProcessTheReReadFoundOnly(t *testing.T) {
+	reapShortWaits(t)
+	alive := true
+	host := dyingOnTerm(&alive, [4]string{"900", "1", "S", "rapper"})
+	c, p, bd := retireSetup(t, host)
+	reads := 0
+	c.ProcessFunc = func(rex.BlockID) rex.ProcessInfo {
+		reads++
+		if reads == 1 {
+			return rex.ProcessInfo{}
+		}
+		return rex.ProcessInfo{Foreground: &rex.Process{PID: 900, Name: "rapper"}}
+	}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if !slices.Contains(signalLog(host), "terminated:900") {
+		t.Errorf("signals = %v, want the process only the re-read reported signalled", signalLog(host))
 	}
 }
 
