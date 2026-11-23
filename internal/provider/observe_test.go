@@ -811,7 +811,7 @@ func TestObserveAgentFromProcessSnapshot(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()
 	host := &prochost.Fake{}
-	host.OnTable = func(call int) (prochost.Table, error) {
+	host.OnTable = func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1:
 			return prochost.Table{

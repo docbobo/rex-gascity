@@ -23,7 +23,7 @@ const reapStopDog = "Indigo--dog-1"
 func TestStopRefusesRecycledPID(t *testing.T) {
 	const captured = "Fri Nov 20 18:00:00 2026"
 	const reused = "Sat Nov 21 09:00:00 2026"
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		start := captured
 		if call > 1 {
 			start = reused // the pid was reused after the snapshot
@@ -119,7 +119,7 @@ func wantSurvivors(t *testing.T, p *provider.Provider, want ...provider.Survivor
 // read gets no KILL and Stop succeeds without a record (§2a row 2).
 func TestStopReuseBeforeKill(t *testing.T) {
 	const reused = "Sat Nov 21 09:00:00 2026"
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch {
 		case call <= 3:
 			return reapTableOf(reapRow(300, "bun")), nil
@@ -146,7 +146,7 @@ func TestStopReuseBeforeKill(t *testing.T) {
 // TestStopPersistentZombie proves a zombie is gone: no signal and no record
 // (§2a row 3).
 func TestStopPersistentZombie(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
 		row := reapRow(300, "bun")
 		row.Zombie = true
 		return prochost.Table{300: row}, nil
@@ -166,7 +166,7 @@ func TestStopPersistentZombie(t *testing.T) {
 // TestStopReportsOpaqueSurvivor proves a present process whose identity is not
 // provable gets no signal, fails the stop, and keeps the record (§2a row 4).
 func TestStopReportsOpaqueSurvivor(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		if call <= 2 {
 			return reapTableOf(reapRow(300, "bun")), nil
 		}
@@ -191,7 +191,7 @@ func TestStopReportsOpaqueSurvivor(t *testing.T) {
 // TestStopShDoesNotMatchBash proves the exact name match: sh is not bash, so
 // the row is an opaque survivor, not the captured process (§2a row 5).
 func TestStopShDoesNotMatchBash(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		if call <= 2 {
 			return reapTableOf(reapRow(300, "sh")), nil
 		}
@@ -216,7 +216,7 @@ func TestStopShDoesNotMatchBash(t *testing.T) {
 // TestStopGoneAfterTerm proves the subtree that dies on TERM leaves no
 // survivor and the stop succeeds (§2a row 6).
 func TestStopGoneAfterTerm(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		if call <= 3 {
 			return reapTableOf(reapRow(300, "bun")), nil
 		}
@@ -237,7 +237,7 @@ func TestStopGoneAfterTerm(t *testing.T) {
 // TestStopReadErrorBeforeTerm proves a table read error before TERM sends no
 // signal, returns an error, and keeps the survivor record (§2a row 7).
 func TestStopReadErrorBeforeTerm(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		if call == 3 {
 			return nil, errReapTable
 		}
@@ -260,7 +260,7 @@ func TestStopReadErrorBeforeTerm(t *testing.T) {
 // TestStopReadErrorDuringPoll proves a read error while waiting for TERM
 // leaves the TERM in place, returns an error, and keeps the record.
 func TestStopReadErrorDuringPoll(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		if call == 4 {
 			return nil, errReapTable
 		}
@@ -283,7 +283,7 @@ func TestStopReadErrorDuringPoll(t *testing.T) {
 // TestStopReadErrorBeforeKill proves a read error at the pre-KILL read leaves
 // the TERM in place, sends no KILL, and keeps the record.
 func TestStopReadErrorBeforeKill(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1, 2, 3:
 			return reapTableOf(reapRow(300, "bun")), nil
@@ -311,7 +311,7 @@ func TestStopReadErrorBeforeKill(t *testing.T) {
 // TestStopReadErrorAfterKill proves a read error after KILL returns the error
 // and keeps the record.
 func TestStopReadErrorAfterKill(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1, 2, 3:
 			return reapTableOf(reapRow(300, "bun")), nil
@@ -349,7 +349,7 @@ func reapTwoRoots(a, b rex.Process) rex.ProcessInfo {
 // (spec review finding 1). The fresh pre-KILL read must see only the alive set.
 func TestStopGonePIDNotKilledAfterReuse(t *testing.T) {
 	const reused = "Sat Nov 21 09:00:00 2026"
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1, 2, 3:
 			return reapTableOf(reapRow(300, "bun"), reapRow(400, "sleep")), nil
@@ -387,7 +387,7 @@ func TestStopGonePIDNotKilledAfterReuse(t *testing.T) {
 // (code review finding).
 func TestStopGonePIDNotKilledDuringLaterTermPoll(t *testing.T) {
 	const reused = "Sat Nov 21 09:00:00 2026"
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1, 2, 3:
 			// Pane snapshot, post-close snapshot, initial scan.
@@ -424,7 +424,7 @@ func TestStopGonePIDNotKilledDuringLaterTermPoll(t *testing.T) {
 // (spec review finding 2).
 func TestStopKillPollErrorKeepsAliveSet(t *testing.T) {
 	const reused = "Sat Nov 21 09:00:00 2026"
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1, 2, 3:
 			return reapTableOf(reapRow(300, "bun"), reapRow(400, "sleep")), nil
@@ -461,7 +461,7 @@ func TestStopKillPollErrorKeepsAliveSet(t *testing.T) {
 // TestStopKillsObjectFromFakeHost proves the stop path reaches the fake host
 // seam: TERM, then KILL, through WithProcessHost (REQ-006).
 func TestStopKillsObjectFromFakeHost(t *testing.T) {
-	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		switch call {
 		case 1, 2, 3:
 			return reapTableOf(reapRow(300, "bun")), nil
@@ -484,5 +484,61 @@ func TestStopKillsObjectFromFakeHost(t *testing.T) {
 	}
 	if _, ok := p.Binding(reapStopDog); ok {
 		t.Error("binding survived a fully reaped stop")
+	}
+}
+
+// TestStopSucceedsWhenTheSubtreeDies proves the success path: descendants that
+// die on TERM leave no survivor, so the stop succeeds and retires the
+// incarnation.
+func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
+	termSent := false
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
+		if call == 1 {
+			return reapTableOf(reapRow(300, "bun")), nil
+		}
+		if termSent {
+			return prochost.Table{}, nil
+		}
+		return reapTableOf(reapRow(300, "bun")), nil
+	}}
+	host.OnSignal = func(_ int, _ int, sig syscall.Signal) error {
+		if sig == syscall.SIGTERM {
+			termSent = true
+		}
+		return nil
+	}
+	fake, p := reapStartDog(t, host, reapOneTree(300, "bun"))
+
+	if err := p.Stop(context.Background(), reapStopDog); err != nil {
+		t.Fatalf("Stop = %v, want nil once the subtree is gone", err)
+	}
+	if len(host.Signals) != 1 || host.Signals[0].PID != 300 || host.Signals[0].Sig != syscall.SIGTERM {
+		t.Errorf("signals = %v, want one TERM for 300", host.Signals)
+	}
+	if len(fake.ClosedBlocks) != 1 {
+		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
+	}
+	if _, ok := p.Binding(reapStopDog); ok {
+		t.Error("binding survived a fully reaped stop")
+	}
+}
+
+// TestStopAlreadyDeadSessionScansNoProcessTable is GCREX-50 AC#3: a name with
+// no live pane stops with exit 0 and never touches the process table.
+func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
+		t.Error("process table read for a session with no pane")
+		return prochost.Table{}, nil
+	}}
+	fake, p := reapStartDog(t, host, reapOneTree(300, "bun"))
+	// The pane is gone: no block in the view and no process to ask about.
+	fake.View.Windows = nil
+	fake.Processes = nil
+
+	if err := p.Stop(context.Background(), reapStopDog); err != nil {
+		t.Fatalf("Stop = %v, want nil for an already-dead pane", err)
+	}
+	if len(host.Signals) != 0 {
+		t.Errorf("signals = %v, want none", host.Signals)
 	}
 }

@@ -21,7 +21,7 @@ import (
 func TestStopReapsRecordedSurvivorsThroughAReplacementScan(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, rex.ProcessInfo{}, func(int) prochost.Table {
+	fake, p, host := reapProvider(t, rex.ProcessInfo{}, func(int) prochost.Table {
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
 	recordSurvivor(t, p, SessionName(reapDog), 300, "bun")
@@ -42,8 +42,8 @@ func TestStopReapsRecordedSurvivorsThroughAReplacementScan(t *testing.T) {
 	if !strings.Contains(err.Error(), "300 (bun)") {
 		t.Errorf("Stop error %q does not name the surviving 300 (bun)", err)
 	}
-	if !slices.Contains(*signals, "terminated:300") {
-		t.Errorf("signals = %v, want a TERM for the recorded survivor 300", *signals)
+	if !slices.Contains(signalLog(host), "terminated:300") {
+		t.Errorf("signals = %v, want a TERM for the recorded survivor 300", signalLog(host))
 	}
 	bd, ok := p.Binding(reapDog)
 	if !ok {
@@ -65,7 +65,10 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 	fake := faketest.New()
 	var p *Provider
 	client := &swapViewClient{Fake: fake}
-	p = New("acme", client)
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
+		return reapTable([4]string{"300", "1", "S", "bun"}), nil
+	}}
+	p = New("acme", client, WithProcessHost(host))
 	if err := p.Start(ctx, "Indigo--dog-1", Config{Argv: []string{"sleep", "300"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -93,11 +96,6 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 			t.Errorf("Record: %v", err)
 		}
 	}
-	var signals []string
-	p.processHost = &reapTestHost{givePs: func(int) prochost.Table {
-		return reapTable([4]string{"300", "1", "S", "bun"})
-	}, signals: &signals}
-
 	_, err := p.KillObject(ctx, "Rig--dog-1", KillObjectRequest{Object: observeObjectFor(bd), Mode: "corpse"})
 	if err == nil {
 		t.Fatal("KillObject = nil, want a survivor failure: the record read under the lock names pid 300")
@@ -112,8 +110,8 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 	if len(got.Survivors) != 1 || got.Survivors[0].PID != 300 {
 		t.Errorf("survivors = %+v, want pid 300 kept for the retry", got.Survivors)
 	}
-	if !slices.Contains(signals, "terminated:300") {
-		t.Errorf("signals = %v, want a TERM for pid 300", signals)
+	if !slices.Contains(signalLog(host), "terminated:300") {
+		t.Errorf("signals = %v, want a TERM for pid 300", signalLog(host))
 	}
 }
 

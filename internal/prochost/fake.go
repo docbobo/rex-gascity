@@ -14,8 +14,9 @@ type SignalCall struct {
 // Fake is the in-memory Host the provider tests inject.
 type Fake struct {
 	// OnTable, when set, answers table call N (1-based) with a table or an
-	// error. It is what the reap tests use to change the table between polls.
-	OnTable func(call int) (Table, error)
+	// error. It receives the call's needArgs flag, so a fixture can answer the
+	// reap read and the observe read differently.
+	OnTable func(call int, needArgs bool) (Table, error)
 	// TableField answers every table call when OnTable is nil.
 	TableField Table
 
@@ -35,7 +36,7 @@ type Fake struct {
 func (f *Fake) Table(ctx context.Context, needArgs bool) (Table, error) {
 	f.tableCalls++
 	if f.OnTable != nil {
-		return f.OnTable(f.tableCalls)
+		return f.OnTable(f.tableCalls, needArgs)
 	}
 	if f.TableField == nil {
 		return Table{}, nil

@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -240,24 +239,20 @@ func recordSurvivor(t *testing.T, p *Provider, name SessionName, pid int, proc s
 func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(int) prochost.Table { return prochost.Table{} })
+	fake, p, host := reapProvider(t, liveTree, func(int) prochost.Table { return prochost.Table{} })
 	bd := recordSurvivor(t, p, reapDog, 300, "bun")
 	// The pane is gone: the record is now the only name for the survivor.
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
 	alive := true
-	psCalls := 0
-	host := p.processHost.(*reapTestHost)
-	host.givePs = func(int) prochost.Table {
-		psCalls++
+	host.OnTable = func(int, bool) (prochost.Table, error) {
 		if !alive {
-			return prochost.Table{}
+			return prochost.Table{}, nil
 		}
-		return reapTable([4]string{"300", "1", "S", "bun"})
+		return reapTable([4]string{"300", "1", "S", "bun"}), nil
 	}
-	host.onSignal = func(pid int, sig syscall.Signal) error {
-		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+	host.OnSignal = func(_ int, _ int, sig syscall.Signal) error {
 		if sig.String() == "terminated" {
 			alive = false
 		}
@@ -271,13 +266,12 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	if res != "gone" {
 		t.Errorf("result = %q, want gone after the retry reaped the record", res)
 	}
-	if len(*signals) == 0 || (*signals)[0] != "terminated:300" {
-		t.Errorf("signals = %v, want the recorded survivor TERMed", *signals)
+	if len(signalLog(host)) == 0 || (signalLog(host))[0] != "terminated:300" {
+		t.Errorf("signals = %v, want the recorded survivor TERMed", signalLog(host))
 	}
 	if _, ok := p.Binding(string(reapDog)); ok {
 		t.Error("binding survived the successful survivor reap")
 	}
-	_ = psCalls
 }
 
 // TestKillObjectFailsWhileRecordedSurvivorsSurvive proves the failed retry:
@@ -307,7 +301,7 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	_, p, signals := reapProvider(t, liveTree, func(int) prochost.Table {
+	_, p, host := reapProvider(t, liveTree, func(int) prochost.Table {
 		if !alive {
 			return prochost.Table{}
 		}
@@ -319,8 +313,7 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	fake := p.client.(*faketest.Fake)
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
-	p.processHost.(*reapTestHost).onSignal = func(pid int, sig syscall.Signal) error {
-		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+	host.OnSignal = func(_ int, pid int, sig syscall.Signal) error {
 		if pid == 300 && sig.String() == "terminated" {
 			alive = false
 		}
@@ -330,8 +323,8 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	if err := p.Stop(ctx, "Rig--dog-1"); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if len(*signals) == 0 || (*signals)[0] != "terminated:300" {
-		t.Errorf("signals = %v, want the alias's primary record reaped", *signals)
+	if len(signalLog(host)) == 0 || (signalLog(host))[0] != "terminated:300" {
+		t.Errorf("signals = %v, want the alias's primary record reaped", signalLog(host))
 	}
 }
 
@@ -361,12 +354,12 @@ func TestStopSurvivorWriteFailureFailsTheStop(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	fake := faketest.New()
-	host := &reapTestHost{givePs: func(int) prochost.Table {
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
 		return reapTable(
 			[4]string{"200", "1", "Ss", "/bin/zsh"},
 			[4]string{"100", "200", "S+", "claude"},
-		)
-	}, signals: new([]string)}
+		), nil
+	}}
 	store := &gatedBindingStore{MemoryStore: NewMemoryStore()}
 	p := New("acme", fake, WithProcessHost(host), WithBindingStore(store))
 	if err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}}); err != nil {
@@ -388,7 +381,7 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	_, p, signals := reapProvider(t, liveTree, func(int) prochost.Table {
+	_, p, host := reapProvider(t, liveTree, func(int) prochost.Table {
 		if !alive {
 			return prochost.Table{}
 		}
@@ -402,8 +395,7 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
-	p.processHost.(*reapTestHost).onSignal = func(pid int, sig syscall.Signal) error {
-		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+	host.OnSignal = func(_ int, pid int, sig syscall.Signal) error {
 		if pid == 300 && sig.String() == "terminated" {
 			alive = false
 		}
@@ -417,8 +409,8 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	want := "terminated:500"
-	if !containsSignal(*signals, want) {
-		t.Errorf("signals = %v, want %s: a new descendant of a recorded survivor", *signals, want)
+	if !containsSignal(signalLog(host), want) {
+		t.Errorf("signals = %v, want %s: a new descendant of a recorded survivor", signalLog(host), want)
 	}
 }
 

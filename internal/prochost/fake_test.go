@@ -31,9 +31,11 @@ func TestFakeRecordsSignals(t *testing.T) {
 func TestFakeOnTableSequence(t *testing.T) {
 	first := Table{1: {PID: 1, Comm: "one", Reliable: true}}
 	second := Table{2: {PID: 2, Comm: "two", Reliable: true}}
+	var flags []bool
 	f := &Fake{
 		TableField: first,
-		OnTable: func(call int) (Table, error) {
+		OnTable: func(call int, needArgs bool) (Table, error) {
+			flags = append(flags, needArgs)
 			switch call {
 			case 1:
 				return first, nil
@@ -54,6 +56,9 @@ func TestFakeOnTableSequence(t *testing.T) {
 	}
 	if _, err = f.Table(context.Background(), false); !errors.Is(err, ErrUnreadableSnapshot) {
 		t.Fatalf("call 3 error = %v, want ErrUnreadableSnapshot", err)
+	}
+	if want := []bool{false, true, false}; !reflect.DeepEqual(flags, want) {
+		t.Errorf("needArgs flags = %v, want %v", flags, want)
 	}
 
 	// Without OnTable the fixed TableField answers every call.

@@ -22,8 +22,7 @@ var psNeedle = "\"ps\""
 // signal or runner fields. It walks internal and cmd like the review grep.
 func TestHostSeamNoPsOutsideAdapter(t *testing.T) {
 	exempt := map[string]bool{
-		filepath.Join("internal", "prochost", "ps.go"):             true,
-		filepath.Join("internal", "provider", "host_seam_test.go"): true,
+		filepath.Join("internal", "prochost", "ps.go"): true,
 	}
 	var psSites, fieldSites []string
 	for _, dir := range []string{"internal", "cmd"} {
