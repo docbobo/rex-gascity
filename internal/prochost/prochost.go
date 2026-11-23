@@ -42,7 +42,7 @@ type Host interface {
 }
 
 // interpreters are the programs whose first non-option argument names the
-// process. This is gc's set (internal/runtime/proctable/names.go).
+// process. This is this pack's local policy; it makes no gc claim.
 var interpreters = map[string]bool{"node": true, "bun": true, "npx": true, "deno": true}
 
 // runnerArgs are the interpreter subcommands skipped before the script operand.

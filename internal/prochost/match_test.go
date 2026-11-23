@@ -5,8 +5,9 @@ import "testing"
 // TestMatchExactCandidates pins the one name-matching rule: exact candidate
 // equality. There is no suffix match and "?" is not a wildcard.
 func TestMatchExactCandidates(t *testing.T) {
-	if !Match(Candidates("", "node", "/usr/local/bin/node", ""), []string{"node"}) {
-		t.Fatal("argv0 base node did not match node")
+	// Only the path basename candidate can match here: argv0 is empty.
+	if !Match(Candidates("", "", "/usr/local/bin/node", ""), []string{"node"}) {
+		t.Fatal("path base /usr/local/bin/node did not match node")
 	}
 	if Match(Candidates("bash", "bash", "", ""), []string{"sh"}) {
 		t.Fatal("bash matched sh")

@@ -62,25 +62,24 @@ func (h *PSHost) Signal(pid int, sig syscall.Signal) error {
 // identity rows add Comm, Start and Zombie. A wide-only row stays. An
 // identity-only row drops.
 func mergeRows(ident Table, wide string) (Table, error) {
+	if strings.TrimSpace(wide) == "" {
+		return nil, ErrUnreadableSnapshot
+	}
 	type wideRow struct {
 		ppid int
 		args string
 	}
 	rows := make(map[int]wideRow)
-	if strings.TrimSpace(wide) == "" {
-		return nil, ErrUnreadableSnapshot
-	}
 	for _, line := range strings.Split(wide, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		cols, rest, ok := splitRow(line, 2)
+		if !ok {
 			continue
 		}
-		pid, pidErr := strconv.Atoi(fields[0])
-		ppid, ppidErr := strconv.Atoi(fields[1])
-		if pidErr != nil || ppidErr != nil || pid <= 0 {
+		pid, ppid, ok := parseIDs(cols[0], cols[1])
+		if !ok {
 			continue
 		}
-		rows[pid] = wideRow{ppid: ppid, args: strings.Join(fields[2:], " ")}
+		rows[pid] = wideRow{ppid: ppid, args: strings.TrimSpace(rest)}
 	}
 	out := make(Table, len(rows))
 	for pid, w := range rows {
@@ -102,19 +101,19 @@ const lstartLen = 24
 func parseRows(out string) Table {
 	rows := make(Table)
 	for _, line := range strings.Split(out, "\n") {
-		pidStr, ppidStr, stat, comm, start, ok := splitProcessRow(line)
+		cols, rest, ok := splitRow(line, 3)
 		if !ok {
 			continue
 		}
-		pid, pidErr := strconv.Atoi(pidStr)
-		ppid, ppidErr := strconv.Atoi(ppidStr)
-		if pidErr != nil || ppidErr != nil || pid <= 0 {
+		pid, ppid, ok := parseIDs(cols[0], cols[1])
+		if !ok {
 			continue
 		}
+		comm, start := splitStart(rest)
 		rows[pid] = Row{
 			PID:      pid,
 			PPID:     ppid,
-			Zombie:   strings.HasPrefix(stat, "Z"),
+			Zombie:   strings.HasPrefix(cols[2], "Z"),
 			Comm:     comm,
 			Start:    start,
 			Reliable: true,
@@ -123,27 +122,40 @@ func parseRows(out string) Table {
 	return rows
 }
 
-// splitProcessRow splits one ps row into its three fixed columns and the rest
-// of the line, which is the command name and, when ps printed it, the trailing
-// lstart column. The name may be empty or contain spaces, so it must not be
-// field-split like the pid and ppid.
-func splitProcessRow(line string) (pid, ppid, stat, comm, start string, ok bool) {
-	var col [3]string
-	rest := strings.TrimRight(line, "\r\n")
-	for i := range col {
+// splitRow splits the first n whitespace-delimited columns from the rest of a
+// ps line. The remainder is not field-split, because a comm or args value may
+// contain spaces.
+func splitRow(line string, n int) (cols []string, rest string, ok bool) {
+	rest = strings.TrimRight(line, "\r\n")
+	cols = make([]string, 0, n)
+	for i := 0; i < n; i++ {
 		rest = strings.TrimLeft(rest, " \t")
 		if rest == "" {
-			return "", "", "", "", "", false
+			return nil, "", false
 		}
 		end := strings.IndexAny(rest, " \t")
 		if end < 0 {
-			col[i], rest = rest, ""
+			cols = append(cols, rest)
+			rest = ""
 			continue
 		}
-		col[i], rest = rest[:end], rest[end:]
+		cols = append(cols, rest[:end])
+		rest = rest[end:]
 	}
-	comm, start = splitStart(rest)
-	return col[0], col[1], col[2], comm, start, true
+	return cols, rest, true
+}
+
+// parseIDs decodes the pid and ppid columns both ps layouts share.
+func parseIDs(pidStr, ppidStr string) (pid, ppid int, ok bool) {
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		return 0, 0, false
+	}
+	ppid, err = strconv.Atoi(ppidStr)
+	if err != nil {
+		return 0, 0, false
+	}
+	return pid, ppid, true
 }
 
 // splitStart separates the trailing lstart column from the command name. A
