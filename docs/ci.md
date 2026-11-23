@@ -29,6 +29,19 @@ The pinned `gc` build was the bottleneck in both jobs. Over the 30 days
 before this workflow changed, `scripts/ci-timings.sh` reported p50/p90 of
 371/527 s for `pack-verify` and 352/559 s for `Conformance`.
 
+After the change, measured on pull request #55:
+
+| Job | code pull request, warm Go cache | docs-only pull request, cold cache |
+|---|---|---|
+| `pack-verify` | 116 s | 358 s |
+| `Conformance` | 145 s | 5 s |
+
+"Cold" means no Go build cache for that branch. A pull request run restores
+caches from its base branch, while a cache a pull request saves stays scoped
+to that PR's merge ref (GitHub dependency-caching reference). `main` runs CI on
+every push, so a docs-only pull request into `main` normally restores that
+cache and `pack-verify` lands near 105 s.
+
 ## Caches
 
 `actions/setup-go` runs with `cache: true` and
@@ -87,6 +100,8 @@ the table to that run's summary.
   the same pin is not a supported state.
 - `pack-verify` has no docs-only path. Its pack checks already cost under two
   minutes with a warm cache, and splitting the job would add setup time to the
-  critical path.
+  critical path. The docs-only verdict time is `pack-verify`, so the 300 s p90
+  target holds only while the base branch keeps a Go build cache. On a cold
+  cache the `gc` install costs about 300 s once.
 - `Conformance` keeps `timeout-minutes: 20` as the backstop for a hang, not as
   a budget.
