@@ -493,6 +493,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// or a provisional binding behind. Stop clears the same keys on the
 		// successful retire path. A survivor record is the only name for a
 		// descendant the retire could not reap, so it stays.
+		// The pane itself was already retired by discardLaunchPolicy when
+		// its record failed; this undoes only start's own provisional state.
 		_ = p.clearStartIdentity(n)
 		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
 			return
@@ -542,29 +544,11 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if alive {
 			return startResult{}, nil
 		}
-		if err := p.client.CloseBlock(ctx, old.SessionID, old.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		// The liveness read above chose this branch; the retirement makes no
+		// BlockProcess call of its own.
+		if _, err := p.retire(ctx, n, old, startDeadPanePolicy()); err != nil {
 			return startResult{}, err
 		}
-		// The retired incarnation's identity goes with it: a start that fails
-		// before seeding (a missing work_dir, a canceled launch) must not leave
-		// a GC_SESSION_ID behind for the next pane under the name to inherit.
-		// The retired identity can sit under the canonical name the caller
-		// reached by alias, not only under n: clear both before the record is
-		// dropped, or a failed relaunch leaves the old GC_SESSION_ID readable.
-		names := []SessionName{n}
-		if old.Name != "" && old.Name != n {
-			names = append(names, old.Name)
-		}
-		if err := p.withStateLock(ctx, func() error {
-			var errs []error
-			for _, name := range names {
-				errs = append(errs, p.clearStartIdentity(name))
-			}
-			return errors.Join(errs...)
-		}); err != nil {
-			return startResult{}, err
-		}
-		p.binder.Forget(n)
 	}
 
 	// Find or create the city session under the short state lock: two starts of
@@ -707,8 +691,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				}
 				if block != "" {
 					bd := p.newBinding(n, sid, w.ID, block, "split", attempt, cfg)
-					if err := p.binder.Record(bd); err != nil {
-						return p.discardLaunch(ctx, bd, err)
+					if recErr := p.binder.Record(bd); recErr != nil {
+						_, err := p.retire(ctx, n, bd, discardLaunchPolicy())
+						return errors.Join(recErr, err)
 					}
 				}
 				launched = startResult{sessionID: sid, blockID: block}
@@ -727,8 +712,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			}
 			if block != "" {
 				bd := p.newBinding(n, sid, wid, block, "window", attempt, cfg)
-				if err := p.binder.Record(bd); err != nil {
-					return p.discardLaunch(ctx, bd, err)
+				if recErr := p.binder.Record(bd); recErr != nil {
+					_, err := p.retire(ctx, n, bd, discardLaunchPolicy())
+					return errors.Join(recErr, err)
 				}
 			}
 			launched = startResult{sessionID: sid, blockID: block}
@@ -849,25 +835,6 @@ func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error 
 	return nil
 }
 
-// discardLaunch retires a pane NewSplit or NewWindow created whose final record
-// failed: the pane would otherwise run on after the deferred cleanup forgets
-// its binding, and a retry would adopt it with no start identity. It reuses
-// stopBinding's order (snapshot the tree, close, re-read, reap) and reports
-// cause joined with any retire failure.
-func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) error {
-	tree, err := p.paneSubtree(ctx, bd)
-	if err != nil {
-		return errors.Join(cause, err)
-	}
-	if err := p.client.CloseBlock(ctx, bd.SessionID, bd.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return errors.Join(cause, err)
-	}
-	if after, readErr := p.paneSubtree(ctx, bd); readErr == nil {
-		tree = unionProcs(tree, after)
-	}
-	return errors.Join(cause, p.reapSurvivors(ctx, bd, tree))
-}
-
 // Stop closes the agent's pane and leaves the city session and other rigs
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
@@ -945,78 +912,10 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		_, err = p.retire(ctx, n, stored, stopNoPanePolicy(hadStored))
 		return err
 	}
-	err = p.stopBinding(ctx, n, binding)
-	if errors.Is(err, errBlockGone) {
-		// Stop stays idempotent: the pane was already closed by another client,
-		// and the cleanup above has finished the retirement.
-		return nil
-	}
+	// Stop stays idempotent: a pane another client already closed
+	// (retireResult.alreadyClosed) is a finished retirement, not an error.
+	_, err = p.retire(ctx, n, binding, stopPolicy())
 	return err
-}
-
-// errBlockGone reports that the exact block was already closed when the close
-// was attempted. stopBinding returns it after finishing the retirement, so Stop
-// can stay idempotent while kill-object answers `gone` instead of `killed`.
-var errBlockGone = errors.New("block already closed")
-
-// stopBinding closes one exact binding: the drain diagnostic, the close, the
-// re-read, the reap and the record cleanup. stop resolves a name to a binding
-// first; kill-object passes the object it re-checked, so its close never
-// follows a fresh resolve onto a different pane.
-func (p *Provider) stopBinding(ctx context.Context, n SessionName, binding Binding) error {
-	// Sample the work tree before the pane closes, while the worker is alive.
-	p.writeDrainDiagnostic(ctx, binding)
-	// Capture the pane's reported process tree too: a close is not proof that
-	// the tree is gone, and a detached descendant can no longer be attributed
-	// to the pane once it has been reparented (GCREX-50). A tree we cannot
-	// read is not a tree we can clear, so leave the pane open for the retry
-	// instead of closing it blind.
-	tree, err := p.paneSubtree(ctx, binding)
-	if err != nil {
-		return fmt.Errorf("could not inspect the pane's process tree, leaving it open: %w", err)
-	}
-	// A survivor an earlier stop recorded was captured before this pane closed,
-	// and a closed pane no longer reports it. Reap it with whatever the pane
-	// still shows, or the retry would clear the record while it runs.
-	tree = unionProcs(tree, survivorProcs(binding.Survivors))
-	closeErr := p.client.CloseBlock(ctx, binding.SessionID, binding.BlockID)
-	if closeErr != nil && !errors.Is(closeErr, rex.ErrNotFound) {
-		return closeErr
-	}
-	alreadyClosed := errors.Is(closeErr, rex.ErrNotFound)
-	// The close is not proof that the tree is gone either: a process the pane
-	// spawned after the snapshot, or one Rex only reports now, would otherwise
-	// pass unreaped. Re-read the pane and union what it still reports. A closed
-	// pane answers ErrNotFound (paneSubtree maps that to no tree) and a failed
-	// re-read leaves the pre-close snapshot authoritative, so neither fails the
-	// stop (review D1).
-	if after, readErr := p.paneSubtree(ctx, binding); readErr == nil {
-		tree = unionProcs(tree, after)
-	}
-	// Reap what the pane left behind and refuse to report success while any of
-	// it survives; the binding, meta and activity stay for a retry, as
-	// herdr-core keeps the box (parity doc ### stop row 2). A signal error with
-	// nothing left is a success: everything died anyway.
-	if err := p.reapSurvivors(ctx, binding, tree); err != nil {
-		return err
-	}
-	if err := p.clearIncarnations(n, binding.Name); err != nil {
-		return err
-	}
-	// The pane is closed and its incarnations are clear: remove the canonical
-	// city session when it is now empty (GCREX-31). The state lock is held
-	// for the check and the removal, so a concurrent Start cannot lose a pane
-	// (it recreates the session on ErrNotFound). The record goes only after a
-	// successful removal: a failed one must keep the session id for the retry
-	// (GCREX-31 review).
-	if err := p.destroyEmptyCitySession(ctx, binding.SessionID); err != nil {
-		return err
-	}
-	p.binder.Forget(binding.Name)
-	if alreadyClosed {
-		return errBlockGone
-	}
-	return nil
 }
 
 // destroyEmptyCitySession removes this city's canonical gc:<city> session once

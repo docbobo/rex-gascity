@@ -242,6 +242,15 @@ func TestRetirePolicyTable(t *testing.T) {
 			reap: reapRecorded, clear: clearIncarnation, destroy: true,
 			forget: forgetCaller,
 		}},
+		{"stalePolicy", stalePolicy(), retirePolicy{
+			reap: reapRecorded, clear: clearIncarnation, forget: forgetBinding,
+		}},
+		{"discardLaunchPolicy", discardLaunchPolicy(), retirePolicy{
+			snapshot: true, close: true, reap: reapTree,
+		}},
+		{"startDeadPanePolicy", startDeadPanePolicy(), retirePolicy{
+			close: true, clear: clearIdentity, forget: forgetCaller,
+		}},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %+v, want %+v", tc.name, tc.got, tc.want)
@@ -755,5 +764,190 @@ func TestRetireDestroyReturnWithoutDeletionIsStillASuccess(t *testing.T) {
 	c.reset()
 	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
 		t.Fatalf("retry: %v", err)
+	}
+}
+
+// TestRetireStalePolicyMakesNoRexCallsAndForgets is REQ-016: the absent-box
+// retirement reaps the recorded survivors, then clears and forgets the
+// record, and never touches Rex.
+func TestRetireStalePolicyMakesNoRexCallsAndForgets(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	bd.Survivors = []Survivor{{PID: 4242, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if _, err := p.retire(context.Background(), bd.Name, bd, stalePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	wantRexCalls(t, c)
+	if bindingKept(p) || metaKept(t, p) {
+		t.Error("record or meta kept after a stale retirement")
+	}
+}
+
+// TestRetireStalePolicyKeepsTheRecordWhileASurvivorLives is REQ-009.4:
+// recorded survivors are reaped before their record goes, and one that will
+// not die keeps it.
+func TestRetireStalePolicyKeepsTheRecordWhileASurvivorLives(t *testing.T) {
+	reapShortWaits(t)
+	host := &prochost.Fake{TableField: reapTable([4]string{"4242", "1", "S", "bun"})}
+	c, p, bd := retireSetup(t, host)
+	bd.Survivors = []Survivor{{PID: 4242, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	_, err := p.retire(context.Background(), bd.Name, bd, stalePolicy())
+	var surv *survivorError
+	if !errors.As(err, &surv) {
+		t.Fatalf("retire = %v, want a survivorError", err)
+	}
+	wantRexCalls(t, c)
+	if !bindingKept(p) || !metaKept(t, p) {
+		t.Error("record or meta lost while a survivor lives")
+	}
+}
+
+// TestRetireDiscardLaunchPolicyReturnsTheRawSnapshotError is REQ-008: the
+// discard path reports the read error unwrapped (the caller joins it with
+// its cause) and closes nothing.
+func TestRetireDiscardLaunchPolicyReturnsTheRawSnapshotError(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.failProcess[1] = errRetireBoom
+	_, err := p.retire(context.Background(), bd.Name, bd, discardLaunchPolicy())
+	if !errors.Is(err, errRetireBoom) || err.Error() != errRetireBoom.Error() {
+		t.Fatalf("retire = %v, want the raw snapshot error", err)
+	}
+	wantRexCalls(t, c, "process")
+}
+
+// TestRetireDiscardLaunchPolicyOnlyClosesAndReaps is REQ-006's discard row:
+// snapshot, close, re-read and reap only; the record, meta and session stay
+// for start's deferred rollback.
+func TestRetireDiscardLaunchPolicyOnlyClosesAndReaps(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	res, err := p.retire(context.Background(), bd.Name, bd, discardLaunchPolicy())
+	if err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if res.alreadyClosed {
+		t.Error("alreadyClosed = true after a clean close")
+	}
+	wantRexCalls(t, c, "process", "close", "process")
+	if !bindingKept(p) || !metaKept(t, p) {
+		t.Error("discard cleared the record or meta it does not own")
+	}
+	if len(c.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none under the launch lock", c.DestroyedSessions)
+	}
+}
+
+// TestRetireDiscardLaunchPolicyReturnsTheCloseError: a close error other
+// than NotFound is returned raw for the caller to join.
+func TestRetireDiscardLaunchPolicyReturnsTheCloseError(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.CloseBlockErr = errRetireBoom
+	_, err := p.retire(context.Background(), bd.Name, bd, discardLaunchPolicy())
+	if err == nil || err.Error() != errRetireBoom.Error() {
+		t.Fatalf("retire = %v, want the raw close error", err)
+	}
+	wantRexCalls(t, c, "process", "close")
+}
+
+// lockProbeMeta runs probe before every meta Drop, the call clearStartIdentity
+// makes per identity key.
+type lockProbeMeta struct {
+	Store[metaKey, string]
+	probe func()
+}
+
+func (s lockProbeMeta) Drop(k metaKey) error {
+	s.probe()
+	return s.Store.Drop(k)
+}
+
+// TestRetireStartDeadPanePolicyClosesClearsIdentityAndForgets is the
+// dead-pane example (REQ-008): close only, no BlockProcess, the identity keys
+// go but the rest of the sidecar stays, and the caller's record is forgotten.
+func TestRetireStartDeadPanePolicyClosesClearsIdentityAndForgets(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	key := metaKey{SessionName(reapDog), startMetaKeys()[0]}
+	if err := p.meta.Write(key, "old-identity"); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	wantRexCalls(t, c, "close")
+	if _, ok, _ := p.meta.Read(key); ok {
+		t.Errorf("%s kept after the dead pane's retirement", key.key)
+	}
+	if !metaKept(t, p) {
+		t.Error("identity clear removed non-identity meta")
+	}
+	if bindingKept(p) {
+		t.Error("record kept after the dead pane's retirement")
+	}
+}
+
+// TestRetireStartDeadPanePolicyClearsTheAliasAndPrimaryIdentity: the
+// retired identity can sit under the primary name the caller reached by
+// alias, so both are cleared.
+func TestRetireStartDeadPanePolicyClearsTheAliasAndPrimaryIdentity(t *testing.T) {
+	_, p, bd := retireSetup(t, nil)
+	alias := SessionName("Indigo--alias")
+	keys := []metaKey{{alias, startMetaKeys()[0]}, {SessionName(reapDog), startMetaKeys()[0]}}
+	for _, k := range keys {
+		if err := p.meta.Write(k, "old-identity"); err != nil {
+			t.Fatalf("seed identity: %v", err)
+		}
+	}
+	if _, err := p.retire(context.Background(), alias, bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	for _, k := range keys {
+		if _, ok, _ := p.meta.Read(k); ok {
+			t.Errorf("identity under %s kept", k.name)
+		}
+	}
+}
+
+// TestRetireStartDeadPanePolicyToleratesAClosedBlock: Rex answering
+// NotFound for the close is a pane already gone, not a failure.
+func TestRetireStartDeadPanePolicyToleratesAClosedBlock(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.CloseBlockErr = rex.ErrNotFound
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v, want NotFound tolerated", err)
+	}
+	if bindingKept(p) {
+		t.Error("record kept after the dead pane's retirement")
+	}
+}
+
+// TestRetireStartDeadPanePolicyHoldsTheStateLockOnlyAroundTheIdentityClear
+// is REQ-014: the identity clear runs under the state lock, the close does
+// not.
+func TestRetireStartDeadPanePolicyHoldsTheStateLockOnlyAroundTheIdentityClear(t *testing.T) {
+	c, p, bd := retireSetup(t, nil, WithNamespace(NewNamespaceForDirs(t.TempDir())))
+	heldAtClose := false
+	c.onClose = func() { heldAtClose = stateLockHeld(t, p) }
+	var heldAtClear []bool
+	p.meta = lockProbeMeta{Store: p.meta, probe: func() { heldAtClear = append(heldAtClear, stateLockHeld(t, p)) }}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if heldAtClose {
+		t.Error("state lock held across CloseBlock")
+	}
+	if len(heldAtClear) == 0 {
+		t.Fatal("identity clear dropped no meta key")
+	}
+	for i, held := range heldAtClear {
+		if !held {
+			t.Errorf("identity Drop %d ran without the state lock", i+1)
+		}
+	}
+	if bindingKept(p) {
+		t.Error("record kept after the dead pane's retirement")
 	}
 }
