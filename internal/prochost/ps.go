@@ -31,9 +31,11 @@ func NewPSHost(cmd CommandRunner) *PSHost { return &PSHost{cmd: cmd} }
 
 // Table runs the identity read always and the wide read only when needArgs.
 // -ww stays on the args read only, because only the args column can be cut at
-// COLUMNS.
+// COLUMNS. comm is the final identity column: BSD ps cuts a non-final comm to
+// 15 bytes, so "(accessoryupdater)" becomes "(accessoryupdate", and an exact
+// match on that cut name would call a different process alive.
 func (h *PSHost) Table(ctx context.Context, needArgs bool) (Table, error) {
-	out, err := h.cmd.Run(ctx, "", nil, "ps", "-axo", "pid=,ppid=,stat=,comm=,lstart=")
+	out, err := h.cmd.Run(ctx, "", nil, "ps", "-axo", "pid=,ppid=,stat=,lstart=,comm=")
 	if err != nil {
 		return nil, err
 	}
@@ -156,14 +158,15 @@ func parseIDs(pidStr, ppidStr string) (pid, ppid int, ok bool) {
 	return pid, ppid, true
 }
 
-// splitStart separates the trailing lstart column from the command name. A
+// splitStart splits the leading lstart column from the command name. lstart
+// comes first so that comm stays the final column, where ps does not cut it. A
 // row without one keeps the whole rest as the name.
 func splitStart(rest string) (comm, start string) {
 	rest = strings.TrimSpace(rest)
 	if len(rest) >= lstartLen {
-		tail := rest[len(rest)-lstartLen:]
-		if f := strings.Fields(tail); len(f) == 5 && strings.Count(f[3], ":") == 2 {
-			return strings.TrimSpace(rest[:len(rest)-lstartLen]), tail
+		head := rest[:lstartLen]
+		if f := strings.Fields(head); len(f) == 5 && strings.Count(f[3], ":") == 2 {
+			return strings.TrimSpace(rest[lstartLen:]), head
 		}
 	}
 	return rest, ""

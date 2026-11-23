@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
@@ -100,7 +101,7 @@ func processAlive(info rex.ProcessInfo, names []string) Liveness {
 	}
 	procs = append(procs, info.Ancestors...)
 	for _, p := range procs {
-		if processMatches(p, names) {
+		if prochost.Match(prochost.Candidates(p.Name, p.Argv0, p.Path, p.Script), names) {
 			return LivenessAlive
 		}
 	}
@@ -119,39 +120,6 @@ func processAlive(info rex.ProcessInfo, names []string) Liveness {
 // can neither match a name nor be ruled out as the agent.
 func processOpaque(p rex.Process) bool {
 	return p.Name == "" && p.Path == "" && p.Argv0 == "" && p.Script == ""
-}
-
-// processMatches reports whether p is one of names, by name, argv0, the
-// basename of its path or argv0, or the script an interpreter runs. Rex only
-// reports a script for interpreters such as node, bun, npx and deno; the pack
-// matches that argument with and without its extension. Empty names never
-// match.
-func processMatches(p rex.Process, names []string) bool {
-	candidates := []string{p.Name, p.Argv0}
-	if p.Path != "" {
-		candidates = append(candidates, filepath.Base(p.Path))
-	}
-	if p.Argv0 != "" {
-		candidates = append(candidates, filepath.Base(p.Argv0))
-	}
-	if p.Script != "" {
-		base := filepath.Base(p.Script)
-		candidates = append(candidates, base)
-		if ext := filepath.Ext(base); ext != "" {
-			candidates = append(candidates, strings.TrimSuffix(base, ext))
-		}
-	}
-	for _, name := range names {
-		if name == "" {
-			continue
-		}
-		for _, c := range candidates {
-			if c == name {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // paneAlive reports whether the pane of b still has a live terminal. It only

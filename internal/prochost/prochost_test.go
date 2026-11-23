@@ -50,9 +50,9 @@ func (s *stubRunner) Run(ctx context.Context, dir string, env []string, name str
 	return "", nil
 }
 
-const identityFixture = `  501     1 Ss   node Fri Nov 20 19:44:50 2026
-  502   501 S    worker Fri Nov 20 19:44:51 2026
-  503     1 Z    gone Fri Nov 20 19:44:52 2026
+const identityFixture = `  501     1 Ss   Fri Nov 20 19:44:50 2026 node
+  502   501 S    Fri Nov 20 19:44:51 2026 worker
+  503     1 Z    Fri Nov 20 19:44:52 2026 gone
 `
 
 // TestPSHostReadCountsAndMerge pins the read contract: identity-only is one
@@ -73,6 +73,11 @@ func TestPSHostReadCountsAndMerge(t *testing.T) {
 	}
 	if len(r.calls) != 1 {
 		t.Fatalf("identity-only reads = %d, want 1", len(r.calls))
+	}
+	// comm must be the final column: BSD ps cuts a non-final comm to 15
+	// bytes, and a cut name would become an exact match candidate.
+	if args := r.calls[0][len(r.calls[0])-1]; !strings.HasSuffix(args, "comm=") {
+		t.Fatalf("identity columns = %q, want comm= last", args)
 	}
 	if got := table[501]; got.Comm != "node" || got.Start == "" || !got.Reliable {
 		t.Fatalf("row 501 = %#v", got)

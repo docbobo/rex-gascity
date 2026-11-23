@@ -1,6 +1,7 @@
 package prochost
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,14 +9,14 @@ import (
 )
 
 // TestParseRowsFixture pins the identity parser against literal
-// `ps -axo pid=,ppid=,stat=,comm=,lstart=` output. The command name may
+// `ps -axo pid=,ppid=,stat=,lstart=,comm=` output. The command name may
 // contain spaces, lstart is a fixed 24-byte column and may be absent, a
 // malformed pid is skipped, and empty output is an empty table.
 func TestParseRowsFixture(t *testing.T) {
-	const fixture = `  501     1 Ss   Google Chrome Helper (Renderer) Fri Nov 20 19:44:50 2026
+	const fixture = `  501     1 Ss   Fri Nov 20 19:44:50 2026 Google Chrome Helper (Renderer)
   777     1 S    /usr/libexec/some helper
-  abc     1 S    bogus row Fri Nov 20 19:44:52 2026
-  900     1 Z    <defunct> Fri Nov 20 19:44:53 2026
+  abc     1 S    Fri Nov 20 19:44:52 2026 bogus row
+  900     1 Z    Fri Nov 20 19:44:53 2026 <defunct>
 `
 	want := Table{
 		501: {PID: 501, PPID: 1, Comm: "Google Chrome Helper (Renderer)",
@@ -43,9 +44,22 @@ func TestParseRowsCaptured(t *testing.T) {
 			Start: "Sat Oct 17 10:42:14 2026", Reliable: true},
 		456: {PID: 456, PPID: 1, Comm: "(fseventsd)",
 			Start: "Sat Oct 17 10:42:14 2026", Reliable: true},
+		462: {PID: 462, PPID: 1, Comm: "(accessoryupdater)",
+			Start: "Sat Oct 17 10:42:14 2026", Reliable: true},
 	}
-	if got := parseRows(readFixture(t, "captured-identity.txt")); !reflect.DeepEqual(got, want) {
+	got := parseRows(readFixture(t, "captured-identity.txt"))
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseRows captured mismatch:\n got %#v\nwant %#v", got, want)
+	}
+	// REQ-005 regression: the reviewed column order cut row 462 to
+	// "(accessoryupdate", which then matched that name as exact. The cut
+	// string must never be a candidate.
+	cut := RowCandidates(got[462])
+	if Match(cut, []string{"(accessoryupdate"}) {
+		t.Fatalf("truncated comm matched: %v", cut)
+	}
+	if !Match(cut, []string{"(accessoryupdater)"}) {
+		t.Fatalf("full comm did not match: %v", cut)
 	}
 }
 
@@ -63,6 +77,8 @@ func TestMergeCaptured(t *testing.T) {
 		452: {PID: 452, PPID: 1, Comm: "(logd)", Args: "(logd)",
 			Start: "Sat Oct 17 10:42:14 2026", Reliable: true},
 		456: {PID: 456, PPID: 1, Comm: "(fseventsd)", Args: "(fseventsd)",
+			Start: "Sat Oct 17 10:42:14 2026", Reliable: true},
+		462: {PID: 462, PPID: 1, Comm: "(accessoryupdater)", Args: "(accessoryupdater)",
 			Start: "Sat Oct 17 10:42:14 2026", Reliable: true},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -96,4 +112,31 @@ func readFixture(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestPSHostMergeSets pins the named merge sets: wide rows supply membership
+// and PPIDs, and identity rows only decorate. A wide-only row stays, an
+// identity-only row drops, and a wide PPID wins over the identity PPID.
+func TestPSHostMergeSets(t *testing.T) {
+	wide := `501 1 node server.js
+502 999 worker --flag
+600 502 orphan
+`
+	r := &stubRunner{outputs: []string{identityFixture, wide}}
+	table, err := NewPSHost(r).Table(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := table[600]; !ok {
+		t.Fatal("wide-only row dropped")
+	}
+	if _, ok := table[503]; ok {
+		t.Fatal("identity-only row kept")
+	}
+	if got := table[502].PPID; got != 999 {
+		t.Fatalf("row 502 PPID = %d, want the wide PPID 999", got)
+	}
+	if got := table[501]; got.Comm != "node" || got.Args != "node server.js" {
+		t.Fatalf("merged row 501 = %#v", got)
+	}
 }

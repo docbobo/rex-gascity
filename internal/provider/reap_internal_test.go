@@ -27,7 +27,7 @@ func reapTable(rows ...[4]string) string { return reapTableAt(reapStart, rows...
 func reapTableAt(start string, rows ...[4]string) string {
 	var b strings.Builder
 	for _, r := range rows {
-		b.WriteString(r[0] + " " + r[1] + " " + r[2] + " " + r[3] + "   " + start + "\n")
+		b.WriteString(r[0] + " " + r[1] + " " + r[2] + " " + start + " " + r[3] + "\n")
 	}
 	return b.String()
 }
