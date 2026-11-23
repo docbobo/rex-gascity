@@ -233,6 +233,14 @@ func TestRetirePolicyTable(t *testing.T) {
 			diagnostic: true, snapshot: true, wrapSnapshotErr: true, close: true,
 			reap: reapTree, clear: clearIncarnation, destroy: true, forget: forgetBinding,
 		}},
+		{"stopNoPanePolicy(true)", stopNoPanePolicy(true), retirePolicy{
+			reap: reapRecorded, clear: clearIncarnation, destroy: true,
+			reRecordOnDestroyFail: true, forget: forgetCaller,
+		}},
+		{"stopNoPanePolicy(false)", stopNoPanePolicy(false), retirePolicy{
+			reap: reapRecorded, clear: clearIncarnation, destroy: true,
+			forget: forgetCaller,
+		}},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %+v, want %+v", tc.name, tc.got, tc.want)
@@ -554,5 +562,117 @@ func TestRetireDestroyBacksOffWhileALaunchHoldsTheSession(t *testing.T) {
 	wantRexCalls(t, c, "process", "close", "process")
 	if bindingKept(p) {
 		t.Error("binding kept although the retirement finished")
+	}
+}
+
+// TestRetireStopNoPaneKeepsAnExistingRecordWhenClearFails is REQ-009.2: the
+// stored record names a survivor, so ResolveFresh kept it; a clear failure
+// returns before destroy and forget, and the record stays.
+func TestRetireStopNoPaneKeepsAnExistingRecordWhenClearFails(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	bd.Survivors = []Survivor{{PID: 4242, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	p.activity = dropFailActivity{Store: p.activity, err: errRetireBoom}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(true))
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("retire = %v, want the clear error", err)
+	}
+	wantRexCalls(t, c)
+	if !bindingKept(p) {
+		t.Error("record lost after a failed clear")
+	}
+}
+
+// TestRetireStopNoPaneDoesNotRestoreADroppedRecordWhenClearFails is
+// REQ-009.2: preserving a record is not restoring one.
+func TestRetireStopNoPaneDoesNotRestoreADroppedRecordWhenClearFails(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	p.binder.Forget(bd.Name) // ResolveFresh dropped the stale record
+	p.activity = dropFailActivity{Store: p.activity, err: errRetireBoom}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(true))
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("retire = %v, want the clear error", err)
+	}
+	wantRexCalls(t, c)
+	if bindingKept(p) {
+		t.Error("a clear failure restored a dropped record")
+	}
+}
+
+// closeOnFake closes bd's block on the underlying fake without logging it,
+// so the session is empty: the no-pane stop's starting state.
+func closeOnFake(t *testing.T, c *retireClient, bd Binding) {
+	t.Helper()
+	if err := c.Fake.CloseBlock(context.Background(), bd.SessionID, bd.BlockID); err != nil {
+		t.Fatalf("CloseBlock: %v", err)
+	}
+}
+
+// TestRetireStopNoPaneReRecordsOnDestroyFailure is REQ-015: ResolveFresh
+// dropped the record, the destroy fails, and the record is put back for the
+// retry.
+func TestRetireStopNoPaneReRecordsOnDestroyFailure(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	closeOnFake(t, c, bd)
+	p.binder.Forget(bd.Name)
+	c.DestroySessionErr = errRetireBoom
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(true))
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("retire = %v, want the destroy error", err)
+	}
+	wantRexCalls(t, c, "view", "destroy")
+	if !bindingKept(p) {
+		t.Error("record not restored after a failed destroy")
+	}
+}
+
+// TestRetireStopNoPaneReRecordsAKeptRecordOnDestroyFailure is REQ-015: the
+// gate is hadStored alone, so a record ResolveFresh kept is written again.
+func TestRetireStopNoPaneReRecordsAKeptRecordOnDestroyFailure(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	closeOnFake(t, c, bd)
+	bd.Survivors = []Survivor{{PID: 4242, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	c.DestroySessionErr = errRetireBoom
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(true))
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("retire = %v, want the destroy error", err)
+	}
+	got, ok := p.Binding(reapDog)
+	if !ok || got.BlockID != bd.BlockID || len(got.Survivors) != 1 {
+		t.Errorf("binding = %+v, %v; want the stored record written again", got, ok)
+	}
+}
+
+// TestRetireStopNoPaneWithoutAStoredBindingDoesNotReRecord pins REQ-015's
+// hadStored gate: with no stored binding a destroy failure re-records nothing.
+func TestRetireStopNoPaneWithoutAStoredBindingDoesNotReRecord(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	closeOnFake(t, c, bd)
+	p.binder.Forget(bd.Name)
+	c.DestroySessionErr = errRetireBoom
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(false))
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("retire = %v, want the destroy error", err)
+	}
+	if bindingKept(p) {
+		t.Error("record written although no stored binding existed")
+	}
+}
+
+// TestRetireStopNoPaneZeroBindingOnlyClearsAndForgets is REQ-015's
+// no-stored-binding case: no Rex call, no error.
+func TestRetireStopNoPaneZeroBindingOnlyClearsAndForgets(t *testing.T) {
+	c, p, _ := retireSetup(t, nil)
+	if _, err := p.retire(context.Background(), "Nobody--x", Binding{}, stopNoPanePolicy(false)); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	wantRexCalls(t, c)
+	if !bindingKept(p) {
+		t.Error("an unrelated name's retirement forgot reapDog")
 	}
 }
