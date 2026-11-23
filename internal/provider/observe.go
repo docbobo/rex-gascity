@@ -495,20 +495,25 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	// under the state lock that the record still names this object before the
 	// close, so a stop or start of the canonical name (a different name lock)
 	// cannot swap the binding in between.
+	var res retireResult
 	same, err := p.withSameBinding(ctx, name, bd, func(Binding) error {
-		return p.stopBinding(ctx, SessionName(name), bd)
+		// The original checked bd, not the closure's re-read: the close and
+		// the reap follow the object that was asked about.
+		var rerr error
+		res, rerr = p.retire(ctx, SessionName(name), bd, stopPolicy())
+		return rerr
 	})
-	if errors.Is(err, errBlockGone) {
-		// Another client closed the pane between the corpse check and the
-		// close; the retirement finished, so this object is gone, not killed.
-		return "gone", nil
-	}
 	if err != nil {
 		return "", err
 	}
 	if !same {
 		// A start took the name after the check: the record is the
 		// replacement's, and it stays untouched.
+		return "gone", nil
+	}
+	if res.alreadyClosed {
+		// Another client closed the pane between the corpse check and the
+		// close; the retirement finished, so this object is gone, not killed.
 		return "gone", nil
 	}
 	return "killed", nil
