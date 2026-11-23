@@ -18,6 +18,9 @@ const (
 	// reapTree reaps the pre-close snapshot, the recorded survivors and the
 	// post-close re-read.
 	reapTree
+	// reapRecorded reaps only the survivors the binding records: the pane
+	// is already gone and reports nothing.
+	reapRecorded
 )
 
 // clearScope selects the sidecar state the clear step removes.
@@ -39,6 +42,9 @@ const (
 	forgetNone forgetMode = iota
 	// forgetBinding drops the record under the binding's own name.
 	forgetBinding
+	// forgetCaller drops the record that answers to the caller's name (the
+	// primary it names when the caller is an alias).
+	forgetCaller
 )
 
 // retirePolicy says which steps of the fixed retirement order a caller runs.
@@ -70,6 +76,11 @@ type retirePolicy struct {
 	// (destroyEmptyCitySession). The caller must not hold that session's
 	// launch lock: destroyEmptyCitySession takes it itself.
 	destroy bool
+	// reRecordOnDestroyFail writes bd back when the destroy fails: the
+	// no-pane stop's ResolveFresh can drop a stale record before retirement
+	// starts, and the retry reads the session id from it (GCREX-31 review).
+	// Errors are joined.
+	reRecordOnDestroyFail bool
 	// forget selects the stored binding dropped last.
 	forget forgetMode
 }
@@ -102,6 +113,30 @@ func stopPolicy() retirePolicy {
 		clear:           clearIncarnation,
 		destroy:         true,
 		forget:          forgetBinding,
+	}
+}
+
+// stopNoPanePolicy retires a name whose pane is already gone (the usual
+// drain case). It skips the snapshot, the close and the re-read: there is no
+// pane to read or close. It reaps only the recorded survivors, because a
+// retry after a stop whose pane has since vanished still owes them a reap.
+// The drain diagnostic stays in stop, gated on hadStored. hadStored gates
+// the destroy-failure re-record (REQ-015); with no stored binding, bd is the
+// zero Binding and every step but the clear and forget of the caller's name
+// is a no-op.
+//
+// Lock state: the caller holds the per-name locks (Stop →
+// stopUnderPrimaryLock). The code takes no state lock on this path; the
+// parity doc `### stop` row 5 and destroyEmptyCitySession's doc say the
+// state lock is held. gc v1.5.1 names no lock for stop
+// (internal/runtime/runtime.go:163-165). Unverified, REQ-017 follow-up.
+func stopNoPanePolicy(hadStored bool) retirePolicy {
+	return retirePolicy{
+		reap:                  reapRecorded,
+		clear:                 clearIncarnation,
+		destroy:               true,
+		reRecordOnDestroyFail: hadStored,
+		forget:                forgetCaller,
 	}
 }
 
@@ -158,6 +193,10 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 		if err := p.reapSurvivors(ctx, bd, tree); err != nil {
 			return res, err
 		}
+	case reapRecorded:
+		if err := p.reapSurvivors(ctx, bd, survivorProcs(bd.Survivors)); err != nil {
+			return res, err
+		}
 	}
 	switch pol.clear {
 	case clearNone:
@@ -170,6 +209,11 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 		// The record goes only after a successful removal: a failed one must
 		// keep the session id for the retry (GCREX-31 review).
 		if err := p.destroyEmptyCitySession(ctx, bd.SessionID); err != nil {
+			if pol.reRecordOnDestroyFail {
+				if recErr := p.binder.Record(bd); recErr != nil {
+					return res, errors.Join(err, recErr)
+				}
+			}
 			return res, err
 		}
 	}
@@ -177,6 +221,8 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 	case forgetNone:
 	case forgetBinding:
 		p.binder.Forget(bd.Name)
+	case forgetCaller:
+		p.binder.Forget(caller)
 	}
 	res.alreadyClosed = closedNotFound
 	return res, nil

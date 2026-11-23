@@ -942,40 +942,8 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 		if hadStored {
 			p.writeDrainDiagnostic(ctx, stored)
 		}
-		// A retry after a stop whose pane has since vanished still owes the
-		// survivors that stop recorded a reap: clearing the record here would
-		// lose their pids and leave them running.
-		if err := p.reapSurvivors(ctx, stored, survivorProcs(stored.Survivors)); err != nil {
-			return err
-		}
-		// Even with no pane, nothing the incarnation left must outlive its
-		// life: clear the whole meta sidecar and the activity record, not just
-		// the identity seed a failed or rolled-back start may have written.
-		// Forget comes after, so a failed cleanup keeps the alias route for the
-		// retry, as stopBinding does.
-		if err := p.clearIncarnations(n, stored.Name); err != nil {
-			return err
-		}
-		// The pane went on its own and this stop found none, but it still
-		// leaves the last pane: remove the empty city session (GCREX-31). The
-		// state lock is already held. A failed removal keeps the record, or the
-		// retry would lose the session id it needs (GCREX-31 review).
-		if err := p.destroyEmptyCitySession(ctx, stored.SessionID); err != nil {
-			// ResolveFresh dropped the stale record before this destroy, so
-			// put it back: the retry reads the session id from it (GCREX-31
-			// review).
-			if hadStored {
-				if recErr := p.binder.Record(stored); recErr != nil {
-					return errors.Join(err, recErr)
-				}
-			}
-			return err
-		}
-		// The survivors are gone, the metadata is clear and the session is
-		// removed, so the record can go with them. Resolve keeps a stale
-		// record that still names a survivor.
-		p.binder.Forget(n)
-		return nil
+		_, err = p.retire(ctx, n, stored, stopNoPanePolicy(hadStored))
+		return err
 	}
 	err = p.stopBinding(ctx, n, binding)
 	if errors.Is(err, errBlockGone) {
