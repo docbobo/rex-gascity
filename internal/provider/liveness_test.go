@@ -47,6 +47,9 @@ func TestProcessAlive(t *testing.T) {
 		// Empty names never match a readable non-matching process: dead, not
 		// unknown, because the table was readable.
 		{"empty names never match", rex.ProcessInfo{Foreground: shell}, []string{""}, LivenessDead},
+		// The one name rule is exact equality: no suffix match.
+		{"sh does not match bash", rex.ProcessInfo{Foreground: &rex.Process{Name: "bash", Argv0: "bash"}}, []string{"sh"}, LivenessDead},
+		{"a suffix does not match", rex.ProcessInfo{Foreground: &rex.Process{Name: "claude-code", Argv0: "claude-code"}}, []string{"claude"}, LivenessDead},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

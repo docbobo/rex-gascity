@@ -3,11 +3,11 @@ package provider
 import (
 	"context"
 	"errors"
-	"os"
-	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
@@ -239,26 +239,20 @@ func recordSurvivor(t *testing.T, p *Provider, name SessionName, pid int, proc s
 func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, signals := reapProvider(t, liveTree, func(int) string { return "" })
+	fake, p, host := reapProvider(t, liveTree, func(int) prochost.Table { return prochost.Table{} })
 	bd := recordSurvivor(t, p, reapDog, 300, "bun")
 	// The pane is gone: the record is now the only name for the survivor.
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
 	alive := true
-	psCalls := 0
-	p.runner = &FakeRunner{Handle: func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
-		psCalls++
+	host.OnTable = func(int, bool) (prochost.Table, error) {
 		if !alive {
-			return "", nil
+			return prochost.Table{}, nil
 		}
 		return reapTable([4]string{"300", "1", "S", "bun"}), nil
-	}}
-	p.signal = func(pid int, sig os.Signal) error {
-		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+	}
+	host.OnSignal = func(_ int, _ int, sig syscall.Signal) error {
 		if sig.String() == "terminated" {
 			alive = false
 		}
@@ -272,13 +266,12 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	if res != "gone" {
 		t.Errorf("result = %q, want gone after the retry reaped the record", res)
 	}
-	if len(*signals) == 0 || (*signals)[0] != "terminated:300" {
-		t.Errorf("signals = %v, want the recorded survivor TERMed", *signals)
+	if len(signalLog(host)) == 0 || (signalLog(host))[0] != "terminated:300" {
+		t.Errorf("signals = %v, want the recorded survivor TERMed", signalLog(host))
 	}
 	if _, ok := p.Binding(string(reapDog)); ok {
 		t.Error("binding survived the successful survivor reap")
 	}
-	_ = psCalls
 }
 
 // TestKillObjectFailsWhileRecordedSurvivorsSurvive proves the failed retry:
@@ -286,7 +279,7 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 func TestKillObjectFailsWhileRecordedSurvivorsSurvive(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
-	fake, p, _ := reapProvider(t, liveTree, func(int) string {
+	fake, p, _ := reapProvider(t, liveTree, func(int) prochost.Table {
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
 	bd := recordSurvivor(t, p, reapDog, 300, "bun")
@@ -308,9 +301,9 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	_, p, signals := reapProvider(t, liveTree, func(int) string {
+	_, p, host := reapProvider(t, liveTree, func(int) prochost.Table {
 		if !alive {
-			return ""
+			return prochost.Table{}
 		}
 		return reapTable([4]string{"300", "1", "S", "bun"})
 	})
@@ -320,8 +313,7 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	fake := p.client.(*faketest.Fake)
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
-	p.signal = func(pid int, sig os.Signal) error {
-		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+	host.OnSignal = func(_ int, pid int, sig syscall.Signal) error {
 		if pid == 300 && sig.String() == "terminated" {
 			alive = false
 		}
@@ -331,8 +323,8 @@ func TestStopRetryReadsTheAliasRecord(t *testing.T) {
 	if err := p.Stop(ctx, "Rig--dog-1"); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if len(*signals) == 0 || (*signals)[0] != "terminated:300" {
-		t.Errorf("signals = %v, want the alias's primary record reaped", *signals)
+	if len(signalLog(host)) == 0 || (signalLog(host))[0] != "terminated:300" {
+		t.Errorf("signals = %v, want the alias's primary record reaped", signalLog(host))
 	}
 }
 
@@ -362,23 +354,18 @@ func TestStopSurvivorWriteFailureFailsTheStop(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	fake := faketest.New()
-	runner := &FakeRunner{}
-	runner.Handle = func(_ context.Context, c RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
 		return reapTable(
 			[4]string{"200", "1", "Ss", "/bin/zsh"},
 			[4]string{"100", "200", "S+", "claude"},
 		), nil
-	}
+	}}
 	store := &gatedBindingStore{MemoryStore: NewMemoryStore()}
-	p := New("acme", fake, WithRunner(runner), WithBindingStore(store))
+	p := New("acme", fake, WithProcessHost(host), WithBindingStore(store))
 	if err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	fake.Processes = map[rex.BlockID]rex.ProcessInfo{"block:dog-1": liveTree}
-	p.signal = func(int, os.Signal) error { return nil }
 	store.fail = true
 
 	err := p.Stop(ctx, reapDog)
@@ -394,9 +381,9 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 	reapShortWaits(t)
 	ctx := context.Background()
 	alive := true
-	_, p, signals := reapProvider(t, liveTree, func(int) string {
+	_, p, host := reapProvider(t, liveTree, func(int) prochost.Table {
 		if !alive {
-			return ""
+			return prochost.Table{}
 		}
 		return reapTable(
 			[4]string{"300", "1", "S", "bun"},
@@ -408,8 +395,7 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 	fake.View = rex.SessionView{}
 	fake.Processes = nil
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
-	p.signal = func(pid int, sig os.Signal) error {
-		*signals = append(*signals, sig.String()+":"+strconv.Itoa(pid))
+	host.OnSignal = func(_ int, pid int, sig syscall.Signal) error {
 		if pid == 300 && sig.String() == "terminated" {
 			alive = false
 		}
@@ -423,8 +409,8 @@ func TestReapRetryIncludesDescendantsOfRecordedSurvivors(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	want := "terminated:500"
-	if !containsSignal(*signals, want) {
-		t.Errorf("signals = %v, want %s: a new descendant of a recorded survivor", *signals, want)
+	if !containsSignal(signalLog(host), want) {
+		t.Errorf("signals = %v, want %s: a new descendant of a recorded survivor", signalLog(host), want)
 	}
 }
 

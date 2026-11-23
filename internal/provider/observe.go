@@ -550,17 +550,17 @@ func (p *Provider) deadAgent(ctx context.Context, bd Binding, agentPID string) (
 	if root <= 0 || len(names) == 0 {
 		return false, nil
 	}
-	wide, comms, err := p.snapshotProcessTable(ctx)
+	table, err := p.processHost.Table(ctx, true)
 	if err != nil {
 		return false, nil
 	}
 	if agentPID != "" {
 		pid, err := strconv.Atoi(agentPID)
-		if err != nil || pidOutsideSubtree(wide, root, pid) {
+		if err != nil || pidOutsideSubtree(table, root, pid) {
 			return false, nil
 		}
 	}
-	agent, _ := snapshotAgent(wide, comms, root, names)
+	agent, _ := snapshotAgent(table, root, names)
 	return agent == agentDead, nil
 }
 

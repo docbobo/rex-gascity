@@ -5,35 +5,44 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
 )
 
-// psSnapshot is a Runner answering the two ps calls the agent snapshot reads: a
-// wide pid, ppid, args table and a narrow pid, comm table.
-func psSnapshot(wide, comms string, err error) *provider.FakeRunner {
-	return &provider.FakeRunner{Handle: func(_ context.Context, c provider.RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
-		}
+// zombieSnapshot builds the zombie tests' host: the observe read answers rows,
+// the reap read answers none because a zombie kill closes the pane. err fails
+// every observe read.
+func zombieSnapshot(err error, rows ...prochost.Row) *prochost.Fake {
+	host := &prochost.Fake{}
+	host.OnTable = func(_ int, needArgs bool) (prochost.Table, error) {
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		if len(c.Args) == 2 {
-			return comms, nil
+		if !needArgs {
+			return prochost.Table{}, nil
 		}
-		return wide, nil
-	}}
+		if host.TableField != nil {
+			return host.TableField, nil
+		}
+		return reapTableOf(rows...), nil
+	}
+	return host
+}
+
+// zombieRow is one typed host row for the zombie tests.
+func zombieRow(pid, ppid int, comm, args string) prochost.Row {
+	return prochost.Row{PID: pid, PPID: ppid, Comm: comm, Args: args, Reliable: true}
 }
 
 // zombieStarted starts name under observe.v1 with the meta the zombie check
 // reads and a readable foreground pid.
-func zombieStarted(t *testing.T, runner provider.Runner, env map[string]string) (*faketest.Fake, *provider.Provider) {
+func zombieStarted(t *testing.T, host prochost.Host, env map[string]string) (*faketest.Fake, *provider.Provider) {
 	t.Helper()
 	t.Setenv("GCREX_OBSERVE_V1", "1")
 	fake := faketest.New()
-	p := provider.New("acme", fake, provider.WithRunner(runner))
+	p := provider.New("acme", fake, provider.WithProcessHost(host))
 	name := "Indigo--dog-1"
 	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"sleep", "300"}, Env: env}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -50,7 +59,7 @@ func zombieStarted(t *testing.T, runner provider.Runner, env map[string]string) 
 func TestKillObjectZombieKillsDeadAgentBox(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	_, p := zombieStarted(t, psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil), env)
+	_, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300")), env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, []string{"gc-rpp-no-such-process"})
 	if err != nil || ans.Object == nil || ans.State != provider.ObserveRunning || ans.Agent != "dead" {
@@ -75,7 +84,7 @@ func TestKillObjectZombieKillsDeadAgentBox(t *testing.T) {
 func TestKillObjectZombieLeavesLiveAgentBox(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	_, p := zombieStarted(t, psSnapshot("100 1 gc-rpp-no-such-process\n", "100 gc-rpp-no-such-process\n", nil), env)
+	_, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "gc-rpp-no-such-process", "gc-rpp-no-such-process")), env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, nil)
 	if err != nil || ans.Object == nil {
@@ -99,7 +108,7 @@ func TestKillObjectZombieLeavesLiveAgentBox(t *testing.T) {
 func TestKillObjectZombieChangedWhenSnapshotUnreadable(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	_, p := zombieStarted(t, psSnapshot("", "", errors.New("ps: no snapshot")), env)
+	_, p := zombieStarted(t, zombieSnapshot(errors.New("ps: no snapshot")), env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, nil)
 	if err != nil || ans.Object == nil {
@@ -120,7 +129,7 @@ func TestKillObjectZombieChangedWhenSnapshotUnreadable(t *testing.T) {
 func TestKillObjectZombieChangedWhenAgentPIDDiffers(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	_, p := zombieStarted(t, psSnapshot("100 1 sleep 300\n999 1 other-agent\n", "100 sleep\n999 other-agent\n", nil), env)
+	_, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300"), zombieRow(999, 1, "other-agent", "other-agent")), env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, nil)
 	if err != nil || ans.Object == nil {
@@ -140,7 +149,7 @@ func TestKillObjectZombieChangedWhenAgentPIDDiffers(t *testing.T) {
 func TestKillObjectZombieKillsWhenAgentPIDMatches(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	_, p := zombieStarted(t, psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil), env)
+	_, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300")), env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, nil)
 	if err != nil || ans.Object == nil {
@@ -159,7 +168,7 @@ func TestKillObjectZombieKillsWhenAgentPIDMatches(t *testing.T) {
 // GT_PROCESS_NAMES cannot prove its agent dead, so zombie answers changed.
 func TestKillObjectZombieChangedWithoutProcessNames(t *testing.T) {
 	ctx := context.Background()
-	_, p := zombieStarted(t, psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil), nil)
+	_, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300")), nil)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, nil)
 	if err != nil || ans.Object == nil {
@@ -179,7 +188,7 @@ func TestKillObjectZombieChangedWithoutProcessNames(t *testing.T) {
 func TestKillObjectZombieChangedWhenAttached(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	fake, p := zombieStarted(t, psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil), env)
+	fake, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300")), env)
 	name := "Indigo--dog-1"
 	fake.Clients = []rex.ClientInfo{attachApp}
 	for i := range fake.View.Windows {
@@ -211,16 +220,15 @@ func TestKillObjectZombieChangedWhenAttached(t *testing.T) {
 func TestKillObjectZombieKillsWhenAgentPIDIsADescendant(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	alive := "100 1 sleep 300\n105 100 gc-rpp-no-such-process\n"
-	runner := psSnapshot(alive, "100 sleep\n105 gc-rpp-no-such-process\n", nil)
-	_, p := zombieStarted(t, runner, env)
+	host := zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300"), zombieRow(105, 100, "gc-rpp-no-such-process", "gc-rpp-no-such-process"))
+	_, p := zombieStarted(t, host, env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, []string{"gc-rpp-no-such-process"})
 	if err != nil || ans.Object == nil || ans.AgentPID != "105" {
 		t.Fatalf("Observe = %+v, %v; want the matched descendant pid 105", ans, err)
 	}
 	// The agent exits; the root and the host stay readable.
-	runner.Handle = psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil).Handle
+	host.TableField = reapTableOf(zombieRow(100, 1, "sleep", "sleep 300"))
 
 	res, err := p.KillObject(ctx, name, provider.KillObjectRequest{Object: *ans.Object, Mode: "zombie", AgentPID: ans.AgentPID})
 	if err != nil {
@@ -236,7 +244,7 @@ func TestKillObjectZombieKillsWhenAgentPIDIsADescendant(t *testing.T) {
 func TestKillObjectZombieChangedWhenAgentPIDIsAnotherBox(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
-	_, p := zombieStarted(t, psSnapshot("100 1 sleep 300\n999 1 other-agent\n", "100 sleep\n999 other-agent\n", nil), env)
+	_, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300"), zombieRow(999, 1, "other-agent", "other-agent")), env)
 	name := "Indigo--dog-1"
 	ans, err := p.Observe(ctx, name, nil)
 	if err != nil || ans.Object == nil {
@@ -262,7 +270,7 @@ func TestKillObjectZombieChangedForAdoptedPane(t *testing.T) {
 	store := provider.NewMemoryStore()
 	p := provider.New("acme", fake,
 		provider.WithBindingStore(store),
-		provider.WithRunner(psSnapshot("100 1 sleep 300\n", "100 sleep\n", nil)))
+		provider.WithProcessHost(zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300"))))
 	name := "Indigo--dog-1"
 	if err := p.Start(ctx, name, provider.Config{
 		Argv: []string{"sleep", "300"},

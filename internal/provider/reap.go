@@ -7,37 +7,27 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
-// Reaping bounds. herdr-core reaps the pane's subtree TERM then KILL two
-// seconds later and rescans up to three times (herdrcore/lifecycle.py:327-368,
-// herdrcore/procs.py:639-643). The vars exist so tests can shorten them.
+// Reaping bounds. herdr-core bounds the reap at these waits; the vars let tests
+// shorten them.
 var (
 	reapTermWait = 2 * time.Second
 	reapKillWait = 2 * time.Second
 	reapPoll     = 50 * time.Millisecond
 )
 
-// paneProc is one process the pane could leave behind: the pid and the name
-// the pane's own process tree reported for it.
-type paneProc struct {
-	pid   int
-	name  string
-	start string // ps lstart of the snapshot row; identity against pid reuse
-}
-
-// survivorError fails a stop whose pane subtree may still be running. herdr-
-// core keeps the record for a retry and exits 1 with this wording
-// (herdrcore/lifecycle.py:523-524); the binding, meta and activity stay too.
+// survivorError fails a stop when a captured process may still run. herdr-core
+// keeps the record for a retry and uses this wording (herdrcore/procs.py).
 type survivorError struct {
 	name      string
-	survivors []paneProc
+	survivors []prochost.Ident
 	reason    error
 }
 
@@ -49,7 +39,7 @@ func (e *survivorError) Error() string {
 	if len(e.survivors) > 0 {
 		names := make([]string, len(e.survivors))
 		for i, s := range e.survivors {
-			names[i] = fmt.Sprintf("%d (%s)", s.pid, s.name)
+			names[i] = fmt.Sprintf("%d (%s)", s.PID, s.Name)
 		}
 		reason = strings.Join(names, ", ")
 		if e.reason != nil {
@@ -63,116 +53,38 @@ func (e *survivorError) Unwrap() error { return e.reason }
 
 // survivorRecords is what the binding keeps of a reaped set, so a retry whose
 // pane is already closed still has the pids to reap.
-func survivorRecords(procs []paneProc) []Survivor {
+func survivorRecords(procs []prochost.Ident) []Survivor {
 	if len(procs) == 0 {
 		return nil
 	}
 	out := make([]Survivor, len(procs))
 	for i, proc := range procs {
-		out[i] = Survivor{PID: proc.pid, Name: proc.name, Start: proc.start}
+		out[i] = Survivor{PID: proc.PID, Name: proc.Name, Start: proc.Start}
 	}
 	return out
 }
 
 // survivorProcs turns the recorded survivors back into a tree to reap.
-func survivorProcs(recs []Survivor) []paneProc {
+func survivorProcs(recs []Survivor) []prochost.Ident {
 	if len(recs) == 0 {
 		return nil
 	}
-	out := make([]paneProc, len(recs))
+	out := make([]prochost.Ident, len(recs))
 	for i, rec := range recs {
-		out[i] = paneProc{pid: rec.PID, name: rec.Name, start: rec.Start}
+		out[i] = prochost.Ident{PID: rec.PID, Name: rec.Name, Start: rec.Start}
 	}
 	return out
-}
-
-// processRow is one row of a host process table snapshot.
-type processRow struct {
-	ppid   int
-	zombie bool
-	name   string
-	start  string
-}
-
-// processTable reads the host process table. Rex panes are local, so a
-// descendant that block.close fails to reap is still visible here.
-func (p *Provider) processTable(ctx context.Context) (map[int]processRow, error) {
-	out, err := p.runner.Run(ctx, "", nil, "ps", "-axo", "pid=,ppid=,stat=,comm=,lstart=")
-	if err != nil {
-		return nil, err
-	}
-	rows := make(map[int]processRow)
-	for _, line := range strings.Split(out, "\n") {
-		pidStr, ppidStr, stat, name, start, ok := splitProcessRow(line)
-		if !ok {
-			continue
-		}
-		pid, pidErr := strconv.Atoi(pidStr)
-		ppid, ppidErr := strconv.Atoi(ppidStr)
-		if pidErr != nil || ppidErr != nil || pid <= 0 {
-			continue
-		}
-		rows[pid] = processRow{
-			ppid:   ppid,
-			zombie: strings.HasPrefix(stat, "Z"),
-			name:   name,
-			start:  start,
-		}
-	}
-	return rows, nil
-}
-
-// lstartLen is the width of ps's lstart column, "%a %b %e %H:%M:%S %Y"
-// ("Fri Nov 20 19:44:50 2026"); both BSD and GNU ps print it fixed-width.
-const lstartLen = 24
-
-// splitProcessRow splits one ps row into its three fixed columns and the rest
-// of the line, which is the command name and, when ps printed it, the trailing
-// lstart column. The name may be empty or contain spaces, so it must not be
-// field-split like the pid and ppid.
-func splitProcessRow(line string) (pid, ppid, stat, comm, start string, ok bool) {
-	var col [3]string
-	rest := strings.TrimRight(line, "\r\n")
-	for i := range col {
-		rest = strings.TrimLeft(rest, " \t")
-		if rest == "" {
-			return "", "", "", "", "", false
-		}
-		end := strings.IndexAny(rest, " \t")
-		if end < 0 {
-			col[i], rest = rest, ""
-			continue
-		}
-		col[i], rest = rest[:end], rest[end:]
-	}
-	comm, start = splitStart(rest)
-	return col[0], col[1], col[2], comm, start, true
-}
-
-// splitStart separates the trailing lstart column from the command name. A
-// row without one (ps called without lstart) keeps the whole rest as the name.
-func splitStart(rest string) (comm, start string) {
-	rest = strings.TrimSpace(rest)
-	if len(rest) >= lstartLen {
-		tail := rest[len(rest)-lstartLen:]
-		if f := strings.Fields(tail); len(f) == 5 && strings.Count(f[3], ":") == 2 {
-			return strings.TrimSpace(rest[:len(rest)-lstartLen]), tail
-		}
-	}
-	return rest, ""
 }
 
 // paneSubtree captures what the pane could leave behind: the foreground Rex
 // reports and every host process below it. Ancestors are reported too, but
 // they are the pane's shell and its parents, so a sibling under one of them is
-// not the pane's process and must not be signalled. A captured name is the
-// host table's comm, not Rex's Name (which differs from it on Darwin, U1), so
-// living compares like with like. It must run before
-// block.close: a detached descendant is reparented to init when the pane dies
-// and can then no longer be attributed to this session. An unreadable process
-// listing is returned so stop can leave the pane open (GCREX-50). A pane that
-// vanished before the snapshot is the no-pane case, not an unreadable tree.
-func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, error) {
+// not the pane's process and is not signalled. A captured name is the host
+// table's comm, not Rex's Name (which differs on Darwin, U1), so the scan
+// compares like with like. It must run before block.close: a descendant that
+// block.close fails to reap is still visible here. A pane that block.close
+// already removed reports no process and is the no-pane case.
+func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]prochost.Ident, error) {
 	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
 		return nil, nil
@@ -194,43 +106,33 @@ func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, erro
 	if len(reported) == 0 {
 		return nil, nil
 	}
-	table, err := p.processTable(ctx)
+	table, err := p.processHost.Table(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	// The walk starts at the foreground. Without one, fall back to the
-	// reported process with no reported ancestor, so it does not depend on
-	// Rex's ancestors order.
-	below := make(map[int]bool, len(reported))
+	// The walk starts at the reported foreground. Without one, it starts at
+	// every reported pid with no reported ancestor.
+	var roots []int
 	if fg := info.Foreground; fg != nil && fg.PID > 0 {
-		below[fg.PID] = true
+		roots = append(roots, fg.PID)
 	} else {
+		set := make(map[int]bool, len(reported))
 		for pid := range reported {
-			if !hasReportedAncestor(pid, reported, table) {
-				below[pid] = true
+			set[pid] = true
+		}
+		for pid := range reported {
+			if !prochost.AncestorIn(table, pid, set) {
+				roots = append(roots, pid)
 			}
 		}
 	}
-	// Add every process whose parent is already in the set, until it settles.
-	for changed := true; changed; {
-		changed = false
-		for pid, row := range table {
-			if below[pid] || !below[row.ppid] {
-				continue
-			}
-			below[pid] = true
-			changed = true
-		}
-	}
-	out := make([]paneProc, 0, len(below))
-	for pid := range below {
-		// Name the process from this ps snapshot whenever it is there: living
-		// compares against the same field, and Rex disagrees with it — Rex
-		// reports the executable (`node`) while Darwin's comm is argv0 (`pi`),
-		// so a process named from Rex would never match its live row (U1).
-		// Rex's name is only the fallback for a reported pid the table lacks.
-		name := filepath.Base(table[pid].name)
-		start := table[pid].start
+	out := make([]prochost.Ident, 0, len(roots))
+	for _, pid := range prochost.Subtree(table, roots) {
+		row := table[pid]
+		// Name the process from this ps snapshot whenever it is there. Rex's
+		// name is the fallback for a reported pid the table lacks.
+		name := filepath.Base(row.Comm)
+		start := row.Start
 		if name == "" || name == "." {
 			name = reported[pid]
 			start = ""
@@ -238,194 +140,164 @@ func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]paneProc, erro
 		if name == "" || name == "." {
 			name = "?"
 		}
-		out = append(out, paneProc{pid: pid, name: name, start: start})
+		out = append(out, prochost.Ident{PID: pid, Name: name, Start: start})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].pid < out[j].pid })
+	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
 	return out, nil
 }
 
-// hasReportedAncestor reports whether one of the pane's other reported
-// processes is above pid in the host table.
-func hasReportedAncestor(pid int, reported map[int]string, table map[int]processRow) bool {
-	seen := make(map[int]bool)
-	for next, ok := table[pid]; ok; next, ok = table[next.ppid] {
-		if next.ppid <= 1 || seen[next.ppid] {
-			return false // top of the table, or a cycle
-		}
-		seen[next.ppid] = true
-		if _, ok := reported[next.ppid]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 // signalAll delivers sig to every captured process and returns the first
-// failure, so a reap that could not signal can say why a process survived. A
-// failure does not stop the loop: one unsignalable process must not shield the
-// rest of the tree from the signal.
-func (p *Provider) signalAll(procs []paneProc, sig syscall.Signal) error {
+// error. A failure does not shield the rest of the set.
+func (p *Provider) signalAll(procs []prochost.Ident, sig syscall.Signal) error {
 	var first error
 	for _, proc := range procs {
-		if proc.pid <= 1 || proc.pid == os.Getpid() {
+		if proc.PID <= 1 || proc.PID == os.Getpid() {
 			continue
 		}
-		if err := p.signal(proc.pid, sig); err != nil && first == nil {
+		if err := p.processHost.Signal(proc.PID, sig); err != nil && first == nil {
 			first = err
 		}
 	}
 	return first
 }
 
-// descendants extends procs with the host processes that descend from them: a
-// process recorded by an earlier stop can spawn a child after the pane closed,
-// and a closed pane reports no tree. Identity is pid plus lstart, so a recycled
-// pid is never followed. An unreadable table leaves procs as the caller gave it.
-func (p *Provider) descendants(ctx context.Context, procs []paneProc) []paneProc {
+// descendants appends the host processes below the captured set. A survivor
+// recorded by an earlier stop can spawn a child before the retry, and a closed
+// pane no longer reports that child. A zombie and a recycled pid are skipped.
+func (p *Provider) descendants(ctx context.Context, procs []prochost.Ident) []prochost.Ident {
 	if len(procs) == 0 {
 		return procs
 	}
-	table, err := p.processTable(ctx)
+	table, err := p.processHost.Table(ctx, false)
 	if err != nil {
 		return procs
 	}
-	children := make(map[int][]int, len(table))
-	for pid, row := range table {
-		children[row.ppid] = append(children[row.ppid], pid)
-	}
-	seen := make(map[int]bool, len(procs))
-	var queue []int
+	existing := make(map[int]bool, len(procs))
+	var roots []int
 	for _, proc := range procs {
-		row, ok := table[proc.pid]
-		if !ok || row.zombie || !sameProcess(proc, row) {
+		existing[proc.PID] = true
+		row, ok := table[proc.PID]
+		if !ok || row.Zombie || !prochost.Same(proc, row) {
 			continue
 		}
-		seen[proc.pid] = true
-		queue = append(queue, proc.pid)
+		roots = append(roots, proc.PID)
 	}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		for _, child := range children[pid] {
-			if seen[child] {
-				continue
-			}
-			seen[child] = true
-			queue = append(queue, child)
-			row := table[child]
-			if row.zombie {
-				continue
-			}
-			procs = append(procs, paneProc{pid: child, name: filepath.Base(row.name), start: row.start})
+	for _, pid := range prochost.Subtree(table, roots) {
+		if existing[pid] {
+			continue
 		}
+		row := table[pid]
+		if row.Zombie {
+			continue
+		}
+		procs = append(procs, prochost.Ident{PID: pid, Name: filepath.Base(row.Comm), Start: row.Start})
 	}
 	return procs
 }
 
-// living returns the captured processes still running. A zombie counts as
-// gone, and so does a pid the host reused: identity is the pid plus the lstart
-// captured in the same snapshot, so a renamed descendant still counts (review
-// round 4) while a recycled pid is never signalled.
-func (p *Provider) living(ctx context.Context, tree []paneProc) []paneProc {
-	table, err := p.processTable(ctx)
+// scan reads the host table once and classifies each captured process per the
+// plan's §2a table: signal (present, not a zombie, Same is true), gone (absent,
+// a zombie, or a different start on the same pid), or unverified (present but
+// identity is not provable). alive is the signal set plus the unverified set.
+func (p *Provider) scan(ctx context.Context, tree []prochost.Ident) (sig, alive, unverified []prochost.Ident, readErr error) {
+	table, err := p.processHost.Table(ctx, false)
 	if err != nil {
-		return tree // cannot prove them gone: report them
+		return nil, tree, nil, err
 	}
-	var out []paneProc
-	for _, proc := range tree {
-		row, ok := table[proc.pid]
-		if !ok || row.zombie || !sameProcess(proc, row) {
+	for _, id := range tree {
+		row, ok := table[id.PID]
+		if !ok || row.Zombie {
 			continue
 		}
-		out = append(out, proc)
+		if id.Start != "" && row.Start != "" && id.Start != row.Start {
+			continue
+		}
+		if prochost.Same(id, row) {
+			sig = append(sig, id)
+			continue
+		}
+		unverified = append(unverified, id)
 	}
-	return out
+	alive = append(append([]prochost.Ident(nil), sig...), unverified...)
+	return sig, alive, unverified, nil
 }
 
-// sameProcess reports whether the table row is still the captured process. The
-// start time decides when both reads printed one; without it the name decides.
-func sameProcess(proc paneProc, row processRow) bool {
-	if proc.start != "" && row.start != "" {
-		return proc.start == row.start
-	}
-	return sameProgram(proc.name, row.name)
-}
-
-// unionProcs appends the processes not already in tree, so a second pane read
-// can extend, never shrink, what the first captured. Identity is pid plus
-// lstart (review round 4): the same pid with a different start is a different
-// process, and dropping one of the two would lose a real survivor.
-func unionProcs(tree, extra []paneProc) []paneProc {
-	// paneProc is comparable; the name is not part of identity, so zero it.
-	seen := make(map[paneProc]bool, len(tree))
+// unionProcs appends the extra set to tree, so a second read never shrinks the
+// captured set. Identity is pid plus start; the name is not part of identity.
+func unionProcs(tree, extra []prochost.Ident) []prochost.Ident {
+	seen := make(map[prochost.Ident]bool, len(tree))
 	for _, proc := range tree {
-		proc.name = ""
+		proc.Name = ""
 		seen[proc] = true
 	}
 	for _, proc := range extra {
 		key := proc
-		key.name = ""
-		if !seen[key] {
-			seen[key] = true
-			tree = append(tree, proc)
+		key.Name = ""
+		if seen[key] {
+			continue
 		}
+		seen[key] = true
+		tree = append(tree, proc)
 	}
 	return tree
 }
 
-// sameProgram reports whether the table row still names the captured process,
-// so a recycled pid is never signalled.
-func sameProgram(name, comm string) bool {
-	if name == "" || name == "?" {
-		return true
-	}
-	return comm == name || filepath.Base(comm) == name || strings.HasSuffix(comm, name)
-}
-
-// waitGone polls the process table until no captured process is left or the
-// wait elapses, returning what survived.
-func (p *Provider) waitGone(ctx context.Context, tree []paneProc, wait time.Duration) []paneProc {
+// waitGone polls scan over the latest alive set until the signal set is empty
+// or the wait expires. It starts from live and keeps only what the last poll
+// proved alive, so a capture already proven gone never re-enters the set. A
+// read error returns the last alive set and the error.
+func (p *Provider) waitGone(ctx context.Context, live []prochost.Ident, wait time.Duration) ([]prochost.Ident, error) {
 	deadline := time.Now().Add(wait)
+	alive := live
 	for {
-		left := p.living(ctx, tree)
-		if len(left) == 0 || !time.Now().Before(deadline) || ctx.Err() != nil {
-			return left
+		sig, current, _, err := p.scan(ctx, alive)
+		if err != nil {
+			return alive, err
+		}
+		alive = current
+		if len(sig) == 0 || !time.Now().Before(deadline) {
+			return alive, nil
 		}
 		select {
 		case <-ctx.Done():
-			return left
+			return alive, nil
 		case <-time.After(reapPoll):
 		}
 	}
 }
 
-// reap gives the pane's reported process tree TERM, waits, then KILL, waits
-// and rescans. It returns the processes that are still alive, plus the first
-// signal failure when there was one; an empty result proves the tree is gone.
-func (p *Provider) reap(ctx context.Context, tree []paneProc) ([]paneProc, error) {
+// reap gives the captured set TERM, waits, runs one fresh scan before KILL, and
+// waits again. left is every capture not proven gone at the last successful
+// read. A read error stops the sequence and returns the current alive set.
+func (p *Provider) reap(ctx context.Context, tree []prochost.Ident) (left []prochost.Ident, readErr, signalErr error) {
 	if len(tree) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	left := p.living(ctx, tree)
+	sig, alive, _, readErr := p.scan(ctx, tree)
+	if readErr != nil {
+		return tree, readErr, nil
+	}
+	if len(sig) == 0 {
+		return alive, nil, nil
+	}
+	signalErr = p.signalAll(sig, syscall.SIGTERM)
+	left, readErr = p.waitGone(ctx, alive, reapTermWait)
+	if readErr != nil {
+		return left, readErr, signalErr
+	}
 	if len(left) == 0 {
-		return nil, nil
+		return nil, nil, signalErr
 	}
-	termErr := p.signalAll(left, syscall.SIGTERM)
-	if left = p.waitGone(ctx, tree, reapTermWait); len(left) == 0 {
-		return nil, termErr
+	sig, alive, _, readErr = p.scan(ctx, left)
+	if readErr != nil {
+		return left, readErr, signalErr
 	}
-	if killErr := p.signalAll(left, syscall.SIGKILL); termErr == nil {
-		termErr = killErr
+	if len(sig) == 0 {
+		return alive, nil, signalErr
 	}
-	return p.waitGone(ctx, tree, reapKillWait), termErr
-}
-
-// osSignal delivers sig to pid. The pane's descendants run on this host, so a
-// plain process signal is the only reap mechanism Rex leaves the pack.
-func osSignal(pid int, sig os.Signal) error {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return err
+	if killErr := p.signalAll(sig, syscall.SIGKILL); signalErr == nil {
+		signalErr = killErr
 	}
-	return proc.Signal(sig)
+	left, readErr = p.waitGone(ctx, alive, reapKillWait)
+	return left, readErr, signalErr
 }

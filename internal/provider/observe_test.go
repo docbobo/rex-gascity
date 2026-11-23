@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/provider"
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
@@ -756,6 +758,51 @@ func TestObserveAnswersUnknownWithinBound(t *testing.T) {
 	}
 }
 
+// TestObserveEmptyWideIsUnknown drives Observe through the real PSHost over a
+// stub runner: the identity read answers a matching subtree, and the wide read
+// is empty. The agent stays omitted, never dead, and the adapter keeps its two
+// reads with -ww on the args read only.
+func TestObserveEmptyWideIsUnknown(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	runner := &provider.FakeRunner{}
+	runner.Handle = func(_ context.Context, c provider.RunCall) (string, error) {
+		if strings.Contains(strings.Join(c.Args, " "), "args=") {
+			return "", nil // the wide read is empty
+		}
+		return "  100     1 S    Fri Nov 20 19:44:50 2026 sleep\n  101   100 S    Fri Nov 20 19:44:50 2026 sh\n", nil
+	}
+	p := provider.New("acme", fake, provider.WithProcessHost(prochost.NewPSHost(runner)))
+	name := "Indigo--dog-1"
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		"block:dog-1": {Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+	}
+
+	before := len(runner.Calls())
+	ans, err := p.Observe(ctx, name, []string{"sleep"})
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if ans.State != provider.ObserveRunning {
+		t.Fatalf("state = %q, want %q", ans.State, provider.ObserveRunning)
+	}
+	if ans.Agent != "" || ans.AgentPID != "" {
+		t.Errorf("agent = %q pid = %q, want an omitted agent, never dead, for an empty wide table", ans.Agent, ans.AgentPID)
+	}
+	calls := runner.Calls()[before:]
+	if len(calls) != 2 {
+		t.Fatalf("snapshot reads = %d, want 2 (identity then wide)", len(calls))
+	}
+	for i, c := range calls {
+		if got, want := strings.Contains(strings.Join(c.Args, " "), "-ww"), i == 1; got != want {
+			t.Errorf("read %d -ww = %v, want %v: %v", i, got, want, c.Args)
+		}
+	}
+}
+
 // TestObserveAgentFromProcessSnapshot proves RPP-OBSERVE-006's wire contract: a
 // running box reports its agent when one of gc's names is in the box's process
 // subtree, and omits it, never calling it dead, when the snapshot cannot be
@@ -763,21 +810,24 @@ func TestObserveAnswersUnknownWithinBound(t *testing.T) {
 func TestObserveAgentFromProcessSnapshot(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()
-	runner := &provider.FakeRunner{}
-	readable := true
-	runner.Handle = func(_ context.Context, c provider.RunCall) (string, error) {
-		if c.Name != "ps" {
-			return "", nil
+	host := &prochost.Fake{}
+	host.OnTable = func(call int, _ bool) (prochost.Table, error) {
+		switch call {
+		case 1:
+			return prochost.Table{
+				100: {PID: 100, PPID: 1, Comm: "sleep", Args: "sleep 300", Reliable: true},
+				101: {PID: 101, PPID: 100, Comm: "sh", Args: "sh -c run", Reliable: true},
+			}, nil
+		case 2:
+			return prochost.Table{
+				100: {PID: 100, PPID: 1, Comm: "sleep", Args: "sleep 300", Reliable: true},
+				101: {PID: 101, PPID: 100, Comm: "sh", Args: "sh -c run", Reliable: true},
+			}, nil
+		default:
+			return nil, prochost.ErrUnreadableSnapshot
 		}
-		if !readable {
-			return "", errors.New("ps: no snapshot")
-		}
-		if len(c.Args) == 2 { // ps -axo pid=,comm=
-			return "100 sleep\n101 sh\n", nil
-		}
-		return "100 1 sleep 300\n101 100 sh -c run\n", nil
 	}
-	p := provider.New("acme", fake, provider.WithRunner(runner))
+	p := provider.New("acme", fake, provider.WithProcessHost(host))
 	name := "Indigo--dog-1"
 	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -802,7 +852,6 @@ func TestObserveAgentFromProcessSnapshot(t *testing.T) {
 		t.Errorf("agent = %q pid = %q, want dead and no pid", none.Agent, none.AgentPID)
 	}
 
-	readable = false
 	unreadable, err := p.Observe(ctx, name, []string{"sleep"})
 	if err != nil {
 		t.Fatalf("Observe: %v", err)
