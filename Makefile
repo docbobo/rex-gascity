@@ -9,7 +9,7 @@ GC_REX_CITY ?= rex-verify
 PACK_VERSION ?= $(shell awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $$2; exit}' pack/pack.toml)
 LDFLAGS ?= -X main.buildVersion=$(PACK_VERSION)
 
-.PHONY: help build install hooks vet test test-e2e verify check conformance clean
+.PHONY: help build install hooks vet test test-e2e verify check conformance timings clean
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-14s %s\n", $$1, $$2}' Makefile
@@ -41,6 +41,9 @@ check: build ## Build and run gc runtime check against testdata/city
 
 conformance: build ## Build and run gc runtime conformance against testdata/city
 	./pack/tests/conformance.sh --binary "$(abspath $(BIN))"
+
+timings: ## Report p50 and p90 CI job wall time for the last 30 days
+	sh scripts/ci-timings.sh
 
 clean: ## Remove build artifacts
 	rm -rf "$(BIN_DIR)"

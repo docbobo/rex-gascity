@@ -1,0 +1,25 @@
+name: ci-timings
+
+# The weekly per-job digest. It answers "did CI get slower" without a person
+# remembering to run the script. On demand: scripts/ci-timings.sh.
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read   # read run and job timings
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Per-job p50 and p90 over the last 30 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo '### CI job wall time, last 30 days (seconds)'
+            scripts/ci-timings.sh
+          } | tee -a "$GITHUB_STEP_SUMMARY"

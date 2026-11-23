@@ -254,10 +254,13 @@ sh pack/tests/check-docs.sh       # runs the sh fences of the operator docs
 | `check-runtime-shim.sh` | The self-installing shim handles a cache hit, a cache miss, the deadline, a platform rejection and clean stdout. |
 | `check-doctor-rex-version.sh` | The doctor check fails on an older rex CLI and passes on an equal or newer one. |
 | `check-trace-stats.sh` | `scripts/provider-trace-stats.sh` prints the golden table. It skips with no `jq`. |
+| `check-ci.sh` | `scripts/docs-only.sh` accepts only documentation paths, and `scripts/ci-timings.sh` computes p50 and p90 from job durations. Neither needs the network. |
 | `check-conformance.sh` | Conformance exits 0 on a real provider and non-zero on a failing one. |
 | `check-release.sh`, `check-release-version.sh` | The release gate accepts only `v<[pack] version>` and the workflow runs it. |
 
 CI runs `make test`, the fake-backed e2e suites, `make verify` and the conformance job. The conformance job installs the pinned real rex first, then runs `pack/tests/conformance.sh`. The pin and its checksum are in `.github/workflows/ci.yml`. A newer preview never changes what CI tests.
+
+Both jobs cache the pinned `gc` binary and skip the Conformance steps on a docs-only pull request. Every job prints its own wall time, and `scripts/ci-timings.sh` reports p50 and p90 per job for the last 30 days. `docs/ci.md` has the job map, the measured cost and the budgets.
 
 `pack/release.sh` reruns `pack/tests/verify.sh` and `pack/tests/conformance.sh` against the downloaded release asset. It attaches `conformance.txt` to the draft. A tag pushed by hand builds nothing. The build runs on workflow dispatch.
 
