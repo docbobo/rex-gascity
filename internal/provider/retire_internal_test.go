@@ -242,6 +242,9 @@ func TestRetirePolicyTable(t *testing.T) {
 			reap: reapRecorded, clear: clearIncarnation, destroy: true,
 			forget: forgetCaller,
 		}},
+		{"stalePolicy", stalePolicy(), retirePolicy{
+			reap: reapRecorded, clear: clearIncarnation, forget: forgetBinding,
+		}},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %+v, want %+v", tc.name, tc.got, tc.want)
@@ -755,5 +758,45 @@ func TestRetireDestroyReturnWithoutDeletionIsStillASuccess(t *testing.T) {
 	c.reset()
 	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
 		t.Fatalf("retry: %v", err)
+	}
+}
+
+// TestRetireStalePolicyMakesNoRexCallsAndForgets is REQ-016: the absent-box
+// retirement reaps the recorded survivors, then clears and forgets the
+// record, and never touches Rex.
+func TestRetireStalePolicyMakesNoRexCallsAndForgets(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	bd.Survivors = []Survivor{{PID: 4242, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if _, err := p.retire(context.Background(), bd.Name, bd, stalePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	wantRexCalls(t, c)
+	if bindingKept(p) || metaKept(t, p) {
+		t.Error("record or meta kept after a stale retirement")
+	}
+}
+
+// TestRetireStalePolicyKeepsTheRecordWhileASurvivorLives is REQ-009.4:
+// recorded survivors are reaped before their record goes, and one that will
+// not die keeps it.
+func TestRetireStalePolicyKeepsTheRecordWhileASurvivorLives(t *testing.T) {
+	reapShortWaits(t)
+	host := &prochost.Fake{TableField: reapTable([4]string{"4242", "1", "S", "bun"})}
+	c, p, bd := retireSetup(t, host)
+	bd.Survivors = []Survivor{{PID: 4242, Name: "bun", Start: reapStart}}
+	if err := p.binder.Record(bd); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	_, err := p.retire(context.Background(), bd.Name, bd, stalePolicy())
+	var surv *survivorError
+	if !errors.As(err, &surv) {
+		t.Fatalf("retire = %v, want a survivorError", err)
+	}
+	wantRexCalls(t, c)
+	if !bindingKept(p) || !metaKept(t, p) {
+		t.Error("record or meta lost while a survivor lives")
 	}
 }

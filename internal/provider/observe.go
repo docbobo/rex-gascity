@@ -241,18 +241,6 @@ func observeUnreadable(err error) bool {
 	return errors.Is(err, rex.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// retireStale finishes the cleanup of a record whose block is already gone: the
-// meta sidecar and activity of that incarnation, then the record itself. It
-// never touches Rex, so it cannot disturb a replacement; the caller checked the
-// record still describes the object that was asked about.
-func (p *Provider) retireStale(bd Binding) error {
-	if err := p.clearIncarnations(bd.Name); err != nil {
-		return err
-	}
-	p.binder.Forget(bd.Name)
-	return nil
-}
-
 // boxState reports what holds the name a binding records. Rex proving the
 // recorded block gone does not prove the name is free (observe.v1 rule 7): a
 // restore or an operator can put another pane under the same labels, so the
@@ -455,10 +443,8 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 				// The state-lock read may carry survivors a canonical Stop
 				// recorded after the check above; reaping the earlier snapshot
 				// would leave them and then delete their only record.
-				if err := p.reapSurvivors(ctx, cur, survivorProcs(cur.Survivors)); err != nil {
-					return err
-				}
-				return p.retireStale(cur)
+				_, err := p.retire(ctx, cur.Name, cur, stalePolicy())
+				return err
 			}); err != nil {
 				return "", err
 			}

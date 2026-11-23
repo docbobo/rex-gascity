@@ -142,6 +142,24 @@ func stopNoPanePolicy(hadStored bool) retirePolicy {
 	}
 }
 
+// stalePolicy finishes the retirement of a record whose block is already
+// gone: kill-object's absent box. It skips the snapshot, the close and the
+// re-read, so it never touches Rex and cannot disturb a replacement pane. It
+// skips the destroy, as the absent-box path does today. It reaps only the
+// recorded survivors, because a previous stop may have recorded pids it could
+// not reap before the pane vanished, and the record is their only name.
+//
+// Lock state: the caller holds the name lock and, inside withSameBinding,
+// the state lock; it passes the binding re-read under that lock as both bd
+// and caller.
+func stalePolicy() retirePolicy {
+	return retirePolicy{
+		reap:   reapRecorded,
+		clear:  clearIncarnation,
+		forget: forgetBinding,
+	}
+}
+
 // retire retires one incarnation in the fixed order: diagnostic, snapshot and
 // union of the recorded survivors, close, re-read, reap, clear, destroy,
 // forget. pol switches steps off or picks their scope; it cannot reorder them.
