@@ -553,3 +553,41 @@ func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
 		t.Errorf("signals = %v, want none", host.Signals)
 	}
 }
+
+// TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead is review F5: a tree that
+// cannot be inspected must fail before block.close, never close the pane and
+// then blame descendants that were never observed.
+func TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead(t *testing.T) {
+	host := &prochost.Fake{OnTable: func(int, bool) (prochost.Table, error) {
+		return prochost.Table{}, nil
+	}}
+	fake, p := reapStartDog(t, host, rex.ProcessInfo{})
+	fake.ProcessErr = errors.New("process: unavailable")
+	ctx := context.Background()
+	if err := p.SetMeta(ctx, reapStopDog, "suspended", "yes"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	err := p.Stop(ctx, reapStopDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want the inspection failure")
+	}
+	if !strings.Contains(err.Error(), "could not inspect the pane's process tree") {
+		t.Errorf("Stop error %q does not say the tree could not be inspected", err)
+	}
+	if !strings.Contains(err.Error(), "process: unavailable") {
+		t.Errorf("Stop error %q does not carry the cause", err)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("closed = %v, want the pane left open", fake.ClosedBlocks)
+	}
+	if len(host.Signals) != 0 {
+		t.Errorf("signals = %v, want none without an observed tree", host.Signals)
+	}
+	if _, ok := p.Binding(reapStopDog); !ok {
+		t.Error("binding forgotten although the pane was never closed")
+	}
+	if got, _ := p.GetMeta(ctx, reapStopDog, "suspended"); got != "yes" {
+		t.Errorf("meta suspended = %q, want it kept for the retry", got)
+	}
+}

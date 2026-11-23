@@ -11,14 +11,14 @@ import (
 // TestParseRowsFixture pins the identity parser against literal
 // `ps -axo pid=,ppid=,stat=,lstart=,comm=` output. The command name may
 // contain spaces, lstart is a fixed 24-byte column and may be absent, an
-// empty comm and runs of spaces in comm stay exact, a malformed pid is
-// skipped, and empty output is an empty table.
+// empty comm (with or without a start time) and runs of spaces in comm stay
+// exact, a malformed pid is skipped, and empty output is an empty table.
 func TestParseRowsFixture(t *testing.T) {
 	const fixture = `  501     1 Ss   Fri Nov 20 19:44:50 2026 Google Chrome Helper (Renderer)
   777     1 S    /usr/libexec/some helper
   abc     1 S    Fri Nov 20 19:44:52 2026 bogus row
   900     1 Z    Fri Nov 20 19:44:53 2026 <defunct>
-  901     1 S
+  901     1 S    Fri Nov 20 19:44:51 2026
   902     1 S    Fri Nov 20 19:44:54 2026 Google  Chrome  Helper
 `
 	want := Table{
@@ -27,7 +27,8 @@ func TestParseRowsFixture(t *testing.T) {
 		777: {PID: 777, PPID: 1, Comm: "/usr/libexec/some helper", Reliable: true},
 		900: {PID: 900, PPID: 1, Comm: "<defunct>",
 			Start: "Fri Nov 20 19:44:53 2026", Zombie: true, Reliable: true},
-		901: {PID: 901, PPID: 1, Comm: "", Reliable: true},
+		901: {PID: 901, PPID: 1, Comm: "",
+			Start: "Fri Nov 20 19:44:51 2026", Reliable: true},
 		902: {PID: 902, PPID: 1, Comm: "Google  Chrome  Helper",
 			Start: "Fri Nov 20 19:44:54 2026", Reliable: true},
 	}

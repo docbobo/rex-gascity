@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -404,42 +403,6 @@ func TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm(t *testing.T) {
 	}
 }
 
-// TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead is review F5: a tree that
-// cannot be inspected must fail before block.close, never close the pane and
-// then blame descendants that were never observed.
-func TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead(t *testing.T) {
-	reapShortWaits(t)
-	ctx := context.Background()
-	fake, p, host := reapProvider(t, liveTree, func(int) prochost.Table { return prochost.Table{} })
-	fake.ProcessErr = errors.New("process: unavailable")
-	if err := p.SetMeta(ctx, reapDog, "suspended", "yes"); err != nil {
-		t.Fatalf("SetMeta: %v", err)
-	}
-
-	err := p.Stop(ctx, reapDog)
-	if err == nil {
-		t.Fatal("Stop = nil, want the inspection failure")
-	}
-	if !strings.Contains(err.Error(), "could not inspect the pane's process tree") {
-		t.Errorf("Stop error %q does not say the tree could not be inspected", err)
-	}
-	if !strings.Contains(err.Error(), "process: unavailable") {
-		t.Errorf("Stop error %q does not carry the cause", err)
-	}
-	if len(fake.ClosedBlocks) != 0 {
-		t.Errorf("closed = %v, want the pane left open", fake.ClosedBlocks)
-	}
-	if len(signalLog(host)) != 0 {
-		t.Errorf("signals = %v, want none without an observed tree", signalLog(host))
-	}
-	if _, ok := p.Binding(reapDog); !ok {
-		t.Error("binding forgotten although the pane was never closed")
-	}
-	if got, _ := p.GetMeta(ctx, reapDog, "suspended"); got != "yes" {
-		t.Errorf("meta suspended = %q, want it kept for the retry", got)
-	}
-}
-
 // TestPaneSubtreeSkipsAncestorsSiblings is review F4: a sibling under the
 // pane's shell (a reported ancestor) is not a pane process and must not be
 // captured or signalled.
@@ -492,11 +455,15 @@ func TestStopKeepsSignallingAfterASignalFailure(t *testing.T) {
 		)
 	})
 	// 300 is the lower survivor pid, so it is signalled first; it is the one
-	// that fails, like an EPERM from a process that changed uid.
-	host.OnSignal = func(_ int, pid int, _ syscall.Signal) error {
+	// that fails, like an EPERM from a process that changed uid. The fake
+	// records failed calls too, so log only the calls it lets succeed and
+	// check the exact sequence.
+	var delivered []string
+	host.OnSignal = func(_ int, pid int, sig syscall.Signal) error {
 		if pid == 300 {
 			return syscall.EPERM
 		}
+		delivered = append(delivered, sig.String()+":"+strconv.Itoa(pid))
 		return nil
 	}
 
@@ -504,10 +471,8 @@ func TestStopKeepsSignallingAfterASignalFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("Stop = nil, want a survivor failure")
 	}
-	for _, want := range []string{"terminated:400", "killed:400"} {
-		if !slices.Contains(signalLog(host), want) {
-			t.Errorf("signals = %v, want %q despite the 300 failure", signalLog(host), want)
-		}
+	if want := []string{"terminated:400", "killed:400"}; !slices.Equal(delivered, want) {
+		t.Errorf("signals = %v, want %v despite the 300 failure", delivered, want)
 	}
 	for _, want := range []string{"300 (bun)", "400 (node)", "operation not permitted"} {
 		if !strings.Contains(err.Error(), want) {
