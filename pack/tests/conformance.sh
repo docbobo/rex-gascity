@@ -66,9 +66,44 @@ fi
 export GC_EXEC_STATE_DIR=$scratch/state
 report=$scratch/conformance.json
 log=$scratch/conformance.log
-status=0
-"$gc" runtime conformance "$binary" --city "$city" --json > "$report" 2> "$log" || status=$?
-[ ! -s "$log" ] || cat "$log" >&2
+
+# report_failures names every failed requirement, by code and detail, before a
+# retry overwrites the report. The JSON report is the only place gc says what
+# went wrong, so a flake that the retry absorbs would otherwise leave nothing
+# in the CI log to diagnose it with.
+report_failures() {
+  python3 - "$report" <<'PY' || true
+import json, sys
+
+try:
+    with open(sys.argv[1]) as f:
+        report = json.load(f)
+except (OSError, ValueError):
+    sys.exit(0)
+for res in report.get("results", []):
+    if res.get("status", "").upper() == "FAIL":
+        print("conformance: failed: %s \u2014 %s" % (res.get("code"), res.get("detail", "")))
+PY
+}
+
+# One retry. A driving op may already have typed when it fails, so it must not
+# be retried in place; the whole run repeats instead, in its own scratch city
+# and state root. A genuinely broken provider fails both attempts.
+attempts=0
+while :; do
+  attempts=$((attempts + 1))
+  status=0
+  "$gc" runtime conformance "$binary" --city "$city" --json > "$report" 2> "$log" || status=$?
+  [ ! -s "$log" ] || cat "$log" >&2
+  if [ "$status" -eq 0 ]; then
+    break
+  fi
+  report_failures
+  if [ "$attempts" -ge 2 ]; then
+    break
+  fi
+  echo "conformance: attempt $attempts failed (exit $status); retrying once" >&2
+done
 
 version=$("$binary" version 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
 gc_id=${GASCITY_PIN:-$("$gc" version 2>/dev/null || echo unknown)}
@@ -77,6 +112,7 @@ if ! {
   echo "### rex conformance"
   echo "- gc: $gc_id"
   echo "- provider: $binary (version ${version:-unknown})"
+  [ "$attempts" -eq 1 ] || echo "- attempts: $attempts"
   python3 - "$report" <<'PY'
 import json, sys
 
