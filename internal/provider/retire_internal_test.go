@@ -703,3 +703,57 @@ func TestRetireStopNoPaneZeroBindingOnlyClearsAndForgets(t *testing.T) {
 		t.Error("an unrelated name's retirement forgot reapDog")
 	}
 }
+
+// TestRetireRetryAfterAPartialClear is the review's partial-clear retry: the
+// clear step drops the meta sidecar and then fails on the activity record, so
+// the first retirement stops before destroy and forget. The retry re-clears
+// the already-gone meta and finishes.
+func TestRetireRetryAfterAPartialClear(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	good := p.activity
+	p.activity = dropFailActivity{Store: good, err: errRetireBoom}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy())
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("first retire = %v, want the clear error", err)
+	}
+	if !bindingKept(p) {
+		t.Fatal("binding forgotten after the partial clear")
+	}
+	if metaKept(t, p) {
+		t.Fatal("the meta sidecar survived the first clear attempt")
+	}
+
+	p.activity = good
+	c.reset()
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if bindingKept(p) {
+		t.Error("binding kept after the retry finished")
+	}
+}
+
+// TestRetireDestroyReturnWithoutDeletionIsStillASuccess is the review's other
+// retry case: destroyEmptyCitySession returns nil when the session is not
+// empty (a window is still there) or a launch holds it, so a nil retire does
+// not prove deletion. The record still goes, and a retry is safe.
+func TestRetireDestroyReturnWithoutDeletionIsStillASuccess(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.Views = map[rex.SessionID]rex.SessionView{
+		bd.SessionID: {Windows: []rex.Window{{ID: "window:still-open"}}},
+	}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if len(c.DestroyedSessions) != 0 {
+		t.Errorf("destroyed %v, want the non-empty session left alone", c.DestroyedSessions)
+	}
+	if bindingKept(p) {
+		t.Error("binding kept although the retirement finished")
+	}
+
+	c.reset()
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+}
