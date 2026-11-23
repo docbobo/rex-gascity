@@ -335,7 +335,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		opt(p)
 	}
 	if p.processHost == nil {
-		p.processHost = processHostAdapter{p}
+		p.processHost = prochost.NewPSHost(p.runner)
 	}
 	labels := p.ns.labels
 	if len(labels) == 0 {

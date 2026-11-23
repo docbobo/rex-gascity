@@ -242,14 +242,14 @@ func unionProcs(tree, extra []prochost.Ident) []prochost.Ident {
 	return tree
 }
 
-// waitGone polls scan until the signal set is empty or the wait expires. It
-// returns the current alive set on every exit. A read error returns the last
-// alive set and the error.
-func (p *Provider) waitGone(ctx context.Context, tree []prochost.Ident, wait time.Duration) ([]prochost.Ident, error) {
+// waitGone polls scan over live until the signal set is empty or the wait
+// expires. It starts and stays on live, so a capture already proven gone never
+// re-enters the set. A read error returns the last alive set and the error.
+func (p *Provider) waitGone(ctx context.Context, live []prochost.Ident, wait time.Duration) ([]prochost.Ident, error) {
 	deadline := time.Now().Add(wait)
-	alive := tree
+	alive := live
 	for {
-		sig, current, _, err := p.scan(ctx, tree)
+		sig, current, _, err := p.scan(ctx, live)
 		if err != nil {
 			return alive, err
 		}
@@ -280,14 +280,14 @@ func (p *Provider) reap(ctx context.Context, tree []prochost.Ident) (left []proc
 		return alive, nil, nil
 	}
 	signalErr = p.signalAll(sig, syscall.SIGTERM)
-	left, readErr = p.waitGone(ctx, tree, reapTermWait)
+	left, readErr = p.waitGone(ctx, alive, reapTermWait)
 	if readErr != nil {
 		return left, readErr, signalErr
 	}
 	if len(left) == 0 {
 		return nil, nil, signalErr
 	}
-	sig, alive, _, readErr = p.scan(ctx, tree)
+	sig, alive, _, readErr = p.scan(ctx, left)
 	if readErr != nil {
 		return left, readErr, signalErr
 	}
@@ -297,18 +297,6 @@ func (p *Provider) reap(ctx context.Context, tree []prochost.Ident) (left []proc
 	if killErr := p.signalAll(sig, syscall.SIGKILL); signalErr == nil {
 		signalErr = killErr
 	}
-	left, readErr = p.waitGone(ctx, tree, reapKillWait)
+	left, readErr = p.waitGone(ctx, alive, reapKillWait)
 	return left, readErr, signalErr
-}
-
-// processHostAdapter is the default prochost.Host. It reads the table through
-// the provider's Runner and signals through the real adapter.
-type processHostAdapter struct{ p *Provider }
-
-func (h processHostAdapter) Table(ctx context.Context, needArgs bool) (prochost.Table, error) {
-	return prochost.NewPSHost(h.p.runner).Table(ctx, needArgs)
-}
-
-func (h processHostAdapter) Signal(pid int, sig syscall.Signal) error {
-	return prochost.NewPSHost(h.p.runner).Signal(pid, sig)
 }

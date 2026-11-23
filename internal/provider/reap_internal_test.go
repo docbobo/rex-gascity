@@ -653,3 +653,16 @@ func TestPaneSubtreePinsAForegroundLeaf(t *testing.T) {
 		t.Errorf("captured = %v, want only the leaf foreground 300", tree)
 	}
 }
+
+// TestNewBuildsThePSHostOnce proves New stores the real ps adapter after the
+// options run, and WithProcessHost still overrides it (spec review finding 3).
+func TestNewBuildsThePSHostOnce(t *testing.T) {
+	p := New("acme", faketest.New())
+	if _, ok := p.processHost.(*prochost.PSHost); !ok {
+		t.Fatalf("default processHost = %T, want *prochost.PSHost", p.processHost)
+	}
+	host := &prochost.Fake{}
+	if got := New("acme", faketest.New(), WithProcessHost(host)); got.processHost != prochost.Host(host) {
+		t.Errorf("override processHost = %T, want the injected fake", got.processHost)
+	}
+}

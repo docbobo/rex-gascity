@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -100,6 +101,19 @@ func reapStartDog(t *testing.T, host *prochost.Fake, tree rex.ProcessInfo) (*fak
 
 // errReapTable is the read failure the reap-through-the-seam tests inject.
 var errReapTable = errors.New("host table unavailable")
+
+// wantSurvivors asserts the exact stored survivor records, not only that a
+// record exists (spec review finding 2).
+func wantSurvivors(t *testing.T, p *provider.Provider, want ...provider.Survivor) {
+	t.Helper()
+	kept, ok := p.Binding(reapStopDog)
+	if !ok {
+		t.Fatal("binding gone, want the survivor record kept")
+	}
+	if !slices.Equal(kept.Survivors, want) {
+		t.Errorf("survivors = %+v, want %+v", kept.Survivors, want)
+	}
+}
 
 // TestStopReuseBeforeKill proves a pid reused between TERM and the pre-KILL
 // read gets no KILL and Stop succeeds without a record (§2a row 2).
@@ -240,9 +254,7 @@ func TestStopReadErrorBeforeTerm(t *testing.T) {
 	if len(host.Signals) != 0 {
 		t.Errorf("signals = %v, want none before the read error", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
-		t.Error("binding gone, want the survivor record kept")
-	}
+	wantSurvivors(t, p, provider.Survivor{PID: 300, Name: "bun", Start: reapStart})
 }
 
 // TestStopReadErrorDuringPoll proves a read error while waiting for TERM
@@ -265,9 +277,7 @@ func TestStopReadErrorDuringPoll(t *testing.T) {
 	if len(host.Signals) != 1 || host.Signals[0].Sig != syscall.SIGTERM {
 		t.Errorf("signals = %v, want one TERM before the poll error", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
-		t.Error("binding gone, want the survivor record kept")
-	}
+	wantSurvivors(t, p, provider.Survivor{PID: 300, Name: "bun", Start: reapStart})
 }
 
 // TestStopReadErrorBeforeKill proves a read error at the pre-KILL read leaves
@@ -295,9 +305,7 @@ func TestStopReadErrorBeforeKill(t *testing.T) {
 	if len(host.Signals) != 1 || host.Signals[0].Sig != syscall.SIGTERM {
 		t.Errorf("signals = %v, want one TERM before the pre-KILL read error", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
-		t.Error("binding gone, want the survivor record kept")
-	}
+	wantSurvivors(t, p, provider.Survivor{PID: 300, Name: "bun", Start: reapStart})
 }
 
 // TestStopReadErrorAfterKill proves a read error after KILL returns the error
@@ -327,9 +335,89 @@ func TestStopReadErrorAfterKill(t *testing.T) {
 	if len(host.Signals) != 2 || host.Signals[0].Sig != syscall.SIGTERM || host.Signals[1].Sig != syscall.SIGKILL {
 		t.Errorf("signals = %v, want TERM then KILL before the read error", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
-		t.Error("binding gone, want the survivor record kept")
+	wantSurvivors(t, p, provider.Survivor{PID: 300, Name: "bun", Start: reapStart})
+}
+
+// reapTwoRoots is a pane that reports two root processes: the foreground is
+// absent and neither reported pid is below the other.
+func reapTwoRoots(a, b rex.Process) rex.ProcessInfo {
+	return rex.ProcessInfo{Ancestors: []rex.Process{a, b}}
+}
+
+// TestStopGonePIDNotKilledAfterReuse proves a capture proven gone in the TERM
+// poll gets no KILL when its pid is back with the captured name but no start
+// (spec review finding 1). The fresh pre-KILL read must see only the alive set.
+func TestStopGonePIDNotKilledAfterReuse(t *testing.T) {
+	const reused = "Sat Nov 21 09:00:00 2026"
+	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+		switch call {
+		case 1, 2, 3:
+			return reapTableOf(reapRow(300, "bun"), reapRow(400, "sleep")), nil
+		case 4:
+			// 300 was reused; 400 stays present but unverified.
+			return prochost.Table{
+				300: {PID: 300, PPID: 1, Comm: "bun", Start: reused},
+				400: {PID: 400, PPID: 1, Comm: "bash"},
+			}, nil
+		case 5:
+			// The replacement at 300 now has no start at all.
+			return prochost.Table{
+				300: {PID: 300, PPID: 1, Comm: "bun"},
+				400: {PID: 400, PPID: 1, Comm: "bash"},
+			}, nil
+		}
+		return prochost.Table{400: {PID: 400, PPID: 1, Comm: "bash"}}, nil
+	}}
+	_, p := reapStartDog(t, host, reapTwoRoots(rex.Process{PID: 300, Name: "bun"}, rex.Process{PID: 400, Name: "sleep"}))
+	err := p.Stop(context.Background(), reapStopDog)
+	if err == nil || !strings.Contains(err.Error(), "400 (sleep)") {
+		t.Fatalf("Stop = %v, want a survivor error naming 400 (sleep)", err)
 	}
+	for _, sig := range host.Signals {
+		if sig.Sig == syscall.SIGKILL {
+			t.Errorf("signals = %v, want no KILL for a capture proven gone", host.Signals)
+		}
+	}
+	wantSurvivors(t, p, provider.Survivor{PID: 400, Name: "sleep", Start: reapStart})
+}
+
+// TestStopKillPollErrorKeepsAliveSet proves the first read error after KILL
+// keeps the latest alive set, not captures the pre-KILL read proved gone
+// (spec review finding 2).
+func TestStopKillPollErrorKeepsAliveSet(t *testing.T) {
+	const reused = "Sat Nov 21 09:00:00 2026"
+	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+		switch call {
+		case 1, 2, 3:
+			return reapTableOf(reapRow(300, "bun"), reapRow(400, "sleep")), nil
+		case 4:
+			// 300 was reused; 400 stays present but unverified.
+			return prochost.Table{
+				300: {PID: 300, PPID: 1, Comm: "bun", Start: reused},
+				400: {PID: 400, PPID: 1, Comm: "bash"},
+			}, nil
+		case 5:
+			// The pre-KILL read finds 400 alive and 300 back with no start.
+			return prochost.Table{
+				300: {PID: 300, PPID: 1, Comm: "bun"},
+				400: reapRow(400, "sleep"),
+			}, nil
+		case 6:
+			return nil, errReapTable
+		}
+		return prochost.Table{}, nil
+	}}
+	_, p := reapStartDog(t, host, reapTwoRoots(rex.Process{PID: 300, Name: "bun"}, rex.Process{PID: 400, Name: "sleep"}))
+	err := p.Stop(context.Background(), reapStopDog)
+	if !errors.Is(err, errReapTable) {
+		t.Fatalf("Stop error = %v, want the post-KILL table read error", err)
+	}
+	for _, sig := range host.Signals {
+		if sig.Sig == syscall.SIGKILL && sig.PID == 300 {
+			t.Errorf("signals = %v, want no KILL for the gone capture 300", host.Signals)
+		}
+	}
+	wantSurvivors(t, p, provider.Survivor{PID: 400, Name: "sleep", Start: reapStart})
 }
 
 // TestStopKillsObjectFromFakeHost proves the stop path reaches the fake host
