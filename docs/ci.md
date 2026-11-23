@@ -90,3 +90,5 @@ the table to that run's summary.
   critical path.
 - `Conformance` keeps `timeout-minutes: 20` as the backstop for a hang, not as
   a budget.
+
+Probe line for the docs-only CI path.
