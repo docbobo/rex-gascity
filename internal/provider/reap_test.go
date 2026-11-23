@@ -494,11 +494,18 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 	termSent := false
 	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
 		if call == 1 {
-			return reapTableOf(reapRow(300, "bun")), nil
+			// Before the close: the pane shell, the foreground agent, and
+			// the agent's child.
+			return reapTableOf(
+				reapRow(200, "/bin/zsh"),
+				prochost.Row{PID: 100, PPID: 200, Comm: "claude", Start: reapStart},
+				prochost.Row{PID: 300, PPID: 100, Comm: "bun", Start: reapStart},
+			), nil
 		}
 		if termSent {
 			return prochost.Table{}, nil
 		}
+		// After the close: the child is reparented to init.
 		return reapTableOf(reapRow(300, "bun")), nil
 	}}
 	host.OnSignal = func(_ int, _ int, sig syscall.Signal) error {
@@ -507,7 +514,11 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 		}
 		return nil
 	}
-	fake, p := reapStartDog(t, host, reapOneTree(300, "bun"))
+	tree := rex.ProcessInfo{
+		Foreground: &rex.Process{PID: 100, Name: "claude"},
+		Ancestors:  []rex.Process{{PID: 200, Name: "zsh"}},
+	}
+	fake, p := reapStartDog(t, host, tree)
 
 	if err := p.Stop(context.Background(), reapStopDog); err != nil {
 		t.Fatalf("Stop = %v, want nil once the subtree is gone", err)
