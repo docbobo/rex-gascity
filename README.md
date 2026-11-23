@@ -37,43 +37,49 @@ rex-gascity/
 
 ### Import by tag
 
-gc clones the repository and uses `pack/` as the pack root. It matches the version constraint against git tags with `git ls-remote`.
+The pack's binding is `rex`. Import it under that name. The pack runs agent
+sessions as native Rex panes instead of tmux panes. It ships one executable,
+`bin/gc-runtime-rex`, which gc runs from the installed pack. It installs the
+matching release binary.
 
 ```sh
 gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.02
 ```
 
-- `--version` takes the bare version. The tag is `v2026.11.02`. `--version v2026.11.02` matches no tag. Push the tag first.
-- `packs.lock` pins the tag commit. The import is reproducible.
-- `--version sha:<commit>` pins one commit instead. It installs only when that commit's `[pack] version` has a published release. Otherwise the install fails and names the tag.
-- A private repository needs git credentials for `git ls-remote` and the fetch.
+`pack/pack.toml` declares `version = "2026.11.02"`, and the release tag is
+`v2026.11.02`. `--version` takes the bare version, so the tag must be pushed
+first. The provider binary installed for that version is the one a session
+runs. A provider that reports another version fails the doctor check, which
+names the mismatch.
 
 ### Install and first use
 
 ```sh
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
-gc doctor --check rex-gascity-runtime:rex-binary
 gc import check
 ```
 
-`[runtimes.rex] command = "bin/gc-runtime-rex"` holds a path separator. gc runs the shipped entry point relative to the pack directory, never through `PATH`. On a cache hit it execs the cached release binary with no network I/O. On a miss it installs release `v<pack version>` into
+- **`gc import install`** writes the pack's files into the city and makes the
+  `rex` runtime available.
+- **`gc doctor --fix`** downloads the pinned release binary into the cache now,
+  so the first session starts with no download.
+- **`gc import check`** verifies that the installed pack matches its import.
+  It is read-only.
+
+The first session needs nothing else. `bin/gc-runtime-rex` installs release
+`v<version>` into
 
 ```text
 ${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/<version>/<os>-<arch>
 ```
 
-under a self-imposed deadline. Then it execs the binary. All install output goes to stderr, so stdout stays clean. A normal first session needs nothing else.
-
-`gc doctor --check rex-gascity-runtime:rex-binary` is read-only and never downloads. On a cold cache it reports "not yet installed, run `--fix` or start a session". `--fix` runs `doctor/rex-binary/fix.sh`. It warms that same cache.
-
-Release assets exist for `darwin` and `linux` on `amd64` and `arm64`. `checksums.txt` ships beside them. The installer verifies sha256 with `sha256sum` or `shasum -a 256` before it writes anything.
-
-It stages the file and renames it into place, so a running provider keeps its inode. It tries the public `curl` URL first. If that fails, it runs `gh release download`. A private release needs `gh` with `GITHUB_TOKEN` or `GH_TOKEN`.
-
-`sh pack/install.sh` puts the provider on `PATH` by hand. It writes `$HOME/.local/bin`, or the directory of the `gc-runtime-rex` already on `PATH`. That copy does not warm the version-keyed cache. The doctor check still reports the cache as cold.
-
-`--from-source` builds from a checkout with Go. Such a build reports the module pseudo-version. The doctor check then warns that it cannot confirm the pack version.
+and execs it. On a cache hit it runs the cached binary with no network I/O.
+All install output goes to stderr, so stdout stays clean. A plain
+`gc doctor --check rex-gascity-runtime:rex-binary` is read-only: it never
+downloads, and a cold cache reports "not yet installed, run `--fix` or start a
+session". A green check means the provider handshakes, its version matches
+`pack.toml`, and the `rex` CLI resolves.
 
 ### Upgrade and roll back
 
@@ -97,6 +103,27 @@ provider = "rex"
 ```
 
 `GC_SESSION=rex gc start` selects the provider for the process that constructs it. In a city with a running supervisor or controller, that process reads its own environment. Set `[session] provider` in `city.toml` and restart the supervisor instead.
+
+### Details
+
+- gc matches the version constraint against git tags with `git ls-remote`, and
+  `packs.lock` pins the tag commit, so the import is reproducible.
+- `--version sha:<commit>` pins one commit instead. It installs only when that
+  commit's `[pack] version` has a published release. Otherwise the install
+  fails and names the tag.
+- A private repository needs git credentials for `git ls-remote` and the
+  fetch. A private release needs `gh` with `GITHUB_TOKEN` or `GH_TOKEN`.
+- Release assets exist for `darwin` and `linux` on `amd64` and `arm64`.
+  `checksums.txt` ships beside them, and the installer verifies sha256 with
+  `sha256sum` or `shasum -a 256` before it writes anything. It stages the file
+  and renames it into place, so a running provider keeps its inode.
+- `sh pack/install.sh` puts the provider on `PATH` by hand. It writes
+  `$HOME/.local/bin`, or the directory of the `gc-runtime-rex` already on
+  `PATH`. That copy does not warm the version-keyed cache. The doctor check
+  still reports the cache as cold.
+- `--from-source` builds from a checkout with Go. Such a build reports the
+  module pseudo-version, and the doctor check warns that it cannot confirm the
+  pack version.
 
 ## Doctor
 
