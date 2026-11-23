@@ -55,11 +55,10 @@ const identityFixture = `  501     1 Ss   Fri Nov 20 19:44:50 2026 node
   503     1 Z    Fri Nov 20 19:44:52 2026 gone
 `
 
-// TestPSHostReadCountsAndMerge pins the read contract: identity-only is one
-// ps, needArgs is two, wide rows supply membership and PPIDs, identity rows
-// add comm, start and zombie, a wide-only row stays, and an identity-only row
-// drops.
-func TestPSHostReadCountsAndMerge(t *testing.T) {
+// TestPSHostReadCounts pins the read contract: identity-only is one ps,
+// needArgs is two, and the wide read supplies the command line. The merge
+// assertions belong to TestPSHostMergeSets.
+func TestPSHostReadCounts(t *testing.T) {
 	wide := `501 1 node server.js
 502 999 worker --flag
 600 502 orphan
@@ -95,17 +94,8 @@ func TestPSHostReadCountsAndMerge(t *testing.T) {
 	if !strings.Contains(strings.Join(r.calls[1], " "), "-ww") {
 		t.Fatalf("args read lacks -ww: %v", r.calls[1])
 	}
-	if got := table[501]; got.Comm != "node" || got.Args != "node server.js" || got.PPID != 1 {
+	if got := table[501]; got.Comm != "node" || got.Args != "node server.js" {
 		t.Fatalf("merged row 501 = %#v", got)
-	}
-	if got := table[502]; got.PPID != 999 {
-		t.Fatalf("wide PPID lost: %#v", got)
-	}
-	if _, ok := table[600]; !ok {
-		t.Fatal("wide-only row dropped")
-	}
-	if _, ok := table[503]; ok {
-		t.Fatal("identity-only row kept")
 	}
 }
 
