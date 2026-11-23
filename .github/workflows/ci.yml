@@ -44,17 +44,7 @@ jobs:
           cache: true
           cache-dependency-path: go.mod
 
-      # go install of the pinned gc is the single slowest step (about 5
-      # minutes). Cache the built binary per pin: a pin bump rebuilds once, and
-      # every run after reuses it.
-      - name: Restore the pinned gc binary
-        id: gc
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin/gc
-          key: gc-${{ runner.os }}-${{ runner.arch }}-${{ env.GASCITY_PIN }}
       - name: Install pinned gc
-        if: steps.gc.outputs.cache-hit != 'true'
         run: go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
       - name: Put gc on PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -140,15 +130,8 @@ jobs:
 
       # gc is a tool install, not a Go import: the pack keeps zero gascity
       # dependencies and still runs against the pinned gc.
-      - name: Restore the pinned gc binary
-        if: steps.docs.outputs.docs_only != 'true'
-        id: gc
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin/gc
-          key: gc-${{ runner.os }}-${{ runner.arch }}-${{ env.GASCITY_PIN }}
       - name: Install pinned gc
-        if: steps.docs.outputs.docs_only != 'true' && steps.gc.outputs.cache-hit != 'true'
+        if: steps.docs.outputs.docs_only != 'true'
         run: go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
       - name: Put gc on PATH
         if: steps.docs.outputs.docs_only != 'true'

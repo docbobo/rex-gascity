@@ -31,16 +31,18 @@ before this workflow changed, `scripts/ci-timings.sh` reported p50/p90 of
 
 ## Caches
 
-- `actions/cache` keeps `~/go/bin/gc` under
-  `gc-<runner.os>-<runner.arch>-<GASCITY_PIN>`. The install step is skipped on
-  a hit.
-- `actions/setup-go` runs with `cache: true` and
-  `cache-dependency-path: go.mod`. This repository has no Go dependencies, so
-  `go.sum` does not exist and the default cache key would be skipped. The Go
-  build cache still makes the one cold install after a pin bump cheaper.
+`actions/setup-go` runs with `cache: true` and
+`cache-dependency-path: go.mod`. This repository has no Go dependencies, so
+`go.sum` does not exist and the default cache key would be skipped. The Go
+build cache then makes `go install gc@pin` cheap once it is warm: the first
+cold build in the 45286698759 run took 301-338 s, and later runs link from
+cached objects.
 
-A pin bump costs one cold install in both jobs, then the binary cache covers
-every later run.
+The built `~/go/bin/gc` binary is deliberately not cached. A `go install`
+binary links against the runner image, and `ubuntu-latest` is not one image:
+the same key restored a binary built on another image and `gc` died with
+`libicui18n.so.78: cannot open shared object file`. The Go build cache gives
+the speed without that coupling.
 
 ## Docs-only fast path
 
