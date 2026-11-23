@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -81,6 +82,44 @@ func reapTableOf(rows ...prochost.Row) prochost.Table {
 // reapOneTree is a pane whose foreground is the only process.
 func reapOneTree(pid int, name string) rex.ProcessInfo {
 	return rex.ProcessInfo{Foreground: &rex.Process{PID: pid, Name: name}}
+}
+
+// reapTableAt builds a host table from [pid, ppid, state, comm] rows sharing one
+// start time.
+func reapTableAt(start string, rows ...[4]string) prochost.Table {
+	table := make(prochost.Table, len(rows))
+	for _, r := range rows {
+		pid, _ := strconv.Atoi(r[0])
+		ppid, _ := strconv.Atoi(r[1])
+		table[pid] = prochost.Row{
+			PID:      pid,
+			PPID:     ppid,
+			Zombie:   strings.HasPrefix(r[2], "Z"),
+			Comm:     r[3],
+			Start:    start,
+			Reliable: true,
+		}
+	}
+	return table
+}
+
+// reapTable is reapTableAt at the shared reapStart.
+func reapTable(rows ...[4]string) prochost.Table { return reapTableAt(reapStart, rows...) }
+
+// reapLiveTree is a pane shell (200) with the agent (100) and two descendants,
+// one of them below the other (300 -> 400).
+var reapLiveTree = rex.ProcessInfo{
+	Foreground: &rex.Process{PID: 100, Name: "claude"},
+	Ancestors:  []rex.Process{{PID: 200, Name: "zsh"}},
+}
+
+// signalLog renders the host's signals as "terminated:300" for assertions.
+func signalLog(host *prochost.Fake) []string {
+	log := make([]string, len(host.Signals))
+	for i, call := range host.Signals {
+		log[i] = call.Sig.String() + ":" + strconv.Itoa(call.PID)
+	}
+	return log
 }
 
 // reapStartDog starts reapStopDog over host and makes its pane report tree.
@@ -551,6 +590,46 @@ func TestStopAlreadyDeadSessionScansNoProcessTable(t *testing.T) {
 	}
 	if len(host.Signals) != 0 {
 		t.Errorf("signals = %v, want none", host.Signals)
+	}
+}
+
+// TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm is review F1: a ps row
+// whose comm is empty or contains runs of spaces must still be captured, so it
+// is reaped and reported instead of silently passing the stop.
+func TestProcessTableKeepsRowsWithAnEmptyOrSpacedComm(t *testing.T) {
+	ctx := context.Background()
+	host := &prochost.Fake{OnTable: func(call int, _ bool) (prochost.Table, error) {
+		if call == 1 {
+			// Before the close: an empty comm and a comm with repeated spaces.
+			return reapTable(
+				[4]string{"200", "1", "Ss", "/bin/zsh"},
+				[4]string{"100", "200", "S+", "claude"},
+				[4]string{"300", "100", "S", ""},
+				[4]string{"400", "100", "S", "Google  Chrome  Helper"},
+			), nil
+		}
+		return reapTable(
+			[4]string{"300", "1", "S", ""},
+			[4]string{"400", "1", "S", "Google  Chrome  Helper"},
+		), nil
+	}}
+	fake, p := reapStartDog(t, host, reapLiveTree)
+	err := p.Stop(ctx, reapStopDog)
+	if err == nil {
+		t.Fatal("Stop = nil, want a survivor failure for the dropped rows")
+	}
+	for _, want := range []string{"300 (?)", "400 (Google  Chrome  Helper)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Stop error %q does not name %q", err, want)
+		}
+	}
+	// The empty comm is an opaque identity: it is reported as a survivor but not
+	// signalled. The named row 400 is signalled TERM then KILL.
+	if len(signalLog(host)) != 2 {
+		t.Errorf("signals = %v, want TERM then KILL for the named survivor 400", signalLog(host))
+	}
+	if len(fake.ClosedBlocks) != 1 {
+		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
 	}
 }
 
