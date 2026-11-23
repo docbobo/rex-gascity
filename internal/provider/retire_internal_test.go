@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/docbobo/rex-gascity/internal/prochost"
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -502,6 +503,32 @@ func TestRetireLeavesAReplacementRecordUntouched(t *testing.T) {
 	}
 }
 
+// TestRetireForgetKeepsAReplacementRecord is the retire.go:179 follow-up: a
+// start that replaced the binding during the lock-free retirement must not
+// have its record dropped by the final Forget. The retired binding is the
+// incarnation argument, so Forget drops only the record it retired.
+func TestRetireForgetKeepsAReplacementRecord(t *testing.T) {
+	_, p, bd := retireSetup(t, nil)
+	replacement := bd
+	replacement.BlockID = "block:replacement"
+	replacement.WindowID = "window:replacement"
+	replacement.CreatedAt = bd.CreatedAt.Add(time.Minute)
+	if err := p.binder.Record(replacement); err != nil {
+		t.Fatalf("record the replacement: %v", err)
+	}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, retirePolicy{forget: forgetBinding})
+	if err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	got, ok := p.Binding(reapDog)
+	if !ok {
+		t.Fatal("the replacement binding was dropped by the retirement's Forget")
+	}
+	if got.BlockID != replacement.BlockID {
+		t.Errorf("binding block = %q, want the replacement %q", got.BlockID, replacement.BlockID)
+	}
+}
+
 // TestRetireForgetsLastAfterAClearFailure is REQ-009.1: a clear failure
 // returns before destroy and forget, so the record stays.
 func TestRetireForgetsLastAfterAClearFailure(t *testing.T) {
@@ -674,5 +701,59 @@ func TestRetireStopNoPaneZeroBindingOnlyClearsAndForgets(t *testing.T) {
 	wantRexCalls(t, c)
 	if !bindingKept(p) {
 		t.Error("an unrelated name's retirement forgot reapDog")
+	}
+}
+
+// TestRetireRetryAfterAPartialClear is the review's partial-clear retry: the
+// clear step drops the meta sidecar and then fails on the activity record, so
+// the first retirement stops before destroy and forget. The retry re-clears
+// the already-gone meta and finishes.
+func TestRetireRetryAfterAPartialClear(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	good := p.activity
+	p.activity = dropFailActivity{Store: good, err: errRetireBoom}
+	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy())
+	if !errors.Is(err, errRetireBoom) {
+		t.Fatalf("first retire = %v, want the clear error", err)
+	}
+	if !bindingKept(p) {
+		t.Fatal("binding forgotten after the partial clear")
+	}
+	if metaKept(t, p) {
+		t.Fatal("the meta sidecar survived the first clear attempt")
+	}
+
+	p.activity = good
+	c.reset()
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if bindingKept(p) {
+		t.Error("binding kept after the retry finished")
+	}
+}
+
+// TestRetireDestroyReturnWithoutDeletionIsStillASuccess is the review's other
+// retry case: destroyEmptyCitySession returns nil when the session is not
+// empty (a window is still there) or a launch holds it, so a nil retire does
+// not prove deletion. The record still goes, and a retry is safe.
+func TestRetireDestroyReturnWithoutDeletionIsStillASuccess(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.Views = map[rex.SessionID]rex.SessionView{
+		bd.SessionID: {Windows: []rex.Window{{ID: "window:still-open"}}},
+	}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if len(c.DestroyedSessions) != 0 {
+		t.Errorf("destroyed %v, want the non-empty session left alone", c.DestroyedSessions)
+	}
+	if bindingKept(p) {
+		t.Error("binding kept although the retirement finished")
+	}
+
+	c.reset()
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
+		t.Fatalf("retry: %v", err)
 	}
 }
