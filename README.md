@@ -43,7 +43,7 @@ sessions as native Rex panes instead of tmux panes. It ships one executable,
 matching release binary.
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.02
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.02
 ```
 
 `pack/pack.toml` declares `version = "2026.11.02"`, and the release tag is
