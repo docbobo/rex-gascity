@@ -248,6 +248,9 @@ func TestRetirePolicyTable(t *testing.T) {
 		{"discardLaunchPolicy", discardLaunchPolicy(), retirePolicy{
 			snapshot: true, close: true, reap: reapTree,
 		}},
+		{"startDeadPanePolicy", startDeadPanePolicy(), retirePolicy{
+			close: true, clear: clearIdentity, forget: forgetCaller,
+		}},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %+v, want %+v", tc.name, tc.got, tc.want)
@@ -848,4 +851,103 @@ func TestRetireDiscardLaunchPolicyReturnsTheCloseError(t *testing.T) {
 		t.Fatalf("retire = %v, want the raw close error", err)
 	}
 	wantRexCalls(t, c, "process", "close")
+}
+
+// lockProbeMeta runs probe before every meta Drop, the call clearStartIdentity
+// makes per identity key.
+type lockProbeMeta struct {
+	Store[metaKey, string]
+	probe func()
+}
+
+func (s lockProbeMeta) Drop(k metaKey) error {
+	s.probe()
+	return s.Store.Drop(k)
+}
+
+// TestRetireStartDeadPanePolicyClosesClearsIdentityAndForgets is the
+// dead-pane example (REQ-008): close only, no BlockProcess, the identity keys
+// go but the rest of the sidecar stays, and the caller's record is forgotten.
+func TestRetireStartDeadPanePolicyClosesClearsIdentityAndForgets(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	key := metaKey{SessionName(reapDog), startMetaKeys()[0]}
+	if err := p.meta.Write(key, "old-identity"); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	wantRexCalls(t, c, "close")
+	if _, ok, _ := p.meta.Read(key); ok {
+		t.Errorf("%s kept after the dead pane's retirement", key.key)
+	}
+	if !metaKept(t, p) {
+		t.Error("identity clear removed non-identity meta")
+	}
+	if bindingKept(p) {
+		t.Error("record kept after the dead pane's retirement")
+	}
+}
+
+// TestRetireStartDeadPanePolicyClearsTheAliasAndPrimaryIdentity: the
+// retired identity can sit under the primary name the caller reached by
+// alias, so both are cleared.
+func TestRetireStartDeadPanePolicyClearsTheAliasAndPrimaryIdentity(t *testing.T) {
+	_, p, bd := retireSetup(t, nil)
+	alias := SessionName("Indigo--alias")
+	keys := []metaKey{{alias, startMetaKeys()[0]}, {SessionName(reapDog), startMetaKeys()[0]}}
+	for _, k := range keys {
+		if err := p.meta.Write(k, "old-identity"); err != nil {
+			t.Fatalf("seed identity: %v", err)
+		}
+	}
+	if _, err := p.retire(context.Background(), alias, bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	for _, k := range keys {
+		if _, ok, _ := p.meta.Read(k); ok {
+			t.Errorf("identity under %s kept", k.name)
+		}
+	}
+}
+
+// TestRetireStartDeadPanePolicyToleratesAClosedBlock: Rex answering
+// NotFound for the close is a pane already gone, not a failure.
+func TestRetireStartDeadPanePolicyToleratesAClosedBlock(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.CloseBlockErr = rex.ErrNotFound
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v, want NotFound tolerated", err)
+	}
+	if bindingKept(p) {
+		t.Error("record kept after the dead pane's retirement")
+	}
+}
+
+// TestRetireStartDeadPanePolicyHoldsTheStateLockOnlyAroundTheIdentityClear
+// is REQ-014: the identity clear runs under the state lock, the close does
+// not.
+func TestRetireStartDeadPanePolicyHoldsTheStateLockOnlyAroundTheIdentityClear(t *testing.T) {
+	c, p, bd := retireSetup(t, nil, WithNamespace(NewNamespaceForDirs(t.TempDir())))
+	heldAtClose := false
+	c.onClose = func() { heldAtClose = stateLockHeld(t, p) }
+	var heldAtClear []bool
+	p.meta = lockProbeMeta{Store: p.meta, probe: func() { heldAtClear = append(heldAtClear, stateLockHeld(t, p)) }}
+	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if heldAtClose {
+		t.Error("state lock held across CloseBlock")
+	}
+	if len(heldAtClear) == 0 {
+		t.Fatal("identity clear dropped no meta key")
+	}
+	for i, held := range heldAtClear {
+		if !held {
+			t.Errorf("identity Drop %d ran without the state lock", i+1)
+		}
+	}
+	if bindingKept(p) {
+		t.Error("record kept after the dead pane's retirement")
+	}
 }

@@ -544,29 +544,11 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		if alive {
 			return startResult{}, nil
 		}
-		if err := p.client.CloseBlock(ctx, old.SessionID, old.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		// The liveness read above chose this branch; the retirement makes no
+		// BlockProcess call of its own.
+		if _, err := p.retire(ctx, n, old, startDeadPanePolicy()); err != nil {
 			return startResult{}, err
 		}
-		// The retired incarnation's identity goes with it: a start that fails
-		// before seeding (a missing work_dir, a canceled launch) must not leave
-		// a GC_SESSION_ID behind for the next pane under the name to inherit.
-		// The retired identity can sit under the canonical name the caller
-		// reached by alias, not only under n: clear both before the record is
-		// dropped, or a failed relaunch leaves the old GC_SESSION_ID readable.
-		names := []SessionName{n}
-		if old.Name != "" && old.Name != n {
-			names = append(names, old.Name)
-		}
-		if err := p.withStateLock(ctx, func() error {
-			var errs []error
-			for _, name := range names {
-				errs = append(errs, p.clearStartIdentity(name))
-			}
-			return errors.Join(errs...)
-		}); err != nil {
-			return startResult{}, err
-		}
-		p.binder.Forget(n)
 	}
 
 	// Find or create the city session under the short state lock: two starts of

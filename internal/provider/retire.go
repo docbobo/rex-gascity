@@ -32,6 +32,11 @@ const (
 	// clearIncarnation removes the whole meta sidecar and the activity record
 	// under the caller's name and the binding's name (clearIncarnations).
 	clearIncarnation
+	// clearIdentity removes only the start identity keys
+	// (clearStartIdentity) under the caller's name and the binding's name,
+	// deduplicated and skipping "". It takes the state lock around the clear
+	// only, so the caller must not hold the state lock.
+	clearIdentity
 )
 
 // forgetMode selects the stored binding the last step drops.
@@ -179,6 +184,25 @@ func discardLaunchPolicy() retirePolicy {
 	}
 }
 
+// startDeadPanePolicy retires the dead pane a Start found under the name
+// before it launches a new one. It closes the block and clears only the start
+// identity, so a start that fails before seeding cannot leave a GC_SESSION_ID
+// for the next pane to inherit, then forgets the caller's record. It skips the
+// snapshot, the re-read and the reap: the pre-resolve reapStartSurvivors sweep
+// already reaped the recorded survivors, and start's liveness read (paneAlive)
+// already chose this branch. It skips the destroy: start reuses the session.
+// It skips the diagnostic: nothing is draining.
+//
+// Lock state: the caller holds the name lock and not the state lock, which
+// the identity clear takes around the clear only (REQ-014).
+func startDeadPanePolicy() retirePolicy {
+	return retirePolicy{
+		close:  true,
+		clear:  clearIdentity,
+		forget: forgetCaller,
+	}
+}
+
 // retire retires one incarnation in the fixed order: diagnostic, snapshot and
 // union of the recorded survivors, close, re-read, reap, clear, destroy,
 // forget. pol switches steps off or picks their scope; it cannot reorder them.
@@ -251,6 +275,24 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 	case clearNone:
 	case clearIncarnation:
 		if err := p.clearIncarnations(caller, bd.Name); err != nil {
+			return res, err
+		}
+	case clearIdentity:
+		// The retired identity can sit under the canonical name the caller
+		// reached by alias, not only under the caller's: clear both before
+		// the record is dropped, or a failed relaunch leaves the old
+		// GC_SESSION_ID readable.
+		names := []SessionName{caller}
+		if bd.Name != "" && bd.Name != caller {
+			names = append(names, bd.Name)
+		}
+		if err := p.withStateLock(ctx, func() error {
+			var errs []error
+			for _, name := range names {
+				errs = append(errs, p.clearStartIdentity(name))
+			}
+			return errors.Join(errs...)
+		}); err != nil {
 			return res, err
 		}
 	}
