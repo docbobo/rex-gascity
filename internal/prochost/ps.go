@@ -65,31 +65,22 @@ func mergeRows(ident Table, wide string) (Table, error) {
 	if strings.TrimSpace(wide) == "" {
 		return nil, ErrUnreadableSnapshot
 	}
-	type wideRow struct {
-		ppid int
-		args string
-	}
-	rows := make(map[int]wideRow)
-	for _, line := range strings.Split(wide, "\n") {
-		cols, rest, ok := splitRow(line, 2)
-		if !ok {
-			continue
-		}
+	rows := make(Table)
+	eachRow(wide, 2, func(cols []string, rest string) {
 		pid, ppid, ok := parseIDs(cols[0], cols[1])
 		if !ok {
-			continue
+			return
 		}
-		rows[pid] = wideRow{ppid: ppid, args: strings.TrimSpace(rest)}
-	}
-	out := make(Table, len(rows))
-	for pid, w := range rows {
-		row := Row{PID: pid, PPID: w.ppid, Args: w.args, Reliable: reliableArgs(w.args)}
+		args := strings.TrimSpace(rest)
+		rows[pid] = Row{PID: pid, PPID: ppid, Args: args, Reliable: reliableArgs(args)}
+	})
+	for pid, row := range rows {
 		if id, ok := ident[pid]; ok {
 			row.Comm, row.Start, row.Zombie = id.Comm, id.Start, id.Zombie
+			rows[pid] = row
 		}
-		out[pid] = row
 	}
-	return out, nil
+	return rows, nil
 }
 
 // lstartLen is the width of ps's lstart column, "%a %b %e %H:%M:%S %Y"
@@ -100,14 +91,10 @@ const lstartLen = 24
 // so their Reliable is true; a usable Comm is enough for the fallback rule.
 func parseRows(out string) Table {
 	rows := make(Table)
-	for _, line := range strings.Split(out, "\n") {
-		cols, rest, ok := splitRow(line, 3)
-		if !ok {
-			continue
-		}
+	eachRow(out, 3, func(cols []string, rest string) {
 		pid, ppid, ok := parseIDs(cols[0], cols[1])
 		if !ok {
-			continue
+			return
 		}
 		comm, start := splitStart(rest)
 		rows[pid] = Row{
@@ -118,8 +105,19 @@ func parseRows(out string) Table {
 			Start:    start,
 			Reliable: true,
 		}
-	}
+	})
 	return rows
+}
+
+// eachRow is the one row parser. It splits every ps line into the first n
+// columns plus the untouched remainder, and skips lines that do not split so
+// each layout stays a caller concern.
+func eachRow(out string, n int, fn func(cols []string, rest string)) {
+	for _, line := range strings.Split(out, "\n") {
+		if cols, rest, ok := splitRow(line, n); ok {
+			fn(cols, rest)
+		}
+	}
 }
 
 // splitRow splits the first n whitespace-delimited columns from the rest of a
