@@ -381,6 +381,44 @@ func TestStopGonePIDNotKilledAfterReuse(t *testing.T) {
 	wantSurvivors(t, p, provider.Survivor{PID: 400, Name: "sleep", Start: reapStart})
 }
 
+// TestStopGonePIDNotKilledDuringLaterTermPoll proves a capture proven gone in
+// one TERM poll is not re-admitted by a later poll of the same phase. Without
+// that, a replacement with the captured name and no start would receive KILL
+// (code review finding).
+func TestStopGonePIDNotKilledDuringLaterTermPoll(t *testing.T) {
+	const reused = "Sat Nov 21 09:00:00 2026"
+	host := &prochost.Fake{OnTable: func(call int) (prochost.Table, error) {
+		switch call {
+		case 1, 2, 3:
+			// Pane snapshot, post-close snapshot, initial scan.
+			return reapTableOf(reapRow(300, "bun"), reapRow(400, "sleep")), nil
+		case 4:
+			// First TERM poll: 300 was reused, 400 is still alive.
+			return prochost.Table{
+				300: {PID: 300, PPID: 1, Comm: "bun", Start: reused},
+				400: reapRow(400, "sleep"),
+			}, nil
+		case 5:
+			// Second TERM poll: the replacement at 300 has no start, 400 is
+			// still alive.
+			return prochost.Table{
+				300: {PID: 300, PPID: 1, Comm: "bun"},
+				400: reapRow(400, "sleep"),
+			}, nil
+		}
+		// 400 exits; the replacement at 300 stays without a start.
+		return prochost.Table{300: {PID: 300, PPID: 1, Comm: "bun"}}, nil
+	}}
+	_, p := reapStartDog(t, host, reapTwoRoots(rex.Process{PID: 300, Name: "bun"}, rex.Process{PID: 400, Name: "sleep"}))
+	if err := p.Stop(context.Background(), reapStopDog); err != nil {
+		t.Fatalf("Stop = %v, want no error once both captures are gone", err)
+	}
+	want := []prochost.SignalCall{{PID: 300, Sig: syscall.SIGTERM}, {PID: 400, Sig: syscall.SIGTERM}}
+	if !slices.Equal(host.Signals, want) {
+		t.Errorf("signals = %v, want TERM to both captures and no KILL", host.Signals)
+	}
+}
+
 // TestStopKillPollErrorKeepsAliveSet proves the first read error after KILL
 // keeps the latest alive set, not captures the pre-KILL read proved gone
 // (spec review finding 2).

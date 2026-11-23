@@ -242,14 +242,15 @@ func unionProcs(tree, extra []prochost.Ident) []prochost.Ident {
 	return tree
 }
 
-// waitGone polls scan over live until the signal set is empty or the wait
-// expires. It starts and stays on live, so a capture already proven gone never
-// re-enters the set. A read error returns the last alive set and the error.
+// waitGone polls scan over the latest alive set until the signal set is empty
+// or the wait expires. It starts from live and keeps only what the last poll
+// proved alive, so a capture already proven gone never re-enters the set. A
+// read error returns the last alive set and the error.
 func (p *Provider) waitGone(ctx context.Context, live []prochost.Ident, wait time.Duration) ([]prochost.Ident, error) {
 	deadline := time.Now().Add(wait)
 	alive := live
 	for {
-		sig, current, _, err := p.scan(ctx, live)
+		sig, current, _, err := p.scan(ctx, alive)
 		if err != nil {
 			return alive, err
 		}
