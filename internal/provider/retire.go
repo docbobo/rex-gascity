@@ -161,6 +161,24 @@ func stalePolicy() retirePolicy {
 	}
 }
 
+// discardLaunchPolicy retires a pane NewSplit or NewWindow created whose
+// final record failed: the pane would otherwise run on after start's deferred
+// rollback forgets its binding. It snapshots, closes, re-reads and reaps. It
+// returns a snapshot error raw; the caller joins every error with its cause.
+// It skips the diagnostic (the worker never ran), the clear and the forget
+// (start's deferred rollback owns them), and the destroy (the caller holds
+// the session's launch lock, so the session cannot be checked empty here).
+//
+// Lock state: the caller holds the name lock, the tab lock and the session's
+// shared launch lock; not the state lock.
+func discardLaunchPolicy() retirePolicy {
+	return retirePolicy{
+		snapshot: true,
+		close:    true,
+		reap:     reapTree,
+	}
+}
+
 // retire retires one incarnation in the fixed order: diagnostic, snapshot and
 // union of the recorded survivors, close, re-read, reap, clear, destroy,
 // forget. pol switches steps off or picks their scope; it cannot reorder them.

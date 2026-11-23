@@ -493,6 +493,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		// or a provisional binding behind. Stop clears the same keys on the
 		// successful retire path. A survivor record is the only name for a
 		// descendant the retire could not reap, so it stays.
+		// The pane itself was already retired by discardLaunchPolicy when
+		// its record failed; this undoes only start's own provisional state.
 		_ = p.clearStartIdentity(n)
 		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
 			return
@@ -707,8 +709,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				}
 				if block != "" {
 					bd := p.newBinding(n, sid, w.ID, block, "split", attempt, cfg)
-					if err := p.binder.Record(bd); err != nil {
-						return p.discardLaunch(ctx, bd, err)
+					if recErr := p.binder.Record(bd); recErr != nil {
+						_, err := p.retire(ctx, n, bd, discardLaunchPolicy())
+						return errors.Join(recErr, err)
 					}
 				}
 				launched = startResult{sessionID: sid, blockID: block}
@@ -727,8 +730,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			}
 			if block != "" {
 				bd := p.newBinding(n, sid, wid, block, "window", attempt, cfg)
-				if err := p.binder.Record(bd); err != nil {
-					return p.discardLaunch(ctx, bd, err)
+				if recErr := p.binder.Record(bd); recErr != nil {
+					_, err := p.retire(ctx, n, bd, discardLaunchPolicy())
+					return errors.Join(recErr, err)
 				}
 			}
 			launched = startResult{sessionID: sid, blockID: block}
@@ -847,25 +851,6 @@ func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error 
 		}
 	}
 	return nil
-}
-
-// discardLaunch retires a pane NewSplit or NewWindow created whose final record
-// failed: the pane would otherwise run on after the deferred cleanup forgets
-// its binding, and a retry would adopt it with no start identity. It reuses
-// stopBinding's order (snapshot the tree, close, re-read, reap) and reports
-// cause joined with any retire failure.
-func (p *Provider) discardLaunch(ctx context.Context, bd Binding, cause error) error {
-	tree, err := p.paneSubtree(ctx, bd)
-	if err != nil {
-		return errors.Join(cause, err)
-	}
-	if err := p.client.CloseBlock(ctx, bd.SessionID, bd.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return errors.Join(cause, err)
-	}
-	if after, readErr := p.paneSubtree(ctx, bd); readErr == nil {
-		tree = unionProcs(tree, after)
-	}
-	return errors.Join(cause, p.reapSurvivors(ctx, bd, tree))
 }
 
 // Stop closes the agent's pane and leaves the city session and other rigs

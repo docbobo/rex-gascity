@@ -245,6 +245,9 @@ func TestRetirePolicyTable(t *testing.T) {
 		{"stalePolicy", stalePolicy(), retirePolicy{
 			reap: reapRecorded, clear: clearIncarnation, forget: forgetBinding,
 		}},
+		{"discardLaunchPolicy", discardLaunchPolicy(), retirePolicy{
+			snapshot: true, close: true, reap: reapTree,
+		}},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %+v, want %+v", tc.name, tc.got, tc.want)
@@ -799,4 +802,50 @@ func TestRetireStalePolicyKeepsTheRecordWhileASurvivorLives(t *testing.T) {
 	if !bindingKept(p) || !metaKept(t, p) {
 		t.Error("record or meta lost while a survivor lives")
 	}
+}
+
+// TestRetireDiscardLaunchPolicyReturnsTheRawSnapshotError is REQ-008: the
+// discard path reports the read error unwrapped (the caller joins it with
+// its cause) and closes nothing.
+func TestRetireDiscardLaunchPolicyReturnsTheRawSnapshotError(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.failProcess[1] = errRetireBoom
+	_, err := p.retire(context.Background(), bd.Name, bd, discardLaunchPolicy())
+	if !errors.Is(err, errRetireBoom) || err.Error() != errRetireBoom.Error() {
+		t.Fatalf("retire = %v, want the raw snapshot error", err)
+	}
+	wantRexCalls(t, c, "process")
+}
+
+// TestRetireDiscardLaunchPolicyOnlyClosesAndReaps is REQ-006's discard row:
+// snapshot, close, re-read and reap only; the record, meta and session stay
+// for start's deferred rollback.
+func TestRetireDiscardLaunchPolicyOnlyClosesAndReaps(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	res, err := p.retire(context.Background(), bd.Name, bd, discardLaunchPolicy())
+	if err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if res.alreadyClosed {
+		t.Error("alreadyClosed = true after a clean close")
+	}
+	wantRexCalls(t, c, "process", "close", "process")
+	if !bindingKept(p) || !metaKept(t, p) {
+		t.Error("discard cleared the record or meta it does not own")
+	}
+	if len(c.DestroyedSessions) != 0 {
+		t.Errorf("destroyed = %v, want none under the launch lock", c.DestroyedSessions)
+	}
+}
+
+// TestRetireDiscardLaunchPolicyReturnsTheCloseError: a close error other
+// than NotFound is returned raw for the caller to join.
+func TestRetireDiscardLaunchPolicyReturnsTheCloseError(t *testing.T) {
+	c, p, bd := retireSetup(t, nil)
+	c.CloseBlockErr = errRetireBoom
+	_, err := p.retire(context.Background(), bd.Name, bd, discardLaunchPolicy())
+	if err == nil || err.Error() != errRetireBoom.Error() {
+		t.Fatalf("retire = %v, want the raw close error", err)
+	}
+	wantRexCalls(t, c, "process", "close")
 }
