@@ -145,6 +145,7 @@ func stopNoPanePolicy(hadStored bool) retirePolicy {
 // stalePolicy finishes the retirement of a record whose block is already
 // gone: kill-object's absent box. It skips the snapshot, the close and the
 // re-read, so it never touches Rex and cannot disturb a replacement pane. It
+// skips the drain diagnostic because the recorded pane is already gone. It
 // skips the destroy, as the absent-box path does today. It reaps only the
 // recorded survivors, because a previous stop may have recorded pids it could
 // not reap before the pane vanished, and the record is their only name.
