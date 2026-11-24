@@ -1,0 +1,55 @@
+name: codeql
+
+# Advisory first: no ruleset requires these checks. See
+# docs/research/codeql-evaluation.md for the evidence and the review date.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "24 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+# A new push to a pull request makes the previous analysis moot. A push to main
+# must always finish, because it uploads the result for that commit.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Go has no "none" build mode, so autobuild is the only non-manual
+        # choice. Actions needs no build.
+        include:
+          - language: actions
+            build-mode: none
+          - language: go
+            build-mode: autobuild
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Autobuild
+        if: matrix.build-mode == 'autobuild'
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
