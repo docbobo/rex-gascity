@@ -1216,3 +1216,56 @@ func TestProcessNamesSplitsOnLines(t *testing.T) {
 		t.Errorf("processNames = %q, want %q", got, want)
 	}
 }
+
+// TestInputOutcomeWireBytesUnchanged locks the exact exit code, stdout and
+// stderr of the three input outcomes whose detail used to be built in main.go
+// (#43 REQ-002). The other dispatch tests check only the word or a stderr
+// substring, so they would miss a drifted detail. The bytes were captured at
+// 15c387e. GC_REX_TRACE is cleared so a tracing warning cannot change stderr.
+func TestInputOutcomeWireBytesUnchanged(t *testing.T) {
+	t.Setenv("GC_REX_TRACE", "")
+	for _, c := range []struct {
+		name   string
+		stdin  string
+		args   []string
+		stdout string
+		stderr string
+	}{
+		{
+			name:   "nudge invalid UTF-8",
+			stdin:  "prompt \xff bytes",
+			args:   []string{"nudge", dog},
+			stdout: `{"outcome":"rejected","detail":"the nudge text is not UTF-8; nothing was typed"}` + "\n",
+			stderr: "rejected: the nudge text is not UTF-8; nothing was typed\n",
+		},
+		{
+			name:   "nudge gone",
+			stdin:  "hello\n",
+			args:   []string{"nudge", "ghost"},
+			stdout: `{"outcome":"gone","detail":"session not found: ghost has no pane"}` + "\n",
+			stderr: "gone: session not found: ghost has no pane\n",
+		},
+		{
+			name:   "send-keys rejection",
+			stdin:  "",
+			args:   []string{"send-keys", dog, "!"},
+			stdout: `{"outcome":"rejected","detail":"key \"!\" has no Rex spelling"}` + "\n",
+			stderr: "rejected: key \"!\" has no Rex spelling\n",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _ := newHarness(t)
+			h.start(dog)
+			r := h.run(c.stdin, c.args...)
+			if r.code != exitInputOutcome {
+				t.Errorf("exit = %d, want %d", r.code, exitInputOutcome)
+			}
+			if r.stdout != c.stdout {
+				t.Errorf("stdout = %q, want %q", r.stdout, c.stdout)
+			}
+			if r.stderr != c.stderr {
+				t.Errorf("stderr = %q, want %q", r.stderr, c.stderr)
+			}
+		})
+	}
+}
