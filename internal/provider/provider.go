@@ -694,9 +694,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 				}
 				if block != "" {
 					bd := p.newBinding(n, sid, w.ID, block, "split", attempt, cfg)
-					if recErr := p.binder.Record(bd); recErr != nil {
-						_, err := p.retire(ctx, n, bd, discardLaunchPolicy())
-						return errors.Join(recErr, err)
+					if err := p.recordOrDiscard(ctx, n, bd); err != nil {
+						return err
 					}
 				}
 				launched = startResult{sessionID: sid, blockID: block}
@@ -715,9 +714,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 			}
 			if block != "" {
 				bd := p.newBinding(n, sid, wid, block, "window", attempt, cfg)
-				if recErr := p.binder.Record(bd); recErr != nil {
-					_, err := p.retire(ctx, n, bd, discardLaunchPolicy())
-					return errors.Join(recErr, err)
+				if err := p.recordOrDiscard(ctx, n, bd); err != nil {
+					return err
 				}
 			}
 			launched = startResult{sessionID: sid, blockID: block}
