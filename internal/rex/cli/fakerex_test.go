@@ -35,6 +35,12 @@ dir=` + shellQuote(f.responses) + `
   printf '%s\n' '---'
 } >> "$log"
 
+# A leading -S <server> comes from cli.Client{Server}; the rest of the script
+# looks at the command that follows it.
+if [ "$1" = "-S" ]; then
+  shift 2
+fi
+
 if [ "$1" = "events" ]; then
   key=events
 elif [ "$1" = "send-key" ]; then

@@ -548,3 +548,43 @@ func TestSessionViewLayoutOnlyBlockStillAppears(t *testing.T) {
 		t.Errorf("blocks = %+v, want %+v", got, want)
 	}
 }
+
+// The city-owned server is opt-in: with Server set, every invocation carries
+// -S so a call never reaches the user's ambient server by accident.
+func TestServerFlagWhenConfigured(t *testing.T) {
+	const server = "unix:///run/gc/acme/rex.sock"
+	fake := newFakeRex(t)
+	fake.respond(t, "session.list", `{"sessions":[]}`)
+	c := &cli.Client{Bin: fake.bin, Server: server}
+
+	if _, err := c.ListSessions(context.Background()); err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	calls := fake.calls(t)
+	if len(calls) == 0 {
+		t.Fatal("no rex invocation recorded")
+	}
+	want := []string{"-S", server, "api", "call", "session.list"}
+	if !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("argv = %v, want %v", calls[0], want)
+	}
+}
+
+// The default is the ambient server: no -S, so the CLI resolves it as before.
+func TestNoServerFlagByDefault(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.list", `{"sessions":[]}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	if _, err := c.ListSessions(context.Background()); err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	calls := fake.calls(t)
+	if len(calls) == 0 {
+		t.Fatal("no rex invocation recorded")
+	}
+	want := []string{"api", "call", "session.list"}
+	if !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("argv = %v, want %v", calls[0], want)
+	}
+}
