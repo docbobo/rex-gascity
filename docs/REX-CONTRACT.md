@@ -93,7 +93,7 @@ carries every method's full input and output schema.
 | `clear` | — | — | `clear-scrollback` (no-op while a full-screen program runs). It drops both the scrollback and the visible screen, so a later `format` is blank. Attached clients stay (GCREX-31) |
 | `reset` | — | — | hard reset of a terminal (fallback) |
 | `program_status` | — | `{records[] {id, state: idle\|working\|done\|blocked\|error, kind, …}}` — programs report via **OSC 7501** | agent state; idle detection |
-| `input_mode` | — | `{echo, canonical, signals, …}` | detect a password/raw prompt. The provider's secret-read guard (#48) treats `canonical && !echo` as a secret read and withholds nudge and send-keys input. A bare `echo:false` is readline (bash, a python REPL) and is not. The discriminator is **unverified** beyond one live probe (rex 0.1.0-preview.21, api 18) |
+| `input_mode` | — | `{echo, canonical, signals, …}` | detect a password/raw prompt. The provider's secret-read guard (#48) treats `canonical && !echo` as a secret read and withholds nudge and send-keys input. `echo:false` alone cannot distinguish a secret read from readline (bash, a python REPL) and is not enough to trigger the guard. The live discriminator is **unverified** beyond one live probe (rex 0.1.0-preview.21, api 18) |
 | `size` / `title` / `pwd` | — | terminal geometry + owning client / title + owner / cwd + owner | diagnostics |
 
 **Reply cap.** A control response is capped at **1 048 576 bytes**; `format`
