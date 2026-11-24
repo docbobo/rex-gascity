@@ -10,7 +10,8 @@ import (
 type paneQuestion string
 
 const (
-	askIdle paneQuestion = "idle" // idleVerdict
+	askIdle    paneQuestion = "idle"    // idleVerdict
+	askStartup paneQuestion = "startup" // startupVerdict
 )
 
 // errScreenRead is the read error a failing screen fixture returns.
@@ -56,6 +57,11 @@ type verdictRow struct {
 	status programStatusSnapshot // the observation's status
 	screen screenFixture         // the observation's screen
 
+	// startup inputs
+	prefix    string
+	pastFloor bool
+	atBound   bool
+
 	want      paneVerdict
 	wantErr   bool // idle: the screen read error is returned
 	wantReads int  // screen reads of the observation
@@ -91,11 +97,38 @@ var idleRows = []verdictRow{
 	{name: "D5 idle: padded idle record", ask: askIdle, status: rec(" idle "), screen: screenText("booting\n"), want: verdictIdle, wantReads: 0},
 }
 
+// startupRows are REQ-009: startupVerdict, today's readinessNote minus bound naming.
+var startupRows = []verdictRow{
+	{name: "startup prompt: dialog", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText(trustDialog), want: verdictDialog, wantReads: 1},
+	{name: "startup prompt: ready prompt", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ "), want: verdictPromptReady, wantReads: 1},
+	{name: "startup prompt: no prompt yet", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n"), want: verdictWaiting, wantReads: 1},
+	{name: "startup prompt: read fails at the bound", ask: askStartup, prefix: "❯ ", atBound: true, status: noRecord, screen: screenFails(), want: verdictWaiting, wantReads: 1},
+	{name: "startup prompt: ignores the floor and an idle record", ask: askStartup, prefix: "❯ ", pastFloor: true, status: rec("idle"), screen: screenText("booting\n"), want: verdictWaiting, wantReads: 1},
+	{name: "startup status: idle past the floor", ask: askStartup, pastFloor: true, status: rec("idle"), screen: screenText("❯ "), want: verdictIdle, wantReads: 1},
+	{name: "startup status: GCREX-59 dialog over an idle record", ask: askStartup, pastFloor: true, status: rec("idle"), screen: screenText(trustDialog), want: verdictDialog, wantReads: 1},
+	{name: "startup status: idle past the floor, read fails", ask: askStartup, pastFloor: true, status: rec("idle"), screen: screenFails(), want: verdictIdle, wantReads: 1},
+	{name: "startup status: dialog at the bound", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText(trustDialog), want: verdictDialog, wantReads: 1},
+	{name: "startup status: no dialog at the bound", ask: askStartup, pastFloor: true, atBound: true, status: rec("working"), screen: screenText("booting\n"), want: verdictWaiting, wantReads: 1},
+	{name: "startup status: read fails at the bound", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenFails(), want: verdictWaiting, wantReads: 1},
+	{name: "startup status: working before the bound", ask: askStartup, pastFloor: true, status: rec("working"), screen: screenText(trustDialog), want: verdictWaiting, wantReads: 0},
+	// D2: prompt mode checks menu cursors with the configured prefix, status mode with none.
+	{name: "D2 startup prompt: prefix cursor beside a bare mention", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText(prefixCursorMenu), want: verdictDialog, wantReads: 1},
+	{name: "D2 startup status: same screen at the bound", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText(prefixCursorMenu), want: verdictWaiting, wantReads: 1},
+	// D3: startup does not consult busy markers; at the settle bound it delivers.
+	{name: "D3 startup status: busy marker at the bound", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText(busyScreen), want: verdictWaiting, wantReads: 1},
+	// D4: prompt mode accepts only the configured prefix.
+	{name: "D4 startup prompt: another ready glyph", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n› "), want: verdictWaiting, wantReads: 1},
+	// D5: startup does not trim the status state.
+	{name: "D5 startup status: padded idle record", ask: askStartup, pastFloor: true, status: rec(" idle "), screen: screenText("❯ "), want: verdictWaiting, wantReads: 0},
+	// D6: status mode reads no screen before the floor and the bound.
+	{name: "D6 startup status: before the floor and the bound", ask: askStartup, status: rec("idle"), screen: screenText(trustDialog), want: verdictWaiting, wantReads: 0},
+}
+
 // TestPaneStateVerdict maps one observation to one verdict for every question
 // the pane-state module answers, and pins how often each decision reads the
 // screen. Rows named D1-D6 pin the divergences issue #44 keeps.
 func TestPaneStateVerdict(t *testing.T) {
-	rows := slices.Concat(idleRows)
+	rows := slices.Concat(idleRows, startupRows)
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			o, reads := row.screen.observe(row.status)
@@ -106,6 +139,8 @@ func TestPaneStateVerdict(t *testing.T) {
 			switch row.ask {
 			case askIdle:
 				got, gotErr = idleVerdict(o)
+			case askStartup:
+				got = startupVerdict(o, row.prefix, row.pastFloor, row.atBound)
 			default:
 				t.Fatalf("unknown question %q", row.ask)
 			}

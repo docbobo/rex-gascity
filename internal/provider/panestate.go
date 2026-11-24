@@ -118,6 +118,50 @@ func idleVerdict(o paneObservation) (paneVerdict, error) {
 	}
 }
 
+// startupVerdict answers one poll of the startup readiness wait. prefix is
+// ready_prompt_prefix; "" selects status mode. pastFloor reports that the
+// ready_delay_ms floor has elapsed, atBound that the wait's bound has. waiting
+// with atBound means "deliver on the bound".
+//
+// Prompt mode reads the screen on every poll: a dialog withholds, the
+// configured prompt is prompt-ready, anything else (a failed read too) waits.
+// Status mode reads the screen only when it can decide (D6): an untrimmed
+// "idle" record past the floor (D5) is idle unless a dialog shows (GCREX-59),
+// and at the bound a dialog withholds. Busy markers are not consulted (D3). A
+// failed read there means "no dialog".
+func startupVerdict(o paneObservation, prefix string, pastFloor, atBound bool) paneVerdict {
+	if prefix != "" {
+		screen, err := o.screen.get()
+		switch {
+		case err != nil:
+			return verdictWaiting
+		case withholdsFirstTurn(screen, prefix):
+			return verdictDialog
+		case screenHasPromptPrefix(screen, prefix):
+			return verdictPromptReady
+		default:
+			return verdictWaiting
+		}
+	}
+	if pastFloor && o.status.Present && o.status.State == "idle" {
+		if screenWithholdsFirstTurn(o) {
+			return verdictDialog
+		}
+		return verdictIdle
+	}
+	if atBound && screenWithholdsFirstTurn(o) {
+		return verdictDialog
+	}
+	return verdictWaiting
+}
+
+// screenWithholdsFirstTurn is status mode's dialog check: the screen reads and
+// shows a dialog with no configured prefix. A failed read is no dialog.
+func screenWithholdsFirstTurn(o paneObservation) bool {
+	screen, err := o.screen.get()
+	return err == nil && withholdsFirstTurn(screen, "")
+}
+
 // screenShowsBusyMarker reports whether a busyMarkers line is on screen.
 func screenShowsBusyMarker(screen string) bool {
 	for _, marker := range busyMarkers {
