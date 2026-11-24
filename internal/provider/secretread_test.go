@@ -224,3 +224,63 @@ func TestNudgeSecretReadProbeStallFailsOpen(t *testing.T) {
 		}
 	})
 }
+
+// lateReplyInputModeFake models an input_mode read that answers a secret read
+// after its context ended, as a CLI response decoded after the command
+// completed can. It tells the test when the read has started.
+type lateReplyInputModeFake struct {
+	*faketest.Fake
+	entered chan struct{}
+}
+
+func (f *lateReplyInputModeFake) BlockInputMode(ctx context.Context, _ rex.SessionID, _ rex.BlockID) (rex.InputMode, error) {
+	close(f.entered)
+	<-ctx.Done()
+	return secretReadMode, nil
+}
+
+// TestNudgeDiscardsLateInputModeReply pins REQ-003 / AC-6: a reply that
+// arrives after the probe context ended does not decide the guard. A probe
+// timeout with a live parent fails open and delivers the nudge; a parent
+// cancellation keeps the cancellation result and types nothing.
+func TestNudgeDiscardsLateInputModeReply(t *testing.T) {
+	// (a) The probe times out and the late reply says secret read: the parent
+	// is live, so the guard fails open and the nudge is delivered.
+	t.Run("probe timeout, parent live", func(t *testing.T) {
+		fake := &lateReplyInputModeFake{Fake: faketest.New(), entered: make(chan struct{})}
+		p := nudgeStarted(t, fake, provider.WithInputModeProbeTimeout(20*time.Millisecond))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		report, err := p.NudgeReport(ctx, activityName, "hello", provider.NudgeModeWait)
+		if err != nil {
+			t.Fatalf("NudgeReport with a late secret-read reply: %v", err)
+		}
+		if !report.Delivered || !wroteText(fake.Fake) {
+			t.Errorf("report = %+v, ops = %v; want the text delivered", report, ops(fake.Fake))
+		}
+	})
+
+	// (b) The parent is cancelled during the read and the late reply says
+	// secret read: the nudge keeps today's cancellation result and types
+	// nothing, rather than answering a secret-read withhold.
+	t.Run("parent cancelled", func(t *testing.T) {
+		fake := &lateReplyInputModeFake{Fake: faketest.New(), entered: make(chan struct{})}
+		// The probe budget is far longer than the test allows, so only the
+		// parent's cancellation can end the read.
+		p := nudgeStarted(t, fake, provider.WithInputModeProbeTimeout(10*time.Second))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-fake.entered
+			cancel()
+		}()
+		_, err := p.NudgeReport(ctx, activityName, "hello", provider.NudgeModeWait)
+		if !errors.Is(err, context.Canceled) || errors.Is(err, provider.ErrSecretRead) {
+			t.Fatalf("error = %v, want context.Canceled and not ErrSecretRead", err)
+		}
+		if wroteText(fake.Fake) || len(fake.SentKeys) != 0 {
+			t.Errorf("ops = %v, keys = %+v; want nothing typed", ops(fake.Fake), fake.SentKeys)
+		}
+	})
+}

@@ -21,7 +21,9 @@ import (
 // (pinentry-curses) read canonical:false and are a known gap.
 //
 // The read fails open: any read error, decode error or probe timeout reports
-// no secret read, so the guarded op behaves as it did before this guard.
+// no secret read, so the guarded op behaves as it did before this guard. A
+// reply that arrives after the probe context ended is discarded for the same
+// reason.
 
 // ErrSecretRead reports that input was withheld because the pane's program is
 // reading a secret. Nudge answers it as the RPP outcome pending_interaction,
@@ -77,6 +79,15 @@ func (p *Provider) readingSecret(ctx context.Context, b Binding) bool {
 	defer cancel()
 	mode, err := p.client.BlockInputMode(probeCtx, b.SessionID, b.BlockID)
 	if err != nil {
+		return false
+	}
+	// A reply that arrives after the probe context ended is late: the probe
+	// timed out or the parent was cancelled while the read was in flight. It
+	// must not decide the guard. A probe timeout fails open and lets the
+	// parent's live path type; a cancelled parent then stops at the caller's
+	// own cancellation check. The CLI client can decode a response after its
+	// command completes, so a late reply is reachable.
+	if probeCtx.Err() != nil {
 		return false
 	}
 	return secretRead(mode)
