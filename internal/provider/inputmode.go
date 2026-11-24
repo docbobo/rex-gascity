@@ -92,3 +92,14 @@ func (p *Provider) readingSecret(ctx context.Context, b Binding) bool {
 	}
 	return secretRead(mode)
 }
+
+// onlyInterrupt reports whether every translated key is the interrupt key
+// (Rex ctrl+c, gc's C-c). SendKeys sends such a list without the guard.
+func onlyInterrupt(rexKeys []string) bool {
+	for _, k := range rexKeys {
+		if k != interruptKey {
+			return false
+		}
+	}
+	return true
+}
