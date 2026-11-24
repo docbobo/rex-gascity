@@ -297,9 +297,9 @@ func (s *slowMissThenRecreate) CreateSession(ctx context.Context, label string) 
 // TestLaunchPaneReturnsFullResultAcrossRetry is issue #76 BR-4 "Result": after
 // one ErrNotFound retry the result names the recreated session and the new
 // block, carries the projected env the launch used, and measures launchDur
-// from before the first attempt. It also carries the assertions of
-// TestStartRecreatesSessionDestroyedBeforeLaunch (one recreate, one window, a
-// recorded binding).
+// from before the first try. It also carries the assertions of the removed
+// Start-level vanished-session test (one recreate, one window, a recorded
+// binding).
 func TestLaunchPaneReturnsFullResultAcrossRetry(t *testing.T) {
 	const delay = 50 * time.Millisecond
 	ctx := context.Background()

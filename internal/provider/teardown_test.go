@@ -335,24 +335,6 @@ func (d *destroyedBeforeLaunch) SessionView(ctx context.Context, sid rex.Session
 	return d.Fake.SessionView(ctx, sid)
 }
 
-func TestStartRecreatesSessionDestroyedBeforeLaunch(t *testing.T) {
-	fake := faketest.New()
-	p := provider.New("acme", &destroyedBeforeLaunch{Fake: fake})
-
-	if err := p.Start(context.Background(), teardownDog, teardownCfg); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if len(fake.CreatedSessions) != 2 {
-		t.Errorf("created sessions = %v, want the session recreated once", fake.CreatedSessions)
-	}
-	if len(fake.CreatedWindows) != 1 {
-		t.Errorf("windows = %d, want 1", len(fake.CreatedWindows))
-	}
-	if b, ok := p.Binding(teardownDog); !ok || b.SessionID == "" {
-		t.Errorf("binding = %+v, %v; want a recorded pane", b, ok)
-	}
-}
-
 // recreatedSessionProbe extends destroyedBeforeLaunch for issue #76 slice 1.
 // The session Start recreates after the miss gets a distinct id (the fake
 // would otherwise derive the same id from the same label, so a binding left on
