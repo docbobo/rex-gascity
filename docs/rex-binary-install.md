@@ -76,6 +76,10 @@ tool a provider on PATH.
 directory from its own path and runs `pack/install.sh` from there. The
 install needs no Go toolchain and no source checkout.
 
+`--fix` refuses with a non-zero exit before any download when the installed
+rex CLI is older than `pack/rex-min-version`. It cannot update the Rex app,
+which bundles the CLI.
+
 `pack/install.sh`:
 
 1. Reads `[pack] version` from `pack.toml`. The release is `v<version>`.
