@@ -85,6 +85,8 @@ jobs:
       # the doc fences (check-docs.sh), so docs stay tested.
       - name: Check for a docs-only change
         id: docs
+        # pipefail: a failed `gh api` must not read as a docs-only change.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

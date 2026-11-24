@@ -25,4 +25,17 @@ printf '.github/workflows/ci.yml\n' | expect 1 "workflow file"
 printf 'internal/provider/session.go\npack/pack.toml\n' | expect 1 "renamed-out code file"
 : | expect 1 "empty file list"
 
+# The docs-only step pipes `gh api` into docs-only.sh. The default bash -e drops
+# a failed lookup behind a successful script, so the job skips conformance on an
+# unreadable file list. An explicit `shell: bash` turns on pipefail.
+docs_step=$(awk '
+  /^      - name: / {
+    if (in_step) exit
+    if ($0 ~ /Check for a docs-only change/) in_step = 1
+  }
+  in_step
+' "$repo/.github/workflows/ci.yml")
+printf '%s\n' "$docs_step" | grep -qx '        shell: bash' ||
+  { echo "check-ci: docs-only step must set 'shell: bash' for pipefail" >&2; exit 1; }
+
 sh "$repo/scripts/ci-timings.sh" --self-test
