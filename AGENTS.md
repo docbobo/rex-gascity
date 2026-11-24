@@ -87,16 +87,8 @@ brief.
 ## Verifying claims
 
 Every claim about the Rex provider, RPP v0, or gc behavior needs two sources.
-Check it before it lands in code, docs, task notes, or a review:
-
-- `docs/provider-herdr-parity.md` — the method-by-method parity record for our
-  provider. First source for anything it covers.
-- The pinned gc checkout (`gastownhall/gascity`). The default path is
-  `/Volumes/Sources/gascity`. On another machine use `$GASCITY_SRC` or the
-  module cache. Read the baseline the parity doc names, tag `v1.5.1`. The
-  working tree may be ahead of it. Relevant paths: `internal/runtime/exec/`,
-  `internal/runtime/protocol.go`,
-  `docs/reference/exec-session-provider.md`.
+Check it before it lands in code, docs, task notes, or a review. The provider
+sources are listed in `internal/provider/AGENTS.md`.
 
 - Cite file and line (gc) or section and verdict (parity doc) for each claim.
 - When the two disagree, report the conflict instead of picking one. In an
@@ -123,12 +115,9 @@ called done.
 
 An existing test may be the proof when it already fails for the bug. Name it.
 
-The provider e2e suites run against the in-repo fake `rex`
-(`internal/rex/fakerex`), so they need no Rex install. Run them with
-`make test-e2e`. `make test` also runs them, because the fake is the default
-when `REX_E2E` is unset. `REX_E2E=1` (or `REX_E2E=live`) selects the live
-server and is the explicit escape hatch, not the normal path. See
-`docs/fake-rex.md` for what the fake covers and what it does not.
+The provider and rex e2e suites run against the in-repo fake `rex`, so they
+need no Rex install. The fake's coverage and the live-server escape hatch are
+in `internal/provider/AGENTS.md` and `internal/rex/AGENTS.md`.
 
 Docs, comments, formatting, and script wiring do not need a new test when the
 behavior does not change. Say "no behavior change" in the notes. Name the check
