@@ -116,11 +116,14 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 }
 
 // failOnceRecordStore fails the first write that carries a block ID, standing
-// in for a binding write that fails after the pane was created.
+// in for a binding write that fails after the pane was created. onFail, when
+// set, runs inside that failing Write, before it returns; it must not read the
+// binding store (s.mu is held).
 type failOnceRecordStore struct {
 	*MemoryStore
 	mu     sync.Mutex
 	failed bool
+	onFail func()
 }
 
 func (s *failOnceRecordStore) Write(k SessionName, v Binding) error {
@@ -128,6 +131,9 @@ func (s *failOnceRecordStore) Write(k SessionName, v Binding) error {
 	defer s.mu.Unlock()
 	if v.BlockID != "" && !s.failed {
 		s.failed = true
+		if s.onFail != nil {
+			s.onFail()
+		}
 		return errStoreWrite
 	}
 	return s.MemoryStore.Write(k, v)
@@ -183,5 +189,107 @@ func TestStartRetiresThePaneWhoseRecordFailed(t *testing.T) {
 				t.Error("binding kept although its pane was never recorded")
 			}
 		})
+	}
+}
+
+// vanishAfterLaunch marks the block each NewWindow creates as vanished, so its
+// BlockProcess answers rex.ErrNotFound (the missing-block snapshot case), and
+// checks on CloseBlock entry that a BlockProcess call for that block came
+// first. Both overrides touch Fake fields only while no Fake method is in
+// flight: after NewWindow returned, and before CloseBlock delegates.
+type vanishAfterLaunch struct {
+	*faketest.Fake
+	launched            rex.BlockID
+	closeChecked        bool
+	snapshotBeforeClose bool
+}
+
+func (v *vanishAfterLaunch) NewWindow(ctx context.Context, sid rex.SessionID, label string, spec rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
+	wid, block, err := v.Fake.NewWindow(ctx, sid, label, spec)
+	if err != nil {
+		return wid, block, err
+	}
+	v.launched = block
+	if v.VanishedBlocks == nil {
+		v.VanishedBlocks = map[rex.BlockID]bool{}
+	}
+	v.VanishedBlocks[block] = true
+	return wid, block, nil
+}
+
+func (v *vanishAfterLaunch) CloseBlock(ctx context.Context, sid rex.SessionID, block rex.BlockID) error {
+	if block == v.launched {
+		v.closeChecked = true
+		for _, call := range v.BlockCalls {
+			if call.BlockID == block && call.Op == "process" {
+				v.snapshotBeforeClose = true
+			}
+		}
+	}
+	return v.Fake.CloseBlock(ctx, sid, block)
+}
+
+// TestStartRecordFailureDoesNotRetryAsVanishedSession is issue #76 slice 1
+// edge (BR-2). The final record fails after the pane was created, and the
+// discard retire's BlockProcess answers rex.ErrNotFound. paneSubtree swallows
+// that answer (reap.go:87-94), so the start fails with the record error, not
+// as a vanished session, and launches no second pane. Whether an ErrNotFound
+// can escape record/discard and reach the retry guard stays unverified: no
+// production step on this path produces one.
+func TestStartRecordFailureDoesNotRetryAsVanishedSession(t *testing.T) {
+	const (
+		sessionID = "mc-record-fail"
+		token     = "token-record-fail"
+	)
+	want := map[string]string{"GC_SESSION_ID": sessionID, "GC_INSTANCE_TOKEN": token}
+	ctx := context.Background()
+	client := &vanishAfterLaunch{Fake: faketest.New()}
+	store := &failOnceRecordStore{MemoryStore: NewMemoryStore()}
+	p := New("acme", client, WithBindingStore(store))
+
+	type metaRead struct {
+		v   string
+		ok  bool
+		err error
+	}
+	reads := map[string]metaRead{}
+	store.onFail = func() {
+		// metaGet reads only the meta store. The public GetMeta would resolve
+		// the name through the binding store whose Write is running.
+		for key := range want {
+			v, ok, err := p.metaGet(SessionName(reapDog), key)
+			reads[key] = metaRead{v: v, ok: ok, err: err}
+		}
+	}
+
+	err := p.Start(ctx, reapDog, Config{Argv: []string{"claude"}, Env: map[string]string{
+		"GC_SESSION_ID": sessionID, "GC_INSTANCE_TOKEN": token,
+	}})
+
+	for key, v := range want {
+		got, seen := reads[key]
+		if !seen || got.err != nil || !got.ok || got.v != v {
+			t.Errorf("%s before the record failed = %+v (seen %v); want %q present", key, got, seen, v)
+		}
+	}
+	if !client.closeChecked {
+		t.Fatal("CloseBlock never ran for the launched block: the pane was not discarded")
+	}
+	if !client.snapshotBeforeClose {
+		t.Error("no BlockProcess call for the launched block before its CloseBlock: the pre-close snapshot did not run")
+	}
+	if !errors.Is(err, errStoreWrite) {
+		t.Fatalf("Start = %v, want the record write error", err)
+	}
+	if errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("Start = %v, matches rex.ErrNotFound: a record failure would read as a vanished session", err)
+	}
+	if n := len(client.CreatedWindows) + len(client.CreatedSplits); n != 1 {
+		t.Errorf("launches = %d, want 1: a record failure must not retry the launch", n)
+	}
+	for key := range want {
+		if v, err := p.GetMeta(ctx, reapDog, key); err != nil || v != "" {
+			t.Errorf("%s after the failed start = %q, %v; want cleared", key, v, err)
+		}
 	}
 }
