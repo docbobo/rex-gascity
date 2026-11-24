@@ -1216,6 +1216,14 @@ func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) er
 	if err != nil {
 		return paneLookupOutcome(err)
 	}
+	// A pane reading a secret gets no keys (#48): an Enter there submits
+	// whatever was typed as a password attempt. A list of only ctrl+c is the
+	// exception and makes no read, because ctrl+c is the way out of a password
+	// prompt. A mixed list is withheld whole, never split.
+	if !onlyInterrupt(rexKeys) && p.readingSecret(ctx, binding) {
+		err := fmt.Errorf("send-keys %s: %w", name, ErrSecretRead)
+		return &InputOutcomeError{Outcome: "not_sent", Detail: err.Error(), Err: err}
+	}
 	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, rexKeys...); err != nil {
 		err = fmt.Errorf("send-keys %s: %w", name, err)
 		// A send that could not reach the server never pressed the key. Any

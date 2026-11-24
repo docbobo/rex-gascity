@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -152,6 +153,12 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		p.clearStartupDeliveryUnconfirmed(ctx, name)
 		return nil
 	}
+	// A pane reading a secret got nothing typed (#48). That is a withhold,
+	// not a failed delivery, and never a failed start.
+	if errors.Is(err, ErrSecretRead) {
+		p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
+		return nil
+	}
 	if err != nil {
 		p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
 		return nil
@@ -176,6 +183,13 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
 			return nil
 		}
+		// ctrl+u is VKILL in a cooked read: pressed into a password prompt it
+		// would erase what a person is typing. Read the mode before the clear
+		// and stop resending on a secret read (#48). A failed read fails open.
+		if p.readingSecret(ctx, binding) {
+			p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
+			return nil
+		}
 		attempt++
 		rt := retryTiming{Attempt: attempt, BackoffMS: millis(backoff)}
 		// Clear the still-drafted line before re-typing, mirroring gc's
@@ -188,6 +202,13 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		timing.Attempts = append(timing.Attempts, rt)
 		if err == nil && report.Confirmed {
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
+			return nil
+		}
+		// The pre-clear read passed, but the resend's own read then saw a
+		// secret read: the guard is a snapshot check, so the ctrl+u already
+		// pressed stays pressed. Nothing more is typed and resending stops.
+		if errors.Is(err, ErrSecretRead) {
+			p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
 			return nil
 		}
 		if err != nil {
@@ -251,6 +272,10 @@ func (p *Provider) writeStartupTimingDiagnostic(b Binding, t startupTiming) {
 	name := unsafeNameChars.ReplaceAllString(string(b.Name), "_")
 	_ = writeJSON(filepath.Join(p.ns.CanonicalDir(), "diagnostics", name+"-startup-timing.json"), t)
 }
+
+// startupSecretReadWhy is the withhold reason a secret read records on the
+// startup marker: "withheld: the pane is reading a secret".
+const startupSecretReadWhy = "the pane is reading a secret"
 
 // startupClearKey clears the pane's draft input line before a startup-nudge
 // resend. gc's send cycle starts with C-u for the same reason (its tmux

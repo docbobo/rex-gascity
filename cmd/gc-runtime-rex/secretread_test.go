@@ -64,3 +64,21 @@ func TestNudgeSecretReadIsPendingInteraction(t *testing.T) {
 		}
 	}
 }
+
+// TestSendKeysSecretReadIsNotSent drives REQ-009 through the send-keys op:
+// Enter into a secret read exits 80 not_sent; a ctrl+c-only list still
+// exits 0 and is sent.
+func TestSendKeysSecretReadIsNotSent(t *testing.T) {
+	h, fake := secretReadHarness(t)
+
+	needWireOutcome(t, h.run("", "send-keys", dog, "Enter"), "not_sent")
+	if len(fake.SentKeys) != 0 {
+		t.Fatalf("keys sent = %+v, want none", fake.SentKeys)
+	}
+	if r := h.run("", "send-keys", dog, "C-c"); r.code != exitOK {
+		t.Fatalf("send-keys C-c: exit %d, stderr %q", r.code, r.stderr)
+	}
+	if len(fake.SentKeys) != 1 || len(fake.SentKeys[0].Keys) != 1 || fake.SentKeys[0].Keys[0] != "ctrl+c" {
+		t.Errorf("keys sent = %+v, want one ctrl+c", fake.SentKeys)
+	}
+}

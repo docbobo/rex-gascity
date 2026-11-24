@@ -284,3 +284,85 @@ func TestNudgeDiscardsLateInputModeReply(t *testing.T) {
 		}
 	})
 }
+
+// TestSendKeysWithholdsDuringSecretRead covers REQ-005 (E3, E5): send-keys
+// into a secret read sends nothing and answers not_sent wrapping
+// ErrSecretRead. A list that mixes ctrl+c with any other key is withheld
+// whole, never split. Keys are gc's tmux-style tokens.
+func TestSendKeysWithholdsDuringSecretRead(t *testing.T) {
+	for _, keys := range [][]string{{"Enter"}, {"C-c", "Enter"}} {
+		t.Run(strings.Join(keys, "+"), func(t *testing.T) {
+			fake, p := started(t)
+			fake.InputModes = map[rex.BlockID]rex.InputMode{activityBlock: secretReadMode}
+
+			err := p.SendKeys(context.Background(), activityName, keys...)
+			outcome := needOutcome(t, err, "not_sent")
+			if !errors.Is(err, provider.ErrSecretRead) {
+				t.Errorf("error = %v, want it to wrap ErrSecretRead", err)
+			}
+			if want := "send-keys " + activityName + ": provider: pane is reading a secret"; outcome.Detail != want {
+				t.Errorf("detail = %q, want %q", outcome.Detail, want)
+			}
+			if len(fake.SentKeys) != 0 {
+				t.Errorf("keys sent = %+v, want none into a secret read", fake.SentKeys)
+			}
+		})
+	}
+}
+
+// TestSendKeysCtrlCPassesSecretRead pins the exemption (REQ-005, E4): a list
+// of only ctrl+c is sent with no input_mode read, because ctrl+c is the way
+// out of a password prompt.
+func TestSendKeysCtrlCPassesSecretRead(t *testing.T) {
+	for _, keys := range [][]string{{"C-c"}, {"C-c", "C-c"}} {
+		t.Run(strings.Join(keys, "+"), func(t *testing.T) {
+			fake, p := started(t)
+			fake.InputModes = map[rex.BlockID]rex.InputMode{activityBlock: secretReadMode}
+
+			if err := p.SendKeys(context.Background(), activityName, keys...); err != nil {
+				t.Fatalf("SendKeys(%v) into a secret read: %v", keys, err)
+			}
+			if len(fake.SentKeys) != 1 || !slices.Equal(fake.SentKeys[0].Keys, slices.Repeat([]string{"ctrl+c"}, len(keys))) {
+				t.Errorf("keys sent = %+v, want %d ctrl+c", fake.SentKeys, len(keys))
+			}
+			if len(fake.InputModeReads) != 0 {
+				t.Errorf("input_mode reads = %d, want 0 for a ctrl+c-only list", len(fake.InputModeReads))
+			}
+		})
+	}
+}
+
+// TestSendKeysTypesOutsideSecretRead pins the predicate on the send-keys path
+// (REQ-002, E8): a raw-mode agent TUI (echo off, not canonical) still gets
+// gc's startup-dialog Enter.
+func TestSendKeysTypesOutsideSecretRead(t *testing.T) {
+	fake, p := started(t)
+	fake.InputModes = map[rex.BlockID]rex.InputMode{activityBlock: {Echo: false, Canonical: false, Signals: false}}
+
+	if err := p.SendKeys(context.Background(), activityName, "Enter"); err != nil {
+		t.Fatalf("SendKeys(Enter) into a raw-mode TUI: %v", err)
+	}
+	if len(fake.SentKeys) != 1 || !slices.Equal(fake.SentKeys[0].Keys, []string{"enter"}) {
+		t.Errorf("keys sent = %+v, want one enter", fake.SentKeys)
+	}
+	if len(fake.InputModeReads) != 1 {
+		t.Errorf("input_mode reads = %d, want 1", len(fake.InputModeReads))
+	}
+}
+
+// TestInterruptIgnoresSecretRead pins REQ-006 (E6): Interrupt makes no
+// input_mode read and sends ctrl+c whatever the pane's mode.
+func TestInterruptIgnoresSecretRead(t *testing.T) {
+	fake, p := started(t)
+	fake.InputModes = map[rex.BlockID]rex.InputMode{activityBlock: secretReadMode}
+
+	if err := p.Interrupt(context.Background(), activityName); err != nil {
+		t.Fatalf("Interrupt into a secret read: %v", err)
+	}
+	if len(fake.SentKeys) != 1 || !slices.Equal(fake.SentKeys[0].Keys, []string{"ctrl+c"}) {
+		t.Errorf("keys sent = %+v, want one ctrl+c", fake.SentKeys)
+	}
+	if len(fake.InputModeReads) != 0 {
+		t.Errorf("input_mode reads = %d, want 0", len(fake.InputModeReads))
+	}
+}
