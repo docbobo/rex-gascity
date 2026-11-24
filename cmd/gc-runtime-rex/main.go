@@ -445,13 +445,11 @@ func opStop(ctx context.Context, p rppProvider, args []string, _ io.Reader, _ io
 // names by which gc identifies the agent; the provider matches them against the
 // box's process subtree, so they must reach it (RPP-OBSERVE-006).
 func opObserve(ctx context.Context, p rppProvider, args []string, stdin io.Reader, out io.Writer) error {
-	// gc writes a few process names and closes the pipe; the bound only stops a
-	// runaway writer from holding the op open.
-	raw, err := io.ReadAll(io.LimitReader(stdin, 64<<10))
+	names, err := readNameList(stdin)
 	if err != nil {
-		return fmt.Errorf("read process names: %w", err)
+		return err
 	}
-	ans, err := p.Observe(ctx, args[0], processNames(raw))
+	ans, err := p.Observe(ctx, args[0], names)
 	if err != nil {
 		return err
 	}
@@ -576,6 +574,22 @@ func processNames(raw []byte) []string {
 	return names
 }
 
+// nameListBudget bounds the name list both name-list ops read. gc writes a few
+// process names and closes the pipe; the bound only stops a runaway writer from
+// holding the op open (F-17, E-8b).
+const nameListBudget = 64 << 10
+
+// readNameList reads at most nameListBudget bytes of stdin and parses them with
+// processNames. It makes no read after the bound. A read error within the bound
+// is returned as "read process names: <err>".
+func readNameList(stdin io.Reader) ([]string, error) {
+	raw, err := io.ReadAll(io.LimitReader(stdin, nameListBudget))
+	if err != nil {
+		return nil, fmt.Errorf("read process names: %w", err)
+	}
+	return processNames(raw), nil
+}
+
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a
 // missing or dead pane is an *provider.InputOutcomeError answered as exit 80
 // `gone`, not swallowed as a silent success.
@@ -584,13 +598,9 @@ func opClearScrollback(ctx context.Context, p rppProvider, args []string, _ io.R
 }
 
 func opProcessAlive(ctx context.Context, p rppProvider, args []string, stdin io.Reader, out io.Writer) error {
-	raw, err := io.ReadAll(stdin)
+	names, err := readNameList(stdin)
 	if err != nil {
-		return fmt.Errorf("read process names: %w", err)
-	}
-	names := strings.Split(string(raw), "\n")
-	if names[len(names)-1] == "" {
-		names = names[:len(names)-1]
+		return err
 	}
 	state, err := p.ProcessAlive(ctx, args[0], names)
 	if err != nil {
