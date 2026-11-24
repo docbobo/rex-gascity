@@ -43,6 +43,21 @@ step_sets_shell_bash() {  # <workflow> <step name substring> <label>
 step_sets_shell_bash "$repo/.github/workflows/ci.yml" 'Check for a docs-only change' docs-only
 step_sets_shell_bash "$repo/.github/workflows/ci-timings.yml" 'Per-job p50 and p90' digest
 
+# One rex pin. The conformance job reads the version from pack/rex-min-version,
+# so a second hardcoded pin or a version comparison that lets the two drift is
+# the bug this guards.
+ci=$repo/.github/workflows/ci.yml
+grep -q 'pack/rex-min-version' "$ci" ||
+  { echo "check-ci: ci.yml must read the rex pin from pack/rex-min-version" >&2; exit 1; }
+if grep -qE '^[[:space:]]+REX_PIN:' "$ci"; then
+  echo "check-ci: ci.yml must not hardcode REX_PIN; derive it from pack/rex-min-version" >&2
+  exit 1
+fi
+if grep -q 'version_cmp' "$ci"; then
+  echo "check-ci: ci.yml must not compare the pin versions; one pin must be the whole story" >&2
+  exit 1
+fi
+
 sh "$repo/scripts/ci-timings.sh" --self-test
 
 # A failed collection must not read as "no runs" or a partial table. The fake

@@ -15,11 +15,11 @@ env:
   # The gc commit conformance runs against. Bump deliberately: a new
   # conformance requirement must show up here, not pass silently.
   GASCITY_PIN: baf57f4ff60ea949d2a0c3922a65be95cf6b7cc1
-  # The conformance run pins one published preview archive by commit and
-  # checksum, so a newer preview never changes what conformance tests.
-  REX_PIN: 0.1.0-preview.22
-  REX_URL: https://blob.superlogical.com/download/rex/preview/a086db17db8d464627c77e3bb0be6d462668b0ac/rex-linux-amd64.tar.gz
-  REX_SHA256: 90ef882c73d5c8fa154586ce0cc36a835a6f0b80c150eb38d3cd127b18476e3c
+  # The conformance run installs the published preview archive named by
+  # pack/rex-min-version. This URL and checksum belong to that archive: bump
+  # them together with pack/rex-min-version, which the job reads as the pin.
+  REX_URL: https://blob.superlogical.com/download/rex/preview/202b1b3fc0219883112258a8d0f9f95e2d47daa9/rex-linux-amd64.tar.gz
+  REX_SHA256: 41988e86e87e8b0b47c8bca7652d9959178360f7789785232090784e38e23cb5
 
 # The job layout and its budgets are documented in docs/ci.md. Two costs
 # dominate every run: building gc from the pin, and the Go build itself. The
@@ -144,6 +144,7 @@ jobs:
       - name: Install pinned rex
         if: steps.docs.outputs.docs_only != 'true'
         run: |
+          REX_PIN=$(tr -d '[:space:]' < pack/rex-min-version)
           mkdir -p "$RUNNER_TEMP/rex-bin"
           curl -fsSL "$REX_URL" -o "$RUNNER_TEMP/rex.tar.gz"
           echo "$REX_SHA256  $RUNNER_TEMP/rex.tar.gz" | sha256sum -c -
@@ -154,23 +155,6 @@ jobs:
           if ! echo "$version" | grep -q "$REX_PIN"
           then
             echo "rex is not the pinned $REX_PIN" >&2
-            exit 1
-          fi
-          # pack/rex-min-version names the newest RELEASED Rex app. REX_PIN pins
-          # a conformance archive that may be an unreleased preview. They have
-          # different jobs, so the minimum may lag the pin but must never lead
-          # it.
-          . pack/bin/_lib.sh
-          min_version=$(tr -d '[:space:]' < pack/rex-min-version)
-          rank=$(version_cmp "$min_version" "$REX_PIN")
-          if [ -z "$rank" ]
-          then
-            echo "pack/rex-min-version ($min_version) is not a Rex version" >&2
-            exit 1
-          fi
-          if [ "$rank" = 1 ]
-          then
-            echo "pack/rex-min-version ($min_version) is newer than REX_PIN ($REX_PIN); the user minimum must not exceed the conformance pin" >&2
             exit 1
           fi
 

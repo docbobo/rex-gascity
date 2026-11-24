@@ -172,7 +172,7 @@ The provider version compares equal after a leading `v` and any `+build-metadata
 
 The check compares versions only. It cannot tell two builds of one version apart.
 
-The rex CLI pin is `pack/rex-min-version` (`0.1.0-preview.21`), the newest released Rex app. It compares as a minimum, so a newer CLI passes. The CI conformance pin (`REX_PIN`) is separate and may name a newer preview. The version comes from `rex version --json`'s `rex_version` field. When `--json` is unsupported, it comes from the first line of `rex version`. An older CLI is an error.
+The rex CLI pin is `pack/rex-min-version` (`0.1.0-preview.21`), the newest released Rex app. The CI conformance job reads the same file and installs the archive for that version, so the two cannot drift. The pin compares as a minimum, so a newer CLI passes. The version comes from `rex version --json`'s `rex_version` field. When `--json` is unsupported, it comes from the first line of `rex version`. An older CLI is an error.
 
 ## How sessions run
 
