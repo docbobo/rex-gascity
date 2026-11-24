@@ -38,9 +38,12 @@ Three gaps matter:
    inputs. Nothing lints it.
 3. **No `govulncheck`.** gascity has `.github/workflows/govulncheck.yml`.
    We do not. A grep over `.github/`, `Makefile` and `pack/tests/` finds no
-   reference. The gap is real but has near-zero value today. `go.mod` has no
-   `require` block and there is no `go.sum`, so no third-party module can
-   match an advisory.
+   reference. `go.mod` has no `require` block and there is no `go.sum`, so no
+   third-party module can match an advisory. That does not make the check
+   worthless. `govulncheck` also reports known vulnerabilities in the Go
+   standard library, and it reports only vulnerabilities that reach symbols
+   our code calls. The value is lower than in a repo with dependencies, but
+   it is not zero. The check stays deferred.
 
 ### Query classes that can matter here, with evidence
 
@@ -169,8 +172,9 @@ analysis, which matches this codebase.
 
 Follow-ups, out of scope here:
 
-- No `govulncheck` job exists. Separate bead. Near-zero value while
-  `go.mod` has no dependencies.
+- No `govulncheck` job exists. Separate bead. Lower value while `go.mod` has
+  no dependencies, but it still covers the standard library, so schedule the
+  check rather than treating it as a no-op.
 - If alert noise appears, add a `codeql-config` with `paths-ignore` instead
   of per-alert dismissals.
 
@@ -193,3 +197,7 @@ Follow-ups, out of scope here:
 - `rex-gascity` at `origin/main` `15c387e`: `.github/workflows/ci.yml`,
   `.github/workflows/release.yml`, `.golangci.yml`, `go.mod`,
   `internal/provider/provider.go:1304`, `internal/provider/lock.go:120,163`.
+- Go vulnerability management docs and `govulncheck` package docs:
+  <https://go.dev/doc/security/vuln/> and
+  <https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck>. The command reports
+  standard-library vulnerabilities as well as module ones.
