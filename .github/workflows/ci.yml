@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  # The docs-only check reads the pull request's changed file list.
+  pull-requests: read
 
 env:
   # The gc commit conformance runs against. Bump deliberately: a new
@@ -19,20 +21,34 @@ env:
   REX_URL: https://blob.superlogical.com/download/rex/preview/a086db17db8d464627c77e3bb0be6d462668b0ac/rex-linux-amd64.tar.gz
   REX_SHA256: 90ef882c73d5c8fa154586ce0cc36a835a6f0b80c150eb38d3cd127b18476e3c
 
+# The job layout and its budgets are documented in docs/ci.md. Two costs
+# dominate every run: building gc from the pin, and the Go build itself. The
+# binary cache and setup-go's cache remove the first, and the docs-only fast
+# path in Conformance skips the second.
 jobs:
   pack-verify:
     runs-on: ubuntu-latest
     steps:
+      - name: Start the job timer
+        run: echo "GC_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
+
+      # cache: true keeps GOMODCACHE and GOCACHE between runs. setup-go keys
+      # on go.sum and skips caching when that file is absent, so point it at
+      # go.mod: this repository has no dependencies, and a Go toolchain bump is
+      # the only change that may invalidate the cache.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
+
       - name: Install pinned gc
-        run: |
-          go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        run: go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
+      - name: Put gc on PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Run pack checks
         run: bash pack/tests/verify.sh
 
@@ -42,46 +58,91 @@ jobs:
       - name: Fake-backed e2e
         run: make test-e2e
 
+      - name: Report the job wall time
+        if: always()
+        run: |
+          start=${GC_JOB_START:-$(date +%s)}
+          elapsed=$(($(date +%s) - start))
+          echo "::notice title=job wall time::$GITHUB_JOB ${elapsed}s"
+          printf '| %s | %ss |\n' "$GITHUB_JOB" "$elapsed" >> "$GITHUB_STEP_SUMMARY"
+
   conformance:
     name: Conformance
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Start the job timer
+        run: echo "GC_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      # A docs-only pull request cannot change the Go build or a conformance
+      # requirement, so this job fast-forwards instead of spending minutes on
+      # both. The job stays defined and reports success: a path-filtered job
+      # would leave the required check pending forever. pack-verify still runs
+      # the doc fences (check-docs.sh), so docs stay tested.
+      - name: Check for a docs-only change
+        id: docs
+        # pipefail: a failed `gh api` must not read as a docs-only change.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          docs_only=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # scripts/docs-only.sh owns the path rules and check-ci.sh tests
+            # them. A failed lookup is not a docs-only change.
+            if gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
+              --jq '.[] | .filename, (.previous_filename // empty)' |
+              scripts/docs-only.sh
+            then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
+        if: steps.docs.outputs.docs_only != 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
 
       - name: go vet
+        if: steps.docs.outputs.docs_only != 'true'
         run: go vet ./...
 
       - name: go test
+        if: steps.docs.outputs.docs_only != 'true'
         run: go test ./...
 
       - name: Lint
+        if: steps.docs.outputs.docs_only != 'true'
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.15.0
 
       - name: Build the provider
+        if: steps.docs.outputs.docs_only != 'true'
         run: make build
 
       # gc is a tool install, not a Go import: the pack keeps zero gascity
       # dependencies and still runs against the pinned gc.
       - name: Install pinned gc
-        run: |
-          go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        if: steps.docs.outputs.docs_only != 'true'
+        run: go install "github.com/gastownhall/gascity/cmd/gc@${GASCITY_PIN}"
+      - name: Put gc on PATH
+        if: steps.docs.outputs.docs_only != 'true'
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       # The provider's session path shells out to the rex CLI, so install the
       # pinned preview archive before running conformance.
       - name: Install pinned rex
+        if: steps.docs.outputs.docs_only != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/rex-bin"
           curl -fsSL "$REX_URL" -o "$RUNNER_TEMP/rex.tar.gz"
@@ -105,7 +166,17 @@ jobs:
           fi
 
       - name: Check the conformance harness
+        if: steps.docs.outputs.docs_only != 'true'
         run: pack/tests/check-conformance.sh --binary bin/gc-runtime-rex
 
       - name: Conformance
+        if: steps.docs.outputs.docs_only != 'true'
         run: pack/tests/conformance.sh --binary bin/gc-runtime-rex
+
+      - name: Report the job wall time
+        if: always()
+        run: |
+          start=${GC_JOB_START:-$(date +%s)}
+          elapsed=$(($(date +%s) - start))
+          echo "::notice title=job wall time::$GITHUB_JOB ${elapsed}s"
+          printf '| %s | %ss |\n' "$GITHUB_JOB" "$elapsed" >> "$GITHUB_STEP_SUMMARY"
