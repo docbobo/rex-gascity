@@ -1203,62 +1203,47 @@ func prefixMatches(b Binding, prefix string) bool {
 // SendKeys presses keys in the agent's pane without submitting. gc passes
 // tmux-style names ("C-c", "Enter"); they are translated to Rex's syntax.
 // No keys is a no-op. Every key is validated before the pane lookup, so a key
-// with no Rex spelling rejects the call without touching Rex (KeyRejectedError).
+// with no Rex spelling rejects the call without touching Rex: a "rejected"
+// *InputOutcomeError wrapping the KeyRejectedError.
 func (p *Provider) SendKeys(ctx context.Context, name string, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
 	}
 	rexKeys, err := translateKeys(keys)
 	if err != nil {
-		return err
-	}
-	binding, err := p.livePane(ctx, name)
-	if err != nil {
-		return paneLookupOutcome(err)
+		return classifyInput(inputSendKeys, stageValidate, err)
 	}
 	// A pane reading a secret gets no keys (#48): an Enter there submits
 	// whatever was typed as a password attempt. A list of only ctrl+c is the
 	// exception and makes no read, because ctrl+c is the way out of a password
 	// prompt. A mixed list is withheld whole, never split.
-	if !onlyInterrupt(rexKeys) && p.readingSecret(ctx, binding) {
-		err := fmt.Errorf("send-keys %s: %w", name, ErrSecretRead)
-		return &InputOutcomeError{Outcome: "not_sent", Detail: err.Error(), Err: err}
-	}
-	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, rexKeys...); err != nil {
-		err = fmt.Errorf("send-keys %s: %w", name, err)
-		// A send that could not reach the server never pressed the key. Any
-		// other send failure may have written the request, so it stays an
-		// unknown-outcome error (exit 1) rather than claiming not_sent.
-		if errors.Is(err, rex.ErrUnavailable) {
-			return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
-		}
-		return err
-	}
-	// Keys pressed into the pane are input even when the screen does not
-	// change, so record the floor for idle detection.
-	p.noteInput(binding)
-	return nil
+	return p.deliverInput(ctx, inputCall{
+		op:    inputSendKeys,
+		name:  name,
+		guard: !onlyInterrupt(rexKeys),
+		send: func(ctx context.Context, b Binding) error {
+			if err := p.client.SendKeys(ctx, b.SessionID, b.BlockID, rexKeys...); err != nil {
+				return fmt.Errorf("send-keys %s: %w", name, err)
+			}
+			return nil
+		},
+	})
 }
 
 // Interrupt sends ctrl+c to the agent's pane. Rex has no signal API, so this
-// is a keystroke, not a signal; an agent with no live pane yields
-// ErrSessionNotFound.
+// is a keystroke, not a signal; an agent with no live pane yields a "gone"
+// outcome wrapping ErrSessionNotFound.
 func (p *Provider) Interrupt(ctx context.Context, name string) error {
-	binding, err := p.livePane(ctx, name)
-	if err != nil {
-		return paneLookupOutcome(err)
-	}
-	if err := p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, interruptKey); err != nil {
-		err = fmt.Errorf("interrupt %s: %w", name, err)
-		// A send that could not reach the server never pressed the key. Any
-		// other send failure may have written the request, so it stays an
-		// unknown-outcome error (exit 1) rather than claiming not_sent.
-		if errors.Is(err, rex.ErrUnavailable) {
-			return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
-		}
-		return err
-	}
-	return nil
+	return p.deliverInput(ctx, inputCall{
+		op:   inputInterrupt,
+		name: name,
+		send: func(ctx context.Context, b Binding) error {
+			if err := p.client.SendKeys(ctx, b.SessionID, b.BlockID, interruptKey); err != nil {
+				return fmt.Errorf("interrupt %s: %w", name, err)
+			}
+			return nil
+		},
+	})
 }
 
 // paneLookupOutcome classifies a livePane failure before any input is sent.

@@ -493,3 +493,28 @@ func outcomeOf(t *testing.T, err error) *provider.InputOutcomeError {
 	}
 	return outcome
 }
+
+// TestSendKeysBadKeyIsRejectedOutcome (#43 REQ-006, E8): an untypable key is
+// a typed "rejected" in the provider, still carries the KeyRejectedError, and
+// makes no Rex call at all, not even session discovery.
+func TestSendKeysBadKeyIsRejectedOutcome(t *testing.T) {
+	fake, p := started(t)
+	lists, views := fake.ListSessionsCalls, fake.SessionViewCalls
+
+	err := p.SendKeys(context.Background(), "Indigo--dog-1", "!")
+
+	if got := outcomeOf(t, err); got.Outcome != "rejected" {
+		t.Errorf("outcome = %q, want rejected (detail %q)", got.Outcome, got.Detail)
+	}
+	var rejected *provider.KeyRejectedError
+	if !errors.As(err, &rejected) {
+		t.Errorf("err = %v, want a *KeyRejectedError in the chain", err)
+	}
+	if fake.ListSessionsCalls != lists || fake.SessionViewCalls != views {
+		t.Errorf("lookups = %d list, %d view; want %d, %d (no lookup)",
+			fake.ListSessionsCalls, fake.SessionViewCalls, lists, views)
+	}
+	if len(fake.BlockCalls) != 0 || len(fake.SentKeys) != 0 {
+		t.Errorf("block ops = %v, keys = %+v; want none", ops(fake), fake.SentKeys)
+	}
+}

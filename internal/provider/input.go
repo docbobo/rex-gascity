@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"context"
 	"errors"
+	"fmt"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
@@ -120,4 +122,45 @@ func inputOutcomeWord(policy inputPolicy, stage inputStage, err error) string {
 		}
 	}
 	return ""
+}
+
+// resolveInputPane resolves name to a live pane for op, with a lookup failure
+// already classified.
+func (p *Provider) resolveInputPane(ctx context.Context, op inputOp, name string) (Binding, error) {
+	binding, err := p.livePane(ctx, name)
+	if err != nil {
+		return Binding{}, classifyInput(op, stageLookup, err)
+	}
+	return binding, nil
+}
+
+// inputCall is one send-keys, interrupt or clear-scrollback delivery. send
+// makes the Rex call and wraps its error with the op and name.
+type inputCall struct {
+	op    inputOp
+	name  string
+	guard bool
+	send  func(ctx context.Context, b Binding) error
+}
+
+// deliverInput runs the shared skeleton: resolve the pane, refuse a pane
+// reading a secret when guard is set (#48), send, then stamp the input floor
+// when the op's policy says so. Each failure is classified at its stage.
+func (p *Provider) deliverInput(ctx context.Context, c inputCall) error {
+	binding, err := p.resolveInputPane(ctx, c.op, c.name)
+	if err != nil {
+		return err
+	}
+	if c.guard && p.readingSecret(ctx, binding) {
+		return classifyInput(c.op, stageGate, fmt.Errorf("%s %s: %w", c.op, c.name, ErrSecretRead))
+	}
+	if err := c.send(ctx, binding); err != nil {
+		return classifyInput(c.op, stageSend, err)
+	}
+	// Input pressed into the pane is input even when the screen does not
+	// change, so record the floor for idle detection.
+	if inputPolicies[c.op].notesInput {
+		p.noteInput(binding)
+	}
+	return nil
 }
