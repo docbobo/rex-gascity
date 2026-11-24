@@ -9,8 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/docbobo/rex-gascity/internal/rex"
+	"unicode/utf8"
 )
 
 // defaultPoolClaimNudge is gc's stalled-claim fallback text (v1.5.1
@@ -210,10 +209,14 @@ func (p *Provider) NudgeImmediate(ctx context.Context, name, text string) error 
 // to polling the pane's rendered output when the program reports no
 // program_status. A delivered but unconfirmed nudge returns a report with
 // Confirmed false and a nil error; returning an error would make gc retype
-// the message on its next attempt.
+// the message on its next attempt. Text that is not UTF-8 is rejected before
+// any Rex call (ErrNudgeNotUTF8).
 func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode NudgeMode) (NudgeReport, error) {
 	if text == "" {
 		return NudgeReport{}, nil
+	}
+	if err := checkNudgeText(text); err != nil {
+		return NudgeReport{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return NudgeReport{}, fmt.Errorf("nudge %s: before typing: %w", name, err)
@@ -223,6 +226,15 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 		return NudgeReport{}, err
 	}
 	return p.nudgeReportBinding(ctx, binding, text, mode)
+}
+
+// checkNudgeText rejects text that is not UTF-8 before any Rex call, so no
+// pane receives U+FFFD-corrupted text (#43 REQ-003).
+func checkNudgeText(text string) error {
+	if !utf8.ValidString(text) {
+		return classifyInput(inputNudge, stageValidate, ErrNudgeNotUTF8)
+	}
+	return nil
 }
 
 // isPoolClaimNudge reports whether text is gc's fallback pool-claim nudge (or
@@ -322,23 +334,17 @@ func claimRecordHeld(out string, sessionID string) bool {
 	return true
 }
 
-// nudgeSendOutcome classifies a failed write or submit into an RPP input
-// outcome. An unreachable server is unavailable; anything else is not_sent,
-// because the send never reached the pane whole (or was cut short before the
-// submit). The wrapped error is kept for errors.Is callers.
-func nudgeSendOutcome(err error) error {
-	if errors.Is(err, rex.ErrUnavailable) {
-		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
-	}
-	return &InputOutcomeError{Outcome: "not_sent", Detail: err.Error(), Err: err}
-}
-
 // nudgeReportBinding is NudgeReport against an already-resolved pane. Startup
 // delivery uses it so the nudge goes to the pane it launched, not to whatever
 // a name lookup resolves to after a concurrent stop and start of the same
 // name.
 func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text string, mode NudgeMode) (NudgeReport, error) {
 	name := string(binding.Name)
+	// Startup delivery enters here without NudgeReport, so the UTF-8 check
+	// runs again: no caller can type corrupted text.
+	if err := checkNudgeText(text); err != nil {
+		return NudgeReport{}, err
+	}
 	// gc's stalled-claim backstop re-arms the fallback pool-claim nudge for a
 	// pool slot whose routed trigger bead changes while the seat is still on
 	// its first claim. Refuse to type that prompt while a claim is live: the
@@ -347,7 +353,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	if isPoolClaimNudge(text) {
 		if claim, err := p.nudge.claimProbe(ctx, binding); err == nil && claim != "" {
 			err := fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
-			return NudgeReport{}, &InputOutcomeError{Outcome: "busy", Detail: err.Error(), Err: err}
+			return NudgeReport{}, classifyInput(inputNudge, stageGate, err)
 		}
 	}
 	baseline, _ := p.programStatusSnapshot(ctx, binding)
@@ -356,7 +362,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 		case "working":
 			err := fmt.Errorf("%w: %s", ErrNudgeBusy, name)
 			return NudgeReport{State: baseline.State, Kind: baseline.Kind},
-				&InputOutcomeError{Outcome: "busy", Detail: err.Error(), Err: err}
+				classifyInput(inputNudge, stageGate, err)
 		case "blocked":
 			report := NudgeReport{State: baseline.State, Kind: baseline.Kind}
 			var err error
@@ -365,7 +371,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 			} else {
 				err = fmt.Errorf("%w: %s", ErrNudgeBlocked, name)
 			}
-			return report, &InputOutcomeError{Outcome: "pending_interaction", Detail: err.Error(), Err: err}
+			return report, classifyInput(inputNudge, stageGate, err)
 		}
 	}
 
@@ -377,7 +383,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	if p.readingSecret(ctx, binding) {
 		err := fmt.Errorf("%w: %s (input_mode canonical, echo off)", ErrSecretRead, name)
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind},
-			&InputOutcomeError{Outcome: "pending_interaction", Detail: err.Error(), Err: err}
+			classifyInput(inputNudge, stageGate, err)
 	}
 
 	// Without a program_status record, the pane's rendered output is the only
@@ -389,18 +395,22 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	// unsubmitted, and gc's retry would then duplicate the prompt.
 	submitCtx, cancelSubmit := p.nudgeSubmitContext(ctx)
 	defer cancelSubmit()
+	// A cancel here is not a send failure: it stays a plain error (exit 1),
+	// never classified (#43 REQ-010).
 	if err := ctx.Err(); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: before typing: %w", name, err)
 	}
 	writeStart := time.Now()
 	if err := p.client.BlockWrite(submitCtx, binding.SessionID, binding.BlockID, text); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: time.Since(writeStart)},
-			nudgeSendOutcome(fmt.Errorf("nudge %s: type text: %w", name, err))
+			classifyInput(inputNudge, stageSend, fmt.Errorf("nudge %s: type text: %w", name, err))
 	}
 	writeDur := time.Since(writeStart)
 	// The text is in the pane now: stamp the input floor so the delivery is
 	// visible to idle detection before the program's output renders.
-	p.noteInput(binding)
+	if inputPolicies[inputNudge].notesInput {
+		p.noteInput(binding)
+	}
 	// The text is in the pane now, so the Enter must be attempted even if the
 	// parent was cancelled. It keeps the same submit deadline, so a cancel or
 	// stall cannot make this run forever.
@@ -410,7 +420,7 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	if err := p.client.SendKeys(enterCtx, binding.SessionID, binding.BlockID, submitKey); err != nil {
 		p.recordNudgeSubmitFailure(binding, err)
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: writeDur},
-			nudgeSendOutcome(fmt.Errorf("nudge %s: text was typed but submit key failed: %w", name, err))
+			classifyInput(inputNudge, stageSubmit, fmt.Errorf("nudge %s: text was typed but submit key failed: %w", name, err))
 	}
 	_ = p.metaDelete(binding.Name, NudgeSubmitFailedMetaKey)
 

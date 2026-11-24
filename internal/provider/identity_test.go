@@ -872,3 +872,44 @@ func TestStartSeedsProcessNames(t *testing.T) {
 		})
 	}
 }
+
+// TestStartupNudgeRejectsInvalidUTF8 (#43 REQ-004, E2): a startup nudge that
+// is not UTF-8 reaches a live idle pane past readiness, types nothing, records
+// the failed-delivery marker, and does not resend even with one resend
+// enabled. The start itself succeeds.
+func TestStartupNudgeRejectsInvalidUTF8(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := faketest.New()
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{State: "idle"}}}
+	}
+	p := startupProvider(fake, provider.WithStartupNudgeRetries([]time.Duration{5 * time.Millisecond}))
+
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Nudge: "\xff"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if _, ok := p.Binding(name); !ok {
+		t.Error("binding dropped, want the started pane kept")
+	}
+	got, err := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if want := "delivery failed: the nudge text is not UTF-8; nothing was typed"; got != want {
+		t.Errorf("marker = %q, want %q", got, want)
+	}
+	for _, c := range fake.BlockCalls {
+		if c.Op == "write" {
+			t.Errorf("block calls = %+v, want no write", fake.BlockCalls)
+			break
+		}
+	}
+	for _, k := range fake.SentKeys {
+		if len(k.Keys) == 1 && k.Keys[0] == "ctrl+u" {
+			t.Errorf("sent keys = %+v, want no startup clear (no resend)", fake.SentKeys)
+			break
+		}
+	}
+}

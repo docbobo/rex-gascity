@@ -547,3 +547,48 @@ func TestNudgeMissingPaneIsGoneOutcome(t *testing.T) {
 		}
 	})
 }
+
+// TestNudgeRejectsInvalidUTF8BeforeRex (#43 REQ-003, E1): every in-process
+// nudge entry point rejects non-UTF-8 text with a typed "rejected" before any
+// Rex call, so no pane receives U+FFFD-corrupted text.
+func TestNudgeRejectsInvalidUTF8BeforeRex(t *testing.T) {
+	const text = "prompt \xff\xfe bytes"
+	calls := map[string]func(*provider.Provider) error{
+		"Nudge": func(p *provider.Provider) error {
+			return p.Nudge(context.Background(), "Indigo--dog-1", text)
+		},
+		"NudgeImmediate": func(p *provider.Provider) error {
+			return p.NudgeImmediate(context.Background(), "Indigo--dog-1", text)
+		},
+		"NudgeReport": func(p *provider.Provider) error {
+			_, err := p.NudgeReport(context.Background(), "Indigo--dog-1", text, provider.NudgeModeWait)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			fake, p := started(t)
+			lists, views := fake.ListSessionsCalls, fake.SessionViewCalls
+
+			err := call(p)
+
+			got := outcomeOf(t, err)
+			if got.Outcome != "rejected" {
+				t.Errorf("outcome = %q, want rejected", got.Outcome)
+			}
+			if want := "the nudge text is not UTF-8; nothing was typed"; got.Detail != want {
+				t.Errorf("detail = %q, want %q", got.Detail, want)
+			}
+			if !errors.Is(err, provider.ErrNudgeNotUTF8) {
+				t.Errorf("err = %v, want ErrNudgeNotUTF8", err)
+			}
+			if fake.ListSessionsCalls != lists || fake.SessionViewCalls != views {
+				t.Errorf("lookups = %d list, %d view; want %d, %d (no lookup)",
+					fake.ListSessionsCalls, fake.SessionViewCalls, lists, views)
+			}
+			if len(fake.BlockCalls) != 0 || len(fake.SentKeys) != 0 {
+				t.Errorf("block ops = %v, keys = %+v; want none", ops(fake), fake.SentKeys)
+			}
+		})
+	}
+}

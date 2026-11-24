@@ -8,6 +8,11 @@ import (
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
+// ErrNudgeNotUTF8 reports nudge text that is not valid UTF-8. Nothing was
+// typed. The nudge answers it as the RPP "rejected" outcome; the text matches
+// herdr-core's failed-nudge wording.
+var ErrNudgeNotUTF8 = errors.New("the nudge text is not UTF-8; nothing was typed")
+
 // inputOp names one of the four RPP driving ops. The values are the RPP op
 // words, so a detail or a policy reads the same as the wire.
 type inputOp string
