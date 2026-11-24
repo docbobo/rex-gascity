@@ -202,6 +202,11 @@ func (p *Provider) launchOnce(ctx context.Context, req launchRequest, sid rex.Se
 			if err := p.recordOrDiscard(ctx, req.name, p.newBinding(req.name, sid, wid, block, "window", req.attempt, req.cfg)); err != nil {
 				return err
 			}
+			// The town tab goes first once, when it is created (#47). Still
+			// under the tab lock, after the binding is recorded.
+			if isTownStart(req.name, req.cfg.Env) {
+				p.placeTownTabFirst(ctx, req.name, sid, wid)
+			}
 		}
 		launched = startResult{sessionID: sid, blockID: block}
 		return nil
@@ -210,4 +215,26 @@ func (p *Provider) launchOnce(ctx context.Context, req launchRequest, sid rex.Se
 		return startResult{}, err
 	}
 	return launched, nil
+}
+
+// placeTownTabFirst moves the town window wid, which launchOnce just created
+// in sid, in front of the session's current first window (#47). It reads the
+// view after the create, because where session.new_window inserts a window is
+// not documented. It moves nothing in a session other than this city's
+// canonical one (a legacy session keeps Rex's order), in an empty view, or
+// when wid is already first: the API rejects before == window. It is
+// best-effort: a failed read or move is a start warning, never a start
+// failure, and there is no retry.
+func (p *Provider) placeTownTabFirst(ctx context.Context, name SessionName, sid rex.SessionID, wid rex.WindowID) {
+	view, err := p.client.SessionView(ctx, sid)
+	if err != nil {
+		p.warnf("start %s: place town tab first: %v", name, err)
+		return
+	}
+	if view.Label != p.binder.canonicalLabel() || len(view.Windows) == 0 || view.Windows[0].ID == wid {
+		return
+	}
+	if err := p.client.MoveWindow(ctx, sid, wid, view.Windows[0].ID); err != nil {
+		p.warnf("start %s: place town tab first: %v", name, err)
+	}
 }
