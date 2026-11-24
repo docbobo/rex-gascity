@@ -38,15 +38,18 @@ Three gaps matter:
    inputs. Nothing lints it.
 3. **No `govulncheck`.** gascity has `.github/workflows/govulncheck.yml`.
    We do not. A grep over `.github/`, `Makefile` and `pack/tests/` finds no
-   reference. The gap is real but has near-zero value today. `go.mod` has no
-   `require` block and there is no `go.sum`, so no third-party module can
-   match an advisory.
+   reference. `go.mod` has no `require` block and there is no `go.sum`, so no
+   third-party module can match an advisory. That does not make the check
+   worthless. `govulncheck` also reports known vulnerabilities in the Go
+   standard library, and it reports only vulnerabilities that reach symbols
+   our code calls. The value is lower than in a repo with dependencies, but
+   it is not zero. The check stays deferred.
 
 ### Query classes that can matter here, with evidence
 
 | Query | Evidence in this tree | Verdict |
 | --- | --- | --- |
-| `go/command-injection` | `internal/provider/provider.go:1293` runs `exec.CommandContext(ctx, "/bin/sh", "-c", command)` in `runPreStart`. The test binary at `internal/rex/fakerex/fakebinary/main.go:1025` does the same. | The only high-value query. `command` comes from pack `pre_start` config, not from protocol JSON, so no alert is expected today. It is the guard if a bead or agent field ever reaches that call. |
+| `go/command-injection` | `internal/provider/provider.go:1304` runs `exec.CommandContext(ctx, "/bin/sh", "-c", command)` in `runPreStart`. The `command` argument is `cfg.PreStart[i]`, and `opStart` (`cmd/gc-runtime-rex/main.go:415`) fills that field by JSON-decoding the `pre_start` array from the start op's stdin (`startConfig.PreStart`, `main.go:154`, copied at `main.go:433`). gc v1.5.1 populates the field from agent config plus engine-generated hooks (`cmd/gc/session_lifecycle_parallel.go:1085-1089,1501-1538`) and sends it in the same JSON (`internal/runtime/exec/json.go:35,59` and `docs/reference/exec-session-provider.md:230,328-333`). | The only high-value query. Pack/city config is one upstream source, not the only one: the value reaches the sink over the protocol message, so a bead or agent field that reaches `pre_start` would arrive by the same path. No alert is expected today, but not because the source is trusted config: the value crosses a process boundary as stdin JSON, so CodeQL sees no same-process source-to-sink path from the `exec.CommandContext` call. Whether CodeQL models `os.Stdin` as a remote source is `unverified`. An alert would appear only for a future in-process path that passes a value straight to `runPreStart`. |
 | `go/path-injection` | 1218 `filepath.Join` uses in first-party Go. State and lock files sit under the user's city dir, for example `internal/provider/lock.go:120` and `:163` (mode `0o644`). | Medium. Session and block identifiers arrive over the protocol. This is the query most likely to give a first alert. |
 | `go/clear-text-logging` | 406 `os.Getenv` uses. Trace and state files record argv and environment. | Medium and worth having. Env values may carry tokens. |
 | `go/log-injection` | no network log sink | Low. |
@@ -129,17 +132,19 @@ Measured on gascity, on a Blacksmith 16 vCPU runner, from the runs API:
 
 Normalised for our repository: gascity has 4416 Go files and 68.2 MB of Go
 source at `v1.5.1`. `rex-gascity` at `origin/main` has 128 files and
-1.28 MB, about 53x smaller by bytes. The Go extractor cost follows source size.
-Expect well under a minute of extraction on 16 vCPU. Expect roughly 2-4 min on
-`ubuntu-latest` with 2 vCPU. Two languages, one matrix, no runner-policy job
-and no cache steps: the workflow in this PR is 55 lines against gascity's 162.
+1.28 MB, about 53x smaller by bytes. Two languages, one matrix, no
+runner-policy job and no cache steps: the workflow in this PR is 55 lines
+against gascity's 162.
 
 Budget: `docbobo/rex-gascity` is public (from `gh repo view`), so CodeQL
 minutes are free. The real cost is PR latency and one more red-or-green row for
 a human to read.
 
-The estimate is not a measurement. The first run of this PR's workflow is the
-measurement. Check its duration before deciding on gating.
+Measured on this repository: run `45342247558` on this PR, `ubuntu-latest`
+with 2 vCPU. Analyze (go) 55 s and Analyze (actions) 42 s, in parallel.
+
+So a pull request pays about one minute of wall clock for two more advisory
+rows.
 
 ## 6. Recommendation and plan
 
@@ -167,8 +172,9 @@ analysis, which matches this codebase.
 
 Follow-ups, out of scope here:
 
-- No `govulncheck` job exists. Separate bead. Near-zero value while
-  `go.mod` has no dependencies.
+- No `govulncheck` job exists. Separate bead. Lower value while `go.mod` has
+  no dependencies, but it still covers the standard library, so schedule the
+  check rather than treating it as a no-op.
 - If alert noise appears, add a `codeql-config` with `paths-ignore` instead
   of per-alert dismissals.
 
@@ -190,4 +196,8 @@ Follow-ups, out of scope here:
   for build modes per language.
 - `rex-gascity` at `origin/main` `15c387e`: `.github/workflows/ci.yml`,
   `.github/workflows/release.yml`, `.golangci.yml`, `go.mod`,
-  `internal/provider/provider.go:1293`, `internal/provider/lock.go:120,163`.
+  `internal/provider/provider.go:1304`, `internal/provider/lock.go:120,163`.
+- Go vulnerability management docs and `govulncheck` package docs:
+  <https://go.dev/doc/security/vuln/> and
+  <https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck>. The command reports
+  standard-library vulnerabilities as well as module ones.
