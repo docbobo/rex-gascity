@@ -26,6 +26,18 @@ if [ -z "$declared" ] || [ -z "$min_version" ]; then
   exit 1
 fi
 
+# The too-old case must come from the pin, not a hardcoded preview number.
+# The pin shape is X.Y.Z-preview.N; anything else fails loudly here.
+case $min_version in
+  *-preview.*) ;;
+  *) echo "check-doctor-rex-version: pack/rex-min-version must be X.Y.Z-preview.N, got $min_version" >&2; exit 1 ;;
+esac
+preview_n=${min_version##*-preview.}
+case $preview_n in
+  ''|*[!0-9]*) echo "check-doctor-rex-version: preview number in $min_version is not numeric" >&2; exit 1 ;;
+esac
+too_old=${min_version%-preview.*}-preview.$(( ${min_version##*-preview.} - 1 ))
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -73,9 +85,11 @@ run_case() {
   printf '%s' "$out"
 }
 
-# Older than the minimum is an error that names both versions.
-out=$(run_case 0.1.0-preview.21 2)
-printf '%s' "$out" | grep -q '0.1.0-preview.21' ||
+# Older than the minimum is an error that names the Rex app and both versions.
+out=$(run_case "$too_old" 2)
+printf '%s\n' "$out" | head -n 1 | grep -q 'Rex app' ||
+  fail "too-old message does not name the Rex app on its first line: $out"
+printf '%s' "$out" | grep -q "$too_old" ||
   fail "too-old message does not name the installed version: $out"
 printf '%s' "$out" | grep -q "$min_version" ||
   fail "too-old message does not name the required version: $out"
@@ -107,7 +121,7 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$tmp/rex"
-run_case 0.1.0-preview.21 2 >/dev/null
+run_case "$too_old" 2 >/dev/null
 
 # An undeterminable version warns instead of erroring.
 cat >"$tmp/rex" <<'EOF'

@@ -298,9 +298,9 @@ else
       rex_remediation="The CLI reported no version. Update Rex so \`rex version --json\` prints a rex_version field."
     elif [ "$installed_rank" = -1 ]; then
       rex_status=error
-      rex_message="the rex CLI is too old"
+      rex_message="the Rex app's rex CLI is too old"
       rex_detail="rex: $rex_path reports version $installed_version, but the pack requires at least $min_version"
-      rex_remediation="Update Rex to $min_version or newer."
+      rex_remediation="Update the Rex app to $min_version or newer. The rex CLI is bundled with the app, so a CLI-only update cannot fix this."
     else
       rex_detail="rex: $rex_path (version $installed_version)"
     fi
