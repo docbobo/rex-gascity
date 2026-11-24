@@ -117,6 +117,10 @@ func BenchmarkCopyTreeInto(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
+				// Every staging entry point builds a fresh stageDest, so each measured
+				// copy starts with an empty directory cache. Keep the root open so
+				// destination-open work stays outside the measurement.
+				clear(dest.dirs)
 				if err := copyTreeInto(dest, src, ".", nil); err != nil {
 					b.Fatal(err)
 				}
