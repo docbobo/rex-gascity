@@ -44,3 +44,47 @@ step_sets_shell_bash "$repo/.github/workflows/ci.yml" 'Check for a docs-only cha
 step_sets_shell_bash "$repo/.github/workflows/ci-timings.yml" 'Per-job p50 and p90' digest
 
 sh "$repo/scripts/ci-timings.sh" --self-test
+
+# A failed collection must not read as "no runs" or a partial table. The fake
+# gh answers; real jq runs the script's own filters. Skips when jq is absent.
+if command -v jq >/dev/null 2>&1; then
+  fake=$(mktemp -d)
+  trap 'rm -rf "$fake"' 0
+  mkdir "$fake/bin"
+  cat > "$fake/bin/gh" <<'EOF'
+#!/bin/sh
+case $1 in
+  run)
+    case ${FAKE_GH_RUNS:-ok} in
+      fail) echo "gh: HTTP 500" >&2; exit 1 ;;
+      empty) echo '[]' ;;
+      *) printf '[{"databaseId":1,"createdAt":"%s"},{"databaseId":2,"createdAt":"%s"}]\n' \
+           "$(date -u +%Y-%m-%dT00:00:00Z)" "$(date -u +%Y-%m-%dT00:00:00Z)" ;;
+    esac ;;
+  api)
+    case $2 in
+      */runs/2/jobs*)
+        if [ "${FAKE_GH_API:-ok}" = fail ]; then echo "gh: HTTP 502" >&2; exit 1; fi ;;
+    esac
+    printf 'build\t42\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$fake/bin/gh"
+
+  timings() { # timings <want> <desc> <fake run response> [fake api response]
+    want=$1; desc=$2; runs=${3:-ok}; api=${4:-ok}; got=0
+    PATH="$fake/bin:$PATH" GITHUB_REPOSITORY=o/r \
+      FAKE_GH_RUNS="$runs" FAKE_GH_API="$api" \
+      sh "$repo/scripts/ci-timings.sh" >/dev/null 2>&1 || got=$?
+    [ "$got" -eq "$want" ] ||
+      { echo "check-ci: ci-timings $desc exited $got, want $want" >&2; exit 1; }
+  }
+
+  timings 1 "with a failed run list" fail
+  timings 1 "with a failed job lookup" ok fail
+  timings 0 "with an empty run list" empty
+  timings 0 "with a clean collection" ok
+else
+  echo "check-ci: skip ci-timings collection checks: jq is not on PATH"
+fi

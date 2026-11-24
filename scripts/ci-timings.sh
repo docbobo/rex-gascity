@@ -72,12 +72,18 @@ command -v jq >/dev/null 2>&1 || { echo "ci-timings: jq is not on PATH" >&2; exi
 repo=${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
 cutoff=$(($(date +%s) - days * 86400))
 
-runs=$(gh run list --repo "$repo" --workflow ci.yml --limit "$limit" \
-  --json databaseId,createdAt |
-  jq -r --argjson cutoff "$cutoff" \
+runs_json=$(gh run list --repo "$repo" --workflow ci.yml --limit "$limit" \
+  --json databaseId,createdAt) ||
+  { echo "ci-timings: gh run list failed" >&2; exit 1; }
+runs=$(printf '%s\n' "$runs_json" | jq -r --argjson cutoff "$cutoff" \
     '.[] | select((.createdAt | fromdate) >= $cutoff) | .databaseId')
 
 [ -n "$runs" ] || { echo "ci-timings: no ci.yml run in the last $days days" >&2; exit 0; }
+
+# The loop writes to a temp file so a failed lookup exits nonzero: in a
+# pipeline, summary would swallow the failure and print a partial table.
+tmp=$(mktemp) || { echo "ci-timings: cannot create a temp file" >&2; exit 1; }
+trap 'rm -f "$tmp"' 0
 
 # Skipped and cancelled jobs are excluded: a cancelled job's window is
 # truncated, so it would report a false speed-up.
@@ -85,5 +91,8 @@ for id in $runs; do
   gh api "repos/$repo/actions/runs/$id/jobs?per_page=100" --jq \
     '.jobs[] | select(.started_at != null and .completed_at != null
        and .conclusion != "skipped" and .conclusion != "cancelled")
-     | [.name, ((.completed_at | fromdate) - (.started_at | fromdate))] | @tsv'
-done | summary
+     | [.name, ((.completed_at | fromdate) - (.started_at | fromdate))] | @tsv' \
+    >>"$tmp" ||
+    { echo "ci-timings: job lookup failed for run $id" >&2; exit 1; }
+done
+summary <"$tmp"
