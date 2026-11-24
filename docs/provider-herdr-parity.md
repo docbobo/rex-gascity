@@ -67,8 +67,8 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `is-attached` | implemented | 6 | intentional |
 | `get-last-activity` | implemented | 5 | intentional |
 | `peek` | implemented | 5 | intentional |
-| `nudge` | implemented | 10 | intentional |
-| `send-keys` | implemented | 7 | intentional |
+| `nudge` | implemented | 11 | intentional |
+| `send-keys` | implemented | 8 | intentional |
 | `interrupt` | implemented | 4 | intentional |
 | `clear-scrollback` | implemented | 6 | intentional |
 | `watch-startup` | not implemented | 4 | not-implemented |
@@ -163,6 +163,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `nudge` | deadline and cancellation | one submit deadline (10 s or the op context's earlier deadline) covers write and Enter; Enter still runs after a successful write when the parent is cancelled; an already-cancelled context writes nothing | send stops 5 s before deadline | intentional | GCREX-21 bounds the split; the remaining window is the transport's own call latency. |
 | `nudge` | retries / settle time | none | none for nudge op | intentional | behavior matches; multi-line ingest is now verified, other Enter-ingest races unverified |
 | `nudge` | activity bookkeeping | records input time after a successful write (`nudge.go`) | note_input stamps input time | intentional | GCREX-24 closed the gap: the input floor keeps a typed-but-unrendered nudge visible to idle detection. |
+| `nudge` | secret-read gating | reads `input_mode` in both modes, after the Wait-mode busy/blocked gate and before the turn baseline. `canonical && !echo` withholds with exit 80 `pending_interaction` (`ErrSecretRead`) and types nothing. Startup records `withheld: the pane is reading a secret` and never presses `ctrl+u` into a secret read. A failed or timed-out read (2 s, capped at half of a context deadline) fails open (`inputmode.go`). | no equivalent | intentional | #48, Rex-only. The predicate is **unverified**: neither this doc nor gc v1.5.1 covers `input_mode`. Its basis is `REX-CONTRACT.md` §4 and the #48 live probe (rex 0.1.0-preview.21, api 18). Raw-mode secret prompts read `canonical:false` and are not seen. gc 1.5.1 reads only the exit code. |
 | `send-keys` | unknown key names | typed as literal chars, or rejected exit 80 (`keymap.go`) | typed as literal chars, or rejected exit 80 | intentional | GCREX-43 implemented the herdr-core grammar: literal text splits per character and an untypable key rejects before any lookup. |
 | `send-keys` | key vocabulary | exact-case table with BTab/PPage/NPage, F1-F12 (`keymap.go`) | exact-case table with BTab/PPage/NPage, F1-F12 | intentional | GCREX-43 aligned the table to herdr-core's TMUX_KEYS. |
 | `send-keys` | modifier handling | prefix only on a table name or a single literal char, in typed order (`keymap.go`) | prefix only on known name or single char | intentional | GCREX-43 aligned to herdr-core; Rex still validates the final binding. |
@@ -171,6 +172,7 @@ exit 0 with a hint), and an empty `env` value must be *unset*, not set to empty.
 | `send-keys` | failure handling | pre-send `unavailable`/`not_sent` exit 80; unknown-after-write exit 1, no retry | unknown outcome exits 1, never retried | intentional | GCREX-42; same effective result at baseline |
 | `send-keys` | partial failure | all keys validated before sending (`provider.go`) | all keys validated before sending | intentional | GCREX-43 translates every key before the pane lookup, so a bad key never reaches Rex. Confirmed live (GCREX-31): `enter ctrl+` exited 2 and sent nothing. |
 | `send-keys` | activity side-effect | records input time after a successful send (`provider.go`) | records input activity | intentional | GCREX-24 closed the gap: both stamp the input floor that `get-last-activity` reads. |
+| `send-keys` | secret-read gating | a list of only ctrl+c (`C-c`) is sent with no read. Any other list reads `input_mode` and on `canonical && !echo` sends nothing, exit 80 `not_sent` (`ErrSecretRead`). A mixed list is withheld whole. A failed read fails open (`provider.go`, `inputmode.go`). | no equivalent | intentional | #48, Rex-only. The predicate is **unverified** (see the `nudge` secret-read row). gc may not answer `busy`/`pending_interaction` for send-keys (`890a58a3e:internal/runtime/exec/outcome.go:54-68`), so the word is `not_sent`. |
 | `interrupt` | mechanism | ctrl+c keystroke via Rex SendKeys | hc terminal.interrupt; signal vs key unverified | intentional | Rex has no signal API |
 | `interrupt` | wait/confirm | none; returns after send | hc waits up to 3 s to settle | intentional | RPP v0 has no outcome contract |
 | `interrupt` | no live program | exit 80 `gone` | exit 80 `gone` | matches | GCREX-44 classifies it; GCREX-70 declared input-outcome (with carrier.ops) and dropped the bestEffort wrapper, so gc reads `gone` as ErrSessionNotFound |
