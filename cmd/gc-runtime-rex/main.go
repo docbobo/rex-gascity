@@ -171,7 +171,7 @@ type opSpec struct {
 	required int
 	usage    string
 	method   string // provider method the handler invokes; "" when it calls none
-	handle   func(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, stdout io.Writer) error
+	handle   func(ctx context.Context, p rppProvider, args []string, stdin io.Reader, stdout io.Writer) error
 }
 
 // unimplemented ops exit 2. They are listed so the intent is explicit; any
@@ -396,7 +396,7 @@ func seedProcessNames(cfg *startConfig) {
 	cfg.Env["GT_PROCESS_NAMES"] = strings.Join(names, ",")
 }
 
-func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, _ io.Writer) error {
+func opStart(ctx context.Context, p rppProvider, args []string, stdin io.Reader, _ io.Writer) error {
 	name := args[0]
 	raw, err := io.ReadAll(stdin)
 	if err != nil {
@@ -437,21 +437,19 @@ func opStart(ctx context.Context, p *provider.Provider, args []string, stdin io.
 	return err
 }
 
-func opStop(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
+func opStop(ctx context.Context, p rppProvider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.Stop(ctx, args[0])
 }
 
 // opObserve answers `observe <name>`. Its stdin is newline-separated process
 // names by which gc identifies the agent; the provider matches them against the
 // box's process subtree, so they must reach it (RPP-OBSERVE-006).
-func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
-	// gc writes a few process names and closes the pipe; the bound only stops a
-	// runaway writer from holding the op open.
-	raw, err := io.ReadAll(io.LimitReader(stdin, 64<<10))
+func opObserve(ctx context.Context, p rppProvider, args []string, stdin io.Reader, out io.Writer) error {
+	names, err := readNameList(stdin)
 	if err != nil {
-		return fmt.Errorf("read process names: %w", err)
+		return err
 	}
-	ans, err := p.Observe(ctx, args[0], processNames(raw))
+	ans, err := p.Observe(ctx, args[0], names)
 	if err != nil {
 		return err
 	}
@@ -463,7 +461,7 @@ func opObserve(ctx context.Context, p *provider.Provider, args []string, stdin i
 	return err
 }
 
-func opInventory(ctx context.Context, p *provider.Provider, _ []string, _ io.Reader, out io.Writer) error {
+func opInventory(ctx context.Context, p rppProvider, _ []string, _ io.Reader, out io.Writer) error {
 	ans, err := p.Inventory(ctx)
 	if err != nil {
 		return err
@@ -476,7 +474,7 @@ func opInventory(ctx context.Context, p *provider.Provider, _ []string, _ io.Rea
 	return err
 }
 
-func opKillObject(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
+func opKillObject(ctx context.Context, p rppProvider, args []string, stdin io.Reader, out io.Writer) error {
 	raw, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("read kill-object request: %w", err)
@@ -499,7 +497,7 @@ func opKillObject(ctx context.Context, p *provider.Provider, args []string, stdi
 // attach and the provider declares no tty.attach, so the op always exits 0 and
 // points the user at the Rex app. It never contacts Rex, so an unknown session
 // or an unreachable server cannot turn into a failed `gc session attach`.
-func opAttach(_ context.Context, _ *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opAttach(_ context.Context, _ rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	_, err := io.WriteString(out, attachHint(args[0]))
 	return err
 }
@@ -509,7 +507,7 @@ func attachHint(name string) string {
 	return fmt.Sprintf("Rex has no in-terminal attach; open the Rex app and select the session %q to attach\n", name)
 }
 
-func opIsRunning(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opIsRunning(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	running, err := p.IsRunning(ctx, args[0])
 	if err != nil {
 		return err
@@ -518,11 +516,11 @@ func opIsRunning(ctx context.Context, p *provider.Provider, args []string, _ io.
 	return nil
 }
 
-func opInterrupt(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
+func opInterrupt(ctx context.Context, p rppProvider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.Interrupt(ctx, args[0])
 }
 
-func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
+func opNudge(ctx context.Context, p rppProvider, args []string, stdin io.Reader, out io.Writer) error {
 	text, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("read message: %w", err)
@@ -555,7 +553,7 @@ func writeDeliveredUnobserved(out io.Writer, name string) error {
 	return err
 }
 
-func opSendKeys(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
+func opSendKeys(ctx context.Context, p rppProvider, args []string, _ io.Reader, _ io.Writer) error {
 	keys := args[1:]
 	if len(keys) == 0 {
 		return nil
@@ -576,21 +574,33 @@ func processNames(raw []byte) []string {
 	return names
 }
 
+// nameListBudget bounds the name list both name-list ops read. gc writes a few
+// process names and closes the pipe; the bound only stops a runaway writer from
+// holding the op open (F-17, E-8b).
+const nameListBudget = 64 << 10
+
+// readNameList reads at most nameListBudget bytes of stdin and parses them with
+// processNames. It makes no read after the bound. A read error within the bound
+// is returned as "read process names: <err>".
+func readNameList(stdin io.Reader) ([]string, error) {
+	raw, err := io.ReadAll(io.LimitReader(stdin, nameListBudget))
+	if err != nil {
+		return nil, fmt.Errorf("read process names: %w", err)
+	}
+	return processNames(raw), nil
+}
+
 // opClearScrollback returns Provider.ClearScrollback directly (GCREX-57): a
 // missing or dead pane is an *provider.InputOutcomeError answered as exit 80
 // `gone`, not swallowed as a silent success.
-func opClearScrollback(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
+func opClearScrollback(ctx context.Context, p rppProvider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.ClearScrollback(ctx, args[0])
 }
 
-func opProcessAlive(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, out io.Writer) error {
-	raw, err := io.ReadAll(stdin)
+func opProcessAlive(ctx context.Context, p rppProvider, args []string, stdin io.Reader, out io.Writer) error {
+	names, err := readNameList(stdin)
 	if err != nil {
-		return fmt.Errorf("read process names: %w", err)
-	}
-	names := strings.Split(string(raw), "\n")
-	if names[len(names)-1] == "" {
-		names = names[:len(names)-1]
+		return err
 	}
 	state, err := p.ProcessAlive(ctx, args[0], names)
 	if err != nil {
@@ -607,7 +617,7 @@ func opProcessAlive(ctx context.Context, p *provider.Provider, args []string, st
 	return nil
 }
 
-func opPeek(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opPeek(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	lines := 0
 	if len(args) > 1 && args[1] != "" {
 		n, err := strconv.Atoi(args[1])
@@ -627,7 +637,7 @@ func opPeek(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 	return err
 }
 
-func opListRunning(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opListRunning(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	prefix := ""
 	if len(args) > 0 {
 		prefix = args[0]
@@ -642,7 +652,7 @@ func opListRunning(ctx context.Context, p *provider.Provider, args []string, _ i
 	return nil
 }
 
-func opGetLastActivity(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opGetLastActivity(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	act, err := p.GetLastActivity(ctx, args[0])
 	if err != nil {
 		return err
@@ -656,7 +666,7 @@ func opGetLastActivity(ctx context.Context, p *provider.Provider, args []string,
 // opIdle answers gc's point-in-time idle snapshot (runtime.IdleSnapshotProvider):
 // one word, idle, busy or indeterminate, and exit 0 for every state because the
 // state is the payload. A failed read is an error and exits 1, never idle.
-func opIdle(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opIdle(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	state, err := p.IdleSnapshot(ctx, args[0])
 	if err != nil {
 		return err
@@ -669,7 +679,7 @@ func opIdle(ctx context.Context, p *provider.Provider, args []string, _ io.Reade
 // (runtime.ProgramStatusProvider): one JSON line, exit 0 for every reading
 // because the reading is the payload. A failed read is an error and exits 1,
 // never a reading.
-func opProgramStatus(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opProgramStatus(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	reading, err := p.ProgramStatus(ctx, args[0])
 	if err != nil {
 		return err
@@ -682,7 +692,7 @@ func opProgramStatus(ctx context.Context, p *provider.Provider, args []string, _
 	return err
 }
 
-func opIsAttached(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opIsAttached(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	attached, err := p.IsAttached(ctx, args[0])
 	if err != nil {
 		return err
@@ -691,7 +701,7 @@ func opIsAttached(ctx context.Context, p *provider.Provider, args []string, _ io
 	return nil
 }
 
-func opSetMeta(ctx context.Context, p *provider.Provider, args []string, stdin io.Reader, _ io.Writer) error {
+func opSetMeta(ctx context.Context, p rppProvider, args []string, stdin io.Reader, _ io.Writer) error {
 	value, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("read value: %w", err)
@@ -699,7 +709,7 @@ func opSetMeta(ctx context.Context, p *provider.Provider, args []string, stdin i
 	return p.SetMeta(ctx, args[0], args[1], string(value))
 }
 
-func opGetMeta(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, out io.Writer) error {
+func opGetMeta(ctx context.Context, p rppProvider, args []string, _ io.Reader, out io.Writer) error {
 	value, err := p.GetMeta(ctx, args[0], args[1])
 	if err != nil {
 		return err
@@ -708,6 +718,6 @@ func opGetMeta(ctx context.Context, p *provider.Provider, args []string, _ io.Re
 	return err
 }
 
-func opRemoveMeta(ctx context.Context, p *provider.Provider, args []string, _ io.Reader, _ io.Writer) error {
+func opRemoveMeta(ctx context.Context, p rppProvider, args []string, _ io.Reader, _ io.Writer) error {
 	return p.RemoveMeta(ctx, args[0], args[1])
 }
