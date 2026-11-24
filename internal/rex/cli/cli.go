@@ -438,6 +438,30 @@ func (c *Client) BlockProgramStatus(ctx context.Context, sessionID rex.SessionID
 	return status, nil
 }
 
+// BlockInputMode returns a pane's terminal input mode (docs/REX-CONTRACT.md
+// §4 input_mode). canonical and echo must both be JSON booleans: a reply
+// missing either, or carrying null, is a decode error, so a caller never reads
+// an absent field as false. signals is optional and defaults to false; unknown
+// fields are ignored.
+func (c *Client) BlockInputMode(ctx context.Context, sessionID rex.SessionID, block rex.BlockID) (rex.InputMode, error) {
+	var reply struct {
+		Echo      *bool `json:"echo"`
+		Canonical *bool `json:"canonical"`
+		Signals   *bool `json:"signals"`
+	}
+	if err := c.blockMethod(ctx, sessionID, block, "input_mode", nil, &reply); err != nil {
+		return rex.InputMode{}, err
+	}
+	if reply.Echo == nil || reply.Canonical == nil {
+		return rex.InputMode{}, fmt.Errorf("decode input_mode: echo and canonical must both be booleans")
+	}
+	mode := rex.InputMode{Echo: *reply.Echo, Canonical: *reply.Canonical}
+	if reply.Signals != nil {
+		mode.Signals = *reply.Signals
+	}
+	return mode, nil
+}
+
 // Events is not implemented in v1; activity tracking arrives in Phase 3.
 func (c *Client) Events(context.Context, rex.SessionID) (<-chan rex.Event, error) {
 	return nil, fmt.Errorf("cli: Events is not implemented")

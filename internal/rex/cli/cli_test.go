@@ -588,3 +588,47 @@ func TestNoServerFlagByDefault(t *testing.T) {
 		t.Errorf("argv = %v, want %v", calls[0], want)
 	}
 }
+
+// TestBlockInputModeDecodes pins the input_mode reply mapping (#48 REQ-001).
+// canonical and echo must be explicit JSON booleans: a reply missing either,
+// or carrying null, is a decode error, never false. signals may be absent
+// (false) and unknown fields are ignored.
+func TestBlockInputModeDecodes(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		reply   string
+		want    rex.InputMode
+		wantErr bool
+	}{
+		{"secret read", `{"echo":false,"canonical":true,"signals":true}`, rex.InputMode{Echo: false, Canonical: true, Signals: true}, false},
+		{"readline", `{"echo":false,"canonical":false,"signals":true}`, rex.InputMode{Echo: false, Canonical: false, Signals: true}, false},
+		{"signals absent, unknown field ignored", `{"echo":true,"canonical":true,"vmin":1}`, rex.InputMode{Echo: true, Canonical: true}, false},
+		{"echo missing", `{"canonical":true,"signals":true}`, rex.InputMode{}, true},
+		{"echo null", `{"echo":null,"canonical":true}`, rex.InputMode{}, true},
+		{"canonical missing", `{"echo":false}`, rex.InputMode{}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := newFakeRex(t)
+			fake.respond(t, "input_mode", c.reply)
+			cl := &cli.Client{Bin: fake.bin}
+
+			got, err := cl.BlockInputMode(context.Background(), "session:a", "block:dog-1")
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("BlockInputMode = %+v, nil; want a decode error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BlockInputMode: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("BlockInputMode = %+v, want %+v", got, c.want)
+			}
+			args := blockMethodArgs(t, fake.calls(t))
+			if args["method"] != "input_mode" || args["session_id"] != "session:a" || args["block_id"] != "block:dog-1" {
+				t.Errorf("block.method args = %v, want input_mode on session:a/block:dog-1", args)
+			}
+		})
+	}
+}

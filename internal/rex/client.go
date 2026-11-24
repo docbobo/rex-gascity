@@ -111,6 +111,15 @@ type ProgramStatus struct {
 	Records []ProgramStatusRecord
 }
 
+// InputMode is a pane's terminal input mode, the input_mode method reply.
+// Canonical is a line-buffered (cooked) read; Echo is whether typed input is
+// echoed back; Signals is whether ctrl+c and friends raise signals.
+type InputMode struct {
+	Echo      bool
+	Canonical bool
+	Signals   bool
+}
+
 // SessionView is the session snapshot from session.view.
 type SessionView struct {
 	SessionID      SessionID
@@ -180,6 +189,9 @@ type Client interface {
 	BlockClear(ctx context.Context, sessionID SessionID, blockID BlockID) error
 	// BlockProgramStatus returns the program-reported status of a pane.
 	BlockProgramStatus(ctx context.Context, sessionID SessionID, blockID BlockID) (ProgramStatus, error)
+	// BlockInputMode returns the pane's terminal input mode. A reply without
+	// explicit echo and canonical booleans is an error, never false.
+	BlockInputMode(ctx context.Context, sessionID SessionID, blockID BlockID) (InputMode, error)
 
 	Events(ctx context.Context, sessionID SessionID) (<-chan Event, error)
 }

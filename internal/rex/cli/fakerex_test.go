@@ -57,6 +57,7 @@ if [ "$key" = "block.method" ]; then
     *'"method":"clear"'*) key=clear ;;
     *'"method":"size"'*) key=size ;;
     *'"method":"program_status"'*) key=program_status ;;
+    *'"method":"input_mode"'*) key=input_mode ;;
   esac
 fi
 # A scripted failure: <key>.exit holds the exit code to fail with.

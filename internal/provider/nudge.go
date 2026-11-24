@@ -381,6 +381,17 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 		}
 	}
 
+	// A pane reading a secret (a password prompt) must not receive the text:
+	// it would be submitted as a password attempt (#48). The check runs in
+	// both modes, after the Wait gate and right before the baseline read and
+	// the write, to keep the check-then-write window short. A failed read
+	// fails open (readingSecret).
+	if p.readingSecret(ctx, binding) {
+		err := fmt.Errorf("%w: %s (input_mode canonical, echo off)", ErrSecretRead, name)
+		return NudgeReport{State: baseline.State, Kind: baseline.Kind},
+			&InputOutcomeError{Outcome: "pending_interaction", Detail: err.Error(), Err: err}
+	}
+
 	// Without a program_status record, the pane's rendered output is the only
 	// available confirmation signal. turnBaseline reads it now, before typing.
 	base := turnBaseline(p.observePane(ctx, binding, baseline))

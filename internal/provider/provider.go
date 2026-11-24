@@ -197,6 +197,9 @@ type Provider struct {
 	// onto Provider.
 	nudge nudgeConfig
 
+	// inputModeProbeTimeout bounds one input_mode read of the secret-read
+	// guard (inputmode.go). Zero means defaultInputModeProbeTimeout.
+	inputModeProbeTimeout time.Duration
 	// startBudget bounds the whole start op when the op context carries no
 	// earlier deadline; preStartHookTimeout bounds one pre_start hook, capped
 	// by whatever remains of startBudget (see start).

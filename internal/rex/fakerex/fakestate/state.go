@@ -110,6 +110,18 @@ type Block struct {
 	Cwd           string   `json:"cwd,omitempty"`
 	PID           int      `json:"pid,omitempty"`
 	ProgramStatus []Record `json:"program_status,omitempty"`
+	// InputMode is what the input_mode block method answers. Nil answers the
+	// default {echo:true, canonical:false, signals:true}. Tests set it through
+	// fakerex.Fake.Update.
+	InputMode *InputMode `json:"input_mode,omitempty"`
+}
+
+// InputMode is a block's terminal input mode, as the input_mode method
+// reports it.
+type InputMode struct {
+	Echo      bool `json:"echo"`
+	Canonical bool `json:"canonical"`
+	Signals   bool `json:"signals"`
 }
 
 // Node is one layout tree node: a block leaf, or a binary split.
