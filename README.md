@@ -2,9 +2,9 @@
 
 A Gas City runtime pack. Runtime `rex` runs agent sessions as native Rex panes instead of tmux panes. The pack ships one executable, `gc-runtime-rex`. It speaks the Runtime Provider Protocol (RPP v0) and drives the `rex` CLI. Gas City runs it once per operation.
 
-## Status: released, v2026.11.02
+## Status: released, v2026.11.03
 
-Version `2026.11.02` (tag `v2026.11.02`) is the current release. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
+Version `2026.11.03` (tag `v2026.11.03`) is the current release. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
 
 The installer never replaces a working provider with an asset that cannot answer `inventory`. A test fixture or a broken release cannot break a city (PR #38).
 
@@ -43,11 +43,11 @@ sessions as native Rex panes instead of tmux panes. It ships one executable,
 matching release binary.
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.02
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.03
 ```
 
-`pack/pack.toml` declares `version = "2026.11.02"`, and the release tag is
-`v2026.11.02`. `--version` takes the bare version, so the tag must be pushed
+`pack/pack.toml` declares `version = "2026.11.03"`, and the release tag is
+`v2026.11.03`. `--version` takes the bare version, so the tag must be pushed
 first. The provider binary installed for that version is the one a session
 runs. A provider that reports another version fails the doctor check, which
 names the mismatch.
@@ -85,13 +85,13 @@ session". A green check means the provider handshakes, its version matches
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.02
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.03
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
 ```
 
-A caret constraint tracks the major line. `--version '^2026.11.02'` matches later 2026 releases and not a 2027 release. `gc import upgrade rex` then moves to the newest matching tag.
+A caret constraint tracks the major line. `--version '^2026.11.03'` matches later 2026 releases and not a 2027 release. `gc import upgrade rex` then moves to the newest matching tag.
 
 The cache has no eviction. Stale `<version>/<os>-<arch>` directories stay after an upgrade and you remove them by hand. `GC_RUNTIME_CACHE_DIR` only redirects new lookups.
 
@@ -135,7 +135,7 @@ One check: `rex-gascity-runtime:rex-binary`. Every run is read-only. It never st
 | Shim | `[pack] version`, `bin/_lib.sh` or the cache path is missing. No release asset exists for this platform. | |
 | rex CLI | It is not on `PATH` (or in `GC_REX_BIN`). It is not executable. It is older than `pack/rex-min-version`. | The version cannot be determined. |
 
-The provider version compares equal after a leading `v` and any `+build-metadata` suffix are stripped. A tagged `v2026.11.02` and a `-ldflags`-stamped `2026.11.02` match. `make build` stamps `[pack] version`.
+The provider version compares equal after a leading `v` and any `+build-metadata` suffix are stripped. A tagged `v2026.11.03` and a `-ldflags`-stamped `2026.11.03` match. `make build` stamps `[pack] version`.
 
 The check compares versions only. It cannot tell two builds of one version apart.
 
