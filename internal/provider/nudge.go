@@ -225,7 +225,109 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 	if err != nil {
 		return NudgeReport{}, err
 	}
-	return p.nudgeReportBinding(ctx, binding, text, mode)
+	res := p.deliverPaneText(ctx, paneTextRequest{Binding: binding, Text: text, Mode: mode})
+	return res.Report, res.Err
+}
+
+// paneTextRequest is one delivery of text into a resolved pane: the gates, the
+// write and submit under one deadline, the confirmation poll, and the optional
+// resend ladder. Nudge and startup delivery both build one, so the ladder's
+// call order lives in one place; the caller maps the result to its own marker
+// or error.
+type paneTextRequest struct {
+	Binding Binding
+	Text    string
+	Mode    NudgeMode
+	// Backoffs is the delay before each resend after a delivered-but-
+	// unconfirmed attempt. Empty disables resending.
+	Backoffs []time.Duration
+	// ClearKey empties the draft line before each resend; empty presses none.
+	// A failed clear stops the ladder, because pasting onto a draft that may
+	// still hold the first copy duplicates the text.
+	ClearKey string
+}
+
+// paneTextAttempt is one attempt in the shared ladder: the backoff that
+// preceded it (zero for the first), its report, and the error that ended it.
+type paneTextAttempt struct {
+	Attempt int
+	Backoff time.Duration
+	Report  NudgeReport
+	Err     error
+}
+
+// paneTextResult is the last attempt's report and error, plus the attempts
+// that ran. LateTurn and Withheld name the two ladder stops that are not a
+// delivery failure: a turn that started after the window, and a pane reading
+// a secret.
+type paneTextResult struct {
+	Report   NudgeReport
+	Err      error
+	Attempts []paneTextAttempt
+	LateTurn bool
+	Withheld bool
+}
+
+// deliverPaneText runs the shared pane-delivery ladder: one gated write,
+// submit and confirmation per attempt, with the caller's resend delays. It
+// stops on a confirmed delivery, a failure, a secret read, or a late turn, and
+// reports every attempt so the caller can record its timing.
+func (p *Provider) deliverPaneText(ctx context.Context, req paneTextRequest) paneTextResult {
+	var res paneTextResult
+	res.Attempts = make([]paneTextAttempt, 0, 1+len(req.Backoffs))
+	for attempt := 1; ; attempt++ {
+		var backoff time.Duration
+		if attempt > 1 {
+			backoff = req.Backoffs[attempt-2]
+			if !p.sleepStartupBackoff(ctx, backoff) {
+				return res
+			}
+			// The turn may have started late: gc checks for a busy pane after
+			// the backoff and before resending, so a nudge that landed a moment
+			// after the confirmation window is not typed twice.
+			snap, err := p.programStatusSnapshot(ctx, req.Binding)
+			if err != nil {
+				snap = programStatusSnapshot{}
+			}
+			if lateTurnVerdict(p.observePane(ctx, req.Binding, snap)) == verdictBusy {
+				res.LateTurn = true
+				return res
+			}
+			// ctrl+u is VKILL in a cooked read: pressed into a password prompt
+			// it would erase what a person is typing. Read the mode before the
+			// clear and stop resending on a secret read (#48). A failed read
+			// fails open.
+			if p.readingSecret(ctx, req.Binding) {
+				res.Withheld = true
+				return res
+			}
+			if req.ClearKey != "" {
+				if err := p.client.SendKeys(ctx, req.Binding.SessionID, req.Binding.BlockID, req.ClearKey); err != nil {
+					res.Err = fmt.Errorf("clear the draft line before a resend: %w", err)
+					return res
+				}
+			}
+		}
+		report, err := p.nudgeReportBinding(ctx, req.Binding, req.Text, req.Mode)
+		res.Report, res.Err = report, err
+		res.Attempts = append(res.Attempts, paneTextAttempt{Attempt: attempt, Backoff: backoff, Report: report, Err: err})
+		if err == nil && report.Confirmed {
+			return res
+		}
+		// The pre-clear read passed, but an attempt's own read then saw a
+		// secret read: the guard is a snapshot check, so a ctrl+u already
+		// pressed stays pressed. Nothing more is typed and resending stops.
+		if errors.Is(err, ErrSecretRead) {
+			res.Withheld = true
+			return res
+		}
+		if err != nil {
+			return res
+		}
+		if attempt-1 >= len(req.Backoffs) {
+			return res
+		}
+	}
 }
 
 // checkNudgeText rejects text that is not UTF-8 before any Rex call, so no

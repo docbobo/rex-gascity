@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -11,8 +10,9 @@ import (
 )
 
 // Startup delivery: the policy Start applies to cfg.Nudge after the pane is
-// launched. It sits on the nudge core in nudge.go (nudgeReportBinding) and
-// shares its tunables (nudgeConfig).
+// launched. It waits for readiness, then hands the text to the shared pane
+// delivery ladder in nudge.go (deliverPaneText), which it also uses for the
+// resend attempts; it shares the nudge tunables (nudgeConfig).
 
 // Defaults for the bounded startup readiness wait. The window mirrors gc's
 // own defaultReadyProbeTimeout (tmux adapter); the shorter settle delay covers
@@ -145,78 +145,52 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		return nil
 	}
 
-	report, err := p.nudgeReportBinding(ctx, binding, cfg.Nudge, NudgeModeImmediate)
-	timing.WriteMS = millis(report.Write)
-	timing.ConfirmMS = millis(report.Confirm)
-	timing.Confirmed = err == nil && report.Confirmed
-	if err == nil && report.Confirmed {
+	res := p.deliverPaneText(ctx, paneTextRequest{
+		Binding:  binding,
+		Text:     cfg.Nudge,
+		Mode:     NudgeModeImmediate,
+		Backoffs: p.nudge.startupNudgeBackoffs,
+		ClearKey: startupClearKey,
+	})
+	p.recordStartupAttempts(&timing, res)
+	switch {
+	case res.LateTurn:
+		// The turn started after the confirmation window: the earlier submit
+		// landed, so a resend would enqueue a second copy.
+		p.clearStartupDeliveryUnconfirmed(ctx, name)
+		return nil
+	case res.Withheld:
+		// A pane reading a secret got nothing typed (#48). That is a withhold,
+		// not a failed delivery, and never a failed start.
+		p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
+		return nil
+	case res.Err == nil && res.Report.Confirmed:
 		p.clearStartupDeliveryUnconfirmed(ctx, name)
 		return nil
 	}
-	// A pane reading a secret got nothing typed (#48). That is a withhold,
-	// not a failed delivery, and never a failed start.
-	if errors.Is(err, ErrSecretRead) {
-		p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
-		return nil
-	}
-	if err != nil {
-		p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
-		return nil
-	}
-
-	attempt := 1
-	for _, backoff := range p.nudge.startupNudgeBackoffs {
-		if ctx.Err() != nil {
-			break
-		}
-		if !p.sleepStartupBackoff(ctx, backoff) {
-			break
-		}
-		// The turn may have started late: gc checks for a busy pane after
-		// the backoff and before resending, so a nudge that landed a
-		// moment after the confirmation window is not typed twice.
-		snap, snapErr := p.programStatusSnapshot(ctx, binding)
-		if snapErr != nil {
-			snap = programStatusSnapshot{}
-		}
-		if lateTurnVerdict(p.observePane(ctx, binding, snap)) == verdictBusy {
-			p.clearStartupDeliveryUnconfirmed(ctx, name)
-			return nil
-		}
-		// ctrl+u is VKILL in a cooked read: pressed into a password prompt it
-		// would erase what a person is typing. Read the mode before the clear
-		// and stop resending on a secret read (#48). A failed read fails open.
-		if p.readingSecret(ctx, binding) {
-			p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
-			return nil
-		}
-		attempt++
-		rt := retryTiming{Attempt: attempt, BackoffMS: millis(backoff)}
-		// Clear the still-drafted line before re-typing, mirroring gc's
-		// clear+paste+submit resend cycle.
-		_ = p.client.SendKeys(ctx, binding.SessionID, binding.BlockID, startupClearKey)
-		report, err = p.nudgeReportBinding(ctx, binding, cfg.Nudge, NudgeModeImmediate)
-		rt.WriteMS = millis(report.Write)
-		rt.ConfirmMS = millis(report.Confirm)
-		rt.Confirmed = err == nil && report.Confirmed
-		timing.Attempts = append(timing.Attempts, rt)
-		if err == nil && report.Confirmed {
-			p.clearStartupDeliveryUnconfirmed(ctx, name)
-			return nil
-		}
-		// The pre-clear read passed, but the resend's own read then saw a
-		// secret read: the guard is a snapshot check, so the ctrl+u already
-		// pressed stays pressed. Nothing more is typed and resending stops.
-		if errors.Is(err, ErrSecretRead) {
-			p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
-			return nil
-		}
-		if err != nil {
-			break
-		}
-	}
-	p.recordStartupDeliveryUnconfirmed(ctx, binding, report, err)
+	p.recordStartupDeliveryUnconfirmed(ctx, binding, res.Report, res.Err)
 	return nil
+}
+
+// recordStartupAttempts copies the shared ladder's per-attempt timing into the
+// startup diagnostic. The first attempt is the top-level write/confirm pair;
+// each resend is a retry row.
+func (p *Provider) recordStartupAttempts(timing *startupTiming, res paneTextResult) {
+	for i, a := range res.Attempts {
+		if i == 0 {
+			timing.WriteMS = millis(a.Report.Write)
+			timing.ConfirmMS = millis(a.Report.Confirm)
+			timing.Confirmed = a.Err == nil && a.Report.Confirmed
+			continue
+		}
+		timing.Attempts = append(timing.Attempts, retryTiming{
+			Attempt:   a.Attempt,
+			BackoffMS: millis(a.Backoff),
+			WriteMS:   millis(a.Report.Write),
+			ConfirmMS: millis(a.Report.Confirm),
+			Confirmed: a.Err == nil && a.Report.Confirmed,
+		})
+	}
 }
 
 // startupTiming is the per-stage startup-nudge timing left in
