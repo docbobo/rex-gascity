@@ -46,7 +46,7 @@ Three gaps matter:
 
 | Query | Evidence in this tree | Verdict |
 | --- | --- | --- |
-| `go/command-injection` | `internal/provider/provider.go:1293` runs `exec.CommandContext(ctx, "/bin/sh", "-c", command)` in `runPreStart`. The test binary at `internal/rex/fakerex/fakebinary/main.go:1025` does the same. | The only high-value query. `command` comes from pack `pre_start` config, not from protocol JSON, so no alert is expected today. It is the guard if a bead or agent field ever reaches that call. |
+| `go/command-injection` | `internal/provider/provider.go:1304` runs `exec.CommandContext(ctx, "/bin/sh", "-c", command)` in `runPreStart`. The `command` argument is `cfg.PreStart[i]`, and `opStart` (`cmd/gc-runtime-rex/main.go:415`) fills that field by JSON-decoding the `pre_start` array from the start op's stdin (`startConfig.PreStart`, `main.go:154`, copied at `main.go:433`). gc v1.5.1 populates the field from agent config plus engine-generated hooks (`cmd/gc/session_lifecycle_parallel.go:1085-1089,1501-1538`) and sends it in the same JSON (`internal/runtime/exec/json.go:35,59` and `docs/reference/exec-session-provider.md:230,328-333`). | The only high-value query. Pack/city config is one upstream source, not the only one: the value reaches the sink over the protocol message, so a bead or agent field that reaches `pre_start` would arrive by the same path. No alert is expected today, but not because the source is trusted config: the value crosses a process boundary as stdin JSON, so CodeQL sees no same-process source-to-sink path from the `exec.CommandContext` call. Whether CodeQL models `os.Stdin` as a remote source is `unverified`. An alert would appear only for a future in-process path that passes a value straight to `runPreStart`. |
 | `go/path-injection` | 1218 `filepath.Join` uses in first-party Go. State and lock files sit under the user's city dir, for example `internal/provider/lock.go:120` and `:163` (mode `0o644`). | Medium. Session and block identifiers arrive over the protocol. This is the query most likely to give a first alert. |
 | `go/clear-text-logging` | 406 `os.Getenv` uses. Trace and state files record argv and environment. | Medium and worth having. Env values may carry tokens. |
 | `go/log-injection` | no network log sink | Low. |
@@ -192,4 +192,4 @@ Follow-ups, out of scope here:
   for build modes per language.
 - `rex-gascity` at `origin/main` `15c387e`: `.github/workflows/ci.yml`,
   `.github/workflows/release.yml`, `.golangci.yml`, `go.mod`,
-  `internal/provider/provider.go:1293`, `internal/provider/lock.go:120,163`.
+  `internal/provider/provider.go:1304`, `internal/provider/lock.go:120,163`.
