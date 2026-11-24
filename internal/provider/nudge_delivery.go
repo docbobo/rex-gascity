@@ -168,7 +168,11 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		// The turn may have started late: gc checks for a busy pane after
 		// the backoff and before resending, so a nudge that landed a
 		// moment after the confirmation window is not typed twice.
-		if snap, snapErr := p.programStatusSnapshot(ctx, binding); snapErr == nil && (snap.State == "working" || snap.State == "blocked") {
+		snap, snapErr := p.programStatusSnapshot(ctx, binding)
+		if snapErr != nil {
+			snap = programStatusSnapshot{}
+		}
+		if lateTurnVerdict(p.observePane(ctx, binding, snap)) == verdictBusy {
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
 			return nil
 		}

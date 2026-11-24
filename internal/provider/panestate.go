@@ -163,6 +163,61 @@ func screenWithholdsFirstTurn(o paneObservation) bool {
 	return err == nil && withholdsFirstTurn(screen, "")
 }
 
+// turnBaseline readies a nudge's baseline observation before the text is
+// typed. Without a status record the screen is the only confirmation signal,
+// so it is read now, while it still predates the typed text. With a record the
+// screen is never read.
+func turnBaseline(o paneObservation) paneObservation {
+	if !o.status.Present {
+		_, _ = o.screen.get()
+	}
+	return o
+}
+
+// turnVerdict answers nudge confirmation for one poll. A status record that
+// shows the turn started is busy with program_status evidence, and the screen
+// is not read. Otherwise, when the baseline had no record and its screen read
+// succeeded, the poll reads the screen and a changed fingerprint is busy with
+// format_poll evidence. Anything else is waiting.
+func turnVerdict(baseline, now paneObservation) (paneVerdict, NudgeSource) {
+	if now.status.Present && turnStarted(baseline.status, now.status) {
+		return verdictBusy, NudgeSourceProgramStatus
+	}
+	if baseline.status.Present {
+		return verdictWaiting, ""
+	}
+	before, err := baseline.screen.get()
+	if err != nil {
+		return verdictWaiting, ""
+	}
+	if after, err := now.screen.get(); err == nil && formatFingerprint(after) != formatFingerprint(before) {
+		return verdictBusy, NudgeSourceFormatPoll
+	}
+	return verdictWaiting, ""
+}
+
+// lateTurnVerdict answers the resend ladder's check for a turn that started
+// after the confirmation window: an untrimmed working or blocked record (D5)
+// is busy, anything else is waiting. It never reads the screen.
+func lateTurnVerdict(o paneObservation) paneVerdict {
+	switch o.status.State {
+	case "working", "blocked":
+		return verdictBusy
+	default:
+		return verdictWaiting
+	}
+}
+
+// turnStarted reports whether after a nudge the program moved from not-working
+// to working, or reported a newer updated_at. A baseline that was already
+// working (an immediate override) can only be confirmed by a newer timestamp.
+func turnStarted(before, after programStatusSnapshot) bool {
+	if before.Present && after.Present && !after.Latest.IsZero() && after.Latest.After(before.Latest) {
+		return true
+	}
+	return after.State == "working" && before.State != "working"
+}
+
 // screenShowsBusyMarker reports whether a busyMarkers line is on screen.
 func screenShowsBusyMarker(screen string) bool {
 	for _, marker := range busyMarkers {
