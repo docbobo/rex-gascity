@@ -518,3 +518,32 @@ func TestSendKeysBadKeyIsRejectedOutcome(t *testing.T) {
 		t.Errorf("block ops = %v, keys = %+v; want none", ops(fake), fake.SentKeys)
 	}
 }
+
+// TestNudgeMissingPaneIsGoneOutcome (#43 REQ-005, E4): a nudge to an unknown
+// name or to a pane whose program exited is a typed "gone" in the provider,
+// and still wraps ErrSessionNotFound.
+func TestNudgeMissingPaneIsGoneOutcome(t *testing.T) {
+	t.Run("unknown name", func(t *testing.T) {
+		p := provider.New("acme", faketest.New())
+		err := p.Nudge(context.Background(), "Indigo--ghost", "hello")
+		if got := outcomeOf(t, err); got.Outcome != "gone" {
+			t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+		}
+		if !errors.Is(err, provider.ErrSessionNotFound) {
+			t.Errorf("err = %v, want ErrSessionNotFound", err)
+		}
+	})
+	t.Run("dead program", func(t *testing.T) {
+		fake, p := started(t)
+		fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+			"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+		}
+		err := p.Nudge(context.Background(), "Indigo--dog-1", "hello")
+		if got := outcomeOf(t, err); got.Outcome != "gone" {
+			t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+		}
+		if !errors.Is(err, provider.ErrSessionNotFound) {
+			t.Errorf("err = %v, want ErrSessionNotFound", err)
+		}
+	})
+}

@@ -218,9 +218,9 @@ func (p *Provider) NudgeReport(ctx context.Context, name, text string, mode Nudg
 	if err := ctx.Err(); err != nil {
 		return NudgeReport{}, fmt.Errorf("nudge %s: before typing: %w", name, err)
 	}
-	binding, err := p.livePane(ctx, name)
+	binding, err := p.resolveInputPane(ctx, inputNudge, name)
 	if err != nil {
-		return NudgeReport{}, nudgeLookupOutcome(err)
+		return NudgeReport{}, err
 	}
 	return p.nudgeReportBinding(ctx, binding, text, mode)
 }
@@ -320,18 +320,6 @@ func claimRecordHeld(out string, sessionID string) bool {
 		return false
 	}
 	return true
-}
-
-// nudgeLookupOutcome classifies a pre-send lookup failure into an RPP input
-// outcome. An unreachable server is unavailable. A missing or dead session
-// keeps ErrSessionNotFound, which the dispatcher types as exit 80 gone for a
-// driving op (GCREX-70); any other lookup failure stays a plain error (exit 1),
-// matching the pack's untyped list failure.
-func nudgeLookupOutcome(err error) error {
-	if errors.Is(err, rex.ErrUnavailable) {
-		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
-	}
-	return err
 }
 
 // nudgeSendOutcome classifies a failed write or submit into an RPP input
