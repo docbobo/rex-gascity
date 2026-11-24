@@ -156,12 +156,21 @@ jobs:
             echo "rex is not the pinned $REX_PIN" >&2
             exit 1
           fi
-          # pack/rex-min-version must equal REX_PIN, so the doctor check and
-          # the conformance pin cannot drift apart.
+          # pack/rex-min-version names the newest RELEASED Rex app. REX_PIN pins
+          # a conformance archive that may be an unreleased preview. They have
+          # different jobs, so the minimum may lag the pin but must never lead
+          # it.
+          . pack/bin/_lib.sh
           min_version=$(tr -d '[:space:]' < pack/rex-min-version)
-          if [ "$min_version" != "$REX_PIN" ]
+          rank=$(version_cmp "$min_version" "$REX_PIN")
+          if [ -z "$rank" ]
           then
-            echo "pack/rex-min-version ($min_version) does not match REX_PIN ($REX_PIN)" >&2
+            echo "pack/rex-min-version ($min_version) is not a Rex version" >&2
+            exit 1
+          fi
+          if [ "$rank" = 1 ]
+          then
+            echo "pack/rex-min-version ($min_version) is newer than REX_PIN ($REX_PIN); the user minimum must not exceed the conformance pin" >&2
             exit 1
           fi
 
