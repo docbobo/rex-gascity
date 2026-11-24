@@ -21,7 +21,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/docbobo/rex-gascity/internal/launch"
 	"github.com/docbobo/rex-gascity/internal/provider"
@@ -215,15 +214,6 @@ var ops = map[string]opSpec{
 	"kill-object":       {1, "kill-object <name>", "KillObject", opKillObject},
 }
 
-// inputOutcomeOps are the four driving ops whose failures are typed by
-// input-outcome (gc internal/runtime/exec/outcome.go, inputOutcomeOp).
-var inputOutcomeOps = map[string]bool{
-	"nudge":            true,
-	"send-keys":        true,
-	"interrupt":        true,
-	"clear-scrollback": true,
-}
-
 // runWithContext dispatches one RPP op and returns the process exit code.
 // Failures write nothing to stdout; the op's output is buffered and flushed
 // only on success. ctx is the op's parent: its cancellation (a SIGTERM caught
@@ -322,19 +312,13 @@ func runWithContext(ctx context.Context, args []string, stdin io.Reader, stdout,
 }
 
 // handlerExitCode maps a handler error to the process exit code and reports
-// it on stderr, so tracing can record the same code the process returns.
+// it on stderr, so tracing can record the same code the process returns. The
+// provider decides every input-op outcome (internal/provider/input.go); the
+// dispatcher only renders it.
 func handlerExitCode(op string, err error, stdout, stderr io.Writer) int {
-	var rejected *provider.KeyRejectedError
-	if errors.As(err, &rejected) {
-		return writeInputOutcome(stdout, stderr, "rejected", rejected.Error())
-	}
 	var outcome *provider.InputOutcomeError
 	if errors.As(err, &outcome) {
 		return writeInputOutcome(stdout, stderr, outcome.Outcome, outcome.Detail)
-	}
-	// A driving op's missing or dead pane is RPP's typed `gone`.
-	if inputOutcomeOps[op] && errors.Is(err, provider.ErrSessionNotFound) {
-		return writeInputOutcome(stdout, stderr, "gone", err.Error())
 	}
 	var coded *exitError
 	if errors.As(err, &coded) {
@@ -542,15 +526,6 @@ func opNudge(ctx context.Context, p *provider.Provider, args []string, stdin io.
 	text, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("read message: %w", err)
-	}
-	if !utf8.Valid(text) {
-		// json.Marshal would rewrite the bytes to U+FFFD and type corrupted
-		// text. Reject before touching Rex so nothing reaches the pane. The
-		// detail matches herdr-core's failed nudge wording.
-		return &provider.InputOutcomeError{
-			Outcome: "rejected",
-			Detail:  "the nudge text is not UTF-8; nothing was typed",
-		}
 	}
 	report, err := p.NudgeReport(ctx, args[0], string(text), provider.NudgeModeWait)
 	if err != nil {
