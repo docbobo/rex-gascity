@@ -211,8 +211,19 @@ func relBelow(rel string) (string, bool) {
 // component-at-a-time O_NOFOLLOW staging (herdrcore/staging.py:17,68-129).
 // os.Root enforces the boundary in the kernel; the explicit Lstat walk turns a
 // destination symlink into an error instead of a followed link.
+//
+// A stageDest lives for one staging pass. It remembers each directory it has
+// verified (no symlink components) or created, so a directory holding many
+// files is checked once, not once per file. The cache holds only directories
+// this pass vetted; a path it has not seen is always checked in full. Source
+// trees never carry symlinks (copyTreeInto refuses them), so nothing in a pass
+// can plant one; a concurrent writer racing the work directory is outside what
+// the per-file Lstat walk covered either (it was check-then-use too), and
+// os.Root still keeps every operation inside the work directory.
 type stageDest struct {
 	root *os.Root
+	// dirs holds work-dir-relative directories already vetted in this pass.
+	dirs map[string]struct{}
 }
 
 // newStageDest opens workDir as the staging root, creating it if needed.
@@ -224,34 +235,63 @@ func newStageDest(workDir string) (*stageDest, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &stageDest{root: root}, nil
+	return &stageDest{root: root, dirs: make(map[string]struct{})}, nil
 }
 
 func (d *stageDest) close() error { return d.root.Close() }
 
 // rejectSymlink fails when any existing component of rel is a symlink.
 func (d *stageDest) rejectSymlink(rel string) error {
+	_, err := d.lstatChecked(rel)
+	return err
+}
+
+// lstatChecked walks rel one component at a time and fails when an existing
+// component is a symlink. It returns the Lstat of the final component, or nil
+// when that component does not exist. Directories vetted earlier in the pass
+// are skipped, so only components not seen before cost a syscall.
+func (d *stageDest) lstatChecked(rel string) (os.FileInfo, error) {
 	if rel == "" || rel == "." {
-		return nil
+		return nil, nil
 	}
 	cur := "."
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+	var info os.FileInfo
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
 		if part == "" || part == "." {
 			continue
 		}
 		cur = filepath.Join(cur, part)
-		info, err := d.root.Lstat(cur)
+		// The final component is always checked: callers need its type, and a
+		// vetted directory at a file's path must still read as a non-file.
+		if _, ok := d.dirs[cur]; ok && i < len(parts)-1 {
+			continue
+		}
+		var err error
+		info, err = d.root.Lstat(cur)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				return nil
+				return nil, nil
 			}
-			return err
+			return nil, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symlink or not a directory", cur)
+			return nil, fmt.Errorf("%s is a symlink or not a directory", cur)
 		}
 	}
-	return nil
+	return info, nil
+}
+
+// markDirs records rel and every ancestor as vetted directories.
+func (d *stageDest) markDirs(rel string) {
+	cur := "."
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		d.dirs[cur] = struct{}{}
+	}
 }
 
 // mkdirAll creates rel inside the root, refusing to pass through a symlink.
@@ -259,10 +299,17 @@ func (d *stageDest) mkdirAll(rel string) error {
 	if rel == "" || rel == "." {
 		return nil
 	}
+	if _, ok := d.dirs[filepath.Clean(rel)]; ok {
+		return nil
+	}
 	if err := d.rejectSymlink(rel); err != nil {
 		return err
 	}
-	return d.root.MkdirAll(rel, 0o755)
+	if err := d.root.MkdirAll(rel, 0o755); err != nil {
+		return err
+	}
+	d.markDirs(rel)
+	return nil
 }
 
 // isDir reports whether rel is an existing directory in the root.
@@ -283,10 +330,11 @@ func (d *stageDest) writeFile(rel, src string, mode os.FileMode) error {
 	if err := d.mkdirAll(filepath.Dir(rel)); err != nil {
 		return err
 	}
-	if err := d.rejectSymlink(rel); err != nil {
+	info, err := d.lstatChecked(rel)
+	if err != nil {
 		return err
 	}
-	if info, err := d.root.Lstat(rel); err == nil && !info.Mode().IsRegular() {
+	if info != nil && !info.Mode().IsRegular() {
 		return fmt.Errorf("cannot stage %s over %s: not a regular file", src, rel)
 	}
 	data, err := os.ReadFile(src)

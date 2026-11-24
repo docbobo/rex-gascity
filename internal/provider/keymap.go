@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrKeyRejected is the sentinel wrapped by KeyRejectedError. Callers classify
@@ -181,14 +182,32 @@ func literalKeys(key string) ([]string, bool) {
 		case r == ' ':
 			out = append(out, "space")
 		case r >= 'A' && r <= 'Z':
-			out = append(out, "shift+"+string(r+'a'-'A'))
+			out = append(out, shiftedLetterKeys[r-'A'])
 		case isLiteralRune(r):
-			out = append(out, string(r))
+			// isLiteralRune admits ASCII only, so the table covers every case.
+			out = append(out, asciiKeys[r])
 		default:
 			return nil, false
 		}
 	}
 	return out, true
+}
+
+// asciiKeys spells each ASCII character as its one-character Rex key, and
+// shiftedLetterKeys spells each upper-case letter as shift+<lower>. Both are
+// built once so literalKeys allocates no string per typed character.
+var (
+	asciiKeys         [utf8.RuneSelf]string
+	shiftedLetterKeys [26]string
+)
+
+func init() {
+	for r := range asciiKeys {
+		asciiKeys[r] = string(rune(r))
+	}
+	for i := range shiftedLetterKeys {
+		shiftedLetterKeys[i] = "shift+" + string(rune('a'+i))
+	}
 }
 
 // isLiteralRune reports whether r is a character herdr-core accepts as literal
