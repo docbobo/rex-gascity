@@ -42,6 +42,13 @@ type inputMatrixRow struct {
 // stamped the floor after a successful call would fail them. Neither op is
 // guarded, so a secret read is a success row too (E15b).
 var inputMatrixRows = []inputMatrixRow{
+	{"clear-scrollback", faultNoBinding, "gone"},
+	{"clear-scrollback", faultDeadProgram, "gone"},
+	{"clear-scrollback", faultLookupUnavailable, "unavailable"},
+	{"clear-scrollback", faultLookupOther, "not_sent"},
+	{"clear-scrollback", faultSendUnavailable, "unavailable"},
+	{"clear-scrollback", faultSendNotFound, "gone"},
+	{"clear-scrollback", faultSendOther, wantUnknown},
 	{"interrupt", faultNone, wantNil},
 	{"clear-scrollback", faultNone, wantNil},
 	{"interrupt", faultSecretRead, wantNil},
@@ -129,8 +136,7 @@ func setSendErr(fake *faketest.Fake, op string, err error) {
 	case "send-keys", "interrupt":
 		fake.SendKeysErr = err
 	case "clear-scrollback":
-		// faketest.Fake has no BlockClear fault hook yet; Task 4 adds ClearErr.
-		panic("clear-scrollback send faults need faketest.Fake.ClearErr")
+		fake.ClearErr = err
 	}
 }
 

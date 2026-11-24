@@ -1096,23 +1096,18 @@ func lastLines(s string, n int) string {
 // silent success, so a caller can tell a cleared scrollback from a vanished
 // pane (GCREX-57). A mid-call ErrNotFound is also gone: the pane vanished
 // before Rex could clear it. An unreachable server is unavailable; any other
-// pre-send failure is not_sent.
+// pre-send failure is not_sent. The words come from classifyInput (input.go).
 func (p *Provider) ClearScrollback(ctx context.Context, name string) error {
-	binding, err := p.livePane(ctx, name)
-	if err != nil {
-		return paneLookupOutcome(err)
-	}
-	if err := p.client.BlockClear(ctx, binding.SessionID, binding.BlockID); err != nil {
-		switch {
-		case errors.Is(err, rex.ErrNotFound):
-			return &InputOutcomeError{Outcome: "gone", Detail: fmt.Sprintf("clear-scrollback %s: %v", name, err), Err: err}
-		case errors.Is(err, rex.ErrUnavailable):
-			return &InputOutcomeError{Outcome: "unavailable", Detail: fmt.Sprintf("clear-scrollback %s: %v", name, err), Err: err}
-		default:
-			return fmt.Errorf("clear-scrollback %s: %w", name, err)
-		}
-	}
-	return nil
+	return p.deliverInput(ctx, inputCall{
+		op:   inputClearScrollback,
+		name: name,
+		send: func(ctx context.Context, b Binding) error {
+			if err := p.client.BlockClear(ctx, b.SessionID, b.BlockID); err != nil {
+				return fmt.Errorf("clear-scrollback %s: %w", name, err)
+			}
+			return nil
+		},
+	})
 }
 
 // ListRunning returns the sorted names of known sessions with the given
@@ -1244,20 +1239,6 @@ func (p *Provider) Interrupt(ctx context.Context, name string) error {
 			return nil
 		},
 	})
-}
-
-// paneLookupOutcome classifies a livePane failure before any input is sent.
-// A missing or dead pane is gone, an unreachable server is unavailable, and
-// every other pre-send failure is not_sent.
-func paneLookupOutcome(err error) error {
-	switch {
-	case errors.Is(err, ErrSessionNotFound):
-		return &InputOutcomeError{Outcome: "gone", Detail: err.Error(), Err: err}
-	case errors.Is(err, rex.ErrUnavailable):
-		return &InputOutcomeError{Outcome: "unavailable", Detail: err.Error(), Err: err}
-	default:
-		return &InputOutcomeError{Outcome: "not_sent", Detail: err.Error(), Err: err}
-	}
 }
 
 // livePane resolves name to a pane whose program is still running. A missing
