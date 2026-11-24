@@ -107,6 +107,9 @@ for t in date sleep dash; do
   ln -sf "$p" "$fake_tools/$t"
 done
 
+# A rex CLI newer than the pack pin. The fix refuses a too-old CLI before it
+# fetches, so the warm cases must not inherit the host's rex version.
+
 # A release asset: answers the two ops the doctor check reads.
 make_asset() {
   cat > "$1" <<ASSET
@@ -379,7 +382,7 @@ case "$cmd" in */*) : ;; *) fail "command must contain a separator for pack-rela
 rm -rf "$cache"
 env PATH="$fake_tools:$PATH" HOME="$work/home" \
   FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
-  GC_RUNTIME_INSTALL_DEADLINE= \
+  GC_REX_BIN="$fake_tools/rex-ok" GC_RUNTIME_INSTALL_DEADLINE= \
   FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
   sh "$repo/pack/doctor/rex-binary/fix.sh" >/dev/null 2>&1 \
   || fail "fix.sh failed"
@@ -396,6 +399,7 @@ fi
 [ -x "$binpath" ] && fail "a timed-out shim call still cached a binary"
 env PATH="$fake_tools:$PATH" HOME="$work/home" \
   FAKE_RELEASE_DIR="$work/release" GC_RUNTIME_CACHE_DIR="$cache" \
+  GC_REX_BIN="$fake_tools/rex-ok" \
   FAKE_UNAME_S="$(host_uname_s)" FAKE_UNAME_M="$(host_uname_m)" \
   GC_RUNTIME_INSTALL_DEADLINE= FAKE_CURL_SLEEP_ASSET=3 \
   sh "$repo/pack/doctor/rex-binary/fix.sh" >/dev/null 2>&1 \

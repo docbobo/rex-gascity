@@ -131,4 +131,42 @@ EOF
 chmod +x "$tmp/rex"
 run_case "" 1 >/dev/null
 
+# --fix warms the provider cache only. It cannot update the Rex app, so a CLI
+# below the minimum must stop it before any fetch.
+cat >"$tmp/rex" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  version)
+    case "${2:-}" in
+      --json) printf '{"rex_version":"%s"}\n' "$FAKE_REX_VERSION" ;;
+      *) printf 'rex %s\n' "$FAKE_REX_VERSION" ;;
+    esac
+    ;;
+esac
+EOF
+chmod +x "$tmp/rex"
+cat >"$tmp/curl" <<EOF
+#!/bin/sh
+: >"$tmp/curl-called"
+exit 6
+EOF
+chmod +x "$tmp/curl"
+
+rm -f "$tmp/curl-called"
+fix_err=$(GC_REX_BIN="$tmp/rex" FAKE_REX_VERSION="$too_old" GC_RUNTIME_CACHE_DIR="$cache" \
+  PATH="$tmp:$PATH" sh "$pack_dir/doctor/rex-binary/fix.sh" 2>&1 >/dev/null) && fix_status=0 || fix_status=$?
+[ "$fix_status" -ne 0 ] || fail "fix.sh exits 0 for a too-old rex CLI"
+[ ! -e "$tmp/curl-called" ] || fail "fix.sh fetched before it refused a too-old rex CLI"
+printf '%s' "$fix_err" | grep -q 'Rex app' ||
+  fail "fix.sh refusal does not name the Rex app: $fix_err"
+printf '%s' "$fix_err" | grep -q "$min_version" ||
+  fail "fix.sh refusal does not name the minimum version: $fix_err"
+
+# Control: a rex CLI at the minimum must not block a cold-cache warm. The fix
+# reaches the fetch, so the fake curl runs and leaves its marker.
+rm -f "$tmp/curl-called"
+GC_REX_BIN="$tmp/rex" FAKE_REX_VERSION="$min_version" GC_RUNTIME_CACHE_DIR="$tmp/cold-cache" \
+  PATH="$tmp:$PATH" sh "$pack_dir/doctor/rex-binary/fix.sh" >/dev/null 2>&1 || true
+[ -e "$tmp/curl-called" ] || fail "fix.sh did not reach the fetch for a rex CLI at the minimum"
+
 echo "rex doctor version check behaves correctly against minVersion $min_version"
