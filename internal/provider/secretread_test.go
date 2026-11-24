@@ -366,3 +366,33 @@ func TestInterruptIgnoresSecretRead(t *testing.T) {
 		t.Errorf("input_mode reads = %d, want 0", len(fake.InputModeReads))
 	}
 }
+
+// TestNudgeCancelBeforeWriteIsPlainError locks the pre-write cancellation as a
+// plain error (#43 REQ-010, E20): a parent cancelled after the turn baseline
+// and before the write answers "before typing" with no *InputOutcomeError in
+// its chain, so the wire stays exit 1. It is not a send failure; classifying
+// it would turn it into not_sent.
+func TestNudgeCancelBeforeWriteIsPlainError(t *testing.T) {
+	fake := &stallInputModeFake{Fake: faketest.New(), entered: make(chan struct{})}
+	p := nudgeStarted(t, fake, provider.WithInputModeProbeTimeout(10*time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-fake.entered
+		cancel()
+	}()
+	_, err := p.NudgeReport(ctx, activityName, "hello", provider.NudgeModeWait)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "before typing") {
+		t.Errorf("error = %q, want the before-typing cancellation", err)
+	}
+	var outcome *provider.InputOutcomeError
+	if errors.As(err, &outcome) {
+		t.Errorf("error = %v carries outcome %q, want a plain error", err, outcome.Outcome)
+	}
+	if wroteText(fake.Fake) || len(fake.SentKeys) != 0 {
+		t.Errorf("ops = %v, keys = %+v; want nothing typed", ops(fake.Fake), fake.SentKeys)
+	}
+}

@@ -493,3 +493,102 @@ func outcomeOf(t *testing.T, err error) *provider.InputOutcomeError {
 	}
 	return outcome
 }
+
+// TestSendKeysBadKeyIsRejectedOutcome (#43 REQ-006, E8): an untypable key is
+// a typed "rejected" in the provider, still carries the KeyRejectedError, and
+// makes no Rex call at all, not even session discovery.
+func TestSendKeysBadKeyIsRejectedOutcome(t *testing.T) {
+	fake, p := started(t)
+	lists, views := fake.ListSessionsCalls, fake.SessionViewCalls
+
+	err := p.SendKeys(context.Background(), "Indigo--dog-1", "!")
+
+	if got := outcomeOf(t, err); got.Outcome != "rejected" {
+		t.Errorf("outcome = %q, want rejected (detail %q)", got.Outcome, got.Detail)
+	}
+	var rejected *provider.KeyRejectedError
+	if !errors.As(err, &rejected) {
+		t.Errorf("err = %v, want a *KeyRejectedError in the chain", err)
+	}
+	if fake.ListSessionsCalls != lists || fake.SessionViewCalls != views {
+		t.Errorf("lookups = %d list, %d view; want %d, %d (no lookup)",
+			fake.ListSessionsCalls, fake.SessionViewCalls, lists, views)
+	}
+	if len(fake.BlockCalls) != 0 || len(fake.SentKeys) != 0 {
+		t.Errorf("block ops = %v, keys = %+v; want none", ops(fake), fake.SentKeys)
+	}
+}
+
+// TestNudgeMissingPaneIsGoneOutcome (#43 REQ-005, E4): a nudge to an unknown
+// name or to a pane whose program exited is a typed "gone" in the provider,
+// and still wraps ErrSessionNotFound.
+func TestNudgeMissingPaneIsGoneOutcome(t *testing.T) {
+	t.Run("unknown name", func(t *testing.T) {
+		p := provider.New("acme", faketest.New())
+		err := p.Nudge(context.Background(), "Indigo--ghost", "hello")
+		if got := outcomeOf(t, err); got.Outcome != "gone" {
+			t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+		}
+		if !errors.Is(err, provider.ErrSessionNotFound) {
+			t.Errorf("err = %v, want ErrSessionNotFound", err)
+		}
+	})
+	t.Run("dead program", func(t *testing.T) {
+		fake, p := started(t)
+		fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+			"block:dog-1": {LastExit: &rex.ExitStatus{ExitCode: 0}},
+		}
+		err := p.Nudge(context.Background(), "Indigo--dog-1", "hello")
+		if got := outcomeOf(t, err); got.Outcome != "gone" {
+			t.Errorf("outcome = %q, want gone (detail %q)", got.Outcome, got.Detail)
+		}
+		if !errors.Is(err, provider.ErrSessionNotFound) {
+			t.Errorf("err = %v, want ErrSessionNotFound", err)
+		}
+	})
+}
+
+// TestNudgeRejectsInvalidUTF8BeforeRex (#43 REQ-003, E1): every in-process
+// nudge entry point rejects non-UTF-8 text with a typed "rejected" before any
+// Rex call, so no pane receives U+FFFD-corrupted text.
+func TestNudgeRejectsInvalidUTF8BeforeRex(t *testing.T) {
+	const text = "prompt \xff\xfe bytes"
+	calls := map[string]func(*provider.Provider) error{
+		"Nudge": func(p *provider.Provider) error {
+			return p.Nudge(context.Background(), "Indigo--dog-1", text)
+		},
+		"NudgeImmediate": func(p *provider.Provider) error {
+			return p.NudgeImmediate(context.Background(), "Indigo--dog-1", text)
+		},
+		"NudgeReport": func(p *provider.Provider) error {
+			_, err := p.NudgeReport(context.Background(), "Indigo--dog-1", text, provider.NudgeModeWait)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			fake, p := started(t)
+			lists, views := fake.ListSessionsCalls, fake.SessionViewCalls
+
+			err := call(p)
+
+			got := outcomeOf(t, err)
+			if got.Outcome != "rejected" {
+				t.Errorf("outcome = %q, want rejected", got.Outcome)
+			}
+			if want := "the nudge text is not UTF-8; nothing was typed"; got.Detail != want {
+				t.Errorf("detail = %q, want %q", got.Detail, want)
+			}
+			if !errors.Is(err, provider.ErrNudgeNotUTF8) {
+				t.Errorf("err = %v, want ErrNudgeNotUTF8", err)
+			}
+			if fake.ListSessionsCalls != lists || fake.SessionViewCalls != views {
+				t.Errorf("lookups = %d list, %d view; want %d, %d (no lookup)",
+					fake.ListSessionsCalls, fake.SessionViewCalls, lists, views)
+			}
+			if len(fake.BlockCalls) != 0 || len(fake.SentKeys) != 0 {
+				t.Errorf("block ops = %v, keys = %+v; want none", ops(fake), fake.SentKeys)
+			}
+		})
+	}
+}

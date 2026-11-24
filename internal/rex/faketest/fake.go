@@ -136,6 +136,10 @@ type Fake struct {
 	// InputModeReads records each BlockInputMode call. It is kept apart from
 	// BlockCalls so the op sequences existing tests assert stay unchanged.
 	InputModeReads []BlockCall
+
+	// ClearErr, when set, is returned by BlockClear after the call is
+	// recorded.
+	ClearErr error
 }
 
 // DefaultInputMode is what BlockInputMode answers for a block with no
@@ -381,7 +385,7 @@ func (f *Fake) BlockClear(_ context.Context, sid rex.SessionID, block rex.BlockI
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record(sid, block, "clear")
-	return nil
+	return f.ClearErr
 }
 
 // record appends a block-method call to the recording. f.mu must be held.
