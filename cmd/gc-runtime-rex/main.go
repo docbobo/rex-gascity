@@ -131,10 +131,13 @@ type deps struct {
 	providerOptions []provider.Option
 }
 
-// liveDeps drives the real rex CLI. GC_REX_BIN overrides the binary; empty
-// means the `rex` on PATH.
+// liveDeps drives the real rex CLI. GC_REX_BIN overrides the binary. Empty
+// means the `rex` on PATH. GC_REX_SERVER, when set, addresses a city-owned
+// server with -S. Empty keeps the user's shared server.
 func liveDeps() deps {
-	return deps{newClient: func() rex.Client { return &cli.Client{Bin: os.Getenv("GC_REX_BIN")} }}
+	return deps{newClient: func() rex.Client {
+		return &cli.Client{Bin: os.Getenv("GC_REX_BIN"), Server: os.Getenv("GC_REX_SERVER")}
+	}}
 }
 
 // startConfig is the start op's stdin JSON. Unknown fields are ignored. The

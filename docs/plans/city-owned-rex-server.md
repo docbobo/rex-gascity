@@ -241,9 +241,13 @@ only if the viewer is on the same server.
 
 - Stage 1 (this note only): record that a city-owned server is *possible*. The
   earlier "impossible" claim was about the old single-server Rex.
-- Stage 2: an opt-in city server. City supervision starts it with
-  `--state-dir <city> --listen unix://<city socket> --restore=false`. The
-  provider addresses it with `-S`. No op-path change is needed to start it.
+- Stage 2 (implemented, `gcrex-d3m0i`): an opt-in city server. City
+  supervision starts it with
+  `rex server run --state-dir <city> --listen unix://<city socket> --restore=false`.
+  The provider addresses it with `-S`. No op-path change is needed to start it.
+  The opt-in is `GC_REX_SERVER=<addr>`. It works as a socket path or a
+  `rex hosts` label. `cli.Client` sends it as `-S` on every call. Unset keeps
+  the user's shared server.
 - Stage 3: `server-stop` behind an ownership record (state dir, instance id,
   pid). The provider stops only what it owns. With no record it keeps today's
   exit 2.

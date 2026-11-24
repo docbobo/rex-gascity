@@ -19,8 +19,11 @@ import (
 )
 
 // Client drives the Rex server through the rex CLI. Bin defaults to "rex".
+// Server, when set, is passed as -S to every invocation so the client
+// addresses a city-owned server instead of the ambient one.
 type Client struct {
-	Bin string
+	Bin    string
+	Server string
 }
 
 // New returns a Client that runs `rex` from PATH.
@@ -36,6 +39,9 @@ func (c *Client) bin() string {
 // run executes rex and returns stdout. A non-zero exit becomes an error that
 // carries the command's stderr.
 func (c *Client) run(ctx context.Context, argv ...string) ([]byte, error) {
+	if c.Server != "" {
+		argv = append([]string{"-S", c.Server}, argv...)
+	}
 	cmd := exec.CommandContext(ctx, c.bin(), argv...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
