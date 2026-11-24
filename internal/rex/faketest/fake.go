@@ -123,7 +123,24 @@ type Fake struct {
 	// methods.
 	ListClientsErr   error
 	ProgramStatusErr error
+
+	// InputModes is the terminal input mode BlockInputMode reports, keyed by
+	// block. A block with no entry answers DefaultInputMode.
+	InputModes map[rex.BlockID]rex.InputMode
+	// InputModeErr, when set, is returned by BlockInputMode.
+	InputModeErr error
+	// InputModeStall makes BlockInputMode block until its own context is done
+	// and then return ctx.Err(), modelling a Rex read that never answers. The
+	// wait happens without the fake's lock held.
+	InputModeStall bool
+	// InputModeReads records each BlockInputMode call. It is kept apart from
+	// BlockCalls so the op sequences existing tests assert stay unchanged.
+	InputModeReads []BlockCall
 }
+
+// DefaultInputMode is what BlockInputMode answers for a block with no
+// InputModes entry: a raw-ish interactive pane, the fake binary's default too.
+var DefaultInputMode = rex.InputMode{Echo: true, Canonical: false, Signals: true}
 
 // BlockCall records one block-method call.
 type BlockCall struct {
@@ -332,6 +349,25 @@ func (f *Fake) BlockProgramStatus(_ context.Context, sid rex.SessionID, block re
 		return f.ProgramStatusFunc(block), nil
 	}
 	return f.ProgramStatuses[block], nil
+}
+
+func (f *Fake) BlockInputMode(ctx context.Context, sid rex.SessionID, block rex.BlockID) (rex.InputMode, error) {
+	f.mu.Lock()
+	f.InputModeReads = append(f.InputModeReads, BlockCall{SessionID: sid, BlockID: block, Op: "input_mode"})
+	stall, err := f.InputModeStall, f.InputModeErr
+	mode, ok := f.InputModes[block]
+	f.mu.Unlock()
+	if stall {
+		<-ctx.Done()
+		return rex.InputMode{}, ctx.Err()
+	}
+	if err != nil {
+		return rex.InputMode{}, err
+	}
+	if !ok {
+		return DefaultInputMode, nil
+	}
+	return mode, nil
 }
 
 func (f *Fake) BlockEvent(_ context.Context, sid rex.SessionID, block rex.BlockID, _ rex.Event) error {

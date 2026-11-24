@@ -681,6 +681,9 @@ func blockMethod(dir, sid, bid, method string, args map[string]any) (any, error)
 	case "pwd":
 		return map[string]any{"cwd": b.Cwd, "owner": b.Owner}, nil
 	case "input_mode":
+		if m := b.InputMode; m != nil {
+			return map[string]any{"echo": m.Echo, "canonical": m.Canonical, "signals": m.Signals}, nil
+		}
 		return map[string]any{"echo": true, "canonical": false, "signals": true}, nil
 	case "reset":
 		return map[string]any{}, nil

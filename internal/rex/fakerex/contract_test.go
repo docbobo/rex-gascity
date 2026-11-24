@@ -414,6 +414,24 @@ func TestReplySchemas(t *testing.T) {
 		t.Errorf("record = %+v", r)
 	}
 
+	// input_mode answers the default until a test sets the block's mode, then
+	// answers that mode for that block only (#48 REQ-010).
+	mode, err := c.BlockInputMode(ctx(t), sid, exited)
+	covered["block.method.input_mode"] = true
+	if err != nil || mode != (rex.InputMode{Echo: true, Canonical: false, Signals: true}) {
+		t.Fatalf("default BlockInputMode = (%+v, %v), want echo, not canonical, signals", mode, err)
+	}
+	f.Update(t, func(st *fakestate.State) {
+		_, _, b, err := st.Block(string(exited))
+		if err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+		b.InputMode = &fakestate.InputMode{Echo: false, Canonical: true, Signals: true}
+	})
+	if mode, err = c.BlockInputMode(ctx(t), sid, exited); err != nil || mode != (rex.InputMode{Echo: false, Canonical: true, Signals: true}) {
+		t.Errorf("seeded BlockInputMode = (%+v, %v), want a secret read", mode, err)
+	}
+
 	_, big, err := c.NewWindow(ctx(t), sid, "Rig: Big", spec("big", "/bin/sh", "-c", "yes x | head -c 1100000"))
 	if err != nil {
 		t.Fatalf("NewWindow: %v", err)
@@ -465,7 +483,7 @@ func TestReplySchemas(t *testing.T) {
 	}
 	// The provider calls exactly these block sub-methods (docs/REX-CONTRACT.md
 	// §4); the rest are diagnostics the cli.Client never decodes.
-	for _, method := range []string{"process", "format", "blob_read", "write", "clear", "program_status"} {
+	for _, method := range []string{"process", "format", "blob_read", "write", "clear", "program_status", "input_mode"} {
 		if !covered["block.method."+method] {
 			t.Errorf("no schema assertion for block.method %s", method)
 		}

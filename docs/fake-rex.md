@@ -40,6 +40,10 @@ REX_E2E=1 go test ./cmd/gc-runtime-rex -run TestE2E -v
     are `paste`, `key`, `focus`, `process`, `format`, `blob_read`, `write`,
     `clear`, `program_status`, `size`, `title`, `pwd`, `input_mode`, and
     `reset`.
+  - `input_mode` answers `{echo: true, canonical: false, signals: true}` by
+    default. A test sets one block's mode through `fakerex.Fake.Update` and
+    `fakestate.Block.InputMode`, for example
+    `&fakestate.InputMode{Canonical: true}` for a secret read (#48).
   - `target.resolve` and `target.complete`.
 - Real child processes for panes, started detached with stdin on a FIFO.
 - Rex's format page cap. A `format` reply carries at most 983040 content
