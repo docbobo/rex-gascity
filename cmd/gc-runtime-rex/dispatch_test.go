@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1214,6 +1215,99 @@ func TestProcessNamesSplitsOnLines(t *testing.T) {
 	want := []string{"my agent", "claude", "codex"}
 	if !slices.Equal(got, want) {
 		t.Errorf("processNames = %q, want %q", got, want)
+	}
+}
+
+// nameListOps are the two ops whose stdin is a newline-separated process-name
+// list. Both must read it through readNameList (REQ-002 of #75).
+var nameListOps = []string{"observe", "process-alive"}
+
+// TestNameListOpsHandTheProviderTheSameList is the REQ-002 proof (AC-2): for
+// the same stdin, observe and process-alive hand the provider the same
+// trimmed, blank-free list. It is red while process-alive keeps its own
+// untrimmed split.
+func TestNameListOpsHandTheProviderTheSameList(t *testing.T) {
+	const stdin = "  claude  \n\nmy agent\n \ncodex\r\n" // E-3
+	want := []string{"claude", "my agent", "codex"}
+	for _, op := range nameListOps {
+		t.Run(op, func(t *testing.T) {
+			rec := &recordingProvider{}
+			spec := ops[op]
+			_ = spec.handle(context.Background(), rec, []string{"s"}, strings.NewReader(stdin), io.Discard)
+			if got := rec.namesFor(t, spec.method); !slices.Equal(got, want) {
+				t.Errorf("%s handed the provider %q, want %q", op, got, want)
+			}
+		})
+	}
+}
+
+// errAfterBudget is what budgetThenErrReader returns for any read after it has
+// served its bytes.
+var errAfterBudget = errors.New("read after the 64 KiB budget")
+
+// budgetThenErrReader serves data with a nil error, then answers every later
+// read with errAfterBudget and counts it. It never returns data and the error
+// together (E-8b of #75).
+type budgetThenErrReader struct {
+	data       []byte
+	extraReads int
+}
+
+func (r *budgetThenErrReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		r.extraReads++
+		return 0, errAfterBudget
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// TestProcessAliveReadsAtMost64KiB is the REQ-003 proof (AC-3): process-alive
+// parses only the first 65,536 bytes of stdin and never reads past them. It
+// counts consumed bytes, so a handler that reads everything and truncates
+// afterwards still fails. The observe subtests guard the shared bound and are
+// green on the baseline; the process-alive subtests are the proof.
+func TestProcessAliveReadsAtMost64KiB(t *testing.T) {
+	const budget = 64 << 10
+	newlines := func(n int) []byte { return bytes.Repeat([]byte("\n"), n) }
+	for _, op := range nameListOps {
+		spec := ops[op]
+		t.Run(op+"/E-7 only name past the bound", func(t *testing.T) {
+			stdin := bytes.NewReader(append(newlines(budget), "claude\n"...)) // 65,543 bytes
+			rec := &recordingProvider{}
+			_ = spec.handle(context.Background(), rec, []string{"s"}, stdin, io.Discard)
+			if got := rec.namesFor(t, spec.method); got != nil {
+				t.Errorf("names = %d entries ending in %q, want nil", len(got), got[len(got)-1])
+			}
+			if stdin.Len() != 7 {
+				t.Errorf("unread = %d bytes, want 7 (exactly %d consumed)", stdin.Len(), budget)
+			}
+		})
+		t.Run(op+"/E-7b partial final line", func(t *testing.T) {
+			stdin := bytes.NewReader(append(newlines(budget-6), "claudecode\n"...)) // 65,541 bytes
+			rec := &recordingProvider{}
+			_ = spec.handle(context.Background(), rec, []string{"s"}, stdin, io.Discard)
+			if got, want := rec.namesFor(t, spec.method), []string{"claude"}; !slices.Equal(got, want) {
+				t.Errorf("names = %q, want %q", got, want)
+			}
+			if stdin.Len() != 5 {
+				t.Errorf("unread = %d bytes, want 5 (exactly %d consumed)", stdin.Len(), budget)
+			}
+		})
+		t.Run(op+"/E-8b exactly the budget then an error", func(t *testing.T) {
+			stdin := &budgetThenErrReader{data: append(newlines(budget-6), "claude"...)} // 65,536 bytes
+			rec := &recordingProvider{}
+			if err := spec.handle(context.Background(), rec, []string{"s"}, stdin, io.Discard); err != nil {
+				t.Errorf("handler error = %v, want nil (no read after the budget)", err)
+			}
+			if got, want := rec.namesFor(t, spec.method), []string{"claude"}; !slices.Equal(got, want) {
+				t.Errorf("names = %q, want %q", got, want)
+			}
+			if stdin.extraReads != 0 {
+				t.Errorf("reads after byte %d = %d, want 0", budget, stdin.extraReads)
+			}
+		})
 	}
 }
 
