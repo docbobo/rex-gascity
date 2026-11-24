@@ -25,17 +25,22 @@ printf '.github/workflows/ci.yml\n' | expect 1 "workflow file"
 printf 'internal/provider/session.go\npack/pack.toml\n' | expect 1 "renamed-out code file"
 : | expect 1 "empty file list"
 
-# The docs-only step pipes `gh api` into docs-only.sh. The default bash -e drops
-# a failed lookup behind a successful script, so the job skips conformance on an
-# unreadable file list. An explicit `shell: bash` turns on pipefail.
-docs_step=$(awk '
-  /^      - name: / {
-    if (in_step) exit
-    if ($0 ~ /Check for a docs-only change/) in_step = 1
-  }
-  in_step
-' "$repo/.github/workflows/ci.yml")
-printf '%s\n' "$docs_step" | grep -qx '        shell: bash' ||
-  { echo "check-ci: docs-only step must set 'shell: bash' for pipefail" >&2; exit 1; }
+# A step that pipes must set `shell: bash`. The default bash -e drops a failed
+# producer behind a successful consumer. The docs-only lookup then reads as a
+# docs-only change, and a failed digest read as a clean report.
+step_sets_shell_bash() {  # <workflow> <step name substring> <label>
+  step=$(awk -v name="$2" '
+    /^      - name: / {
+      if (in_step) exit
+      if (index($0, name)) in_step = 1
+    }
+    in_step
+  ' "$1")
+  printf '%s\n' "$step" | grep -qx '        shell: bash' ||
+    { echo "check-ci: $3 step must set 'shell: bash' for pipefail" >&2; exit 1; }
+}
+
+step_sets_shell_bash "$repo/.github/workflows/ci.yml" 'Check for a docs-only change' docs-only
+step_sets_shell_bash "$repo/.github/workflows/ci-timings.yml" 'Per-job p50 and p90' digest
 
 sh "$repo/scripts/ci-timings.sh" --self-test
