@@ -87,6 +87,16 @@ session". A green check means the provider handshakes, its version matches
 constraint. The constraint must allow more than one tag: `--version '^2026.11.03'`
 matches later 2026 releases and not a 2027 release.
 
+The install example pins a bare version, so convert it once. Remove the import
+and add it again with a caret constraint.
+
+```sh
+gc import remove rex
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version '^2026.11.03'
+```
+
+Then run the upgrade, install and verify.
+
 ```sh
 gc import upgrade rex
 gc import install
@@ -97,8 +107,7 @@ gc doctor --check rex-gascity-runtime:rex-binary --fix
 `gc import check` is read-only. The doctor command downloads and runs the new
 release binary now.
 
-A bare `--version 2026.11.03` pins one tag, so `gc import upgrade rex` leaves
-it in place. To move to one explicit version, or to roll back to an older one,
+A bare version pins one tag, so `gc import upgrade rex` leaves it in place. To move to one explicit version, or to roll back to an older one,
 remove the import and add it again with the bare version and the `//pack` URL
 form.
 
