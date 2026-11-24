@@ -382,15 +382,8 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	}
 
 	// Without a program_status record, the pane's rendered output is the only
-	// available confirmation signal. Capture its baseline before typing.
-	var baseFingerprint string
-	haveFormatBaseline := false
-	if !baseline.Present {
-		if out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID); err == nil {
-			baseFingerprint = formatFingerprint(out)
-			haveFormatBaseline = true
-		}
-	}
+	// available confirmation signal. turnBaseline reads it now, before typing.
+	base := turnBaseline(p.observePane(ctx, binding, baseline))
 
 	// One deadline covers the write and the Enter. Without it a stalled Rex
 	// call or a gc cancel between the two could leave the text typed but
@@ -427,22 +420,15 @@ func (p *Provider) nudgeReportBinding(ctx context.Context, binding Binding, text
 	deadline := time.Now().Add(p.nudge.nudgeConfirmWindow)
 	first := true
 	for {
-		confirmed := false
-		if snapshot, err := p.programStatusSnapshot(ctx, binding); err == nil && snapshot.Present {
+		snapshot, err := p.programStatusSnapshot(ctx, binding)
+		if err != nil {
+			snapshot = programStatusSnapshot{}
+		}
+		if snapshot.Present {
 			report.State, report.Kind = snapshot.State, snapshot.Kind
-			if turnStarted(baseline, snapshot) {
-				confirmed = true
-				report.Source = NudgeSourceProgramStatus
-			}
 		}
-		if !confirmed && haveFormatBaseline {
-			if out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID); err == nil &&
-				formatFingerprint(out) != baseFingerprint {
-				confirmed = true
-				report.Source = NudgeSourceFormatPoll
-			}
-		}
-		if confirmed {
+		if verdict, source := turnVerdict(base, p.observePane(ctx, binding, snapshot)); verdict == verdictBusy {
+			report.Source = source
 			report.Confirmed = true
 			report.Confirm = time.Since(confirmStart)
 			return report, nil
@@ -514,16 +500,6 @@ func (p *Provider) programStatusSnapshot(ctx context.Context, b Binding) (progra
 		}
 	}
 	return snap, nil
-}
-
-// turnStarted reports whether after a nudge the program moved from not-working
-// to working, or reported a newer updated_at. A baseline that was already
-// working (an immediate override) can only be confirmed by a newer timestamp.
-func turnStarted(before, after programStatusSnapshot) bool {
-	if before.Present && after.Present && !after.Latest.IsZero() && after.Latest.After(before.Latest) {
-		return true
-	}
-	return after.State == "working" && before.State != "working"
 }
 
 // nudgeDiagnostic is written when a nudge was delivered but its turn start was

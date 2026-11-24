@@ -1,9 +1,6 @@
 package provider
 
-import (
-	"context"
-	"strings"
-)
+import "context"
 
 // IdleState is one point-in-time idle reading of a session, the provider's
 // answer to a gc runtime's IdleSnapshotProvider (SnapshotIdle). It is the
@@ -48,7 +45,7 @@ var busyMarkers = []string{
 // readyPromptPrefixes are the prompt glyphs a ready composer can show: ❯ is the
 // default idle prefix gc uses for tmux (`internal/runtime/tmux/tmux.go:5738`,
 // gc's `defaultReadyPromptPrefix`), and the `›`/`>` pair is this provider's
-// readiness glyph set (`startupPromptGlyphs` in readiness.go:68-73, from
+// readiness glyph set (`startupPromptGlyphs` in readiness.go, from
 // readiness.py's `PROMPT_GLYPHS`). The provider has no per-session ready prefix
 // at op time, so a conservative default set keeps the fallback from calling a
 // pane idle on a glyph it does not recognise.
@@ -75,60 +72,20 @@ func (p *Provider) IdleSnapshot(ctx context.Context, name string) (IdleState, er
 		return "", ErrSessionNotFound
 	}
 
-	status, err := p.client.BlockProgramStatus(ctx, binding.SessionID, binding.BlockID)
+	snap, err := p.programStatusSnapshot(ctx, binding)
 	if err != nil {
 		return "", err
 	}
-	if _, state, present := newestProgramStatus(status.Records); present {
-		switch strings.TrimSpace(state) {
-		case "idle":
-			return IdleStateIdle, nil
-		case "working", "blocked":
-			return IdleStateBusy, nil
-		default:
-			return IdleStateIndeterminate, nil
-		}
-	}
-
-	screen, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
+	verdict, err := idleVerdict(p.observePane(ctx, binding, snap))
 	if err != nil {
 		return "", err
 	}
-	return screenIdleState(screen), nil
-}
-
-// screenIdleState classifies a rendered pane for IdleSnapshot's fallback. A
-// startup dialog owns the input, so it is not an idle boundary and not proof of
-// work either: it is indeterminate. A busy marker is busy. A bare ready prompt
-// (not a numbered menu's cursor row) is idle. Everything else is
-// indeterminate, mirroring gc's classification of a pane that shows neither a
-// ready prompt nor a trusted busy indicator.
-func screenIdleState(screen string) IdleState {
-	if screen == "" {
-		return IdleStateIndeterminate
+	switch verdict {
+	case verdictIdle:
+		return IdleStateIdle, nil
+	case verdictBusy:
+		return IdleStateBusy, nil
+	default:
+		return IdleStateIndeterminate, nil
 	}
-	if withholdsFirstTurn(screen, "") {
-		return IdleStateIndeterminate
-	}
-	for _, marker := range busyMarkers {
-		if strings.Contains(screen, marker) {
-			return IdleStateBusy
-		}
-	}
-	if screenShowsReadyPrompt(screen) {
-		return IdleStateIdle
-	}
-	return IdleStateIndeterminate
-}
-
-// screenShowsReadyPrompt reports whether the bottom-most prompt-prefixed line is
-// a bare ready composer. It reuses screenHasPromptPrefix, whose menu-cursor and
-// border handling matches gc's paneShowsReadyPrompt, over readyPromptPrefixes.
-func screenShowsReadyPrompt(screen string) bool {
-	for _, prefix := range readyPromptPrefixes {
-		if screenHasPromptPrefix(screen, prefix) {
-			return true
-		}
-	}
-	return false
 }

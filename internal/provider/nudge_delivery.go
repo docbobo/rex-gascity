@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -170,7 +168,11 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		// The turn may have started late: gc checks for a busy pane after
 		// the backoff and before resending, so a nudge that landed a
 		// moment after the confirmation window is not typed twice.
-		if snap, snapErr := p.programStatusSnapshot(ctx, binding); snapErr == nil && (snap.State == "working" || snap.State == "blocked") {
+		snap, snapErr := p.programStatusSnapshot(ctx, binding)
+		if snapErr != nil {
+			snap = programStatusSnapshot{}
+		}
+		if lateTurnVerdict(p.observePane(ctx, binding, snap)) == verdictBusy {
 			p.clearStartupDeliveryUnconfirmed(ctx, name)
 			return nil
 		}
@@ -369,40 +371,25 @@ func readyDelay(cfg Config) time.Duration {
 // idle program_status once the ready_delay_ms floor has passed, else a bound.
 // A screen showing a startup dialog is never ready (readinessDialog), in any
 // mode, because the first turn must not land in it (herdr-core
-// withholds_first_turn; herdrcore/lifecycle.py:1078-1096). It returns
-// ready=false to keep waiting.
+// withholds_first_turn; herdrcore/lifecycle.py:1078-1096). startupVerdict
+// (panestate.go) makes the decision; this maps it to an outcome and names the
+// bound. A failed status read counts as no record. It returns ready=false to
+// keep waiting.
 func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config, r readinessBounds, snap programStatusSnapshot, snapErr error, sawRecord bool, elapsed time.Duration) (string, bool) {
-	if r.promptWatch {
-		screen, err := p.paneScreen(ctx, sid, block)
-		if err == nil {
-			if withholdsFirstTurn(screen, cfg.ReadyPromptPrefix) {
-				return readinessDialog, true
-			}
-			if screenHasPromptPrefix(screen, cfg.ReadyPromptPrefix) {
-				return readinessPrompt, true
-			}
-		}
+	if snapErr != nil {
+		snap = programStatusSnapshot{}
+	}
+	o := p.observePane(ctx, Binding{SessionID: sid, BlockID: block}, snap)
+	switch startupVerdict(o, cfg.ReadyPromptPrefix, elapsed >= r.delay, elapsed >= r.bound(sawRecord)) {
+	case verdictDialog:
+		return readinessDialog, true
+	case verdictPromptReady:
+		return readinessPrompt, true
+	case verdictIdle:
+		return readinessIdle, true
+	default:
 		return p.readinessBound(r, sawRecord, elapsed)
 	}
-	if elapsed >= r.delay && snapErr == nil && snap.Present && snap.State == "idle" {
-		// A dialog can sit over a prompt that still reports idle (the live case
-		// GCREX-59 fixes): the write lands, the Enter is consumed by the dialog
-		// and no turn starts. Read the screen once and withhold instead.
-		if screen, err := p.paneScreen(ctx, sid, block); err == nil && withholdsFirstTurn(screen, "") {
-			return readinessDialog, true
-		}
-		return readinessIdle, true
-	}
-	note, ready := p.readinessBound(r, sawRecord, elapsed)
-	if !ready {
-		return "", false
-	}
-	// A pane that never reported idle can still be showing a dialog at the
-	// bound; a first turn typed then would land in it too.
-	if screen, err := p.paneScreen(ctx, sid, block); err == nil && withholdsFirstTurn(screen, "") {
-		return readinessDialog, true
-	}
-	return note, true
 }
 
 // readinessBound names the bound the wait ended on, or reports not-over yet.
@@ -469,107 +456,4 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 // A read failure is the caller's to fall back from, never a failed start.
 func (p *Provider) paneScreen(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, error) {
 	return p.client.BlockFormat(ctx, sid, block)
-}
-
-// screenHasPromptPrefix reports whether the screen's live composer shows
-// prefix. It reads the screen as gc's paneShowsReadyPrompt does (gc v1.5.1
-// internal/runtime/tmux/tmux.go:4199-4231): the bottom-most line showing the
-// prefix is the composer (lines above it are past turns), NBSP reads as a
-// space, one leading box border is skipped, the bare glyph counts, and the
-// cursor row of a numbered menu is no prompt (a startup dialog marks its
-// selected option with the same glyph, and typing would pick it). A screen
-// showing a dialog as a whole is GCREX-59's gap, not this function's.
-func screenHasPromptPrefix(screen, prefix string) bool {
-	if prefix == "" {
-		return false
-	}
-	lines := strings.Split(screen, "\n")
-	for index := len(lines) - 1; index >= 0; index-- {
-		if _, ok := promptRest(lines[index], prefix); ok {
-			return !menuCursorRow(lines, index, prefix)
-		}
-	}
-	return false
-}
-
-// promptRest is gc's promptLineRest: what follows prefix on line, and whether
-// the line shows it at all. "" means the bare glyph. One leading box border is
-// skipped, and an empty prefix matches nothing.
-func promptRest(line, prefix string) (string, bool) {
-	if prefix == "" {
-		return "", false
-	}
-	text := strings.ReplaceAll(strings.TrimSpace(line), "\u00a0", " ")
-	prefix = strings.ReplaceAll(prefix, "\u00a0", " ")
-	bare := strings.TrimSpace(prefix)
-	for _, candidate := range []string{text, stripBorder(text)} {
-		if strings.HasPrefix(candidate, prefix) {
-			return strings.TrimLeft(candidate[len(prefix):], " "), true
-		}
-		if bare != "" && candidate == bare {
-			return "", true
-		}
-	}
-	return "", false
-}
-
-// menuCursorRow is gc's isMenuCursorRow: a line whose rest reads "N. " is a
-// numbered menu's cursor row when the nearest non-blank line above or below it
-// is option N-1 or N+1 (unselected options carry no glyph).
-func menuCursorRow(lines []string, index int, prefix string) bool {
-	rest, ok := promptRest(lines[index], prefix)
-	if !ok {
-		return false
-	}
-	number, ok := optionNumber(rest)
-	if !ok {
-		return false
-	}
-	for _, step := range []int{-1, 1} {
-		if n, ok := neighbourOption(lines, index, step); ok && (n == number-1 || n == number+1) {
-			return true
-		}
-	}
-	return false
-}
-
-// neighbourOption is the option number of the nearest non-blank line from
-// index in direction step, if that line is a numbered option.
-func neighbourOption(lines []string, index, step int) (int, bool) {
-	for at := index + step; at >= 0 && at < len(lines); at += step {
-		row := stripBorder(strings.ReplaceAll(strings.TrimSpace(lines[at]), "\u00a0", " "))
-		if row != "" {
-			return optionNumber(row)
-		}
-	}
-	return 0, false
-}
-
-// optionNumber is gc's menuOptionNumber: N for text starting with ASCII digits
-// followed by ". ".
-func optionNumber(text string) (int, bool) {
-	digits := 0
-	for digits < len(text) && text[digits] >= '0' && text[digits] <= '9' {
-		digits++
-	}
-	if digits == 0 || !strings.HasPrefix(text[digits:], ". ") {
-		return 0, false
-	}
-	n, err := strconv.Atoi(text[:digits])
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-// stripBorder removes one leading box border and the blanks around it, matching
-// gc's stripLeadingBoxBorder (gc v1.5.1 internal/runtime/tmux/tmux.go:4204-4213).
-func stripBorder(text string) string {
-	text = strings.TrimLeft(text, " \t")
-	for _, border := range []string{"│", "┃"} {
-		if strings.HasPrefix(text, border) {
-			return strings.TrimLeft(text[len(border):], " \t")
-		}
-	}
-	return text
 }

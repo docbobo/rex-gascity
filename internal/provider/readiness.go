@@ -1,6 +1,9 @@
 package provider
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Startup-dialog detection: whether a pane's rendered screen shows a dialog the
 // first turn must not land in. It ports runtime-herdr-core's
@@ -45,13 +48,8 @@ var startupDialogGroups = [][][]string{
 var rateLimitDialogMarkers = []string{"Usage limit reached", "You've hit your limit", "/rate-limit-options"}
 
 // bareRateLimitMarkers is readiness.py's BARE_RATE_LIMIT: the low-confidence
-// mention that only counts beside a menu cursor row (or, for the gc-reference
-// showsDialog, as the RATE_LIMIT screen marker).
+// mention that only counts beside a menu cursor row.
 var bareRateLimitMarkers = []string{"rate limit", "Rate limit"}
-
-// allRateLimitMarkers is readiness.py's RATE_LIMIT = RATE_LIMIT_DIALOG +
-// BARE_RATE_LIMIT, the permissive screen matcher showsDialog uses.
-var allRateLimitMarkers = append(append([]string{}, rateLimitDialogMarkers...), bareRateLimitMarkers...)
 
 // rateLimitMenuOptions is readiness.py's RATE_LIMIT_MENU: the options gc's
 // ContainsProviderRateLimitScreen reads beside a "rate limit" mention.
@@ -73,17 +71,12 @@ var (
 	startupPromptEndings = []string{">", "$", "%", "#", "❯", "›"}
 )
 
-// showsDialog reports whether the screen shows a startup dialog gc knows. It is
-// readiness.py's shows_dialog, the gc reference (gc's ContainsRateLimitDialog);
-// Start uses withholdsFirstTurn, which narrows it.
-func showsDialog(screen string) bool {
-	return namedDialog(screen) || rateLimited(screen, allRateLimitMarkers)
-}
-
 // withholdsFirstTurn reports whether the screen shows a dialog the first turn
 // must not land in: a named dialog gc knows, a high-confidence rate-limit
 // screen, or a bare "rate limit" mention beside a menu cursor row. It is
-// readiness.py's withholds_first_turn, what the startup readiness wait uses.
+// readiness.py's withholds_first_turn, which narrows readiness.py's
+// shows_dialog (gc's ContainsRateLimitDialog). The pane-state module
+// (panestate.go) is its only caller.
 func withholdsFirstTurn(screen, prefix string) bool {
 	return namedDialog(screen) || rateLimited(screen, rateLimitDialogMarkers) || rateLimitMenu(screen, prefix)
 }
@@ -226,4 +219,107 @@ func containsAll(screen string, subs []string) bool {
 		}
 	}
 	return true
+}
+
+// screenHasPromptPrefix reports whether the screen's live composer shows
+// prefix. It reads the screen as gc's paneShowsReadyPrompt does (gc v1.5.1
+// internal/runtime/tmux/tmux.go:4199-4231): the bottom-most line showing the
+// prefix is the composer (lines above it are past turns), NBSP reads as a
+// space, one leading box border is skipped, the bare glyph counts, and the
+// cursor row of a numbered menu is no prompt (a startup dialog marks its
+// selected option with the same glyph, and typing would pick it). A screen
+// showing a dialog as a whole is GCREX-59's gap, not this function's.
+func screenHasPromptPrefix(screen, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	lines := strings.Split(screen, "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		if _, ok := promptRest(lines[index], prefix); ok {
+			return !menuCursorRow(lines, index, prefix)
+		}
+	}
+	return false
+}
+
+// promptRest is gc's promptLineRest: what follows prefix on line, and whether
+// the line shows it at all. "" means the bare glyph. One leading box border is
+// skipped, and an empty prefix matches nothing.
+func promptRest(line, prefix string) (string, bool) {
+	if prefix == "" {
+		return "", false
+	}
+	text := strings.ReplaceAll(strings.TrimSpace(line), "\u00a0", " ")
+	prefix = strings.ReplaceAll(prefix, "\u00a0", " ")
+	bare := strings.TrimSpace(prefix)
+	for _, candidate := range []string{text, stripBorder(text)} {
+		if strings.HasPrefix(candidate, prefix) {
+			return strings.TrimLeft(candidate[len(prefix):], " "), true
+		}
+		if bare != "" && candidate == bare {
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// menuCursorRow is gc's isMenuCursorRow: a line whose rest reads "N. " is a
+// numbered menu's cursor row when the nearest non-blank line above or below it
+// is option N-1 or N+1 (unselected options carry no glyph).
+func menuCursorRow(lines []string, index int, prefix string) bool {
+	rest, ok := promptRest(lines[index], prefix)
+	if !ok {
+		return false
+	}
+	number, ok := optionNumber(rest)
+	if !ok {
+		return false
+	}
+	for _, step := range []int{-1, 1} {
+		if n, ok := neighbourOption(lines, index, step); ok && (n == number-1 || n == number+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// neighbourOption is the option number of the nearest non-blank line from
+// index in direction step, if that line is a numbered option.
+func neighbourOption(lines []string, index, step int) (int, bool) {
+	for at := index + step; at >= 0 && at < len(lines); at += step {
+		row := stripBorder(strings.ReplaceAll(strings.TrimSpace(lines[at]), "\u00a0", " "))
+		if row != "" {
+			return optionNumber(row)
+		}
+	}
+	return 0, false
+}
+
+// optionNumber is gc's menuOptionNumber: N for text starting with ASCII digits
+// followed by ". ".
+func optionNumber(text string) (int, bool) {
+	digits := 0
+	for digits < len(text) && text[digits] >= '0' && text[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || !strings.HasPrefix(text[digits:], ". ") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(text[:digits])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// stripBorder removes one leading box border and the blanks around it, matching
+// gc's stripLeadingBoxBorder (gc v1.5.1 internal/runtime/tmux/tmux.go:4204-4213).
+func stripBorder(text string) string {
+	text = strings.TrimLeft(text, " \t")
+	for _, border := range []string{"│", "┃"} {
+		if strings.HasPrefix(text, border) {
+			return strings.TrimLeft(text[len(border):], " \t")
+		}
+	}
+	return text
 }
