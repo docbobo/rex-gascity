@@ -83,17 +83,41 @@ session". A green check means the provider handshakes, its version matches
 
 ### Upgrade and roll back
 
+`gc import upgrade rex` moves the import to the newest tag that matches its
+constraint. The constraint must allow more than one tag: `--version '^2026.11.03'`
+matches later 2026 releases and not a 2027 release.
+
 ```sh
-gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.03
+gc import upgrade rex
 gc import install
+gc import check
 gc doctor --check rex-gascity-runtime:rex-binary --fix
-gc doctor --check rex-gascity-runtime:rex-binary
 ```
 
-A caret constraint tracks the major line. `--version '^2026.11.03'` matches later 2026 releases and not a 2027 release. `gc import upgrade rex` then moves to the newest matching tag.
+`gc import check` is read-only. The doctor command downloads and runs the new
+release binary now.
 
-The cache has no eviction. Stale `<version>/<os>-<arch>` directories stay after an upgrade and you remove them by hand. `GC_RUNTIME_CACHE_DIR` only redirects new lookups.
+A bare `--version 2026.11.03` pins one tag, so `gc import upgrade rex` leaves
+it in place. To move to one explicit version, or to roll back to an older one,
+remove the import and add it again with the bare version and the `//pack` URL
+form.
+
+```sh
+gc import remove rex
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.03
+gc import install
+gc import check
+gc doctor --check rex-gascity-runtime:rex-binary --fix
+```
+
+The cache keeps one directory per version and has no eviction. Old
+`<version>/<os>-<arch>` directories stay until you remove them by hand.
+`GC_RUNTIME_CACHE_DIR` only redirects new lookups.
+
+A running supervisor or controller picks up the new provider only after a
+restart. [City configuration](#city-configuration) covers the mechanism.
+Session panes that the old provider started keep running on the old binary
+until they restart.
 
 ### City configuration
 
