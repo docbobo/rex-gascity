@@ -205,6 +205,25 @@ func (c *Client) CloseBlock(ctx context.Context, sessionID rex.SessionID, block 
 	}, nil)
 }
 
+// MoveWindow moves a window within its session's window order (Rex API
+// session.move_window, docs/REX-CONTRACT.md §3). before is the window to
+// place it just before. An empty before moves it to the end, which the API
+// expresses by omitting before_window_id. The {revision} reply is read and
+// discarded.
+func (c *Client) MoveWindow(ctx context.Context, sessionID rex.SessionID, windowID, before rex.WindowID) error {
+	args := map[string]any{
+		"session_id": string(sessionID),
+		"window_id":  string(windowID),
+	}
+	if before != "" {
+		args["before_window_id"] = string(before)
+	}
+	var reply struct {
+		Revision int64 `json:"revision"`
+	}
+	return c.call(ctx, "session.move_window", args, &reply)
+}
+
 // sessionViewReply is the session.view reply the client reads.
 type sessionViewReply struct {
 	SessionID      string `json:"session_id"`

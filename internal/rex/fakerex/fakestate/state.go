@@ -32,7 +32,7 @@ var Methods = []string{
 	"server.version",
 	"session.create", "session.destroy", "session.list",
 	"session.list_clients", "session.view",
-	"session.new_window", "session.new_split",
+	"session.new_window", "session.new_split", "session.move_window",
 	"session.focus_block", "session.focus_window",
 	"session.set_block_label", "session.set_window_label", "session.set_label",
 	"block.close", "block.event", "block.method",
@@ -376,6 +376,53 @@ func (s *Session) Remove(id string) {
 			}
 		}
 	}
+}
+
+// MoveWindow moves window id to just before window before, or to the end of
+// the session's window order when before is "" (Rex session.move_window). It
+// reports whether the order changed. Faults match Rex: before == id is a
+// server-side bad_request (exit 1); a window not in the session is not_found.
+func (s *Session) MoveWindow(id, before string) (bool, error) {
+	if before == id {
+		return false, fmt.Errorf("%w: window %s cannot move before itself (status=400 code=bad_request)", ErrFail, id)
+	}
+	from := -1
+	for i, w := range s.Windows {
+		if w.ID == id {
+			from = i
+		}
+	}
+	if from < 0 {
+		return false, fmt.Errorf("%w: window %s is not in session %s (code=not_found)", ErrNotFound, id, s.ID)
+	}
+	moved := s.Windows[from]
+	rest := make([]*Window, 0, len(s.Windows))
+	rest = append(rest, s.Windows[:from]...)
+	rest = append(rest, s.Windows[from+1:]...)
+	to := len(rest)
+	if before != "" {
+		to = -1
+		for i, w := range rest {
+			if w.ID == before {
+				to = i
+			}
+		}
+		if to < 0 {
+			return false, fmt.Errorf("%w: window %s is not in session %s (code=not_found)", ErrNotFound, before, s.ID)
+		}
+	}
+	next := make([]*Window, 0, len(s.Windows))
+	next = append(next, rest[:to]...)
+	next = append(next, moved)
+	next = append(next, rest[to:]...)
+	changed := false
+	for i := range next {
+		if next[i] != s.Windows[i] {
+			changed = true
+		}
+	}
+	s.Windows = next
+	return changed, nil
 }
 
 // RemoveLeaf drops the leaf for id from the tree, collapsing its parent split
