@@ -370,6 +370,12 @@ func (c *Client) BlockFormat(ctx context.Context, sessionID rex.SessionID, block
 		return "", err
 	}
 
+	// The common reply is one page: return it as is rather than copying up to
+	// formatMaxBytes into a builder.
+	if first.ID == 0 {
+		return first.Content, nil
+	}
+
 	var out strings.Builder
 	out.WriteString(first.Content)
 	offset := len(first.Content)
