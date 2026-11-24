@@ -17,6 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Per-job p50 and p90 over the last 30 days
+        # pipefail: a failed ci-timings.sh must fail the step, not the tee.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
