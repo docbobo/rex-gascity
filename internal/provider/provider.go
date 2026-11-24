@@ -466,11 +466,11 @@ type startResult struct {
 	env map[string]string
 }
 
-func (p *Provider) start(ctx context.Context, name string, cfg Config) (res startResult, err error) {
+func (p *Provider) start(ctx context.Context, name string, cfg Config) (startResult, error) {
 	n := SessionName(name)
 	// One token per start call. The provisional record this start writes is
 	// writable only by this attempt, so a stale survivor write from another
-	// launch cannot take it, and the retry below reuses the same token.
+	// launch cannot take it, and launchPane's retry reuses the same token.
 	attempt := rand.Text()
 	// Build the one launch plan up front: it projects pool routing for every
 	// later step and owns the Rex block layout. The launch label must come
@@ -484,28 +484,6 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		Label:   paneLabelFor(n, env),
 	})
 	cfg.Env = plan.Env
-	seeded := false
-	// keepProvisional stays true when a failed launch could not remove the
-	// empty city session. A later Stop then still finds the session id.
-	keepProvisional := false
-	defer func() {
-		if err == nil || !seeded {
-			return
-		}
-		// A failed launch or a canceled start must not leave a seeded identity
-		// or a provisional binding behind. Stop clears the same keys on the
-		// successful retire path. A survivor record is the only name for a
-		// descendant the retire could not reap, so it stays.
-		// The pane itself was already retired by discardLaunchPolicy when
-		// its record failed; this undoes only start's own provisional state.
-		_ = p.clearStartIdentity(n)
-		if bd, ok := p.Binding(name); ok && len(bd.Survivors) > 0 {
-			return
-		}
-		if !keepProvisional {
-			p.binder.Forget(n)
-		}
-	}()
 	// The env-derived labels let Resolve rediscover a live pane whose sidecar
 	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
 	// cannot place the pane in its rig tab).
@@ -554,26 +532,8 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		}
 	}
 
-	// Find or create the city session under the short state lock: two starts of
-	// different names may run concurrently, and both would otherwise create the
-	// shared `gc:<city>` session.
-	findOrCreate := func() (rex.SessionID, error) {
-		var sid rex.SessionID
-		err := p.withStateLock(ctx, func() error {
-			var ok bool
-			var err error
-			sid, ok, err = p.binder.FindSession(ctx)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				sid, err = p.client.CreateSession(ctx, p.binder.canonicalLabel())
-			}
-			return err
-		})
-		return sid, err
-	}
-	sid, err := findOrCreate()
+	// Find or create the city session under the short state lock.
+	sid, err := p.findOrCreateCitySession(ctx)
 	if err != nil {
 		return startResult{}, err
 	}
@@ -641,120 +601,18 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (res star
 		return startResult{}, err
 	}
 
-	// Seed the identity and a provisional binding under the short state lock,
-	// before the launch call (which blocks while Rex dismisses startup dialogs).
-	// A reconciler tick in that window can then read the current
-	// GC_SESSION_ID/GC_INSTANCE_TOKEN instead of an empty identity and must not
-	// roll the pending create back.
-	seeded = true
-	if err := p.withStateLock(ctx, func() error {
-		if err := p.seedStartIdentity(n, cfg.Env); err != nil {
-			return err
-		}
-		return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
-	}); err != nil {
-		return startResult{}, err
-	}
-
-	tab := hint.TabLabel
-	spec := plan.Spec
-	// The blocking launch holds only the per-rig (tab) lock, so a slow NewWindow
-	// or NewSplit for one rig does not stall other rigs' starts or any stop. The
-	// lock makes the view read and the create/split decision atomic per tab, so
-	// two concurrent starts in one rig cannot both create the tab.
-	var launched startResult
-	launchStart := time.Now()
-	launch := func() error {
-		// The shared launch lock is held across the view read and the
-		// create/split call, so a stop of any name can tell that a pane is
-		// still to come even while the session view shows no window yet
-		// (GCREX-31 review). It is cross-process, and the kernel drops it if
-		// this process dies.
-		releaseLaunch, err := p.beginLaunch(ctx, sid)
-		if err != nil {
-			return err
-		}
-		defer releaseLaunch()
-		return p.withTabLock(ctx, tab, func() error {
-			view, err := p.client.SessionView(ctx, sid)
-			if err != nil {
-				return err
-			}
-			for _, w := range view.Windows {
-				if w.Label != tab {
-					continue
-				}
-				anchor, direction, ok := nextSplit(w)
-				if !ok {
-					continue
-				}
-				block, err := p.client.NewSplit(ctx, sid, anchor, direction, "after", spec)
-				if err != nil {
-					return err
-				}
-				if block != "" {
-					bd := p.newBinding(n, sid, w.ID, block, "split", attempt, cfg)
-					if err := p.recordOrDiscard(ctx, n, bd); err != nil {
-						return err
-					}
-				}
-				launched = startResult{sessionID: sid, blockID: block}
-				return nil
-			}
-			// A brand-new session's tab becomes active so the operator lands in
-			// it. A name that already answered to a binding (a live pane
-			// returned above, a dead one is relaunched here) is an existing
-			// session and must not steal focus. A split never moves the active
-			// tab either.
-			windowSpec := spec
-			windowSpec.Focus = !found
-			wid, block, err := p.client.NewWindow(ctx, sid, tab, windowSpec)
-			if err != nil {
-				return err
-			}
-			if block != "" {
-				bd := p.newBinding(n, sid, wid, block, "window", attempt, cfg)
-				if err := p.recordOrDiscard(ctx, n, bd); err != nil {
-					return err
-				}
-			}
-			launched = startResult{sessionID: sid, blockID: block}
-			return nil
-		})
-	}
-	err = launch()
-	if errors.Is(err, rex.ErrNotFound) {
-		// A concurrent Stop of another name destroyed the empty city session
-		// after find-or-create released the state lock. Create it again and
-		// launch once more; a second miss is returned as is.
-		if sid, err = findOrCreate(); err == nil {
-			if err = p.withStateLock(ctx, func() error {
-				return p.recordProvisionalBinding(n, sid, "", attempt, cfg)
-			}); err == nil {
-				err = launch()
-			}
-		}
-	}
-	if err != nil {
-		// A failed launch leaves no pane, and the stop that skipped this
-		// session because the launch was in flight will not run again: remove
-		// the empty city session here, or it outlives its last pane
-		// (GCREX-31 review). The launch lock is released by now.
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), startCleanupTimeout)
-		defer cancelCleanup()
-		if derr := p.withStateLock(cleanupCtx, func() error {
-			return p.destroyEmptyCitySession(cleanupCtx, sid)
-		}); derr != nil {
-			// Keep the provisional record: the deferred handler must not
-			// forget it. A later Stop retries the removal.
-			keepProvisional = true
-			p.warnf("start %s: remove the empty city session %s: %v", n, sid, derr)
-		}
-		return startResult{}, err
-	}
-	launched.launchDur = time.Since(launchStart)
-	launched.env = plan.Env
-	return launched, nil
+	// Seed identity, launch the pane, and record it or roll back. launchPane
+	// owns that step, its lock order, the vanished-session retry and the
+	// rollback of everything this start seeded.
+	return p.launchPane(ctx, launchRequest{
+		name:     n,
+		attempt:  attempt,
+		session:  sid,
+		tab:      hint.TabLabel,
+		spec:     plan.Spec,
+		relaunch: found,
+		cfg:      cfg,
+	})
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the
