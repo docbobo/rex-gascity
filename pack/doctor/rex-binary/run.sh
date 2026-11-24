@@ -34,6 +34,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 pack_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd -P)
 pack_toml="$pack_dir/pack.toml"
 
+if [ -r "$pack_dir/bin/_lib.sh" ]; then . "$pack_dir/bin/_lib.sh"; fi
+
 # normalize_version strips a leading `v` and any `+build-metadata` suffix, so
 # `v0.1.0`, `0.1.0` and `0.1.0+dirty` all compare as `0.1.0`.
 normalize_version() {
@@ -41,36 +43,6 @@ normalize_version() {
   v=${v#v}
   v=${v%%+*}
   printf '%s' "$v"
-}
-
-# version_cmp prints -1, 0 or 1 comparing the first argument against the
-# second as MAJOR.MINOR.PATCH[-preview.N]. It prints nothing when either string
-# is not that scheme. Fields compare one at a time, so no field has a packing
-# limit. A release ranks above any preview of the same MAJOR.MINOR.PATCH.
-version_cmp() {
-  awk -v a="$1" -v b="$2" '
-    function parse(s, v,   rel, pre) {
-      sub(/^v/, "", s)
-      sub(/\+.*$/, "", s)
-      if (s !~ /^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$/) return 0
-      split(s, rel, "-")
-      split(rel[1], v, ".")
-      v[4] = 999
-      if (rel[2] != "") {
-        split(rel[2], pre, ".")
-        v[4] = pre[2]
-      }
-      return 1
-    }
-    BEGIN {
-      if (!parse(a, av) || !parse(b, bv)) exit
-      for (i = 1; i <= 4; i++) {
-        if (av[i] + 0 < bv[i] + 0) { printf "-1"; exit }
-        if (av[i] + 0 > bv[i] + 0) { printf "1"; exit }
-      }
-      printf "0"
-    }
-  '
 }
 
 # The runtime command, the declared version, and the rex CLI minimum. Fall
@@ -161,7 +133,6 @@ if [ "$provider_path" = "$pack_shim" ] && [ -x "$provider_path" ]; then
     shim_unresolved_kind=pack
     shim_unresolved="the shim cache helper \`bin/_lib.sh\` is missing"
   else
-    . "$pack_dir/bin/_lib.sh"
     if ! gc_runtime_platform >/dev/null 2>&1; then
       shim_unresolved_kind=platform
       _plat_err=$(gc_runtime_platform 2>&1) || true
@@ -281,7 +252,7 @@ elif [ ! -x "$rex_path" ]; then
   rex_remediation="Reinstall Rex (https://rex.dev) or set GC_REX_BIN to an executable."
 else
   rex_detail="rex: $rex_path"
-  if [ -n "$min_version" ]; then
+  if [ -n "$min_version" ] && command -v version_cmp >/dev/null 2>&1; then
     installed_version=
     version_json=$("$rex_path" version --json 2>/dev/null) || version_json=
     if [ -n "$version_json" ]; then
