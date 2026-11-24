@@ -12,9 +12,10 @@ import (
 // takes one observation of the pane and returns one verdict. The screen
 // predicates in readiness.go are called from here and nowhere else.
 //
-// This is the intended end state. Today only IdleSnapshot uses idleVerdict.
-// nudge_delivery.go still calls the readiness predicates directly. Those
-// callers move here in later tasks.
+// This is the intended end state. IdleSnapshot uses idleVerdict and the startup
+// readiness wait uses startupVerdict. nudge_delivery.go still calls the
+// readiness predicates directly for nudge confirmation and the resend ladder.
+// Those callers move here in later tasks.
 //
 // The callers combine program_status and the screen differently on purpose.
 // Those divergences (D1-D6, issue #44) are kept, and TestPaneStateVerdict pins

@@ -100,6 +100,7 @@ var idleRows = []verdictRow{
 // startupRows are REQ-009: startupVerdict, today's readinessNote minus bound naming.
 var startupRows = []verdictRow{
 	{name: "startup prompt: dialog", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText(trustDialog), want: verdictDialog, wantReads: 1},
+	{name: "startup prompt: dialog over a matching prompt", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText("READY>\n" + trustDialog), want: verdictDialog, wantReads: 1},
 	{name: "startup prompt: ready prompt", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ "), want: verdictPromptReady, wantReads: 1},
 	{name: "startup prompt: no prompt yet", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n"), want: verdictWaiting, wantReads: 1},
 	{name: "startup prompt: read fails at the bound", ask: askStartup, prefix: "❯ ", atBound: true, status: noRecord, screen: screenFails(), want: verdictWaiting, wantReads: 1},
