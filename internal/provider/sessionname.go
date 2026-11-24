@@ -96,11 +96,34 @@ func legacyTabLabelFor(n SessionName, env map[string]string) string {
 // clampRexLabel truncates s to maxRexLabel runes, replacing the tail with "…"
 // so truncation is visible and never splits a UTF-8 sequence.
 func clampRexLabel(s string) string {
-	r := []rune(s)
-	if len(r) <= maxRexLabel {
+	// A string of at most maxRexLabel bytes has at most that many runes.
+	if len(s) <= maxRexLabel {
 		return s
 	}
-	return string(r[:maxRexLabel-1]) + "…"
+	// Walk the runes once, remembering where the kept prefix ends, instead of
+	// materialising a []rune of the whole label.
+	count, end := 0, 0
+	for i := range s {
+		if count == maxRexLabel-1 {
+			end = i
+		}
+		count++
+	}
+	if count <= maxRexLabel {
+		return s
+	}
+	// Rebuild the prefix rune by rune so invalid bytes become U+FFFD exactly as
+	// the []rune round trip did.
+	var sb strings.Builder
+	sb.Grow(end + len("…"))
+	for i, r := range s {
+		if i >= end {
+			break
+		}
+		sb.WriteRune(r)
+	}
+	sb.WriteString("…")
+	return sb.String()
 }
 
 // PaneLabel is the Rex pane label: the agent.
