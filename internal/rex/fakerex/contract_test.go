@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -243,6 +244,80 @@ func TestClientErrorClassification(t *testing.T) {
 	}
 }
 
+// TestMoveWindowContract drives session.move_window through cli.Client against
+// the fake binary (#47, REQ-004): a reorder, an in-place call that leaves the
+// revision unchanged, a move to the end, and the three faults
+// docs/REX-CONTRACT.md §3 lists.
+func TestMoveWindowContract(t *testing.T) {
+	f := fakerex.New(t)
+	c, sid, _ := start(t, f, "dog-1", "/bin/sh", "-c", "sleep 60")
+	town, _, err := c.NewWindow(ctx(t), sid, "Gas City", spec("mayor", "/bin/sh", "-c", "sleep 60"))
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+	order := func() ([]rex.WindowID, int64) {
+		t.Helper()
+		view, err := c.SessionView(ctx(t), sid)
+		if err != nil {
+			t.Fatalf("SessionView: %v", err)
+		}
+		ids := make([]rex.WindowID, 0, len(view.Windows))
+		for _, w := range view.Windows {
+			ids = append(ids, w.ID)
+		}
+		return ids, view.Revision
+	}
+	ids, _ := order()
+	if len(ids) != 2 || ids[1] != town {
+		t.Fatalf("order = %v, want [rig, %s]", ids, town)
+	}
+	rig := ids[0]
+
+	// Reorder: the town window moves before the rig window.
+	if err := c.MoveWindow(ctx(t), sid, town, rig); err != nil {
+		t.Fatalf("MoveWindow before: %v", err)
+	}
+	ids, rev := order()
+	if !slices.Equal(ids, []rex.WindowID{town, rig}) {
+		t.Fatalf("order after move = %v, want [%s %s]", ids, town, rig)
+	}
+
+	// Already in place: no change, no revision bump.
+	if err := c.MoveWindow(ctx(t), sid, town, rig); err != nil {
+		t.Fatalf("MoveWindow in place: %v", err)
+	}
+	if ids, got := order(); got != rev || !slices.Equal(ids, []rex.WindowID{town, rig}) {
+		t.Errorf("in-place move: order %v revision %d, want [%s %s] revision %d", ids, got, town, rig, rev)
+	}
+
+	// No before: move to the end, and the revision moves.
+	if err := c.MoveWindow(ctx(t), sid, town, ""); err != nil {
+		t.Fatalf("MoveWindow to end: %v", err)
+	}
+	if ids, got := order(); got <= rev || !slices.Equal(ids, []rex.WindowID{rig, town}) {
+		t.Errorf("move to end: order %v revision %d, want [%s %s] revision > %d", ids, got, rig, town, rev)
+	}
+
+	// Faults: unknown window, unknown before, unknown session -> not found
+	// (exit 3); before == window -> bad_request (server-side, exit 1).
+	if err := c.MoveWindow(ctx(t), sid, "window:999", rig); !errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("unknown window = %v, want ErrNotFound", err)
+	}
+	if err := c.MoveWindow(ctx(t), sid, town, "window:999"); !errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("unknown before = %v, want ErrNotFound", err)
+	}
+	if err := c.MoveWindow(ctx(t), "session:999", town, rig); !errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("unknown session = %v, want ErrNotFound", err)
+	}
+	err = c.MoveWindow(ctx(t), sid, town, town)
+	if err == nil || errors.Is(err, rex.ErrNotFound) || !strings.Contains(err.Error(), "bad_request") {
+		t.Errorf("before == window = %v, want a bad_request failure that is not ErrNotFound", err)
+	}
+	if ids, _ := order(); !slices.Equal(ids, []rex.WindowID{rig, town}) {
+		t.Errorf("order after failed moves = %v, want it unchanged [%s %s]", ids, rig, town)
+	}
+}
+
 // TestReplySchemas drives every method through the real cli.Client and asserts
 // the fields it decodes are populated. A renamed or retyped field decodes to
 // the zero value, so a typo in the fake fails here instead of producing a zero
@@ -354,6 +429,10 @@ func TestReplySchemas(t *testing.T) {
 	if view, err = c.SessionView(ctx(t), sid); err != nil || view.ActiveWindowID != wid2 {
 		t.Fatalf("active window = %v (%v), want %s", view.ActiveWindowID, err, wid2)
 	}
+	if reply := raw("session.move_window", fmt.Sprintf(`{"session_id":%q,"window_id":%q}`, sid, wid2)); reply["revision"] == nil {
+		t.Errorf("session.move_window reply = %v, want a revision", reply)
+	}
+	covered["session.move_window"] = true
 
 	if err := c.BlockWrite(ctx(t), sid, bid, "hello"); err != nil {
 		t.Fatalf("BlockWrite: %v", err)

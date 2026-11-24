@@ -67,6 +67,7 @@ gc city → Rex session, gc rig → Rex tab, gc agent → Rex pane (Option B).
 | `session.list_clients` | `session_id` | `clients[] {client_id, principal, info, connected_at, connection_state}` — the attached-client source (§12), not `session.view` |
 | `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe.** The provider calls it in one place: `stop` removes this city's own canonical `gc:<city>` session once its last pane is gone, behind the fail-closed empty check in §12 (GCREX-31) |
 | `session.focus_block` / `session.focus_window` | ids | focus a pane / tab |
+| `session.move_window` | `session_id`, `window_id`, optional `before_window_id` (omitted: move the window to the end) | `revision`, unchanged when the window is already in place (the call is then a no-op). The window order is `session.view` `windows[]` and the Rex.app tab order; the active window, focus and blocks do not change. Faults: unknown session `session_not_found`; a window not in the session `not_found`; `before_window_id == window_id` `bad_request` (server-side, CLI exit 1, as §8). `rex window move --index 1` equals `before_window_id=<current first window>` only when the window is not already first, because the API rejects `before_window_id == window_id`. The provider calls it once, when it creates the town tab (#47). Source: installed `rex` `0.1.0-preview.21` `api describe session.move_window` |
 | `session.set_block_label` / `session.set_window_label` / `session.set_label` | ids, label | ≤128 chars |
 | `block.close` | `session_id`, `block_id` **or** `window_id`, `keep_last` | returns `{block_id, revision}`; `keep_last` refuses the last block in a window (`bad_request`, exit 1) |
 | `block.event` | `session_id`, `block_id`, `event {type, payload}` | input event; `type` ∈ `key`, `paste`, `mouse`, `wheel`, `focus`. A `paste` payload is `{"text": "..."}`; a `focus` payload is `{"action": "in"\|"out"}` |
@@ -387,10 +388,11 @@ say "Topology methods — §3"
 for m in session.create session.new_window session.new_split session.view \
          session.list session.list_clients session.destroy session.focus_block \
          session.focus_window session.set_block_label session.set_window_label \
-         session.set_label block.close block.event block.method target.resolve; do
+         session.set_label session.move_window block.close block.event block.method \
+         target.resolve; do
   rex api describe "$m" >/dev/null 2>&1 || echo "MISSING $m"
 done
-echo "checked 16 methods (no MISSING lines = all present)"
+echo "checked 17 methods (no MISSING lines = all present)"
 
 say "Terminal block methods — §4 (names the provider relies on)"
 rex block inspect "$REX_BLOCK" --json \

@@ -296,6 +296,8 @@ func call(dir, method string, in map[string]any) (any, error) {
 		return newWindow(dir, in)
 	case "session.new_split":
 		return newSplit(dir, in)
+	case "session.move_window":
+		return moveWindow(dir, in)
 	case "session.focus_block":
 		return setterReply(dir, func(st *fakestate.State) error {
 			s, err := st.Session(str(in, "session_id"))
@@ -382,6 +384,29 @@ func setterReply(dir string, fn func(*fakestate.State) error) (any, error) {
 			return err
 		}
 		st.Revision++
+		reply = map[string]any{"revision": st.Revision}
+		return nil
+	})
+	return reply, err
+}
+
+// moveWindow reorders a session's windows (session.move_window). Unlike the
+// setters, it bumps the revision only when the order changes: Rex leaves the
+// revision unchanged for a call that changes nothing session.view shows.
+func moveWindow(dir string, in map[string]any) (any, error) {
+	var reply any
+	err := update(dir, func(st *fakestate.State) error {
+		s, err := st.Session(str(in, "session_id"))
+		if err != nil {
+			return err
+		}
+		changed, err := s.MoveWindow(str(in, "window_id"), str(in, "before_window_id"))
+		if err != nil {
+			return err
+		}
+		if changed {
+			st.Revision++
+		}
 		reply = map[string]any{"revision": st.Revision}
 		return nil
 	})
