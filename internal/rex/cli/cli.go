@@ -205,43 +205,58 @@ func (c *Client) CloseBlock(ctx context.Context, sessionID rex.SessionID, block 
 	}, nil)
 }
 
+// sessionViewReply is the session.view reply the client reads.
+type sessionViewReply struct {
+	SessionID      string `json:"session_id"`
+	Label          string `json:"label"`
+	ActiveWindowID string `json:"active_window_id"`
+	Revision       int64  `json:"revision"`
+	Windows        []struct {
+		ID             string `json:"window_id"`
+		Label          string `json:"label"`
+		FocusedBlockID string `json:"focused_block_id"`
+		Layers         []struct {
+			Layout *layoutTree `json:"layout"`
+			Blocks []struct {
+				ID    string `json:"block_id"`
+				Label string `json:"label"`
+				Owner string `json:"owner"`
+			} `json:"blocks"`
+		} `json:"layers"`
+	} `json:"windows"`
+}
+
 // SessionView returns the session's windows and their blocks.
 func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.SessionView, error) {
-	var reply struct {
-		SessionID      string `json:"session_id"`
-		Label          string `json:"label"`
-		ActiveWindowID string `json:"active_window_id"`
-		Revision       int64  `json:"revision"`
-		Windows        []struct {
-			ID             string `json:"window_id"`
-			Label          string `json:"label"`
-			FocusedBlockID string `json:"focused_block_id"`
-			Layers         []struct {
-				Layout *layoutTree `json:"layout"`
-				Blocks []struct {
-					ID    string `json:"block_id"`
-					Label string `json:"label"`
-					Owner string `json:"owner"`
-				} `json:"blocks"`
-			} `json:"layers"`
-		} `json:"windows"`
-	}
+	var reply sessionViewReply
 	if err := c.call(ctx, "session.view", map[string]any{"session_id": string(sessionID)}, &reply); err != nil {
 		return rex.SessionView{}, err
 	}
+	return reply.view(), nil
+}
+
+// view converts the wire reply to a rex.SessionView.
+func (r *sessionViewReply) view() rex.SessionView {
 	view := rex.SessionView{
-		SessionID:      rex.SessionID(reply.SessionID),
-		Label:          reply.Label,
-		ActiveWindowID: rex.WindowID(reply.ActiveWindowID),
-		Revision:       reply.Revision,
+		SessionID:      rex.SessionID(r.SessionID),
+		Label:          r.Label,
+		ActiveWindowID: rex.WindowID(r.ActiveWindowID),
+		Revision:       r.Revision,
 	}
-	for _, w := range reply.Windows {
+	for _, w := range r.Windows {
 		win := rex.Window{
 			ID:             rex.WindowID(w.ID),
 			Label:          w.Label,
 			FocusedBlockID: rex.BlockID(w.FocusedBlockID),
 		}
-		index := map[rex.BlockID]int{}
+		listed := 0
+		for _, layer := range w.Layers {
+			listed += len(layer.Blocks)
+		}
+		index := make(map[rex.BlockID]int, listed)
+		if listed > 0 {
+			win.Blocks = make([]rex.Block, 0, listed)
+		}
 		add := func(id rex.BlockID, label, owner string, rect [4]float64) {
 			if i, ok := index[id]; ok {
 				if label != "" && win.Blocks[i].Label == "" {
@@ -277,7 +292,7 @@ func (c *Client) SessionView(ctx context.Context, sessionID rex.SessionID) (rex.
 		}
 		view.Windows = append(view.Windows, win)
 	}
-	return view, nil
+	return view
 }
 
 // layoutTree is one node of a session.view layer layout: a block leaf or a

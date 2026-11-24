@@ -184,3 +184,26 @@ func BenchmarkBlockFormat(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkSessionViewDecode is SessionView without the process spawn: decode
+// the reply and convert it, the part the client's own code controls.
+func BenchmarkSessionViewDecode(b *testing.B) {
+	for _, shape := range []struct{ windows, panes int }{{1, 5}, {4, 25}, {10, 50}} {
+		raw, err := json.Marshal(viewReply(shape.windows, shape.panes))
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Run(fmt.Sprintf("%dw-%dp", shape.windows, shape.panes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var reply sessionViewReply
+				if err := json.Unmarshal(raw, &reply); err != nil {
+					b.Fatal(err)
+				}
+				if v := reply.view(); len(v.Windows) != shape.windows {
+					b.Fatalf("windows = %d, want %d", len(v.Windows), shape.windows)
+				}
+			}
+		})
+	}
+}
