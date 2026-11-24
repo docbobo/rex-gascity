@@ -207,8 +207,8 @@ var parityRows = []verdictRow{
 	// herdr-core shows_dialog says dialog; withholds_first_turn narrows it; dead
 	// matcher deleted in #44. The rows pin today's live verdicts: a one-option
 	// menu has no numbered neighbour, so menuCursorRow reads "› 1. Retry" as a
-	// composer and the idle row is decided by screenShowsReadyPrompt (follow-up 4
-	// in the #44 PR body).
+	// composer and the idle row is decided by screenShowsReadyPrompt (the
+	// single-option Codex rate-limit menu follow-up in the #44 PR body).
 	{name: "codex rate-limit menu is a dialog (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("OpenAI Codex\nrate limit\n› 1. Retry\n  enter confirm · esc skip\n"), want: verdictWaiting, wantReads: 1}, // readiness_internal_test.go:28
 	{name: "codex rate-limit menu is a dialog (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("OpenAI Codex\nrate limit\n› 1. Retry\n  enter confirm · esc skip\n"), want: verdictIdle, wantReads: 1},                                          // readiness_internal_test.go:28
 
@@ -250,13 +250,13 @@ var parityRows = []verdictRow{
 	// box border is skipped, the bare glyph counts, and a numbered menu's cursor
 	// row is no prompt. Each case is asked on startup in prompt mode with its
 	// prefix.
-	{name: "bare glyph on its own line (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ "), want: verdictPromptReady, wantReads: 1},         // nudge_prompt_internal_test.go:18
-	{name: "glyph then draft text (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ hello"), want: verdictPromptReady, wantReads: 1},         // nudge_prompt_internal_test.go:19
-	{name: "bare glyph with no trailing space (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯"), want: verdictPromptReady, wantReads: 1},   // nudge_prompt_internal_test.go:20
-	{name: "nbsp between glyph and text (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ hello"), want: verdictPromptReady, wantReads: 1},   // nudge_prompt_internal_test.go:21
-	{name: "box border before the glyph (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n│ ❯ hello"), want: verdictPromptReady, wantReads: 1}, // nudge_prompt_internal_test.go:22
-	{name: "thick box border before the glyph (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n┃❯ "), want: verdictPromptReady, wantReads: 1}, // nudge_prompt_internal_test.go:23
-	{name: "glyph only in past output (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("❯ old turn\ndone"), want: verdictPromptReady, wantReads: 1},     // nudge_prompt_internal_test.go:24
+	{name: "bare glyph on its own line (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ "), want: verdictPromptReady, wantReads: 1},            // nudge_prompt_internal_test.go:18
+	{name: "glyph then draft text (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ hello"), want: verdictPromptReady, wantReads: 1},            // nudge_prompt_internal_test.go:19
+	{name: "bare glyph with no trailing space (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯"), want: verdictPromptReady, wantReads: 1},      // nudge_prompt_internal_test.go:20
+	{name: "nbsp between glyph and text (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯\u00a0hello"), want: verdictPromptReady, wantReads: 1}, // nudge_prompt_internal_test.go:21
+	{name: "box border before the glyph (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n│ ❯ hello"), want: verdictPromptReady, wantReads: 1},    // nudge_prompt_internal_test.go:22
+	{name: "thick box border before the glyph (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n┃❯ "), want: verdictPromptReady, wantReads: 1},    // nudge_prompt_internal_test.go:23
+	{name: "glyph only in past output (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("❯ old turn\ndone"), want: verdictPromptReady, wantReads: 1},        // nudge_prompt_internal_test.go:24
 	// Masked: the screen matches the trust dialog's "trust this folder" marker
 	// (startupDialogGroups in readiness.go), so prompt mode reads dialog before
 	// the prompt rule runs. predicateRows keeps the old false.
