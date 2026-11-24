@@ -30,6 +30,11 @@ func TestRecordOrDiscardRetiresPaneWhenRecordFails(t *testing.T) {
 	p.recordProvisionalBinding(reapDog, "session:acme", "", "attempt", Config{})
 	bd := p.newBinding(reapDog, "session:acme", "window:Indigo", "block:dog-1", "split", "attempt", Config{})
 
+	key := metaKey{reapDog, startMetaKeys()[0]}
+	if err := p.meta.Write(key, "seeded"); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+
 	if err := p.recordOrDiscard(ctx, reapDog, bd); !errors.Is(err, errStoreWrite) {
 		t.Fatalf("recordOrDiscard = %v, want the record error", err)
 	}
@@ -42,16 +47,12 @@ func TestRecordOrDiscardRetiresPaneWhenRecordFails(t *testing.T) {
 	if _, ok := p.Binding(reapDog); !ok {
 		t.Error("binding dropped; the discard policy leaves it for start's rollback")
 	}
-	key := metaKey{reapDog, startMetaKeys()[0]}
-	if err := p.meta.Write(key, "seeded"); err != nil {
-		t.Fatalf("seed identity: %v", err)
-	}
-	_, ok, readErr := p.meta.Read(key)
+	got, ok, readErr := p.meta.Read(key)
 	if readErr != nil {
 		t.Fatalf("meta read: %v", readErr)
 	}
-	if !ok {
-		t.Error("seeded key dropped; the discard policy leaves it for start's rollback")
+	if got != "seeded" {
+		t.Errorf("identity key = %q (present=%v), want %q kept for start's rollback", got, ok, "seeded")
 	}
 	if len(c.DestroyedSessions) != 0 {
 		t.Errorf("destroyed = %v, want none under the launch lock", c.DestroyedSessions)
