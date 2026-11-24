@@ -129,17 +129,19 @@ Measured on gascity, on a Blacksmith 16 vCPU runner, from the runs API:
 
 Normalised for our repository: gascity has 4416 Go files and 68.2 MB of Go
 source at `v1.5.1`. `rex-gascity` at `origin/main` has 128 files and
-1.28 MB, about 53x smaller by bytes. The Go extractor cost follows source size.
-Expect well under a minute of extraction on 16 vCPU. Expect roughly 2-4 min on
-`ubuntu-latest` with 2 vCPU. Two languages, one matrix, no runner-policy job
-and no cache steps: the workflow in this PR is 55 lines against gascity's 162.
+1.28 MB, about 53x smaller by bytes. Two languages, one matrix, no
+runner-policy job and no cache steps: the workflow in this PR is 55 lines
+against gascity's 162.
 
 Budget: `docbobo/rex-gascity` is public (from `gh repo view`), so CodeQL
 minutes are free. The real cost is PR latency and one more red-or-green row for
 a human to read.
 
-The estimate is not a measurement. The first run of this PR's workflow is the
-measurement. Check its duration before deciding on gating.
+Measured on this repository: run `45342247558` on this PR, `ubuntu-latest`
+with 2 vCPU. Analyze (go) 55 s and Analyze (actions) 42 s, in parallel.
+
+So a pull request pays about one minute of wall clock for two more advisory
+rows.
 
 ## 6. Recommendation and plan
 
