@@ -913,3 +913,51 @@ func TestStartupNudgeRejectsInvalidUTF8(t *testing.T) {
 		}
 	}
 }
+
+// clearFailFake fails the ctrl+u that a startup resend presses before it
+// re-types the nudge, counted separately so the test can tell the clear from
+// the submit.
+type clearFailFake struct {
+	*faketest.Fake
+	clears int
+}
+
+func (f *clearFailFake) SendKeys(ctx context.Context, sid rex.SessionID, block rex.BlockID, keys ...string) error {
+	if len(keys) == 1 && keys[0] == "ctrl+u" {
+		f.clears++
+	}
+	if len(keys) == 1 && keys[0] == "ctrl+u" {
+		return errors.New("rex: send-keys failed")
+	}
+	return f.Fake.SendKeys(ctx, sid, block, keys...)
+}
+
+// TestStartupResendStopsWhenClearKeyFails pins the shared retry ladder's rule
+// for the draft clear: gc's nudge clears with C-u and returns the clear error
+// before pasting (v1.5.1 internal/runtime/tmux/tmux.go:3723,
+// composer_clear.go:337), and a paste onto a draft that may still hold the
+// first copy duplicates the text. The provider does the same: one attempt, no
+// second write, and the pane keeps the unconfirmed marker.
+func TestStartupResendStopsWhenClearKeyFails(t *testing.T) {
+	const name = "Indigo--dog-1"
+	ctx := context.Background()
+	fake := &clearFailFake{Fake: faketest.New()}
+	fake.ProgramStatusFunc = idleStatus
+	writes := 0
+	fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) { writes++ }
+	p := startupProvider(fake, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond, time.Millisecond}))
+
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Nudge: "hello agent"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if writes != 1 {
+		t.Errorf("writes = %d, want only the first attempt (a failed clear must not re-type)", writes)
+	}
+	if fake.clears != 1 {
+		t.Errorf("ctrl+u presses = %d, want 1", fake.clears)
+	}
+	got, _ := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey)
+	if !strings.HasPrefix(got, "delivery failed:") {
+		t.Errorf("%s = %q, want a delivery-failed marker naming the clear", provider.StartupDeliveryUnconfirmedMetaKey, got)
+	}
+}
