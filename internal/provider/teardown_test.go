@@ -353,6 +353,117 @@ func TestStartRecreatesSessionDestroyedBeforeLaunch(t *testing.T) {
 	}
 }
 
+// recreatedSessionProbe extends destroyedBeforeLaunch for issue #76 slice 1.
+// The session Start recreates after the miss gets a distinct id (the fake
+// would otherwise derive the same id from the same label, so a binding left on
+// the old session would go unseen), and every NewWindow call records the
+// identity readable through GetMeta at that moment.
+type recreatedSessionProbe struct {
+	destroyedBeforeLaunch
+	p         *provider.Provider
+	name      string
+	creates   int
+	first     rex.SessionID
+	recreated rex.SessionID
+	windows   []identityAtLaunch
+}
+
+// identityAtLaunch is what one NewWindow call saw.
+type identityAtLaunch struct {
+	sid        rex.SessionID
+	sessionID  string
+	sessionErr error
+	token      string
+	tokenErr   error
+}
+
+func (r *recreatedSessionProbe) CreateSession(ctx context.Context, label string) (rex.SessionID, error) {
+	sid, err := r.Fake.CreateSession(ctx, label)
+	if err != nil {
+		return "", err
+	}
+	r.creates++
+	if r.creates == 1 {
+		r.first = sid
+		return sid, nil
+	}
+	// No Fake method is in flight here, so the fields may be written directly.
+	r.recreated = rex.SessionID(string(sid) + "-recreated")
+	for i := range r.Sessions {
+		if r.Sessions[i].ID == sid {
+			r.Sessions[i].ID = r.recreated
+		}
+	}
+	return r.recreated, nil
+}
+
+func (r *recreatedSessionProbe) NewWindow(ctx context.Context, sid rex.SessionID, label string, spec rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
+	// GetMeta takes no name lock (meta.go:67-77), so it cannot deadlock
+	// against the Start that holds it.
+	got := identityAtLaunch{sid: sid}
+	got.sessionID, got.sessionErr = r.p.GetMeta(ctx, r.name, "GC_SESSION_ID")
+	got.token, got.tokenErr = r.p.GetMeta(ctx, r.name, "GC_INSTANCE_TOKEN")
+	r.windows = append(r.windows, got)
+	return r.Fake.NewWindow(ctx, sid, label, spec)
+}
+
+// TestStartRetryKeepsSeededIdentity is issue #76 slice 1 (BR-1): when the city
+// session vanishes before the launch, the retry launches into a recreated
+// session with GC_SESSION_ID and GC_INSTANCE_TOKEN still readable, so gc's
+// pending-create check sees this start's identity during and after the launch.
+func TestStartRetryKeepsSeededIdentity(t *testing.T) {
+	const (
+		sessionID = "mc-retry-session"
+		token     = "token-retry"
+	)
+	ctx := context.Background()
+	fake := faketest.New()
+	probe := &recreatedSessionProbe{
+		destroyedBeforeLaunch: destroyedBeforeLaunch{Fake: fake},
+		name:                  teardownDog,
+	}
+	p := provider.New("acme", probe)
+	probe.p = p
+	// teardownCfg carries no Env, and an unseeded key reads "" with a nil
+	// error, so the identity inputs must be distinct and non-empty.
+	cfg := provider.Config{
+		Argv: teardownCfg.Argv,
+		Env:  map[string]string{"GC_SESSION_ID": sessionID, "GC_INSTANCE_TOKEN": token},
+	}
+
+	if err := p.Start(ctx, teardownDog, cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if len(fake.CreatedSessions) != 2 {
+		t.Fatalf("created sessions = %v, want the session recreated once", fake.CreatedSessions)
+	}
+	if probe.recreated == "" || probe.recreated == probe.first {
+		t.Fatalf("recreated session = %q, first = %q, want a distinct id", probe.recreated, probe.first)
+	}
+	if len(fake.CreatedWindows) != 1 || len(probe.windows) != 1 {
+		t.Fatalf("windows = %d (probed %d), want exactly the retry's one", len(fake.CreatedWindows), len(probe.windows))
+	}
+	got := probe.windows[0]
+	if got.sid != probe.recreated {
+		t.Errorf("retry launched into %s, want the recreated %s", got.sid, probe.recreated)
+	}
+	if got.sessionErr != nil || got.sessionID != sessionID {
+		t.Errorf("GC_SESSION_ID during the retry launch = %q, %v, want %q, nil", got.sessionID, got.sessionErr, sessionID)
+	}
+	if got.tokenErr != nil || got.token != token {
+		t.Errorf("GC_INSTANCE_TOKEN during the retry launch = %q, %v, want %q, nil", got.token, got.tokenErr, token)
+	}
+	for key, want := range map[string]string{"GC_SESSION_ID": sessionID, "GC_INSTANCE_TOKEN": token} {
+		if v, err := p.GetMeta(ctx, teardownDog, key); err != nil || v != want {
+			t.Errorf("%s after Start = %q, %v, want %q, nil", key, v, err, want)
+		}
+	}
+	if b, ok := p.Binding(teardownDog); !ok || b.SessionID != probe.recreated {
+		t.Errorf("binding = %+v, %v, want it recorded against %s", b, ok, probe.recreated)
+	}
+}
+
 func TestStopToleratesSessionGoneBeforeClose(t *testing.T) {
 	fake, p := teardownStarted(t, teardownDog)
 	fake.Sessions = nil
