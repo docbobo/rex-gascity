@@ -48,13 +48,8 @@ var startupDialogGroups = [][][]string{
 var rateLimitDialogMarkers = []string{"Usage limit reached", "You've hit your limit", "/rate-limit-options"}
 
 // bareRateLimitMarkers is readiness.py's BARE_RATE_LIMIT: the low-confidence
-// mention that only counts beside a menu cursor row (or, for the gc-reference
-// showsDialog, as the RATE_LIMIT screen marker).
+// mention that only counts beside a menu cursor row.
 var bareRateLimitMarkers = []string{"rate limit", "Rate limit"}
-
-// allRateLimitMarkers is readiness.py's RATE_LIMIT = RATE_LIMIT_DIALOG +
-// BARE_RATE_LIMIT, the permissive screen matcher showsDialog uses.
-var allRateLimitMarkers = append(append([]string{}, rateLimitDialogMarkers...), bareRateLimitMarkers...)
 
 // rateLimitMenuOptions is readiness.py's RATE_LIMIT_MENU: the options gc's
 // ContainsProviderRateLimitScreen reads beside a "rate limit" mention.
@@ -76,17 +71,12 @@ var (
 	startupPromptEndings = []string{">", "$", "%", "#", "❯", "›"}
 )
 
-// showsDialog reports whether the screen shows a startup dialog gc knows. It is
-// readiness.py's shows_dialog, the gc reference (gc's ContainsRateLimitDialog);
-// Start uses withholdsFirstTurn, which narrows it.
-func showsDialog(screen string) bool {
-	return namedDialog(screen) || rateLimited(screen, allRateLimitMarkers)
-}
-
 // withholdsFirstTurn reports whether the screen shows a dialog the first turn
 // must not land in: a named dialog gc knows, a high-confidence rate-limit
 // screen, or a bare "rate limit" mention beside a menu cursor row. It is
-// readiness.py's withholds_first_turn, what the startup readiness wait uses.
+// readiness.py's withholds_first_turn, which narrows readiness.py's
+// shows_dialog (gc's ContainsRateLimitDialog). The pane-state module
+// (panestate.go) is its only caller.
 func withholdsFirstTurn(screen, prefix string) bool {
 	return namedDialog(screen) || rateLimited(screen, rateLimitDialogMarkers) || rateLimitMenu(screen, prefix)
 }

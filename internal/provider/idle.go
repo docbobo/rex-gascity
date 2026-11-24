@@ -45,7 +45,7 @@ var busyMarkers = []string{
 // readyPromptPrefixes are the prompt glyphs a ready composer can show: ❯ is the
 // default idle prefix gc uses for tmux (`internal/runtime/tmux/tmux.go:5738`,
 // gc's `defaultReadyPromptPrefix`), and the `›`/`>` pair is this provider's
-// readiness glyph set (`startupPromptGlyphs` in readiness.go:68-73, from
+// readiness glyph set (`startupPromptGlyphs` in readiness.go, from
 // readiness.py's `PROMPT_GLYPHS`). The provider has no per-session ready prefix
 // at op time, so a conservative default set keeps the fallback from calling a
 // pane idle on a glyph it does not recognise.

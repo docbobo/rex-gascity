@@ -166,11 +166,132 @@ var turnRows = []verdictRow{
 	{name: "D5 late turn: padded working record", ask: askLateTurn, status: rec(" working "), screen: screenText("a"), want: verdictWaiting},
 }
 
+// parityRows are REQ-013: the 43 cases of the deleted per-predicate parity
+// tests, each asked on a question where the pinned predicate decides the
+// verdict. A row's trailing comment names its source case by file:line at
+// 296b74f.
+var parityRows = []verdictRow{
+	// From TestShowsDialogMatchesHerdrCoreReadiness: runtime-herdr-core
+	// readiness.py (pinned 0f07496) test_herdrcore_readiness.py. shows_dialog is
+	// named-dialog OR any rate-limit marker (gc's ContainsRateLimitDialog), and
+	// a Codex screen that has finished starting shows none. Each case is asked
+	// (a) on startup in status mode at the bound with no record, and (b) on the
+	// idle snapshot with no record.
+	{name: "trust dialog (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\n"), want: verdictDialog, wantReads: 1},                         // readiness_internal_test.go:17
+	{name: "trust dialog (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\n"), want: verdictDialog, wantReads: 1},                                                               // readiness_internal_test.go:17
+	{name: "bypass permissions (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("WARNING: Claude Code running in Bypass Permissions mode\n❯ 1. No, exit\n  2. Yes, I accept\n"), want: verdictDialog, wantReads: 1}, // readiness_internal_test.go:18
+	{name: "bypass permissions (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("WARNING: Claude Code running in Bypass Permissions mode\n❯ 1. No, exit\n  2. Yes, I accept\n"), want: verdictDialog, wantReads: 1},                                       // readiness_internal_test.go:18
+	{name: "custom api key (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Detected a custom API key in your environment\n"), want: verdictDialog, wantReads: 1},                                                  // readiness_internal_test.go:19
+	{name: "custom api key (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("Detected a custom API key in your environment\n"), want: verdictDialog, wantReads: 1},                                                                                        // readiness_internal_test.go:19
+	{name: "theme picker with /theme (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Choose the text style\nTo change this later, run /theme\n"), want: verdictDialog, wantReads: 1},                              // readiness_internal_test.go:20
+	{name: "theme picker with /theme (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("Choose the text style\nTo change this later, run /theme\n"), want: verdictDialog, wantReads: 1},                                                                    // readiness_internal_test.go:20
+	{name: "theme picker without every marker (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Choose the text style\n"), want: verdictWaiting, wantReads: 1},                                                      // readiness_internal_test.go:21
+	{name: "theme picker without every marker (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("Choose the text style\n"), want: verdictWaiting, wantReads: 1},                                                                                            // readiness_internal_test.go:21
+	{name: "hook review with every marker (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Hooks need review\nTrust all and continue\nContinue without trusting\n"), want: verdictDialog, wantReads: 1},            // readiness_internal_test.go:22
+	{name: "hook review with every marker (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("Hooks need review\nTrust all and continue\nContinue without trusting\n"), want: verdictDialog, wantReads: 1},                                                  // readiness_internal_test.go:22
+	{name: "hook review missing a marker (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Hooks need review\nTrust all and continue\n"), want: verdictWaiting, wantReads: 1},                                       // readiness_internal_test.go:23
+	{name: "hook review missing a marker (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("Hooks need review\nTrust all and continue\n"), want: verdictWaiting, wantReads: 1},                                                                             // readiness_internal_test.go:23
+	{name: "usage limit (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("You've hit your limit\n"), want: verdictDialog, wantReads: 1},                                                                             // readiness_internal_test.go:24
+	{name: "usage limit (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("You've hit your limit\n"), want: verdictDialog, wantReads: 1},                                                                                                                   // readiness_internal_test.go:24
+	// Old false. The idle row is then decided by screenShowsReadyPrompt, which sees "❯ ".
+	{name: "a live composer is no dialog (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("❯ Try it\n"), want: verdictWaiting, wantReads: 1}, // readiness_internal_test.go:25
+	{name: "a live composer is no dialog (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("❯ Try it\n"), want: verdictIdle, wantReads: 1},                                          // readiness_internal_test.go:25
+	// Old false. The idle row is then decided by screenShowsReadyPrompt, which sees "› ".
+	{name: "codex settled hides the bare mention (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("OpenAI Codex\n› ask about the rate limit\n  gpt-5 · ~/repo\n"), want: verdictWaiting, wantReads: 1}, // readiness_internal_test.go:26
+	{name: "codex settled hides the bare mention (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("OpenAI Codex\n› ask about the rate limit\n  gpt-5 · ~/repo\n"), want: verdictIdle, wantReads: 1},                                          // readiness_internal_test.go:26
+	// herdr-core shows_dialog says dialog; withholds_first_turn narrows it; dead
+	// matcher deleted in #44. The rows pin today's live verdicts. The idle row is
+	// decided by screenShowsReadyPrompt, which sees "› ".
+	{name: "codex not settled shows the bare mention (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("OpenAI Codex\n› ask about the rate limit\n"), want: verdictWaiting, wantReads: 1}, // readiness_internal_test.go:27
+	{name: "codex not settled shows the bare mention (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("OpenAI Codex\n› ask about the rate limit\n"), want: verdictIdle, wantReads: 1},                                          // readiness_internal_test.go:27
+	// herdr-core shows_dialog says dialog; withholds_first_turn narrows it; dead
+	// matcher deleted in #44. The rows pin today's live verdicts: a one-option
+	// menu has no numbered neighbour, so menuCursorRow reads "› 1. Retry" as a
+	// composer and the idle row is decided by screenShowsReadyPrompt (follow-up 4
+	// in the #44 PR body).
+	{name: "codex rate-limit menu is a dialog (shows_dialog, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("OpenAI Codex\nrate limit\n› 1. Retry\n  enter confirm · esc skip\n"), want: verdictWaiting, wantReads: 1}, // readiness_internal_test.go:28
+	{name: "codex rate-limit menu is a dialog (shows_dialog, idle)", ask: askIdle, status: noRecord, screen: screenText("OpenAI Codex\nrate limit\n› 1. Retry\n  enter confirm · esc skip\n"), want: verdictIdle, wantReads: 1},                                          // readiness_internal_test.go:28
+
+	// From TestWithholdsFirstTurnMatchesHerdrCoreReadiness: runtime-herdr-core
+	// readiness.py (pinned 0f07496) test_herdrcore_readiness.py. A named dialog,
+	// a high-confidence rate-limit screen, or a bare "rate limit" mention beside
+	// a numbered menu's cursor row withholds; a bare mention with no menu does
+	// not. A case with a prefix is asked on startup in prompt mode with that
+	// prefix; a case with no prefix on startup in status mode at the bound. An
+	// old false in prompt mode is then decided by screenHasPromptPrefix:
+	// prompt-ready when the screen shows the prefix, else waiting.
+	{name: "trust dialog (withholds_first_turn, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\n"), want: verdictDialog, wantReads: 1}, // readiness_internal_test.go:53
+	{name: "usage limit with a prompt (withholds_first_turn, startup)", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText("You've hit your limit\nREADY> \n"), want: verdictDialog, wantReads: 1},                          // readiness_internal_test.go:54
+	// Old false. The row is then decided by screenHasPromptPrefix, which sees READY>.
+	{name: "bare mention under the prompt (withholds_first_turn, startup)", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText("READY> \n  rate limit: 40% used\n"), want: verdictPromptReady, wantReads: 1},                                                                 // readiness_internal_test.go:55
+	{name: "bare mention with no prompt (withholds_first_turn, startup)", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText("booting\n  rate limit: 40% used\n"), want: verdictWaiting, wantReads: 1},                                                                       // readiness_internal_test.go:56
+	{name: "bare mention beside a glyph with no prefix, status line (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("❯ \n  Rate limit resets at 5pm\n"), want: verdictWaiting, wantReads: 1},                              // readiness_internal_test.go:57
+	{name: "bare mention on its own line (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Rate limit reached\nretrying...\n"), want: verdictWaiting, wantReads: 1},                                                        // readiness_internal_test.go:58
+	{name: "bare mention on the marker's own line (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Rate limit reached: 100%\n"), want: verdictWaiting, wantReads: 1},                                                      // readiness_internal_test.go:59
+	{name: "bare mention in a tip (withholds_first_turn, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("Welcome\nTip: avoid hitting the rate limit by...\n"), want: verdictWaiting, wantReads: 1},                                                                // readiness_internal_test.go:60
+	{name: "numbered list with no cursor row (withholds_first_turn, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("Tips:\n1. mind the rate limit\n2. use /compact\n"), want: verdictWaiting, wantReads: 1},                                                       // readiness_internal_test.go:61
+	{name: "provider rate-limit screen (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Rate limit reached\n1. Keep trying\n2. Stop\n"), want: verdictDialog, wantReads: 1},                                               // readiness_internal_test.go:62
+	{name: "provider rate-limit screen with a cursor (withholds_first_turn, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("Rate limit reached\n❯ 1. Keep trying\n  2. Stop\n"), want: verdictDialog, wantReads: 1},                                               // readiness_internal_test.go:63
+	{name: "uppercase provider rate-limit screen (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("RATE LIMIT REACHED\n1. Keep trying\n2. Stop\n"), want: verdictDialog, wantReads: 1},                                     // readiness_internal_test.go:64
+	{name: "usage-limit menu with a cursor (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("Usage limit reached for gemini-3-flash-preview.\n1. Keep trying\n2. Stop\n"), want: verdictDialog, wantReads: 1},              // readiness_internal_test.go:65
+	{name: "bare mention beside a cursor and prefix (withholds_first_turn, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("rate limit\n❯ 1. Retry\n  2. Wait\n"), want: verdictDialog, wantReads: 1},                                                              // readiness_internal_test.go:66
+	{name: "bare mention beside a glyph with no prefix, menu cursor (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("rate limit\n❯ 1. Retry\n  2. Wait\n"), want: verdictDialog, wantReads: 1},                            // readiness_internal_test.go:67
+	{name: "bare mention beside a prefix cursor (withholds_first_turn, startup)", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText("rate limit\nREADY> 1. Retry\n  2. Wait\n"), want: verdictDialog, wantReads: 1},                                                         // readiness_internal_test.go:68
+	{name: "codex settled hides the menu (withholds_first_turn, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("OpenAI Codex\n› why did Rate limit reached show Keep trying and Stop\n  gpt-5 · ~/repo\n"), want: verdictWaiting, wantReads: 1}, // readiness_internal_test.go:69
+	// Old false. The row is then decided by screenHasPromptPrefix, which sees READY>.
+	{name: "a plain prompt (withholds_first_turn, startup)", ask: askStartup, prefix: "READY>", status: noRecord, screen: screenText("READY> \n"), want: verdictPromptReady, wantReads: 1}, // readiness_internal_test.go:70
+
+	// From TestScreenHasPromptPrefixMatchesGcPaneShowsReadyPrompt: gc's
+	// paneShowsReadyPrompt. The deleted test cited gc v1.5.1
+	// internal/runtime/tmux/tmux.go:4199-4231, which holds matchesPromptPrefix
+	// and stripLeadingBoxBorder; paneShowsReadyPrompt and isMenuCursorRow are at
+	// gc edge 890a58a3e internal/runtime/tmux/tmux.go:5554 and :5583.
+	// The bottom-most prompt line decides, NBSP reads as a space, one leading
+	// box border is skipped, the bare glyph counts, and a numbered menu's cursor
+	// row is no prompt. Each case is asked on startup in prompt mode with its
+	// prefix.
+	{name: "bare glyph on its own line (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ "), want: verdictPromptReady, wantReads: 1},         // nudge_prompt_internal_test.go:18
+	{name: "glyph then draft text (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ hello"), want: verdictPromptReady, wantReads: 1},         // nudge_prompt_internal_test.go:19
+	{name: "bare glyph with no trailing space (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯"), want: verdictPromptReady, wantReads: 1},   // nudge_prompt_internal_test.go:20
+	{name: "nbsp between glyph and text (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ hello"), want: verdictPromptReady, wantReads: 1},   // nudge_prompt_internal_test.go:21
+	{name: "box border before the glyph (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n│ ❯ hello"), want: verdictPromptReady, wantReads: 1}, // nudge_prompt_internal_test.go:22
+	{name: "thick box border before the glyph (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n┃❯ "), want: verdictPromptReady, wantReads: 1}, // nudge_prompt_internal_test.go:23
+	{name: "glyph only in past output (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("❯ old turn\ndone"), want: verdictPromptReady, wantReads: 1},     // nudge_prompt_internal_test.go:24
+	// Masked: the screen matches the trust dialog's "trust this folder" marker
+	// (startupDialogGroups in readiness.go), so prompt mode reads dialog before
+	// the prompt rule runs. predicateRows keeps the old false.
+	{name: "selected dialog option is no prompt (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("Do you trust this folder?\n❯ 1. Yes\n  2. No"), want: verdictDialog, wantReads: 1}, // nudge_prompt_internal_test.go:25
+	{name: "second dialog option below the cursor (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("Menu\n❯ 2. Keep trying\n  1. Stop"), want: verdictWaiting, wantReads: 1},         // nudge_prompt_internal_test.go:26
+	{name: "a draft starting 1. is still a prompt (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n❯ 1. fix the test\n"), want: verdictPromptReady, wantReads: 1},          // nudge_prompt_internal_test.go:27
+	{name: "no glyph anywhere (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\nworking"), want: verdictWaiting, wantReads: 1},                                              // nudge_prompt_internal_test.go:28
+	// Masked by mode selection: an empty prefix is status mode, which never asks
+	// screenHasPromptPrefix. predicateRows keeps the old false.
+	{name: "empty prefix matches nothing (paneShowsReadyPrompt, startup)", ask: askStartup, pastFloor: true, atBound: true, status: noRecord, screen: screenText("booting\n❯ "), want: verdictWaiting, wantReads: 1}, // nudge_prompt_internal_test.go:29
+	{name: "border glyph alone is not the prefix (paneShowsReadyPrompt, startup)", ask: askStartup, prefix: "❯ ", status: noRecord, screen: screenText("booting\n│"), want: verdictWaiting, wantReads: 1},            // nudge_prompt_internal_test.go:30
+}
+
+// predicateRows hold the parity cases no verdict row can observe (masked
+// cases), asserted directly on the predicate. Nothing else belongs here.
+var predicateRows = []struct {
+	name   string
+	screen string
+	prefix string
+	want   bool
+}{
+	// nudge_prompt_internal_test.go:25: prompt mode reads this screen as a
+	// dialog before it asks screenHasPromptPrefix.
+	{"selected dialog option is no prompt", "Do you trust this folder?\n❯ 1. Yes\n  2. No", "❯ ", false},
+	// nudge_prompt_internal_test.go:29: an empty prefix selects status mode. The
+	// guard mirrors gc v1.5.1 matchesPromptPrefix
+	// (internal/runtime/tmux/tmux.go:4204-4206).
+	{"empty prefix matches nothing", "booting\n❯ ", "", false},
+}
+
 // TestPaneStateVerdict maps one observation to one verdict for every question
 // the pane-state module answers, and pins how often each decision reads the
 // screen. Rows named D1-D6 pin the divergences issue #44 keeps.
 func TestPaneStateVerdict(t *testing.T) {
-	rows := slices.Concat(idleRows, startupRows, turnRows)
+	rows := slices.Concat(idleRows, startupRows, turnRows, parityRows)
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			o, reads := row.screen.observe(row.status)
@@ -215,6 +336,13 @@ func TestPaneStateVerdict(t *testing.T) {
 			}
 			if baseRds != nil && *baseRds != row.wantBaseReads {
 				t.Errorf("baseline screen reads = %d, want %d", *baseRds, row.wantBaseReads)
+			}
+		})
+	}
+	for _, row := range predicateRows {
+		t.Run("predicates/"+row.name, func(t *testing.T) {
+			if got := screenHasPromptPrefix(row.screen, row.prefix); got != row.want {
+				t.Errorf("screenHasPromptPrefix(%q, %q) = %v, want %v", row.screen, row.prefix, got, row.want)
 			}
 		})
 	}
