@@ -6,6 +6,7 @@ package faketest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 
@@ -33,6 +34,14 @@ type SentKeys struct {
 	SessionID rex.SessionID
 	BlockID   rex.BlockID
 	Keys      []string
+}
+
+// MoveWindowCall records a MoveWindow call, whether it succeeded, was a no-op,
+// or failed.
+type MoveWindowCall struct {
+	SessionID rex.SessionID
+	WindowID  rex.WindowID
+	Before    rex.WindowID
 }
 
 // Fake is a recording rex.Client. Its methods are safe for concurrent use.
@@ -140,6 +149,14 @@ type Fake struct {
 	// ClearErr, when set, is returned by BlockClear after the call is
 	// recorded.
 	ClearErr error
+
+	// MoveWindowCalls records every MoveWindow call before any error check, so
+	// an empty record proves no call was made at all. Only a call that
+	// succeeds changes View.Windows.
+	MoveWindowCalls []MoveWindowCall
+	// MoveWindowErr, when set, is returned by MoveWindow after the call is
+	// recorded.
+	MoveWindowErr error
 }
 
 // DefaultInputMode is what BlockInputMode answers for a block with no
@@ -221,6 +238,36 @@ func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID)
 		windows = append(windows, w)
 	}
 	f.View.Windows = windows
+	return nil
+}
+
+// MoveWindow reorders View.Windows as Rex's session.move_window does: wid
+// moves just before before, or to the end when before is "". It acts on View,
+// as NewWindow does. The call is recorded first; then MoveWindowErr, before ==
+// wid, or an unknown id fail it without changing the order.
+func (f *Fake) MoveWindow(_ context.Context, sid rex.SessionID, wid, before rex.WindowID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.MoveWindowCalls = append(f.MoveWindowCalls, MoveWindowCall{SessionID: sid, WindowID: wid, Before: before})
+	if f.MoveWindowErr != nil {
+		return f.MoveWindowErr
+	}
+	if before == wid {
+		return fmt.Errorf("move window %s before itself: bad_request", wid)
+	}
+	from := slices.IndexFunc(f.View.Windows, func(w rex.Window) bool { return w.ID == wid })
+	if from < 0 {
+		return fmt.Errorf("window %s: %w", wid, rex.ErrNotFound)
+	}
+	moved := f.View.Windows[from]
+	rest := slices.Delete(slices.Clone(f.View.Windows), from, from+1)
+	to := len(rest)
+	if before != "" {
+		if to = slices.IndexFunc(rest, func(w rex.Window) bool { return w.ID == before }); to < 0 {
+			return fmt.Errorf("window %s: %w", before, rex.ErrNotFound)
+		}
+	}
+	f.View.Windows = slices.Insert(rest, to, moved)
 	return nil
 }
 

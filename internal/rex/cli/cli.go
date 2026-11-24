@@ -29,6 +29,9 @@ type Client struct {
 // New returns a Client that runs `rex` from PATH.
 func New() *Client { return &Client{Bin: "rex"} }
 
+// Client is the rex.Client the provider runs with.
+var _ rex.Client = (*Client)(nil)
+
 func (c *Client) bin() string {
 	if c.Bin == "" {
 		return "rex"
