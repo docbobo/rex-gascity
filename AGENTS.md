@@ -1,3 +1,15 @@
+## Subsystem notes
+
+The rules in this file are repo-wide. Each subsystem also has a nested
+`AGENTS.md` with the local invariants and the docs it depends on. Pi loads a
+nested context file only when the working directory is inside that subtree, so
+read the file before you touch that area:
+
+- `internal/provider/AGENTS.md` — RPP v0 runtime semantics: sessions, panes,
+  state, meta, overlays.
+- `internal/rex/AGENTS.md` — the `rex` CLI client and the fake the e2e suites
+  drive.
+
 ## Autonomous runs
 
 Agents may work this repo with no person at the keyboard. These rules define
