@@ -91,7 +91,8 @@ conformance` builds the provider and runs `pack/tests/conformance.sh`, which
 drives the real rex CLI. Install the rex CLI and put it on PATH first. The
 Makefile target does not install it.
 
-The CI conformance job installs the pinned real rex (`REX_PIN` and checksum in
+The CI conformance job installs the real rex archive for the
+`pack/rex-min-version` pin (`REX_URL` and `REX_SHA256` in
 `.github/workflows/ci.yml`) before it runs the same script. `make test-e2e` is
 the coverage a contributor gets without Rex. Conformance remains the gate on
 the real CLI and server.
