@@ -332,7 +332,7 @@ func (s *State) Session(id string) (*Session, error) {
 			return ses, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: session %s", ErrNotFound, id)
+	return nil, fmt.Errorf("%w: session %s not found (status=404 code=session_not_found)", ErrNotFound, id)
 }
 
 // Block finds a block by id and the session and window that hold it.

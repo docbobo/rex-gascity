@@ -37,8 +37,9 @@ REX_E2E=1 go test ./cmd/gc-runtime-rex -run TestE2E -v
     `session.focus_window`, `session.set_block_label`,
     `session.set_window_label`, `session.set_label`. `session.move_window`
     bumps the revision only when the order changes, and answers
-    `not_found` (exit 3) for an unknown session or window and
-    `bad_request` (exit 1) for `before_window_id == window_id`.
+    `session_not_found` for an unknown session and `not_found` for a window
+    not in the session (both exit 3), and `bad_request` (exit 1) for
+    `before_window_id == window_id`.
   - `block.close`, `block.event`, and `block.method`. The supported methods
     are `paste`, `key`, `focus`, `process`, `format`, `blob_read`, `write`,
     `clear`, `program_status`, `size`, `title`, `pwd`, `input_mode`, and

@@ -1,11 +1,13 @@
 package fakerex_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -244,6 +246,24 @@ func TestClientErrorClassification(t *testing.T) {
 	}
 }
 
+// runFake runs the fake binary directly and returns its exit code and stderr.
+// It reaches the fault names, which cli.Client drops when it maps an exit code.
+func runFake(t *testing.T, f *fakerex.Fake, args ...string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(f.Bin, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return 0, stderr.String()
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("run fake %v: %v", args, err)
+	}
+	return exitErr.ExitCode(), stderr.String()
+}
+
 // TestMoveWindowContract drives session.move_window through cli.Client against
 // the fake binary (#47, REQ-004): a reorder, an in-place call that leaves the
 // revision unchanged, a move to the end, and the three faults
@@ -305,6 +325,17 @@ func TestMoveWindowContract(t *testing.T) {
 	}
 	if err := c.MoveWindow(ctx(t), sid, town, "window:999"); !errors.Is(err, rex.ErrNotFound) {
 		t.Errorf("unknown before = %v, want ErrNotFound", err)
+	}
+	// Fault names: a raw CLI call must name the fault, not just exit 3. The
+	// contract (§3) distinguishes an unknown session (session_not_found) from a
+	// window not in the session (not_found), and the fake must too.
+	if code, stderr := runFake(t, f, "api", "call", "session.move_window",
+		`{"session_id":"session:999","window_id":"window:999"}`); code != 3 || !strings.Contains(stderr, "code=session_not_found") {
+		t.Errorf("missing session = exit %d %q, want exit 3 naming session_not_found", code, stderr)
+	}
+	if code, stderr := runFake(t, f, "api", "call", "session.move_window",
+		fmt.Sprintf(`{"session_id":%q,"window_id":"window:999"}`, sid)); code != 3 || !strings.Contains(stderr, "code=not_found") {
+		t.Errorf("missing window = exit %d %q, want exit 3 naming not_found", code, stderr)
 	}
 	if err := c.MoveWindow(ctx(t), "session:999", town, rig); !errors.Is(err, rex.ErrNotFound) {
 		t.Errorf("unknown session = %v, want ErrNotFound", err)
