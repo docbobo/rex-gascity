@@ -373,6 +373,27 @@ test("config: a home with a percent is expanded literally", function()
 	equal(config.expand("~", "/home/a%0"), "/home/a%0", "a bare tilde too")
 end)
 
+test("config: the status settings have defaults", function()
+	local settings = config.resolve(nil)
+	equal(settings.pack_binding, nil, "pack_binding")
+	equal(settings.status_display, "text", "status_display")
+end)
+
+test("config: the status settings can be set", function()
+	local settings = config.resolve(fixture .. "/status.lua")
+	equal(settings.pack_binding, "mine", "pack_binding")
+	equal(settings.status_display, "markdown", "status_display")
+	equal(#stub.logs, 0, "no warnings")
+end)
+
+test("config: a status setting of the wrong type is reported", function()
+	local settings = config.resolve(fixture .. "/status-wrongtype.lua")
+	equal(settings.pack_binding, nil, "pack_binding keeps its default")
+	equal(settings.status_display, "text", "status_display keeps its default")
+	truthy(stub.logged("warn", "pack_binding"), "names pack_binding")
+	truthy(stub.logged("warn", "status_display"), "names status_display")
+end)
+
 -- Text -------------------------------------------------------------------
 
 test("text: trim and collapse", function()
