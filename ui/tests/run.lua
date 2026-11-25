@@ -1279,6 +1279,183 @@ test("status: an empty server line is no server", function()
 	equal(found.server, nil, "no server")
 end)
 
+-- A scratch directory with a fake gc and a fake rex in it.
+--
+-- The fake gc prints the fixture for `config show --json`, or fails like a
+-- broken city.toml when FAKE_GC_FAIL is set. The fake rex succeeds only for
+-- a read-only check (--autostart=false) of session s1.
+local function probe_tools()
+	local dir = text.trim(sh('mktemp -d "${TMPDIR:-/tmp}/gascity-status-test.XXXXXX"'))
+	write_file(dir .. "/gc", table.concat({
+		"#!/bin/sh",
+		'printf "%s\\n" "$*" > gc.args',
+		'case " $* " in *" config show --json "*) ;; *) exit 9 ;; esac',
+		'if [ -n "${FAKE_GC_FAIL:-}" ]; then printf "bad city.toml\\nline two\\n" >&2; exit 1; fi',
+		'cat "$FIXTURE"',
+	}, "\n") .. "\n")
+	write_file(dir .. "/rex", table.concat({
+		"#!/bin/sh",
+		'case " $* " in *" --autostart=false "*) ;; *) exit 8 ;; esac',
+		'case " $* " in *" -s s1 "*) exit 0 ;; esac',
+		"exit 3",
+	}, "\n") .. "\n")
+	sh("chmod +x " .. text.quote(dir .. "/gc") .. " " .. text.quote(dir .. "/rex"))
+	return dir
+end
+
+-- Runs a probe script the way the hidden block does: /bin/sh, in `dir`, with
+-- `dir` first on PATH and only the environment named in `env`. A last line
+-- shows whether the script ran to its end.
+-- The fixture by its absolute path, since the probe runs in another directory.
+local function fixture_path(name)
+	local path = fixture .. "/" .. name
+	if path:sub(1, 1) ~= "/" then
+		path = text.trim(sh("pwd")) .. "/" .. path
+	end
+	return path
+end
+
+local function run_probe(script, dir, env)
+	write_file(dir .. "/probe.sh", script .. "\nprintf 'END\\n'\n")
+	return sh(
+		"cd " .. text.quote(dir) .. " && env -i HOME=\"$HOME\" PATH=" .. text.quote(dir .. ":/usr/bin:/bin")
+			.. " FIXTURE=" .. text.quote(fixture_path("config-show.json"))
+			.. " " .. (env or "")
+			.. " /bin/sh probe.sh 2>/dev/null"
+	)
+end
+
+local function remove(dir)
+	sh("rm -rf " .. text.quote(dir))
+end
+
+test("status: the probe lists only the top-level imports", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/named", "s1"), dir)
+	local args = sh("cat " .. text.quote(dir .. "/gc.args"))
+	remove(dir)
+	equal(args, "--city /cities/named config show --json\n", "the named city is passed to gc")
+	contains(output, "@@city|/cities/alpha\n", "the city gc read")
+	contains(output, "@@config|0\n", "the lookup succeeded")
+	contains(output, "@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity\n", "gc")
+	contains(output, "@@import|rex|https://github.com/docbobo/rex-gascity//pack\n", "rex")
+	falsy(output:find("rig-rex", 1, true), "no rig-level import")
+	falsy(output:find("roles", 1, true), "no default rig import")
+	local _, count = output:gsub("@@import|", "")
+	equal(count, 2, "two imports")
+	contains(output, "END", "the script ran to its end")
+end)
+
+test("status: without a named city, gc finds it from the pane's directory", function()
+	local script = status.script(config.resolve(nil), nil, "s1")
+	falsy(script:find("--city", 1, true), "no --city")
+	local dir = probe_tools()
+	local output = run_probe(script, dir)
+	local args = sh("cat " .. text.quote(dir .. "/gc.args"))
+	remove(dir)
+	equal(args, "config show --json\n", "gc gets no --city")
+	contains(output, "@@city|/cities/alpha\n", "the city gc found")
+end)
+
+test("status: the probe verifies the server without starting one", function()
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	contains(script, "--autostart=false api call session.list_blocks -s 's1' </dev/null >/dev/null 2>&1", "read-only")
+
+	local dir = probe_tools()
+	local owned = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	local foreign = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s2"), dir, "REX_SERVER=/tmp/other.sock")
+	local unset = run_probe(script, dir)
+	remove(dir)
+	contains(owned, "@@server|/tmp/other.sock\n", "the server that owns s1")
+	contains(foreign, "@@server|\n", "a server that does not own s2")
+	contains(unset, "@@server|\n", "no REX_SERVER")
+end)
+
+test("status: a failed config show reports its status and stderr", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir, "FAKE_GC_FAIL=1")
+	remove(dir)
+	contains(output, "@@config|1\n", "the status")
+	contains(output, "@@error|bad city.toml line two", "stderr on one line")
+	falsy(output:find("@@import|", 1, true), "no imports")
+	contains(output, "END", "the script ran to its end")
+end)
+
+test("status: no gc says so and still reaches the end", function()
+	local dir = probe_tools()
+	local settings = config.resolve(nil)
+	settings.gc_bin = "/nowhere/gc"
+	local output = run_probe(status.script(settings, "/cities/alpha", "s1"), dir)
+	remove(dir)
+	contains(output, "@@gc|missing\n", "gc is missing")
+	falsy(output:find("@@config|", 1, true), "no lookup")
+	contains(output, "END", "the script ran to its end")
+end)
+
+test("status: pack_binding skips the import lookup, not the server check or the gc check", function()
+	local settings = config.resolve(nil)
+	settings.pack_binding = "mine"
+	local script = status.script(settings, nil, "s1")
+	falsy(script:find("config show", 1, true), "no config show")
+	contains(script, "--autostart=false", "the server check")
+	contains(script, "has_gc", "the gc check")
+
+	local dir = probe_tools()
+	local found = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	settings.gc_bin = "/nowhere/gc"
+	local missing = run_probe(status.script(settings, nil, "s1"), dir, "REX_SERVER=/tmp/other.sock")
+	remove(dir)
+	falsy(found:find("@@gc|", 1, true), "gc is there")
+	falsy(found:find("@@config|", 1, true), "no lookup with gc")
+	contains(missing, "@@server|/tmp/other.sock\n", "the server is still checked")
+	contains(missing, "@@gc|missing\n", "a missing gc is still reported")
+	falsy(missing:find("@@config|", 1, true), "no lookup without gc")
+	contains(missing, "END", "the script ran to its end")
+end)
+
+test("status: the lookup keeps its files in a private directory and removes it", function()
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	contains(script, 'mktemp -d "${TMPDIR:-/tmp}/gascity-status.XXXXXX"', "a private directory")
+	falsy(script:find(".err", 1, true), "no predictable sibling file")
+
+	local dir = probe_tools()
+	sh("mkdir " .. text.quote(dir .. "/tmp"))
+	local tmpdir = "TMPDIR=" .. text.quote(dir .. "/tmp")
+	local passed = run_probe(script, dir, tmpdir)
+	local left_after_pass = sh("ls -A " .. text.quote(dir .. "/tmp"))
+	local failed = run_probe(script, dir, tmpdir .. " FAKE_GC_FAIL=1")
+	local left_after_fail = sh("ls -A " .. text.quote(dir .. "/tmp"))
+	local no_dir = run_probe(script, dir, "TMPDIR=" .. text.quote(dir .. "/missing"))
+	remove(dir)
+	contains(passed, "@@config|0\n", "the lookup ran")
+	equal(left_after_pass, "", "nothing left after a lookup that passed")
+	contains(failed, "@@error|bad city.toml line two", "stderr was read from the private directory")
+	equal(left_after_fail, "", "nothing left after a lookup that failed")
+	contains(no_dir, "@@config|1\n", "no directory is a failed lookup")
+	contains(no_dir, "@@error|cannot make a temporary directory\n", "and says why")
+	falsy(no_dir:find("@@import|", 1, true), "no imports")
+	contains(no_dir, "END", "the script ran to its end")
+end)
+
+test("status: a value that holds the probe's end marker survives", function()
+	local server = "unix:///tmp/a<<gascity-end.sock"
+	local dir = probe_tools()
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"REX_SERVER=" .. text.quote(server)
+	)
+	remove(dir)
+
+	-- The terminal shows the writer's rows between the probe's markers.
+	stub.format = probe_answer({ output })
+	local answer = assert(probe.run({ session_id = "s1" }, "true"))
+	local found = status.parse(answer.output)
+	equal(found.server, server, "the whole server comes back")
+	equal(#found.imports, 2, "the imports after it survive")
+end)
+
+
 test("status: a wrapped import source may hold the row separator", function()
 	local found = status.parse(table.concat({
 		"@@config|0",
