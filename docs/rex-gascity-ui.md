@@ -83,8 +83,9 @@ It runs `rex config check --json` and looks at the source file of each
 
 The installer follows the same rows. It writes nothing when the config already
 loads the installed copy, or loads another copy. A running server keeps the old
-actions until `rex config reload`. `rex config reload` is refused over a remote
-connection, so run it on the machine that runs the server.
+actions until `rex config reload`. When the installer adds the block and the
+list is stale, it runs that reload once. `rex config reload` is refused over a
+remote connection, so run it on the machine that runs the server.
 
 ## `init.lua` is not writable
 

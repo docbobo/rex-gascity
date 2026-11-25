@@ -38,13 +38,34 @@ cp -R "$repo/pack/doctor/rex-ui" "$tree2/pack/doctor/rex-ui"
 tools=$work/tools
 mkdir -p "$tools"
 
-# Fake rex: answers the one probe. --json output is what the check parses;
-# without it the shape is the human one.
+# Fake rex: answers `config check` (the check's one probe) and the two calls
+# the installer's reload tail makes: `actions [--json]` and `config reload`.
+# A state file flips the action list from stale to loaded; REX_FAKE_NO_SERVER
+# makes `actions` fail, as with no server; REX_FAKE_RELOAD_FAIL makes the
+# reload fail.
 cat > "$tools/rex" <<'EOF'
 #!/bin/sh
 [ -n "${REX_CALL_LOG:-}" ] && echo "$*" >> "$REX_CALL_LOG"
 sub=$1; shift
+if [ "$sub" = actions ]; then
+  [ -z "${REX_FAKE_NO_SERVER:-}" ] || { echo "rex: no server" >&2; exit 2; }
+  name=core_ping
+  if [ -n "${REX_FAKE_ACTIONS_STATE:-}" ] && [ -f "$REX_FAKE_ACTIONS_STATE" ]; then
+    name=gascity_mail_mayor
+  fi
+  if [ "${1:-}" = --json ]; then
+    printf '{"actions":[{"name":"%s"}]}\n' "$name"
+  else
+    printf '%s\n' "$name"
+  fi
+  exit 0
+fi
 [ "$sub" = config ] || exit 2
+if [ "${1:-}" = reload ]; then
+  [ -z "${REX_FAKE_RELOAD_FAIL:-}" ] || { echo "rex: reload failed" >&2; exit 1; }
+  [ -z "${REX_FAKE_ACTIONS_STATE:-}" ] || printf '%s\n' loaded > "$REX_FAKE_ACTIONS_STATE"
+  exit 0
+fi
 [ "${1:-}" = check ] || exit 2
 shift
 json=0
@@ -166,6 +187,7 @@ new_case() {
   [ -e "$installed" ] || mkdir -p "$installed"
   printf '%s\n' "$version" > "$installed/version"
   rm -f "$home/rex-calls"
+  rm -f "$work/rex-actions-state"
 }
 
 # A stub and a reference block written the way ui/install.sh writes them.
@@ -208,6 +230,9 @@ run_fix() { # run_fix [pack-tree] [extra argument]
     REX_CONFIG="$cfg" REX_GASCITY_UI="$stub" REX_CALL_LOG="$home/rex-calls" \
     FAKE_RELEASES="$work/releases" GC_RUNTIME_CACHE_DIR="$home/.cache/rex-gascity" \
     ${FAKE_CURL_FAIL:+FAKE_CURL_FAIL="$FAKE_CURL_FAIL"} \
+    ${REX_FAKE_NO_SERVER:+REX_FAKE_NO_SERVER="$REX_FAKE_NO_SERVER"} \
+    ${REX_FAKE_RELOAD_FAIL:+REX_FAKE_RELOAD_FAIL="$REX_FAKE_RELOAD_FAIL"} \
+    REX_FAKE_ACTIONS_STATE="$work/rex-actions-state" \
     sh "${1:-$tree}/pack/doctor/rex-ui/fix.sh" ${2:-} 2>&1)
   fix_status=$?
   set -e
@@ -418,5 +443,39 @@ expect_fix_status 0
 grep -qF -- '>>> rex-gascity-ui (managed; do not edit this block)' "$cfg" \
   || fail "the gh fallback did not add the reference block"
 [ -s "$work/gh-calls" ] || fail "the fix never tried gh after curl failed"
+
+# 14. A running server has a stale action list: the fix reloads once and says
+#     so, instead of only printing the manual note.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+run_fix
+expect_fix_status 0
+grep -qF -- 'config reload' "$home/rex-calls" || fail "the fix did not reload the running server"
+expect_fix_out "the running server now sees the extension"
+case "$fix_out" in
+  *"run 'rex config reload'"*) fail "the fix printed the manual note after a successful reload" ;;
+esac
+
+# 15. The reload fails: the manual note is the fallback and the fix still exits
+#     0. The install verdict stays on `rex config check`.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+REX_FAKE_RELOAD_FAIL=1
+run_fix
+REX_FAKE_RELOAD_FAIL=
+expect_fix_status 0
+expect_fix_out "run 'rex config reload' so a running server picks the extension up"
+
+# 16. No running server: no reload is attempted and no reload note is printed.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+REX_FAKE_NO_SERVER=1
+run_fix
+REX_FAKE_NO_SERVER=
+expect_fix_status 0
+! grep -qF -- 'config reload' "$home/rex-calls" || fail "the fix reloaded with no running server"
+case "$fix_out" in
+  *"rex config reload"*) fail "the fix printed a reload note with no running server" ;;
+esac
 
 echo "check-doctor-rex-ui: ok ($case_no cases)"

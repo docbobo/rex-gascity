@@ -7,7 +7,8 @@ mail to the city's mayor: it asks what to send, then runs
 
 The code is in this repository's `ui/` directory. `ui/install.sh` copies it to
 a versioned directory in the cache and wires it into the Rex config. Changes
-take effect with `rex config reload`.
+take effect with `rex config reload`. The installer runs that reload once when
+it adds the block and a running server has a stale action list.
 
 ## Install
 
