@@ -1061,12 +1061,12 @@ test("rigs: a named city is used with named rigs", function()
 	contains(script, "'rig' 'resume' 'alpha'", "the rig")
 end)
 
-test("rigs: gc failing is the action's error, in one line", function()
+test("rigs: gc failing is the action's error, in full", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = probe_answer({ "gc rig suspend: no such rig alpha", "second line" }, 1)
 	local ok, result = run_rig("suspend", { rigs = "alpha" })
 	falsy(ok, "reports an error")
-	equal(result, "gc rig suspend: no such rig alpha", "the first line")
+	equal(result, "gc rig suspend: no such rig alpha\nsecond line", "the whole error")
 	truthy(stub.logged("error", "second line"), "the whole output is logged")
 end)
 
