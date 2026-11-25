@@ -73,6 +73,9 @@ local function named_rigs(list)
 	return names
 end
 
+-- The Rex icon set is closed: an unknown name is dropped.
+local RIG_ICONS = { suspend = "clock", resume = "plus" }
+
 -- Asks which rigs to act on. Returns the names, or nil when nothing was chosen.
 local function ask(rigs, kind)
 	local suspending = kind == "suspend"
@@ -88,7 +91,7 @@ local function ask(rigs, kind)
 			title = rig.name,
 			subtitle = rig.path,
 			detail = detail,
-			icon = "package",
+			icon = RIG_ICONS[kind],
 		}
 	end
 
@@ -276,7 +279,7 @@ local function commands(app, settings)
 			title = "Suspend a Rig…",
 			description = "Suspend rigs of the city the pane belongs to.",
 			keywords = "gascity rig suspend agents pause stop",
-			icon = "package",
+			icon = RIG_ICONS.suspend,
 			args = { city = "string?", rigs = "string?" },
 			run = function(ctx, args)
 				return rigs_move(ctx, args, "suspend")
@@ -288,7 +291,7 @@ local function commands(app, settings)
 			title = "Resume a Rig…",
 			description = "Resume rigs of the city the pane belongs to.",
 			keywords = "gascity rig resume agents start",
-			icon = "package",
+			icon = RIG_ICONS.resume,
 			args = { city = "string?", rigs = "string?" },
 			run = function(ctx, args)
 				return rigs_move(ctx, args, "resume")

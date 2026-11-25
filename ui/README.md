@@ -32,7 +32,7 @@ installs, so the first download is only the way to get the script.
 
 ```sh
 mkdir -p ~/gascity-ui-install && cd ~/gascity-ui-install
-curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.04/gascity-ui.tar.gz
+curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.05/gascity-ui.tar.gz
 tar -xzf gascity-ui.tar.gz
 sh ui/install.sh
 ```
@@ -46,7 +46,7 @@ Import the pack, then let the doctor fix install the UI. The fix runs
 `ui/install.sh` for you. See [`docs/rex-gascity-ui.md`](../docs/rex-gascity-ui.md).
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.04
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 ```
