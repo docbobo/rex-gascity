@@ -253,11 +253,10 @@ name = "%s"
   i=0
   while [ "$i" -lt "$count" ]; do
     script=$work/$name/$i.sh
-    if grep -q "$pack_url" "$script"; then
-      sed "s|$pack_url|$remote|g" "$script" > "$script.run"
-    else
-      cp "$script" "$script.run"
-    fi
+    # A version-neutral fence writes <version> and the reader substitutes the
+    # version they installed. The fixture installed $base, so run it as $base.
+    sed -e "s|$pack_url|$remote|g" -e "s|<version>|$base|g" \
+      "$script" > "$script.run"
     if ! ( cd "$city" && env -i \
       HOME="$city/home" \
       GC_HOME="$city/home/.gc-city" \
