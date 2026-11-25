@@ -30,6 +30,7 @@ for _, name in ipairs({
 	"mail",
 	"send",
 	"report",
+	"status",
 	"actions",
 }) do
 	package.loaded["gascity." .. name] = nil
@@ -47,4 +48,5 @@ actions.register({
 	run = require("gascity.run"),
 	send = require("gascity.send"),
 	report = require("gascity.report"),
+	status = require("gascity.status"),
 })

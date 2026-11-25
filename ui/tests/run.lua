@@ -568,6 +568,7 @@ local function app_with(overrides)
 		run = run,
 		send = send,
 		report = report,
+		status = status,
 	}
 	for key, value in pairs(overrides or {}) do
 		app[key] = value
@@ -1586,6 +1587,143 @@ test("status: a value may hold the probe's end marker", function()
 	equal(status.binding(found.imports, nil), "rex", "the next row is read")
 end)
 
+-- The status update action -------------------------------------------------
+
+local REX_PACK = "https://github.com/docbobo/rex-gascity//pack"
+
+-- Runs the action with a spy in place of send.message. Returns ok, the result,
+-- and the messages it sent.
+local function run_status(args, settings)
+	local sent = {}
+	local app = app_with({
+		send = {
+			message = function(_, _, message)
+				sent[#sent + 1] = message
+				return "layer:1", nil, message.subject
+			end,
+		},
+	})
+	for key, value in pairs(settings or {}) do
+		app.config[key] = value
+	end
+	actions.register(app)
+	local ok, result = pcall(
+		stub.actions.gascity_status_update.run,
+		{ block_id = "block:1", session_id = "s1" },
+		args or {}
+	)
+	return ok, result, sent
+end
+
+test("status action: it is registered with a title, an icon, and optional arguments", function()
+	run_status({})
+	local definition = stub.actions.gascity_status_update
+	truthy(definition, "registered")
+	equal(definition.title, "Gas City: Ask the Mayor for a Status Update…", "title")
+	equal(definition.args.city, "string?", "city")
+	equal(definition.args.display, "string?", "display")
+end)
+
+test("status action: it mails the mayor the command, the session, the server, and the display", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|/tmp/rex.sock", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, result, sent = run_status({ city = "/cities/alpha" })
+	truthy(ok, "no error: " .. tostring(result))
+	equal(#sent, 1, "one mail")
+	equal(sent[1].subject, "Status update requested", "the subject")
+	equal(sent[1].city, "/cities/alpha", "the city")
+	contains(sent[1].body, "gc 'rex' status-update --template", "the template")
+	contains(sent[1].body, "--server '/tmp/rex.sock' --session 's1' --display 'text'", "the target")
+	equal(result.binding, "rex", "binding")
+	equal(result.server, "/tmp/rex.sock", "server")
+	equal(result.session_id, "s1", "session")
+	equal(result.display, "text", "display")
+	equal(#stub.layers, 0, "the action opens no pane of its own")
+	contains(stub.blocks[1].options.command[3], "-s 's1'", "the probe checks this session")
+end)
+
+test("status action: a non-default server is the one named", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|/tmp/other.sock", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, result, sent = run_status({ city = "/cities/alpha" })
+	truthy(ok, "no error: " .. tostring(result))
+	contains(sent[1].body, "--server '/tmp/other.sock'", "the other server")
+end)
+
+test("status action: the display comes from the argument, then the setting", function()
+	stub.format = probe_answer({ "@@city|-", "@@server|S", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local _, _, sent = run_status({ city = "/c", display = "markdown" }, { status_display = "other" })
+	contains(sent[1].body, "--display 'markdown'", "the argument")
+	stub.reset()
+	stub.format = probe_answer({ "@@city|-", "@@server|S", "@@config|0", "@@import|rex|" .. REX_PACK })
+	_, _, sent = run_status({ city = "/c" }, { status_display = "other" })
+	contains(sent[1].body, "--display 'other'", "the setting")
+end)
+
+test("status action: pack_binding names the binding with no import", function()
+	stub.format = probe_answer({ "@@city|-", "@@server|S" })
+	local ok, result, sent = run_status({ city = "/c" }, { pack_binding = "mine" })
+	truthy(ok, "no error: " .. tostring(result))
+	contains(sent[1].body, "gc 'mine' status-update", "the override")
+	falsy(stub.blocks[1].options.command[3]:find("config show", 1, true), "no lookup")
+end)
+
+test("status action: pack_binding does not skip the gc check, and no mail goes", function()
+	stub.format = probe_answer({ "@@server|/tmp/rex.sock", "@@gc|missing" })
+	local ok, err, sent = run_status({ city = "/c" }, { pack_binding = "mine" })
+	falsy(ok, "an error")
+	contains(err, "gc is not on this machine", "the gc.guard message")
+	equal(#sent, 0, "no mail")
+	contains(stub.blocks[1].options.command[3], "has_gc", "the probe checks gc")
+end)
+
+test("status action: a city without the pack is told how to fix it, and no mail goes", function()
+	stub.format = probe_answer({
+		"@@city|/cities/alpha",
+		"@@server|S",
+		"@@config|0",
+		"@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity",
+	})
+	local ok, err, sent = run_status({ city = "alpha" }, { file = "/home/me/.config/rex/gascity.lua" })
+	falsy(ok, "an error")
+	equal(
+		err,
+		"alpha does not import the rex-gascity pack. Import it (docs/rex-runtime-pack.md), or set pack_binding in /home/me/.config/rex/gascity.lua",
+		"the error"
+	)
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: a failed config show is named as that, and no mail goes", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|S", "@@config|1", "@@error|bad city.toml" })
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	equal(err, "gc config show failed for alpha (exit 1): bad city.toml", "the error")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: no gc on the machine is named, and no mail goes", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|S", "@@gc|missing" })
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	contains(err, "gc is not on this machine", "the gc.guard message")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: an unverified server is an error, and no mail goes", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	equal(err, "could not find the Rex server that owns session s1", "the error")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: a machine that does not answer is an error, and no mail goes", function()
+	stub.format = "nothing yet"
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	equal(err, "the machine did not answer in time", "the probe's reason")
+	equal(#sent, 0, "no mail")
+end)
+
 -- The Gas City menu ------------------------------------------------------
 
 local function run_menu(choice, ctx)
@@ -1604,16 +1742,18 @@ test("menu: it lists the Gas City commands and nothing else", function()
 
 	truthy(stub.picks ~= nil, "asked")
 	equal(stub.picks.title, "Gas City", "the title")
-	equal(#stub.picks.items, 5, "five commands")
+	equal(#stub.picks.items, 6, "six commands")
 	equal(stub.picks.items[1].title, "Message the Mayor…", "the first")
-	equal(stub.picks.items[2].title, "Suspend a Rig…", "the second")
-	equal(stub.picks.items[3].title, "Resume a Rig…", "the third")
-	equal(stub.picks.items[4].title, "Open a Rig…", "the fourth")
-	equal(stub.picks.items[5].title, "Where This Runs…", "the fifth")
+	equal(stub.picks.items[2].title, "Ask the Mayor for a Status Update…", "the second")
+	equal(stub.picks.items[3].title, "Suspend a Rig…", "the third")
+	equal(stub.picks.items[4].title, "Resume a Rig…", "the fourth")
+	equal(stub.picks.items[5].title, "Open a Rig…", "the fifth")
+	equal(stub.picks.items[6].title, "Where This Runs…", "the sixth")
 	truthy(stub.picks.items[1].subtitle ~= nil, "each says what it does")
-	equal(stub.picks.items[2].icon, "clock", "suspend uses the clock")
-	equal(stub.picks.items[3].icon, "plus", "resume uses the plus")
-	truthy(stub.picks.items[2].icon ~= stub.picks.items[3].icon, "and they differ")
+	equal(stub.picks.items[2].icon, "document", "the status update uses the document")
+	equal(stub.picks.items[3].icon, "clock", "suspend uses the clock")
+	equal(stub.picks.items[4].icon, "plus", "resume uses the plus")
+	truthy(stub.picks.items[3].icon ~= stub.picks.items[4].icon, "and they differ")
 	for _, item in ipairs(stub.picks.items) do
 		truthy(REX_ICONS[item.icon], "a known Rex icon: " .. tostring(item.icon))
 	end
@@ -1886,6 +2026,7 @@ test("entry: init.lua registers the actions and the binding", function()
 	truthy(ok, "loads: " .. tostring(err))
 	truthy(stub.actions.gascity_mail_mayor ~= nil, "registers the message action")
 	truthy(stub.actions.gascity_doctor ~= nil, "registers the report action")
+	truthy(stub.actions.gascity_status_update ~= nil, "registers the status update action")
 	equal(stub.binds["ctrl+b>g"], "gascity_menu", "binds the key to the menu")
 end)
 

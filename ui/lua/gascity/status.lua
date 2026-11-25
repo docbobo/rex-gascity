@@ -326,8 +326,9 @@ end
 
 -- Asks the pane's machine. `opts.city` names the city, `opts.cwd` the
 -- directory to ask from. Returns the parsed answer, or nil and a reason.
--- A probe error (a failed lookup or filter) is a reason, not an answer with
--- no imports (REQ-003).
+-- A probe error or a failed config filter is a reason, not an answer with no
+-- imports (REQ-003). A config show that failed with a status still comes back
+-- as the answer, so the caller can name the exit and the message.
 function M.ask(settings, ctx, opts)
 	opts = opts or {}
 	local answer, err = probe.run(ctx, M.script(settings, opts.city, ctx.session_id), {
@@ -338,7 +339,7 @@ function M.ask(settings, ctx, opts)
 		return nil, err
 	end
 	local parsed = M.parse(answer.output)
-	if parsed.error ~= nil then
+	if parsed.error ~= nil and (parsed.config_status == nil or parsed.config_status == 0) then
 		return nil, parsed.error
 	end
 	return parsed
