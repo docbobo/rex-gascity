@@ -74,14 +74,14 @@ assert opts["command"][:2] == ["/bin/sh", "-c"], opts
 PY
 }
 
-# pane_out <request> <want> <what>: the pane command prints exactly <want>.
-pane_out() { # pane_out <request> <want> <what>
-  python3 - "$1" > "$work/pane-script" <<'PY' || fail "$3: request has no pane command"
+# pane_look <request> <what>: the pane command runs and prints the report look.
+pane_look() { # pane_look <request> <what>
+  python3 - "$1" > "$work/pane-script" <<'PY' || fail "$2: request has no pane command"
 import json, sys
 print(json.load(open(sys.argv[1]))["layout"]["block"]["options"]["command"][2])
 PY
-  sh "$work/pane-script" > "$work/pane-out"
-  cmp -s "$work/pane-out" "$2" || fail "$3: pane output differs from $(basename "$2")"
+  sh "$work/pane-script" > "$work/pane-out" || fail "$2: the pane command failed"
+  has "$work/pane-out" "Close this pane when you are done." "$2 pane"
 }
 
 body=$work/body.md
@@ -150,8 +150,15 @@ has "$req" '"bounds":[0.08,0.16,0.84,0.56],"focus":true' "request"
 has "$req" '"layout":{"block":{"flavor":"com.superlogical.terminal.shell","label":"gascity-status"' "request"
 has "$req" '"command":["/bin/sh","-c","printf '"'"'%s\\n'"'"' '"'" "request"
 has "$req" '"exit":{"on_completion":false}' "request"
+has "$req" '\u001b[1;38;5;81mGas City' "title"
+has "$req" '\u001b[38;5;245m    Status update — alpha' "title"
+has "$req" '✅  \u001b[1;38;5;109mDone' "Done section"
+has "$req" '⛔  \u001b[1;38;5;109mBlocked' "Blocked section"
+has "$req" '    • shipped \u001b[1mit\u001b[0m' "bold item"
+has "$req" '\u001b[38;5;203mwaiting on \u001b[38;5;81mci\u001b[0m' "red Blocked item with code"
+has "$req" '\u001b[38;5;240mClose this pane when you are done.' "footer"
 json_ok "$req" "request"
-pane_out "$req" "$body" "request"
+pane_look "$req" "request"
 
 # --body-file sends the same request as stdin.
 cp "$req" "$work/stdin-request"
@@ -166,7 +173,7 @@ code_is 0 "escapes"
 has "$req" 'say \"hi\" \\ it'"'"'\\'"'"''"'"'s' "escapes"
 has "$req" 'a\ttab' "tab"
 json_ok "$req" "escapes"
-pane_out "$req" "$work/quotes" "escapes"
+pane_look "$req" "escapes"
 
 # A value that ends with a newline keeps it as a JSON \n.
 nl='
@@ -199,5 +206,22 @@ rm -f "$log.argv"
 PATH=/usr/bin:/bin REX_BIN_DIR=$tools REX_FAKE_LOG=$log sh "$cmd" --session ID < "$body" > "$work/out" 2> "$work/err" || code=$?
 code_is 0 "REX_BIN_DIR"
 [ -e "$log.argv" ] || fail "REX_BIN_DIR: the fake rex was not called"
+
+# The body cannot drive the terminal: its controls are stripped, and every
+# ESC left in the request starts one of the renderer's SGR sequences.
+printf '# Status update\n## Done\n- a\033[2Jb\033]0;t\007c\302\233x\n' > "$work/controls"
+run --session ID < "$work/controls"
+code_is 0 "controls"
+has "$req" 'a[2Jb]0;tcx' "controls stripped"
+has "$req" '\u001b[1;38;5;81mGas City' "renderer colors kept"
+esc=$(printf '\033')
+if LC_ALL=C grep -q "$esc" "$req"; then fail "controls: a raw ESC reached the request"; fi
+c1=$(printf '\302\233')
+if LC_ALL=C grep -q "$c1" "$req"; then fail "controls: a C1 control reached the request"; fi
+LC_ALL=C awk '
+  { n = split($0, part, /\\u001b/)
+    for (i = 2; i <= n; i++) if (part[i] !~ /^\[[0-9;]*m/) { print "bad: " substr(part[i], 1, 12); bad = 1 } }
+  END { exit bad }
+' "$req" || fail "controls: an ESC in the request is not an SGR sequence"
 
 echo "check-status-update: ok"
