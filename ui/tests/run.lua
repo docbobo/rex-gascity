@@ -400,6 +400,28 @@ test("pane: returns nil when nothing reported one", function()
 	equal(pane.cwd("block:1"), nil, "cwd")
 end)
 
+-- The shell helper -------------------------------------------------------
+
+test("The shell helper: an interactive shell in the chosen directory", function()
+	stub.pane_cwd = "/work/alpha"
+	local id = run.shell({ session_id = "session:1" }, { cwd = "/work/alpha", label = "gascity:alpha" })
+	equal(id, "block:probe", "returns the block id")
+
+	local block = stub.blocks[1]
+	equal(block.session_id, "session:1", "the session it was asked for")
+	equal(block.flavor, "com.superlogical.terminal.shell", "a terminal")
+	equal(block.label, "gascity:alpha", "the label")
+	equal(block.options.cwd, "/work/alpha", "the directory, unchanged")
+	equal(block.options.command, nil, "no command, so it is interactive")
+end)
+
+test("The shell helper: an error from the session is returned", function()
+	stub.block_error = "boom"
+	local id, err = run.shell({ session_id = "session:1" }, { cwd = "/work/alpha" })
+	equal(id, nil, "no block")
+	equal(err, "boom", "the error, as a string")
+end)
+
 -- Mail -------------------------------------------------------------------
 
 test("mail: the subject is the message on one line", function()
