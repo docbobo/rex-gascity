@@ -9,6 +9,8 @@ read the file before you touch that area:
   state, meta, overlays.
 - `internal/rex/AGENTS.md` — the `rex` CLI client and the fake the e2e suites
   drive.
+- `ui/AGENTS.md` — the Gas City UI Rex extension: its tests, its version
+  rule, and the single installer.
 
 ## Autonomous runs
 

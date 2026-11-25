@@ -83,7 +83,11 @@ case $(uname -m) in
   *) die "unsupported machine: $(uname -m)" ;;
 esac
 asset=gc-runtime-rex_${os}_${arch}
-assets="gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 gc-runtime-rex_darwin_amd64 gc-runtime-rex_darwin_arm64 checksums.txt"
+# One release carries the provider binaries, the extension tree and one
+# checksums.txt over all of them, so a wait or a verification that skipped
+# gascity-ui.tar.gz would publish a tag whose UI asset is a different build.
+ui_asset=gascity-ui.tar.gz
+assets="gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 gc-runtime-rex_darwin_amd64 gc-runtime-rex_darwin_arm64 $ui_asset checksums.txt"
 
 json_field() {
   printf '%s' "$1" | python3 -c "import json,sys; print(json.load(sys.stdin)['$2'])"
@@ -169,7 +173,7 @@ fi
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/rexrelease.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# Bounded wait for the four binaries and checksums.txt. A build that never
+# Bounded wait for the four binaries, the extension tree and checksums.txt. A
 # arrives leaves the draft for a later --resume.
 deadline=$(( $(date +%s) + wait_seconds ))
 while :; do
@@ -193,19 +197,32 @@ print(" ".join(n for n in sys.argv[1].split() if n not in have))
 done
 
 dl=$tmp/download
-"$GH" release download "$tag" --pattern "$asset" --pattern checksums.txt --dir "$dl"
+"$GH" release download "$tag" --pattern "$asset" --pattern "$ui_asset" --pattern checksums.txt --dir "$dl"
 [ -f "$dl/$asset" ] || die "downloaded asset $asset is missing"
+[ -f "$dl/$ui_asset" ] || die "downloaded asset $ui_asset is missing"
 [ -f "$dl/checksums.txt" ] || die "downloaded checksums.txt is missing"
 
-expected=$(awk -v a="$asset" '$2 == a || $2 == "*" a {print $1; exit}' "$dl/checksums.txt")
-[ -n "$expected" ] || die "checksums.txt has no entry for $asset"
-if command -v sha256sum >/dev/null 2>&1; then
-  actual=$(sha256sum "$dl/$asset" | awk '{print $1}')
-else
-  actual=$(shasum -a 256 "$dl/$asset" | awk '{print $1}')
-fi
-[ "$actual" = "$expected" ] ||
-  die "sha256 mismatch for $asset: expected $expected, got $actual"
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+# Both published assets are verified against the one checksums.txt: a UI
+# tarball built from another commit is refused rather than published. No `local`
+# here, so the names are prefixed to leave the caller's alone.
+verify_asset() { # verify_asset <name> <sha256>
+  _expected=$(awk -v a="$1" '$2 == a || $2 == "*" a {print $1; exit}' "$dl/checksums.txt")
+  [ -n "$_expected" ] || die "checksums.txt has no entry for $1"
+  [ "$2" = "$_expected" ] || die "sha256 mismatch for $1: expected $_expected, got $2"
+}
+
+actual=$(sha256_of "$dl/$asset")
+verify_asset "$asset" "$actual"
+ui_actual=$(sha256_of "$dl/$ui_asset")
+verify_asset "$ui_asset" "$ui_actual"
 
 # gh release download writes 0644. The checksum covers the content, not the
 # mode, and conformance.sh refuses a --binary it cannot execute.
@@ -237,6 +254,8 @@ if [ "$conf_status" -eq 0 ]; then result=PASS; else result=FAIL; fi
   echo "gc commit: $gc_commit"
   echo "asset: $asset"
   echo "asset_sha256: $actual"
+  echo "ui_asset: $ui_asset"
+  echo "ui_asset_sha256: $ui_actual"
   echo "host_os: $os"
   echo "host_arch: $arch"
   echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -173,6 +173,12 @@ reset_state() {
     cp "$work/asset" "$state/assets/$name"
     printf '%s  %s\n' "$sha" "$name" >> "$state/assets/checksums.txt"
   done
+  # The release carries the extension tree as well, and release.sh waits for it.
+  # Built from the checkout so it is a real tarball with a real checksum line.
+  tar -czf "$state/assets/gascity-ui.tar.gz" -C "$src" ui
+  ui_sha=$(shasum -a 256 "$state/assets/gascity-ui.tar.gz" 2>/dev/null | awk '{print $1}')
+  [ -n "$ui_sha" ] || ui_sha=$(sha256sum "$state/assets/gascity-ui.tar.gz" | awk '{print $1}')
+  printf '%s  %s\n' "$ui_sha" gascity-ui.tar.gz >> "$state/assets/checksums.txt"
   # gh release download writes 0644; the release script must chmod the asset.
   chmod 0644 "$state"/assets/*
   git -C "$work/origin.git" tag -d v0.2.0 >/dev/null 2>&1 || true
@@ -365,5 +371,137 @@ for want in 'result: PASS' 'rex ver' 'gc ver' 'asset_sha256:' 'tag: v0.2.0' 'tag
   grep -q "$want" "$state/assets/conformance.txt" ||
     fail "conformance.txt is missing '$want'"
 done
+grep -q 'ui_asset:' "$state/assets/conformance.txt" ||
+  fail "conformance.txt does not name the UI asset"
+
+# A UI tarball that does not match its checksums.txt line is refused, and the
+# draft is left unpublished: the extension and the provider binary have to come
+# from one build.
+reset_state
+line=$(grep -n 'gascity-ui.tar.gz' "$state/assets/checksums.txt" | head -n 1 | cut -d: -f1)
+[ -n "$line" ] || fail "the fixture release has no gascity-ui.tar.gz line"
+{
+  head -n "$((line - 1))" "$state/assets/checksums.txt"
+  printf '%s  %s\n' 0000000000000000000000000000000000000000000000000000000000000000 gascity-ui.tar.gz
+  tail -n "+$((line + 1))" "$state/assets/checksums.txt"
+} > "$work/checksums.tmp"
+mv "$work/checksums.tmp" "$state/assets/checksums.txt"
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "a release with a mismatched gascity-ui.tar.gz must fail"
+fi
+grep -q 'sha256 mismatch for gascity-ui.tar.gz' "$work/out" ||
+  fail "the mismatch refusal does not name gascity-ui.tar.gz"
+[ ! -f "$state/published" ] || fail "a mismatched UI asset published the release"
+[ -f "$state/draft" ] || fail "a refused UI asset removed the draft"
+
+# --- the UI asset in the release workflow ------------------------------------
+# check-release runs release.sh against a fake gh, so it never executes the
+# workflow. The workflow's own steps are the only place gascity-ui.tar.gz and
+# its checksum line are made. Run those two steps' scripts here, on a copy of
+# the real ui/ tree, and assert what they produce.
+wf=$src/.github/workflows/release.yml
+[ -f "$wf" ] || fail ".github/workflows/release.yml does not exist"
+
+step_script() { # step_script <step name>: print the step's run block
+  awk -v name="      - name: $1" '
+    $0 == name { in_step = 1; next }
+    in_step && /^      - / { exit }
+    in_step && /^        run: \|$/ { in_run = 1; next }
+    in_step && in_run && /^          / { sub(/^          /, ""); print; next }
+    in_step && in_run { exit }
+  ' "$wf"
+}
+
+pkg=$(step_script "Package the UI")
+sums=$(step_script "Write checksums.txt")
+[ -n "$pkg" ] || fail "release.yml has no 'Package the UI' step with a run block"
+[ -n "$sums" ] || fail "release.yml has no 'Write checksums.txt' run block"
+
+# The gate runs both version guards, so a tag that disagrees with ui/version
+# stops the release before build and upload.
+gate=$(awk '/^  gate:/ { in_gate = 1 } in_gate && /^  [a-z]+:/ && !/^  gate:/ { exit } in_gate' "$wf")
+printf '%s\n' "$gate" | grep -q 'sh pack/tests/check-ui-version.sh' ||
+  fail "release.yml's gate does not run pack/tests/check-ui-version.sh"
+
+tar=tar
+if ! tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  command -v gtar >/dev/null 2>&1 && tar=gtar
+fi
+if ! "$tar" --version 2>/dev/null | grep -q 'GNU tar'; then
+  # The workflow runs on ubuntu-latest, where tar is GNU tar. A developer
+  # machine without it (macOS bsdtar) skips, and says so; CI must not skip,
+  # because a silent skip there would leave the UI asset unchecked.
+  if [ -n "${CI:-}" ]; then
+    fail "GNU tar is required in CI: install it, or the 'Package the UI' step cannot be checked"
+  fi
+  echo "check-release: skip UI asset checks: GNU tar is not on PATH (install gtar)"
+  echo "check-release: ok"
+  exit 0
+fi
+
+[ -f "$src/ui/init.lua" ] || fail "ui/init.lua does not exist"
+[ -f "$src/ui/install.sh" ] || fail "ui/install.sh does not exist"
+
+sha_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+# Build in a scratch tree: the repo's ui/ plus the four provider assets the
+# build jobs would have left in dist/. tar here is the GNU tar found above.
+mkdir -p "$work/bin-gnu" "$work/uiwf/dist"
+ln -s "$(command -v "$tar")" "$work/bin-gnu/tar"
+# The workflow's checksum step runs on ubuntu-latest, so it calls sha256sum.
+# Stand that in on a machine that only has shasum.
+if ! command -v sha256sum >/dev/null 2>&1; then
+  printf '%s\n' '#!/bin/sh' 'exec shasum -a 256 "$@"' > "$work/bin-gnu/sha256sum"
+  chmod +x "$work/bin-gnu/sha256sum"
+fi
+cp -R "$src/ui" "$work/uiwf/ui"
+for name in gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 \
+            gc-runtime-rex_darwin_amd64 gc-runtime-rex_darwin_arm64; do
+  cp "$work/asset" "$work/uiwf/dist/$name"
+done
+
+# The same shell the runner uses; $pkg runs from the repo root, $sums in dist.
+# The scripts go to files, not `bash -c`, so nothing in the YAML is re-parsed.
+printf '%s\n' "$pkg" > "$work/pkg.sh"
+printf '%s\n' "$sums" > "$work/sums.sh"
+( cd "$work/uiwf" && PATH="$work/bin-gnu:$PATH" bash -eo pipefail "$work/pkg.sh" ) ||
+  fail "the 'Package the UI' step failed"
+( cd "$work/uiwf/dist" && PATH="$work/bin-gnu:$PATH" bash -eo pipefail "$work/sums.sh" ) >/dev/null ||
+  fail "the 'Write checksums.txt' step failed"
+
+ui_asset=$work/uiwf/dist/gascity-ui.tar.gz
+[ -f "$ui_asset" ] || fail "the workflow did not produce gascity-ui.tar.gz"
+gzip -t "$ui_asset" 2>/dev/null || fail "gascity-ui.tar.gz is not a gzip file"
+listing=$(tar -tzf "$ui_asset" 2>/dev/null) || fail "gascity-ui.tar.gz is not a readable tarball"
+for want in ui/init.lua ui/install.sh; do
+  printf '%s\n' "$listing" | grep -qx "$want" ||
+    fail "gascity-ui.tar.gz does not contain $want"
+done
+printf '%s\n' "$listing" | grep -qvE '^ui(/|$)' &&
+  fail "gascity-ui.tar.gz has an entry outside ui/"
+
+ui_sha=$(sha_of "$ui_asset")
+grep -qx "$ui_sha  gascity-ui.tar.gz" "$work/uiwf/dist/checksums.txt" ||
+  fail "checksums.txt has no sha256 line for gascity-ui.tar.gz"
+for name in gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 \
+            gc-runtime-rex_darwin_amd64 gc-runtime-rex_darwin_arm64; do
+  grep -q "  $name\$" "$work/uiwf/dist/checksums.txt" ||
+    fail "checksums.txt lost the line for $name"
+done
+
+# Same tree, same bytes.
+( cd "$work/uiwf" && rm dist/gascity-ui.tar.gz &&
+  PATH="$work/bin-gnu:$PATH" bash -eo pipefail "$work/pkg.sh" )
+[ "$(sha_of "$ui_asset")" = "$ui_sha" ] || fail "gascity-ui.tar.gz is not deterministic"
+
+# A mismatch must be caught: a changed archive no longer matches its line.
+printf 'x' >> "$ui_asset"
+[ "$(sha_of "$ui_asset")" != "$ui_sha" ] || fail "sha256 did not change with the archive"
+if grep -qx "$(sha_of "$ui_asset")  gascity-ui.tar.gz" "$work/uiwf/dist/checksums.txt"; then
+  fail "a tampered gascity-ui.tar.gz still matches checksums.txt"
+fi
 
 echo "check-release: ok"

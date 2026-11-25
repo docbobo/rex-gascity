@@ -167,6 +167,16 @@ constraint tracks the major line: `--version '^2026.11.03'` matches later
 2026 releases and not a 2027 release. `gc import upgrade rex` then moves to
 the newest matching tag.
 
+## Gas City UI
+
+A second check, `rex-gascity-runtime:rex-ui`, covers the Gas City UI, a Rex
+extension that is not part of the provider. It is optional: a missing UI is a
+warning (exit 1), and a config that does not load or a missing `rex` is an
+error (exit 2). The check is read-only. `gc doctor --check rex-gascity-runtime:rex-ui --fix`
+installs the UI for the pack's version and wires the Rex config. Install,
+doctor rows, the unwritable `init.lua` case, upgrade and uninstall are in
+[`rex-gascity-ui.md`](rex-gascity-ui.md).
+
 ## Source checkout
 
 From a git checkout of this repository, with a Go toolchain:

@@ -25,9 +25,11 @@ rex-gascity/
     bin/_lib.sh                     cache-path helper shared with the doctor fix
     install.sh                      release installer, and --from-source
     doctor/rex-binary/              gc doctor check: run.sh, fix.sh, doctor.toml
+    doctor/rex-ui/                  gc doctor check for the Gas City UI
     rex-min-version                 the oldest rex CLI the pack drives
     release.sh                      the only publisher
     tests/                          check-*.sh (pack checks), conformance.sh
+  ui/                               the Gas City UI, a Rex Lua extension, and its installer
   docs/                             operator and reference docs
   testdata/city/                    a scratch city for gc runtime check and conformance
   Makefile                          build, test, verify, check, conformance
@@ -80,6 +82,22 @@ All install output goes to stderr, so stdout stays clean. A plain
 downloads, and a cold cache reports "not yet installed, run `--fix` or start a
 session". A green check means the provider handshakes, its version matches
 `pack.toml`, and the `rex` CLI resolves.
+
+### Gas City UI
+
+The pack also ships an optional Rex extension, the Gas City UI, in `ui/`. A
+second doctor check installs and verifies it:
+
+```sh
+gc doctor --check rex-gascity-runtime:rex-ui --fix
+gc doctor --check rex-gascity-runtime:rex-ui
+```
+
+The check is read-only without `--fix`. It warns (exit 1) when the UI is not
+installed or the Rex config does not load it, and errors (exit 2) when the
+config fails to load or `rex` is missing. The UI also installs alone, without
+the provider. See [`docs/rex-gascity-ui.md`](docs/rex-gascity-ui.md) and
+[`ui/README.md`](ui/README.md).
 
 ### Upgrade and roll back
 
@@ -160,7 +178,7 @@ provider = "rex"
 
 ## Doctor
 
-One check: `rex-gascity-runtime:rex-binary`. Every run is read-only. It never starts a session, writes state or downloads. Exit 0 is OK, 1 is a warning and 2 is an error.
+The provider check is `rex-gascity-runtime:rex-binary`. The UI check, `rex-gascity-runtime:rex-ui`, is described in [`docs/rex-gascity-ui.md`](docs/rex-gascity-ui.md). Every run is read-only. It never starts a session, writes state or downloads. Exit 0 is OK, 1 is a warning and 2 is an error.
 
 | Subject | Error | Warning |
 |---|---|---|
@@ -282,7 +300,7 @@ sh pack/tests/check-docs.sh       # runs the sh fences of the operator docs
 | Check | Proves |
 |---|---|
 | `check-import.sh` | Tag import and release install work end to end. The `sha:` case fails and names the tag. |
-| `check-docs.sh` | Every `sh` fence in `docs/rex-runtime-pack.md` and `docs/rex-binary-install.md` runs against a scratch city. The version-keyed cache and the manual `PATH` install both reach the documented version. |
+| `check-docs.sh` | Every `sh` fence in `docs/rex-runtime-pack.md`, `docs/rex-binary-install.md` and `docs/rex-gascity-ui.md` runs against a scratch city. The version-keyed cache and the manual `PATH` install both reach the documented version. |
 | `check-installer.sh` | `pack/install.sh` works over fake `curl`, `gh` and `uname`, including checksum, platform and destination failures. |
 | `check-runtime-shim.sh` | The self-installing shim handles a cache hit, a cache miss, the deadline, a platform rejection and clean stdout. |
 | `check-doctor-rex-version.sh` | The doctor check fails on an older rex CLI and passes on an equal or newer one. |

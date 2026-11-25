@@ -54,6 +54,9 @@ jobs:
         run: |
           git checkout --quiet "$SHA"
           bash pack/check-release-version.sh "$TAG"
+          # One tag cuts the provider and the UI: a tag that disagrees with
+          # ui/version must stop here, before the build and the upload.
+          sh pack/tests/check-ui-version.sh
 
   build:
     needs: gate
@@ -99,17 +102,29 @@ jobs:
           retention-days: 1
 
   upload:
-    needs: build
+    needs: [gate, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # One tag cuts the provider and the UI. The archive holds the ui/ tree
+      # from the repo root, so ui/install.sh finds entries spelled ui/...
+      # Sorted names, a fixed mtime and owner, and gzip -n keep the bytes the
+      # same for the same tree.
+      - name: Package the UI
+        run: |
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -cf - ui | gzip -n >dist/gascity-ui.tar.gz
       - name: Write checksums.txt
         working-directory: dist
         run: |
-          sha256sum gc-runtime-rex_* >checksums.txt
+          sha256sum gc-runtime-rex_* gascity-ui.tar.gz >checksums.txt
           cat checksums.txt
       # No --clobber: a release is immutable, so a second upload of the same
       # asset fails instead of replacing a published binary.
