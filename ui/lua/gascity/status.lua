@@ -125,6 +125,7 @@ function dec(v,   r, i, n, c, e, u, l) {
 --
 --   @@city|<path>             the city gc read (its city_path)
 --   @@server|<address or>     $REX_SERVER, only once it is seen to own the session
+--   @@server_error|<reason>   why the check did not pass, when the row above is empty
 --   @@gc|missing              no gc, so no import lookup
 --   @@config|<status>         how `gc config show --json` exited
 --   @@error|<stderr>          its stderr on one line, when that status is not 0
@@ -158,15 +159,24 @@ function M.script(settings, city, session_id)
 		add("set --")
 	end
 
-	-- The server. --autostart=false keeps the check read-only: an address with
-	-- no server behind it fails instead of starting one. Only the exit status
-	-- is used, so nothing it prints reaches the screen.
-	add('rex=$(command -v rex 2>/dev/null) || rex=')
-	add('if [ -z "$rex" ] && [ -n "${REX_BIN_DIR:-}" ] && [ -x "$REX_BIN_DIR/rex" ]; then rex="$REX_BIN_DIR/rex"; fi')
+	-- The server. The app's rex comes first: the pane lives in the app, and a
+	-- different rex on PATH (or one without --autostart) must not decide.
+	-- --autostart=false keeps the check read-only: an address with no server
+	-- behind it fails instead of starting one. A check that does not pass puts
+	-- the reason in @@server_error, so the action can name it.
+	add('rex=')
+	add('if [ -n "${REX_BIN_DIR:-}" ] && [ -x "$REX_BIN_DIR/rex" ]; then rex="$REX_BIN_DIR/rex"; fi')
+	add('if [ -z "$rex" ]; then rex=$(command -v rex 2>/dev/null) || rex=; fi')
 	add("server=")
-	add('if [ -n "${REX_SERVER:-}" ] && [ -n "$rex" ] && "$rex" -S "$REX_SERVER" --autostart=false api call session.list_blocks -s '
+	add("why=")
+	add('if [ -z "${REX_SERVER:-}" ]; then why="REX_SERVER is not set"')
+	add('elif [ -z "$rex" ]; then why="no rex on PATH and none in REX_BIN_DIR (REX_SERVER=$REX_SERVER)"')
+	add('elif out=$("$rex" -S "$REX_SERVER" --autostart=false api call session.list_blocks -s '
 		.. text.quote(session_id or "")
-		.. ' </dev/null >/dev/null 2>&1; then server=$REX_SERVER; fi')
+		.. ' </dev/null 2>&1); then server=$REX_SERVER')
+	add('else why="rex -S $REX_SERVER api call session.list_blocks failed (exit $?): $out"')
+	add("fi")
+	add('if [ -n "$why" ]; then printf \'@@server_error|%s\\n\' "$(esc "$(printf \'%s\' "$why" | tr \'\\n\' \' \')")"; fi')
 	add('printf \'@@server|%s\\n\' "$(esc "$server")"')
 
 	-- gc. Checked with or without pack_binding: the override skips only the
@@ -241,8 +251,8 @@ local function unescape(value)
 	end))
 end
 
--- Reads the answer into `{ city, server, gc_missing, config_status, error,
--- imports = { { key = ..., source = ... }, ... } }`.
+-- Reads the answer into `{ city, server, server_error, gc_missing,
+-- config_status, error, imports = { { key = ..., source = ... }, ... } }`.
 --
 -- The screen wraps a long line into rows, so the rows are joined and the
 -- answer is split again at each @@. The probe escapes a value that holds @@.
@@ -250,13 +260,16 @@ function M.parse(output)
 	local joined = (output or ""):gsub("\n", "")
 	local answer = { gc_missing = false, imports = {} }
 	for line in (joined .. "@@"):gmatch("(.-)@@") do
-		local kind, rest = line:match("^(%a+)|(.*)$")
+		local kind, rest = line:match("^([%a_]+)|(.*)$")
 		if kind == "city" then
 			local value = unescape(rest)
 			answer.city = (value ~= "" and value ~= "-") and value or nil
 		elseif kind == "server" then
 			local value = unescape(rest)
 			answer.server = value ~= "" and value or nil
+		elseif kind == "server_error" then
+			local value = text.trim(unescape(rest))
+			answer.server_error = value ~= "" and value or nil
 		elseif kind == "gc" then
 			answer.gc_missing = rest == "missing"
 		elseif kind == "config" then

@@ -227,7 +227,12 @@ local function commands(app, settings)
 			)
 		end
 		if found.server == nil then
-			error("could not find the Rex server that owns session " .. tostring(ctx.session_id), 0)
+			error(
+				"could not find the Rex server that owns session "
+					.. tostring(ctx.session_id)
+					.. (found.server_error and (": " .. found.server_error) or ""),
+				0
+			)
 		end
 
 		local layer_id, send_err = app.send.message(app, ctx, {

@@ -1280,6 +1280,12 @@ test("status: an empty server line is no server", function()
 	equal(found.server, nil, "no server")
 end)
 
+test("status: the reason the server could not be verified is read back", function()
+	local found = status.parse("@@server|\n@@server_error|rex -S /tmp/x.sock failed (exit 3): no session")
+	equal(found.server, nil, "no server")
+	equal(found.server_error, "rex -S /tmp/x.sock failed (exit 3): no session", "the reason")
+end)
+
 -- A scratch directory with a fake gc and a fake rex in it.
 --
 -- The fake gc prints the fixture for `config show --json`, or fails like a
@@ -1360,7 +1366,7 @@ end)
 
 test("status: the probe verifies the server without starting one", function()
 	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
-	contains(script, "--autostart=false api call session.list_blocks -s 's1' </dev/null >/dev/null 2>&1", "read-only")
+	contains(script, "--autostart=false api call session.list_blocks -s 's1' </dev/null", "read-only")
 
 	local dir = probe_tools()
 	local owned = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
@@ -1368,8 +1374,13 @@ test("status: the probe verifies the server without starting one", function()
 	local unset = run_probe(script, dir)
 	remove(dir)
 	contains(owned, "@@server|/tmp/other.sock\n", "the server that owns s1")
+	falsy(owned:find("@@server_error|", 1, true), "no reason when the server answers")
 	contains(foreign, "@@server|\n", "a server that does not own s2")
+	contains(foreign, "@@server_error|", "a server that did not answer is a reason")
+	contains(foreign, "/tmp/other.sock", "the reason names the address")
+	contains(foreign, "exit 3", "and the CLI's exit status")
 	contains(unset, "@@server|\n", "no REX_SERVER")
+	contains(unset, "REX_SERVER is not set", "and says so")
 end)
 
 test("status: a failed config show reports its status and stderr", function()
@@ -1515,7 +1526,39 @@ test("status: rex is found in REX_BIN_DIR when it is not on PATH", function()
 	remove(dir)
 	contains(found, "@@server|/tmp/other.sock\n", "the fallback finds rex")
 	contains(absent, "@@server|\n", "no rex anywhere is no server")
+	contains(absent, "no rex on PATH and none in REX_BIN_DIR", "and says that no rex was found")
+	contains(absent, "/tmp/other.sock", "the reason names the address")
 	contains(absent, "END", "the script ran to its end")
+end)
+
+test("status: the app's rex is used before a rex on PATH", function()
+	local dir = probe_tools()
+	-- An older rex on PATH, as an install without the app's binary leaves it.
+	write_file(dir .. "/rex", "#!/bin/sh\nprintf 'unknown flag: --autostart\\n' >&2\nexit 2\n")
+	sh("chmod +x " .. text.quote(dir .. "/rex"))
+	local bin = dir .. "/bin dir"
+	sh("mkdir " .. text.quote(bin))
+	write_file(bin .. "/rex", "#!/bin/sh\ncase \" $* \" in *\" -s s1 \"*) exit 0 ;; esac\nexit 3\n")
+	sh("chmod +x " .. text.quote(bin .. "/rex"))
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	local app = run_probe(script, dir, "REX_SERVER=/tmp/other.sock REX_BIN_DIR=" .. text.quote(bin))
+	local path_only = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	remove(dir)
+	contains(app, "@@server|/tmp/other.sock\n", "the app's rex answers")
+	contains(path_only, "@@server|\n", "a rex on PATH that fails is no server")
+	contains(path_only, "unknown flag: --autostart", "the CLI's reason is named")
+	contains(path_only, "/tmp/other.sock", "the address is named")
+end)
+
+test("status: a session the server does not list names the CLI reason", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s2"), dir, "REX_SERVER=/tmp/other.sock")
+	remove(dir)
+	contains(output, "@@server|\n", "no server")
+	contains(output, "@@server_error|", "the reason row")
+	contains(output, "/tmp/other.sock", "the address")
+	contains(output, "exit 3", "the exit status")
+	contains(output, "END", "the script ran to its end")
 end)
 
 test("status: a percent, a tab, a newline, and a carriage return survive", function()
@@ -1730,6 +1773,23 @@ test("status action: an unverified server is an error, and no mail goes", functi
 	local ok, err, sent = run_status({ city = "alpha" })
 	falsy(ok, "an error")
 	equal(err, "could not find the Rex server that owns session s1", "the error")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: an unverified server names the CLI reason and the address", function()
+	stub.format = probe_answer({
+		"@@city|/cities/alpha",
+		"@@server|",
+		"@@server_error|rex -S /tmp/other.sock api call session.list_blocks failed (exit 3): no such session",
+		"@@config|0",
+		"@@import|rex|" .. REX_PACK,
+	})
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	contains(err, "could not find the Rex server that owns session s1", "the session")
+	contains(err, "/tmp/other.sock", "the address")
+	contains(err, "exit 3", "the CLI's exit status")
+	contains(err, "no such session", "the CLI's reason")
 	equal(#sent, 0, "no mail")
 end)
 
