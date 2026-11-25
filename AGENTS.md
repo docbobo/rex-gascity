@@ -1,3 +1,7 @@
+## General
+
+Before editing any file, read it first. Before modifying a function, grep for all callers. Research before you edit.
+
 ## Subsystem notes
 
 The rules in this file are repo-wide. Each subsystem also has a nested
