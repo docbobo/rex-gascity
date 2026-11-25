@@ -57,17 +57,26 @@ func townTabLabel(pin string) string {
 	return pin
 }
 
+// isTownStart reports whether a start takes tabLabel's town branch: a
+// town-style name and no GC_RIG in the projected start env. A town-style
+// name with GC_RIG set (a wisp instance) belongs to its rig tab. Compare the
+// classification, never the labels: a pin can equal a rig label, and the tab
+// label is clamped while the pin is not (#47).
+func isTownStart(name SessionName, env map[string]string) bool {
+	return env["GC_RIG"] == "" && name.IsTown()
+}
+
 // tabLabel derives the Rex tab label for a started session: "Rig: <GC_RIG>"
 // whenever GC_RIG is non-empty, even for a town-style name with no "--" (a wisp
 // instance name). Only with no GC_RIG does the name shape decide: the town label
 // for a town-level name, otherwise "Rig: " plus the name split. Every result is
 // clamped to maxRexLabel.
 func tabLabel(name SessionName, env map[string]string, town string) string {
+	if isTownStart(name, env) {
+		return clampRexLabel(town)
+	}
 	if rig := env["GC_RIG"]; rig != "" {
 		return clampRexLabel("Rig: " + rig)
-	}
-	if name.IsTown() {
-		return clampRexLabel(town)
 	}
 	return clampRexLabel("Rig: " + name.Rig())
 }

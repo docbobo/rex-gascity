@@ -171,6 +171,10 @@ type Client interface {
 	NewWindow(ctx context.Context, sessionID SessionID, label string, spec LaunchSpec) (WindowID, BlockID, error)
 	NewSplit(ctx context.Context, sessionID SessionID, anchor BlockID, direction, side string, spec LaunchSpec) (BlockID, error)
 	CloseBlock(ctx context.Context, sessionID SessionID, blockID BlockID) error
+	// MoveWindow moves a window within its session's window order
+	// (session.move_window): just before window before, or to the end when
+	// before is "". The active window and focus do not change.
+	MoveWindow(ctx context.Context, sessionID SessionID, windowID WindowID, before WindowID) error
 	SessionView(ctx context.Context, sessionID SessionID) (SessionView, error)
 	ListSessions(ctx context.Context) ([]Session, error)
 	// ListClients returns the clients attached to a session. It is the

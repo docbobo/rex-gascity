@@ -180,6 +180,77 @@ func TestCloseBlock(t *testing.T) {
 	}
 }
 
+// TestMoveWindowSendsBeforeWindowID pins the session.move_window wire for a
+// move before another window (#47, REQ-002): session_id, window_id and
+// before_window_id, and the {revision} reply is accepted.
+func TestMoveWindowSendsBeforeWindowID(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.move_window", `{"revision":7}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	if err := c.MoveWindow(context.Background(), "session:a", "window:town", "window:rig"); err != nil {
+		t.Fatalf("MoveWindow: %v", err)
+	}
+	args := argsFor(t, fake.calls(t), "session.move_window")
+	want := map[string]any{"session_id": "session:a", "window_id": "window:town", "before_window_id": "window:rig"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+// TestMoveWindowOmitsBeforeWhenEmpty pins REQ-001/REQ-002: before == "" means
+// "move to the end", which the API expresses by leaving before_window_id out.
+func TestMoveWindowOmitsBeforeWhenEmpty(t *testing.T) {
+	fake := newFakeRex(t)
+	fake.respond(t, "session.move_window", `{"revision":8}`)
+	c := &cli.Client{Bin: fake.bin}
+
+	if err := c.MoveWindow(context.Background(), "session:a", "window:town", ""); err != nil {
+		t.Fatalf("MoveWindow: %v", err)
+	}
+	args := argsFor(t, fake.calls(t), "session.move_window")
+	if _, ok := args["before_window_id"]; ok {
+		t.Errorf("args = %v, want no before_window_id", args)
+	}
+	if args["session_id"] != "session:a" || args["window_id"] != "window:town" {
+		t.Errorf("args = %v, want session:a / window:town", args)
+	}
+}
+
+// TestMoveWindowErrorMapping pins REQ-002: MoveWindow uses the shared call
+// path, so exit 3 is rex.ErrNotFound, exit 4 is rex.ErrUnavailable, and a
+// server-side failure (exit 1, e.g. bad_request) is neither.
+func TestMoveWindowErrorMapping(t *testing.T) {
+	for _, tc := range []struct {
+		exit        string
+		notFound    bool
+		unavailable bool
+	}{
+		{"3", true, false},
+		{"4", false, true},
+		{"1", false, false},
+	} {
+		t.Run("exit "+tc.exit, func(t *testing.T) {
+			fake := newFakeRex(t)
+			if err := os.WriteFile(filepath.Join(fake.responses, "session.move_window.exit"), []byte(tc.exit), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			c := &cli.Client{Bin: fake.bin}
+
+			err := c.MoveWindow(context.Background(), "session:a", "window:town", "window:rig")
+			if err == nil {
+				t.Fatal("MoveWindow succeeded, want an error")
+			}
+			if got := errors.Is(err, rex.ErrNotFound); got != tc.notFound {
+				t.Errorf("errors.Is(ErrNotFound) = %v, want %v (err %v)", got, tc.notFound, err)
+			}
+			if got := errors.Is(err, rex.ErrUnavailable); got != tc.unavailable {
+				t.Errorf("errors.Is(ErrUnavailable) = %v, want %v (err %v)", got, tc.unavailable, err)
+			}
+		})
+	}
+}
+
 func TestSessionViewFlattensLayers(t *testing.T) {
 	fake := newFakeRex(t)
 	fake.respond(t, "session.view", `{

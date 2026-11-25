@@ -96,6 +96,11 @@ Full report: [provider-method-audit/protocol.md](provider-method-audit/protocol.
 | `GC_EXEC_CITY_PATH` and `GC_RPP_FAULT` read from env (`## start` > Inputs) | `internal/provider/namespace.go:42-50` reads `GC_REX_CITY`/`GC_CITY_PATH`/`GC_CITY`; `GC_RPP_FAULT` is unread | Fault-injection env var has no effect; city key uses `CityFromEnv` | low |
 | Redacted stderr; exit-0 warnings on stderr (`## Shared RPP contract` > Failure envelope, `## start` > Success output) | `cmd/gc-runtime-rex/main.go:164-166` prints raw `err` to stderr without redaction; `opStart` (`main.go:206-220`) writes no exit-0 warnings | Secret values in errors are not redacted; undelivered nudge writes only meta (`GC_STARTUP_DELIVERY_UNCONFIRMED`), no stderr warning | low |
 
+Town tab order (#47) is a Rex-only, best-effort `start` behavior, not a
+deviation from a documented claim: see the parity row `start` / town tab
+order in [provider-herdr-parity.md](provider-herdr-parity.md). The gc
+comparison is **unverified**.
+
 Full report: [provider-method-audit/start.md](provider-method-audit/start.md)
 
 ### `stop` — deviations

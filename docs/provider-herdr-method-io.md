@@ -939,6 +939,12 @@ Pack vs gc v1.5.1; not resolved.
    platform execution remain `unverified`. Parity row 11 flags the Rex side only.
 6. The Linux-only scope path (`herdrcore/lifecycle.py:684-730`) was read, not
    run; `systemd-run` behaviour is unverified.
+7. Town tab order (#47): the Rex provider moves a newly created town tab first
+   in its canonical session, once, best-effort (parity row `start` / town tab
+   order). It is Rex-only. Whether RPP v0 `start` carries any tab-order
+   requirement is **unverified**: neither gc `v1.5.1` nor herdr-core `0f07496`
+   mentions window or tab order (`git grep`/`grep` for
+   `move_window|tab order|window order|reorder`, no match).
 
 ## stop
 
