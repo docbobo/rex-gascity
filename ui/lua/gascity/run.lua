@@ -95,6 +95,28 @@ function M.pane(ctx, opts)
 	return result.layer_id
 end
 
+-- Opens an interactive shell block in a split beside the block `ctx` names,
+-- so it lands in a visible window. `opts.cwd` is the directory it starts in.
+-- Returns the block id, or nil and an error.
+function M.shell(ctx, opts)
+	local split, err = rex.session.new_split({
+		session_id = ctx.session_id,
+		anchor_id = ctx.block_id,
+		direction = "horizontal",
+		side = "after",
+		focus = true,
+		layout = rex.layout.block({
+			flavor = TERMINAL,
+			label = opts.label or "gascity",
+			options = { cwd = opts.cwd },
+		}),
+	})
+	if split == nil then
+		return nil, tostring(err)
+	end
+	return split.block_ids and split.block_ids[1]
+end
+
 -- Shows `opts.text` in a floating pane that stays up until it is closed.
 --
 -- The text is printed with `%s`, so escape sequences in it are colours rather

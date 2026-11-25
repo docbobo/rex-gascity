@@ -64,10 +64,12 @@ local stub = {
 	layer_error = nil,
 	format = nil,
 	block_error = nil,
+	split_error = nil,
 	json_text = nil,
 	json_value = nil,
 	json_error = nil,
 	blocks = {},
+	splits = {},
 	closed = {},
 	picks = nil,
 	pick_count = 0,
@@ -89,12 +91,14 @@ function stub.reset()
 	stub.layer_error = nil
 	stub.format = nil
 	stub.blocks = {}
+	stub.splits = {}
 	stub.closed = {}
 	stub.picks = nil
 	stub.pick_count = 0
 	stub.picked = nil
 	stub.pick_why = nil
 	stub.block_error = nil
+	stub.split_error = nil
 	stub.json_text = nil
 	stub.json_value = nil
 	stub.json_error = nil
@@ -174,6 +178,16 @@ rex = {
 			end
 			stub.blocks[#stub.blocks + 1] = args
 			return { block_id = "block:probe" }
+		end,
+		new_split = function(args)
+			if stub.split_error ~= nil then
+				return nil, stub.split_error
+			end
+			if args.anchor_id == nil and args.window_id == nil then
+				return nil, "session.new_split needs an anchor_id or a window_id"
+			end
+			stub.splits[#stub.splits + 1] = args
+			return { window_id = "window:1", block_ids = { "block:probe" } }
 		end,
 		new_layer = function(args)
 			if stub.layer_error ~= nil then
@@ -398,6 +412,32 @@ end)
 
 test("pane: returns nil when nothing reported one", function()
 	equal(pane.cwd("block:1"), nil, "cwd")
+end)
+
+-- The shell helper -------------------------------------------------------
+
+test("The shell helper: a visible split in the chosen directory", function()
+	local id = run.shell({ session_id = "session:1", block_id = "block:1" }, { cwd = "/work/alpha", label = "gascity:alpha" })
+	equal(id, "block:probe", "returns the block id")
+
+	local split = stub.splits[1]
+	equal(split.session_id, "session:1", "the session it was asked for")
+	equal(split.anchor_id, "block:1", "split beside the block in ctx")
+	equal(split.direction, "horizontal", "side by side")
+	equal(split.side, "after", "to the right")
+	equal(split.focus, true, "the window is made active")
+	local block = split.layout.block
+	equal(block.flavor, "com.superlogical.terminal.shell", "a terminal")
+	equal(block.label, "gascity:alpha", "the label")
+	equal(block.options.cwd, "/work/alpha", "the directory, unchanged")
+	equal(block.options.command, nil, "no command, so it is interactive")
+end)
+
+test("The shell helper: an error from the session is returned", function()
+	stub.split_error = "boom"
+	local id, err = run.shell({ session_id = "session:1", block_id = "block:1" }, { cwd = "/work/alpha" })
+	equal(id, nil, "no block")
+	equal(err, "boom", "the error, as a string")
 end)
 
 -- Mail -------------------------------------------------------------------
@@ -1004,6 +1044,126 @@ test("rigs: a command that never answers is reported", function()
 	equal(stub.closed[1], "block:probe", "the hidden block is closed anyway")
 end)
 
+-- Opening a rig -----------------------------------------------------------
+
+local function run_open(args)
+	actions.register(app_with({}))
+	return pcall(
+		stub.actions.gascity_rigs_open.run,
+		{ block_id = "block:1", session_id = "session:1" },
+		args or {}
+	)
+end
+
+local function rigs_fixture(rigs)
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.json_value = { rigs = rigs }
+end
+
+test("rigs open: the picker lists the rigs and the pane gets the path", function()
+	rigs_fixture({
+		{ name = "alpha", path = "/work/alpha" },
+		{ name = "beta", path = "/work/beta" },
+	})
+	stub.picked = "alpha"
+
+	local ok, result = run_open()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(stub.picks.title, "Open which rig?", "the question")
+	equal(stub.picks.multiple, nil, "one rig at a time")
+	equal(stub.picks.confirm, "Open", "the label")
+	equal(stub.picks.items[1].subtitle, "/work/alpha", "the rig's path")
+
+	local split = stub.splits[#stub.splits]
+	equal(split.session_id, "session:1", "the pane's session")
+	local block = split.layout.block
+	equal(block.flavor, "com.superlogical.terminal.shell", "a terminal")
+	equal(block.label, "gascity:alpha", "the label")
+	equal(block.options.cwd, "/work/alpha", "the directory")
+	equal(block.options.command, nil, "an interactive shell")
+	equal(result.cwd, "/work/alpha", "the result names the path")
+end)
+
+test("rigs open: rig= skips the picker", function()
+	rigs_fixture({
+		{ name = "alpha", path = "/work/alpha" },
+		{ name = "beta", path = "/work/beta" },
+	})
+	stub.picked = nil
+
+	local ok, result = run_open({ rig = "beta" })
+	truthy(ok, "no error: " .. tostring(result))
+	equal(stub.pick_count, 0, "no question")
+	equal(result.cwd, "/work/beta", "the rig's path")
+end)
+
+test("rigs open: an unknown name is an error and opens nothing", function()
+	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
+	local ok, result = run_open({ rig = "gamma" })
+	falsy(ok, "reports an error")
+	contains(tostring(result), "no rig named gamma", "the reason")
+	equal(#stub.blocks, 1, "only the rig list was asked for")
+end)
+
+test("rigs open: no rigs is an error", function()
+	rigs_fixture({})
+	local ok, result = run_open()
+	falsy(ok, "reports an error")
+	contains(tostring(result), "no rigs listed", "the reason")
+	equal(#stub.blocks, 1, "only the rig list was asked for")
+end)
+
+test("rigs open: a rig with no path is not offered", function()
+	rigs_fixture({ { name = "alpha" }, { name = "beta", path = "/work/beta" } })
+	stub.picked = "beta"
+	local ok = run_open()
+	truthy(ok, "no error")
+	equal(#stub.picks.items, 1, "only the rig with a path")
+	equal(stub.picks.items[1].title, "beta", "the one with a path")
+
+	local ok_named, result = run_open({ rig = "alpha" })
+	falsy(ok_named, "an unopenable rig is an error")
+	contains(tostring(result), "has no path", "the reason")
+end)
+
+test("rigs open: no rig has a path, so no picker", function()
+	rigs_fixture({ { name = "alpha" }, { name = "beta" } })
+	local ok, result = run_open()
+	falsy(ok, "reports an error")
+	contains(tostring(result), "has a path", "the reason")
+	equal(stub.pick_count, 0, "no question")
+	equal(#stub.splits, 0, "nothing opened")
+end)
+
+test("rigs open: cancel is quiet", function()
+	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
+	stub.picked = nil
+	local ok, result = run_open()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result, nil, "nothing opened")
+	equal(#stub.logs, 0, "nothing logged")
+	equal(#stub.blocks, 1, "only the rig list was asked for")
+end)
+
+test("rigs open: a tilde path is passed through", function()
+	rigs_fixture({ { name = "alpha", path = "~/src/alpha" } })
+	stub.picked = "alpha"
+	local ok = run_open()
+	truthy(ok, "no error")
+	equal(stub.splits[#stub.splits].layout.block.options.cwd, "~/src/alpha", "byte for byte")
+end)
+
+test("rigs open: a picker failure that is not a cancel is logged", function()
+	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
+	stub.picked = nil
+	stub.pick_why = "no ui"
+	local ok, result = run_open()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result, nil, "nothing opened")
+	truthy(stub.logged("warn", "gascity_rigs_open"), "the failure is logged")
+end)
+
 -- The Gas City menu ------------------------------------------------------
 
 local function run_menu(choice, ctx)
@@ -1022,11 +1182,12 @@ test("menu: it lists the Gas City commands and nothing else", function()
 
 	truthy(stub.picks ~= nil, "asked")
 	equal(stub.picks.title, "Gas City", "the title")
-	equal(#stub.picks.items, 4, "four commands")
+	equal(#stub.picks.items, 5, "five commands")
 	equal(stub.picks.items[1].title, "Message the Mayor…", "the first")
 	equal(stub.picks.items[2].title, "Suspend a Rig…", "the second")
 	equal(stub.picks.items[3].title, "Resume a Rig…", "the third")
-	equal(stub.picks.items[4].title, "Where This Runs…", "the fourth")
+	equal(stub.picks.items[4].title, "Open a Rig…", "the fourth")
+	equal(stub.picks.items[5].title, "Where This Runs…", "the fifth")
 	truthy(stub.picks.items[1].subtitle ~= nil, "each says what it does")
 	equal(stub.picks.items[2].icon, "clock", "suspend uses the clock")
 	equal(stub.picks.items[3].icon, "plus", "resume uses the plus")
@@ -1055,6 +1216,15 @@ test("menu: a rig command reaches its own picker", function()
 	-- the first pick was the menu, the second the rigs
 	equal(stub.picks.title, "Suspend which rigs?", "the rig question")
 	equal(result, nil, "and nothing was ticked")
+end)
+
+test("menu: the rig open command reaches its own picker", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.json_value = { rigs = { { name = "alpha", path = "/work/alpha" } } }
+	run_menu("rigs_open")
+	-- the first pick was the menu, the second the rigs
+	equal(stub.picks.title, "Open which rig?", "the rig question")
 end)
 
 test("doctor: the report is a pane with icons and colour", function()
