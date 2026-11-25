@@ -12,6 +12,7 @@ end
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path
 
 local text = require("gascity.text")
+local ansi = require("gascity.ansi")
 local config = require("gascity.config")
 local pane = require("gascity.pane")
 local mail = require("gascity.mail")
@@ -2037,12 +2038,37 @@ end)
 
 test("report: the terminal form can warn in colour", function()
 	local facts = {
-		{ label = "settings", value = "/nowhere (missing)", icon = "document" },
-		{ label = "gc", value = "found on PATH", icon = "gear" },
+		{ label = "directory", value = "the pane reported none", icon = "📂", severity = "trouble" },
+		{ label = "gc", value = "found on PATH", icon = "🔧", severity = "normal" },
+		{ label = "checkout", value = "/nowhere (missing)", icon = "📁", severity = "normal" },
 	}
 	local printed = report.terminal(facts)
-	contains(printed, "\27[38;5;203m/nowhere (missing)", "the trouble is coloured")
+	contains(printed, "\27[38;5;203mthe pane reported none", "the trouble is coloured")
 	falsy(printed:find("\27[38;5;203mfound on PATH", 1, true), "the rest is not")
+	falsy(printed:find("\27[38;5;203m/nowhere (missing)", 1, true), "user text does not colour")
+end)
+
+test("report: presentation follows the fact, not its prose", function()
+	local facts = {
+		{ label = "directory", value = "/home/u/missing/city", icon = "📂", severity = "normal" },
+		{ label = "directory", value = "the pane reported none", icon = "📂", severity = "trouble" },
+		{ label = "cache", value = "warm", icon = "📦", severity = "normal" },
+	}
+	local printed = report.terminal(facts)
+	falsy(
+		printed:find(ansi.color(203, "/home/u/missing/city"), 1, true),
+		"normal text with the word missing is not coloured"
+	)
+	contains(printed, ansi.color(203, "the pane reported none"), "the trouble fact is coloured")
+	contains(printed, "📂", "the icon comes from the fact")
+	contains(printed, "📦", "each fact keeps its own icon")
+	for _, fact in ipairs(some_facts()) do
+		truthy(fact.icon ~= nil and fact.icon ~= "", "every fact has an icon")
+		truthy(
+			fact.severity == "normal" or fact.severity == "trouble",
+			"every fact has a severity"
+		)
+	end
 end)
 
 test("report: a footer is included when asked for", function()

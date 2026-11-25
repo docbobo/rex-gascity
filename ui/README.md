@@ -296,10 +296,12 @@ the one that owns the panes - and says when they are the same. It also reports
 the pane's directory, the city it is in, the cities gc lists, and the recipient.
 
 From the palette or its key it opens a pane with the facts, an icon for each,
-labels in grey and the heading in cyan; anything in trouble, such as a missing
-settings file, stands out in red. The pane stays up so it can be read, and says
-how to close it. Run it with `rex do` - anything without a person at the app -
-and the same facts are printed plainly instead, with no pane.
+labels in grey and the heading in cyan. A fact that is in trouble, such as a
+missing settings file, stands out in red. The icon and the colour come from the
+fact itself, not from its text. A path with the word "missing" in it stays
+plain. The pane stays up so it can be read, and says how to close it. Run it
+with `rex do` - anything without a person at the app - and the same facts are
+printed plainly instead, with no pane.
 
 ## Layout
 
