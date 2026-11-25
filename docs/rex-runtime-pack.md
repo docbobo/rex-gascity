@@ -211,7 +211,9 @@ through `rex api call session.new_layer`, and it finds `rex` on `PATH` or in
 | 1 | A read failure, an empty update, or an unknown `--display`. |
 | 2 | A usage error, such as a missing `--session`. |
 | 127 | No `rex` on `PATH` and none in `$REX_BIN_DIR`. |
-| other | `rex` failed, and its status and stderr are passed through. It can overlap a status above. |
+
+If `rex` fails, the command returns the same nonzero exit status and passes
+through its stderr. The status can match a code in this table.
 
 ## Source checkout
 
