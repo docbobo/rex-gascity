@@ -21,6 +21,7 @@ local machine = require("gascity.machine")
 local probe = require("gascity.probe")
 local send = require("gascity.send")
 local report = require("gascity.report")
+local status = require("gascity.status")
 local actions = require("gascity.actions")
 
 local fixture = root .. "/tests/fixtures"
@@ -1183,6 +1184,127 @@ test("rigs open: a picker failure that is not a cancel is logged", function()
 	truthy(ok, "no error: " .. tostring(result))
 	equal(result, nil, "nothing opened")
 	truthy(stub.logged("warn", "gascity_rigs_open"), "the failure is logged")
+end)
+
+-- The status update -------------------------------------------------------
+
+-- Runs `command` in /bin/sh on this machine and returns what it printed.
+local function sh(command)
+	local pipe = assert(io.popen(command))
+	local out = pipe:read("*a")
+	pipe:close()
+	return out
+end
+
+local function write_file(path, content)
+	local file = assert(io.open(path, "w"))
+	file:write(content)
+	file:close()
+end
+
+test("status: both live spellings of the pack's source match", function()
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity//pack"), "//pack")
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity//pack/"), "trailing slash")
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity.git//pack"), ".git")
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity/tree/main/pack"), "/tree/main/pack")
+	truthy(status.is_this_pack("github.com/docbobo/rex-gascity/tree/v2026.11.06/pack"), "no scheme, a tag")
+	falsy(status.is_this_pack("https://github.com/gastownhall/gascity-packs/tree/main/gascity"), "another pack")
+	falsy(status.is_this_pack("https://github.com/docbobo/rex-gascity//ui"), "another directory")
+	falsy(status.is_this_pack("https://github.com/docbobo/rex-gascity-fork//pack"), "another repository")
+	falsy(status.is_this_pack(nil), "no source")
+end)
+
+test("status: the override wins, then the first matching key in sorted order", function()
+	local rex_pack = "https://github.com/docbobo/rex-gascity//pack"
+	local other = "https://github.com/gastownhall/gascity-packs/tree/main/gascity"
+	equal(status.binding({}, "mine"), "mine", "the override needs no import")
+	equal(status.binding({ { key = "rex", source = rex_pack } }, nil), "rex", "one match")
+	equal(
+		status.binding({
+			{ key = "zz", source = "https://github.com/docbobo/rex-gascity/tree/main/pack" },
+			{ key = "aa", source = rex_pack },
+		}, nil),
+		"aa",
+		"two matches"
+	)
+	equal(status.binding({ { key = "gc", source = other } }, nil), nil, "no match")
+	equal(status.binding({ { key = "rex", source = rex_pack } }, ""), "rex", "an empty override is no override")
+end)
+
+test("status: the mail names the template, the command, and its target", function()
+	local body = status.body("rex", "/tmp/rex.sock", "s1", "text")
+	contains(body, "gc 'rex' status-update --template", "the template command")
+	contains(
+		body,
+		"gc 'rex' status-update --server '/tmp/rex.sock' --session 's1' --display 'text'",
+		"the command"
+	)
+end)
+
+test("status: every value in the mail arrives as one word", function()
+	local body = status.body("my pack;x", "/tmp/a b.sock", "s 1'x", "te'xt")
+	local line = body:match("\n%s*(gc [^\n]*%-%-display [^\n]*)$")
+	truthy(line, "the command line")
+	local words = sh("set -- " .. line .. "; for w; do printf '[%s]\\n' \"$w\"; done")
+	equal(
+		words,
+		"[gc]\n[my pack;x]\n[status-update]\n[--server]\n[/tmp/a b.sock]\n[--session]\n[s 1'x]\n[--display]\n[te'xt]\n",
+		"the words"
+	)
+end)
+
+test("status: the answer is read across wrapped rows", function()
+	local found = status.parse(table.concat({
+		"@@city|/cities/alp",
+		"ha",
+		"@@server|unix:///Users/me/Library/Application%20Sup",
+		"port/rex/server.sock",
+		"@@config|0",
+		"@@import|rex|https://github.com/docbobo/rex-ga",
+		"scity//pack",
+		"@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity",
+	}, "\n"))
+	equal(found.city, "/cities/alpha", "the city")
+	equal(found.server, "unix:///Users/me/Library/Application%20Support/rex/server.sock", "the server")
+	equal(found.config_status, 0, "the lookup status")
+	equal(#found.imports, 2, "two imports")
+	equal(found.imports[1].key, "rex", "the first key")
+	equal(found.imports[1].source, "https://github.com/docbobo/rex-gascity//pack", "its source")
+	falsy(found.gc_missing, "gc was there")
+end)
+
+test("status: an empty server line is no server", function()
+	local found = status.parse("@@city|-\n@@server|\n@@config|0")
+	equal(found.city, nil, "no city")
+	equal(found.server, nil, "no server")
+end)
+
+test("status: a wrapped import source may hold the row separator", function()
+	local found = status.parse(table.concat({
+		"@@config|0",
+		"@@import|rex|https://github.com/docbobo/rex-gascity/tree/release%40%40sta",
+		"ble/pack",
+	}, "\n"))
+	equal(#found.imports, 1, "one import")
+	equal(
+		found.imports[1].source,
+		"https://github.com/docbobo/rex-gascity/tree/release@@stable/pack",
+		"the @ signs come back"
+	)
+	equal(status.binding(found.imports, nil), "rex", "the binding is found")
+end)
+
+test("status: a percent sign in a value is not read as an escape", function()
+	local found = status.parse("@@server|unix:///tmp/a%2540.sock")
+	equal(found.server, "unix:///tmp/a%40.sock", "the percent comes back")
+end)
+
+test("status: a value may hold the probe's end marker", function()
+	local found = status.parse(
+		"@@server|unix:///tmp/a%3C%3Cgascity-end.sock\n@@import|rex|https://github.com/docbobo/rex-gascity//pack"
+	)
+	equal(found.server, "unix:///tmp/a<<gascity-end.sock", "the < signs come back")
+	equal(status.binding(found.imports, nil), "rex", "the next row is read")
 end)
 
 -- The Gas City menu ------------------------------------------------------
