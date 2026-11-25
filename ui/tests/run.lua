@@ -1994,18 +1994,29 @@ end)
 
 -- The report's look ------------------------------------------------------
 
-local function some_facts()
+local function some_facts_with(pane_cwd, answer)
 	local settings = config.resolve(nil)
 	settings.city = nil
-	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "city|-", "rigs|{}" })
+	stub.pane_cwd = pane_cwd
+	stub.format = probe_answer(answer)
 	return report.facts(app_with({}), "block:1", { origin = "palette" })
+end
+
+local function some_facts()
+	return some_facts_with("/work", { "city|-", "rigs|{}" })
 end
 
 test("report: the terminal form has an icon for every fact", function()
 	local printed = report.terminal(some_facts())
 	for _, icon in ipairs({ "💻", "📁", "📄", "📺", "🔗", "🔧", "📨" }) do
 		contains(printed, icon, "an icon")
+	end
+end)
+
+test("report: every fact carries an icon and a severity", function()
+	for _, fact in ipairs(some_facts()) do
+		truthy(fact.icon ~= nil, "icon for " .. fact.label)
+		truthy(fact.severity ~= nil, "severity for " .. fact.label)
 	end
 end)
 
@@ -2037,12 +2048,37 @@ end)
 
 test("report: the terminal form can warn in colour", function()
 	local facts = {
-		{ label = "settings", value = "/nowhere (missing)", icon = "document" },
-		{ label = "gc", value = "found on PATH", icon = "gear" },
+		{ label = "settings", value = "/nowhere (missing)", icon = "📄", severity = "trouble" },
+		{ label = "gc", value = "found on PATH", icon = "🔧", severity = "normal" },
 	}
 	local printed = report.terminal(facts)
 	contains(printed, "\27[38;5;203m/nowhere (missing)", "the trouble is coloured")
 	falsy(printed:find("\27[38;5;203mfound on PATH", 1, true), "the rest is not")
+end)
+
+test("report: severity is declared, not sniffed from the value", function()
+	local function directory_of(facts)
+		for _, fact in ipairs(facts) do
+			if fact.label == "directory" then
+				return fact
+			end
+		end
+	end
+
+	-- REQ-004: a path that contains "missing" is not trouble.
+	local ok_facts = some_facts_with("/work/missing-dir", { "host|test-machine" })
+	local directory = directory_of(ok_facts)
+	equal(directory.severity, "normal", "user data does not set the severity")
+	local printed = report.terminal(ok_facts)
+	contains(printed, "missing-dir", "the path renders")
+	falsy(printed:find("\27[38;5;203m", 1, true), "nothing is in trouble colour")
+
+	-- REQ-005: a real problem is trouble.
+	local none = directory_of(some_facts_with(nil, { "host|test-machine" }))
+	equal(none.value, "the pane reported none", "the real problem")
+	equal(none.severity, "trouble", "is trouble")
+	local none_printed = report.terminal(some_facts_with(nil, { "host|test-machine" }))
+	contains(none_printed, "\27[38;5;203mthe pane reported none", "rendered in red")
 end)
 
 test("report: a footer is included when asked for", function()

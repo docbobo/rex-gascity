@@ -33,37 +33,48 @@ local function hostname()
 	return "unknown"
 end
 
--- The lines of the report. Each is `{ label, value, icon }`. `ctx` is the
--- action's context, when there is one.
+-- The lines of the report. Each is `{ label, value, icon, severity }`.
+-- `severity` is "trouble" for something wrong, "normal" otherwise. `ctx` is
+-- the action's context, when there is one.
 function M.facts(app, block_id, ctx)
 	local settings = app.config
 	local facts = {}
-	local function add(label, value, icon)
-		facts[#facts + 1] = { label = label, value = value, icon = icon }
+	local function add(label, value, icon, severity)
+		facts[#facts + 1] = {
+			label = label,
+			value = value,
+			icon = icon,
+			severity = severity or "normal",
+		}
 	end
 
 	-- Two machines are in play: the one running this action, with its settings
 	-- and checkout, and the one that owns the pane. Naming both is the point of
 	-- this report - one name on its own reads like the wrong machine.
 	local this_machine = hostname()
-	add("runs on", this_machine .. "  (this action)", "laptop")
+	add("runs on", this_machine .. "  (this action)", "💻", "normal")
 
 	-- The machine with the panes answers for itself, and for its cities.
 	local cwd = app.pane.cwd(block_id)
 	local found, find_err = app.machine.ask(settings, ctx or {}, { cwd = cwd })
 	if found == nil then
-		add("panes", "the machine did not answer: " .. tostring(find_err), "screens")
+		add("panes", "the machine did not answer: " .. tostring(find_err), "📺", "trouble")
 	elseif found.host ~= nil and found.host == this_machine then
-		add("panes", found.host .. "  (the same machine)", "screens")
+		add("panes", found.host .. "  (the same machine)", "📺", "normal")
 	else
-		add("panes", (found.host or "unnamed") .. "  (the session's machine)", "screens")
+		add("panes", (found.host or "unnamed") .. "  (the session's machine)", "📺", "normal")
 	end
 
-	add("checkout", app.root, "folder")
-	add("settings", settings.file .. (readable(settings.file) and "" or "  (missing)"), "document")
+	add("checkout", app.root, "📁", "normal")
+	add(
+		"settings",
+		settings.file .. (readable(settings.file) and "" or "  (missing)"),
+		"📄",
+		readable(settings.file) and "normal" or "trouble"
+	)
 
 	if cwd == nil then
-		add("directory", "the pane reported none", "terminal")
+		add("directory", "the pane reported none", "📂", "trouble")
 	else
 		-- Base this on the machine that owns the pane, not on whether the local
 		-- process can read the path: a remote pane can name a path that happens
@@ -76,32 +87,35 @@ function M.facts(app, block_id, ctx)
 		else
 			where = "on another machine"
 		end
-		add("directory", cwd .. "  (" .. where .. ")", "terminal")
+		add("directory", cwd .. "  (" .. where .. ")", "📂", "normal")
 	end
 
 	if found == nil then
-		add("cities", "not asked: the machine did not answer", "globe")
+		add("cities", "not asked: the machine did not answer", "🌇", "trouble")
 	else
-		add("city", found.city or "none above the pane", "star")
+		add("city", found.city or "none above the pane", "📍", "normal")
 		add(
 			"cities",
 			#found.cities > 0 and table.concat(found.cities, ", ") or "none listed by gc",
-			"globe"
+			"🌇",
+			"normal"
 		)
 	end
 
-	add("mail runs", "in a pane of this session, on the machine that owns it", "link")
-	add("gc", settings.gc_bin or "found on PATH, then the usual Nix and Go places", "gear")
+	add("mail runs", "in a pane of this session, on the machine that owns it", "🔗", "normal")
+	add("gc", settings.gc_bin or "found on PATH, then the usual Nix and Go places", "🔧", "normal")
 	add(
 		"sends to",
 		settings.recipient .. (settings.notify and "  (with --notify)" or "  (without --notify)"),
-		"person"
+		"📨",
+		"normal"
 	)
 	if ctx ~= nil then
 		add(
 			"ran from",
 			(ctx.origin or "unknown") .. (ctx.client_id ~= nil and ", as a client" or ""),
-			"clock"
+			"🕒",
+			"normal"
 		)
 	end
 
@@ -120,28 +134,6 @@ function M.text(facts)
 		lines[#lines + 1] = fact.label .. string.rep(" ", width - #fact.label + 2) .. fact.value
 	end
 	return table.concat(lines, "\n")
-end
-
--- The icons, two cells wide each, so the columns line up under them.
-local ICONS = {
-	["runs on"] = "💻",
-	panes = "📺",
-	checkout = "📁",
-	settings = "📄",
-	directory = "📂",
-	city = "📍",
-	cities = "🌇",
-	["mail runs"] = "🔗",
-	gc = "🔧",
-	["sends to"] = "📨",
-	["ran from"] = "🕒",
-}
-
--- A line that says something is wrong is worth seeing first.
-local function trouble(value)
-	return value:find("missing", 1, true) ~= nil
-		or value:find("did not answer", 1, true) ~= nil
-		or value:find("cannot", 1, true) ~= nil
 end
 
 -- The facts for a terminal: icons, colour, and two aligned columns.
@@ -164,9 +156,9 @@ function M.terminal(facts, opts)
 	}
 
 	for _, fact in ipairs(facts) do
-		local icon = ICONS[fact.label] or "•"
+		local icon = fact.icon or "•"
 		local label = fact.label .. string.rep(" ", width - #fact.label)
-		local value = trouble(fact.value) and ansi.color(203, fact.value) or fact.value
+		local value = fact.severity == "trouble" and ansi.color(203, fact.value) or fact.value
 		lines[#lines + 1] = "  " .. icon .. "  " .. ansi.color(109, label) .. "  " .. value
 	end
 
