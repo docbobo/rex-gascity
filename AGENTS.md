@@ -193,8 +193,8 @@ and report it blocked.
 
 The `issue-build` order picks the formula per tracked issue by GitHub label:
 
-- `gc/superpowers` present -> `superpowers-build`.
-- label absent -> `build-basic`. This is the default.
+- `complexity/high` -> `superpowers-build`.
+- `complexity/low`, `complexity/medium`, or no complexity label -> `build-basic`. This is the default.
 
 The design gate applies only to `superpowers-build`. It reads the issue's
 `gc/review-brainstorm` label:
