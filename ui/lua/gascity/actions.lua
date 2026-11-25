@@ -5,6 +5,22 @@ local text = require("gascity.text")
 
 local M = {}
 
+-- The prompt API landed in control API revision 17. An older server has no
+-- rex.ui, or a rex.ui without the function. That is "unsupported", not a crash
+-- and not an error: the caller returns without sending anything.
+local function prompt(kind, opts)
+	local ui = rex.ui
+	local fn = type(ui) == "table" and ui[kind] or nil
+	if type(fn) ~= "function" then
+		rex.log(
+			"warn",
+			"rex.ui." .. kind .. " needs control API revision 17. This server is older"
+		)
+		return nil, "unsupported"
+	end
+	return fn(opts)
+end
+
 -- Asks which city to send to when the pane is in none of them and the machine
 -- has more than one. Returns the chosen path, or nil when nothing was chosen.
 local function choose(cities)
@@ -22,14 +38,14 @@ local function choose(cities)
 		}
 	end
 
-	local picked, why = rex.ui.pick({
+	local picked, why = prompt("pick", {
 		title = "Which city?",
 		placeholder = "Filter cities",
 		confirm = "Send",
 		items = items,
 	})
 	if picked == nil then
-		if why ~= "cancelled" then
+		if why ~= "cancelled" and why ~= "unsupported" then
 			rex.log("warn", "gascity_mail_mayor: " .. tostring(why or "no answer"))
 		end
 		return nil
@@ -76,7 +92,7 @@ local function ask(rigs, kind)
 		}
 	end
 
-	local names, why = rex.ui.pick({
+	local names, why = prompt("pick", {
 		title = suspending and "Suspend which rigs?" or "Resume which rigs?",
 		placeholder = "Filter rigs",
 		multiple = true,
@@ -84,7 +100,7 @@ local function ask(rigs, kind)
 		items = items,
 	})
 	if names == nil then
-		if why ~= "cancelled" then
+		if why ~= "cancelled" and why ~= "unsupported" then
 			rex.log("warn", "gascity_rigs_" .. kind .. ": " .. tostring(why or "no answer"))
 		end
 		return nil
@@ -105,13 +121,13 @@ local function commands(app, settings)
 	local function mail(ctx, args)
 		local body = args.body
 		if body == nil then
-			local answer, why = rex.ui.input({
+			local answer, why = prompt("input", {
 				title = "Message the mayor",
 				placeholder = "What should the mayor know?",
 				confirm = "Send to " .. settings.recipient,
 			})
 			if answer == nil then
-				if why ~= "cancelled" then
+				if why ~= "cancelled" and why ~= "unsupported" then
 					rex.log("warn", "gascity_mail_mayor: " .. tostring(why or "no answer"))
 				end
 				return nil
@@ -328,14 +344,14 @@ function M.register(app)
 				}
 			end
 
-			local picked, why = rex.ui.pick({
+			local picked, why = prompt("pick", {
 				title = "Gas City",
 				placeholder = "Filter commands",
 				confirm = "Run",
 				items = items,
 			})
 			if picked == nil then
-				if why ~= "cancelled" then
+				if why ~= "cancelled" and why ~= "unsupported" then
 					rex.log("warn", "gascity_menu: " .. tostring(why or "no answer"))
 				end
 				return nil
