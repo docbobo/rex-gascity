@@ -188,22 +188,3 @@ opens the PR before closing the bead. Record the PR URL in the bead.
 
 If the push or PR fails, do not close the bead. Record the failure in the bead
 and report it blocked.
-
-### Superpowers gate is label-driven
-
-The design gate is chosen per tracked issue by a GitHub label. The
-`issue-build` order launches `superpowers-build` and reads the issue's
-`gc/review-brainstorm` label:
-
-- label present -> `--var brainstorming_approval_mode=interactive` and
-  `--var interaction_mode=interactive`. Boris reviews the design and the
-  written spec before the build continues.
-- label absent -> `--var brainstorming_approval_mode=autonomous` and
-  `--var interaction_mode=autonomous`. The design auto-approves and the rest
-  of the build runs unattended.
-
-This rule governs launches that carry a tracked GitHub issue. Any other
-`superpowers-build` launch (a hand-run, or one with no issue) keeps the old
-rule: pass `--var brainstorming_approval_mode=interactive` and leave
-`interaction_mode` at `interactive`. If a run cannot reach Boris, stop at the
-gate and report blocked under "Asking for a decision" above.
