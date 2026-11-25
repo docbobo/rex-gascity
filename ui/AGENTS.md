@@ -25,5 +25,6 @@
   fix calls `ui/install.sh`.
 - The installer decides with `rex config check --json`, never with the
   server's action list. Keep it that way: the list is stale until
-  `rex config reload`.
+  `rex config reload`. The list may only decide whether to try that reload
+  once after the block is appended. A failed reload never changes the verdict.
 - `ui/` carries no Go and no pack files. `pack/` carries no Lua.

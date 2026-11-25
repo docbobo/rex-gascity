@@ -283,7 +283,8 @@ installed_root=$cache_root/$version/ui
 #
 # One probe, `rex config check --json`: it loads the config file in the local
 # rex binary and reports each action's `source`. The server's action list is
-# deliberately not the probe — it goes stale until `rex config reload`.
+# deliberately not the probe — it goes stale until `rex config reload`. At the
+# end it decides only whether to try that reload once.
 # ---------------------------------------------------------------------------
 
 probe_json=
@@ -703,9 +704,16 @@ if ! check_out=$(rex config check "$config_file" 2>&1); then
 fi
 
 note "added the rex-gascity-ui block to $config_file (backup: $backup)"
+# The server's action list is not the install verdict: it is stale until
+# `rex config reload`. It decides one thing only, whether to try that reload
+# once. A failed reload adds no non-zero exit and no rollback; the manual note
+# is the fallback.
 if rex actions --json >/dev/null 2>&1; then
   if rex actions --json 2>/dev/null | grep -q '"gascity_'; then
     note "a running server already sees the extension"
+  elif rex config reload >/dev/null 2>&1 && \
+       rex actions --json 2>/dev/null | grep -q '"gascity_'; then
+    note "the running server now sees the extension"
   else
     note "run 'rex config reload' so a running server picks the extension up"
   fi
