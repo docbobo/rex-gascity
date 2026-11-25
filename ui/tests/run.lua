@@ -818,6 +818,11 @@ test("machine: asks for its name, the pane's city, and gc's list", function()
 	contains(script, "cities", "asks gc for its list")
 end)
 
+test("machine: a city path wrapped across rows is recovered", function()
+	local answer = machine.parse("city|/srv/very-long/\nGas City\ncity|/other")
+	same(answer.cities, { "/srv/very-long/Gas City", "/other" }, "the wrapped path and the next city")
+end)
+
 test("machine: reads a city path with a space in it", function()
 	local answer = machine.parse("city|/srv/Gas City")
 	equal(answer.cities[1], "/srv/Gas City", "the space is kept")
