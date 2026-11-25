@@ -35,15 +35,20 @@ display=text
 body_file=
 template=0
 
+# has_value: the next word exists and does not look like another option.
+has_value() {
+	[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ]
+}
+
 while [ "$#" -gt 0 ]; do
 	case $1 in
-		--session) [ "$#" -ge 2 ] || usage "--session needs a value"; session=$2; shift 2 ;;
+		--session) has_value "$@" || usage "--session needs a value"; session=$2; shift 2 ;;
 		--session=*) session=${1#*=}; shift ;;
-		--server) [ "$#" -ge 2 ] || usage "--server needs a value"; server=$2; shift 2 ;;
+		--server) has_value "$@" || usage "--server needs a value"; server=$2; shift 2 ;;
 		--server=*) server=${1#*=}; shift ;;
-		--display) [ "$#" -ge 2 ] || usage "--display needs a value"; display=$2; shift 2 ;;
+		--display) has_value "$@" || usage "--display needs a value"; display=$2; shift 2 ;;
 		--display=*) display=${1#*=}; shift ;;
-		--body-file) [ "$#" -ge 2 ] || usage "--body-file needs a value"; body_file=$2; shift 2 ;;
+		--body-file) has_value "$@" || usage "--body-file needs a value"; body_file=$2; shift 2 ;;
 		--body-file=*) body_file=${1#*=}; shift ;;
 		--template) template=1; shift ;;
 		-h | --help) cat "$dir/help.md"; exit 0 ;;
@@ -97,9 +102,10 @@ esac
 # --- the request ---------------------------------------------------------------
 
 # A JSON string: \ " newline tab and ESC escaped, other C0 bytes dropped,
-# UTF-8 passed through byte for byte.
+# UTF-8 passed through byte for byte. The added newline turns a value's own
+# final newline into an empty awk record, which keeps it as a JSON \n.
 json_string() {
-	printf '%s' "$1" | LC_ALL=C awk '
+	printf '%s\n' "$1" | LC_ALL=C awk '
 	BEGIN { ORS = ""; printf "\"" }
 	{
 		if (NR > 1) printf "\\n"

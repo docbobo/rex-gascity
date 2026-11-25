@@ -39,7 +39,7 @@ log=$work/rex
 run() {
   rm -f "$log.argv" "$log.stdin"
   code=0
-  PATH="$tools:/usr/bin:/bin" REX_FAKE_LOG=$log REX_BIN_DIR= \
+  PATH="$tools:/usr/bin:/bin" REX_FAKE_LOG=$log REX_BIN_DIR= GC_PACK_DIR= \
     sh "$cmd" "$@" > "$work/out" 2> "$work/err" || code=$?
 }
 
@@ -59,14 +59,21 @@ no_rex() { # no_rex <what>
 body=$work/body.md
 printf '%s\n' '# Status update — alpha' '## Done' '- shipped **it**' '## Blocked' '- waiting on `ci`' > "$body"
 
-# --template prints the template, from next to the script and from GC_PACK_DIR.
+# --template prints the template next to the script, or from GC_PACK_DIR.
 run --template < /dev/null
 code_is 0 "--template"
 has "$work/out" "## Needs you" "--template"
+
+# A GC_PACK_DIR template wins over the sibling, so only content that the pack
+# dir has proves the lookup. Without GC_PACK_DIR, the sibling template is used.
+altpack=$work/altpack
+mkdir -p "$altpack/commands/status-update"
+printf '%s\n' '# Template from the pack dir' > "$altpack/commands/status-update/template.md"
 code=0
-GC_PACK_DIR=$repo/pack sh "$cmd" --template > "$work/out" 2> "$work/err" < /dev/null || code=$?
+GC_PACK_DIR=$altpack sh "$cmd" --template > "$work/out" 2> "$work/err" < /dev/null || code=$?
 code_is 0 "--template with GC_PACK_DIR"
-has "$work/out" "## Summary" "--template with GC_PACK_DIR"
+has "$work/out" "# Template from the pack dir" "--template with GC_PACK_DIR"
+lacks "$work/out" "## Needs you" "--template with GC_PACK_DIR"
 
 # Usage errors exit 2 before anything else.
 run < "$body"
@@ -78,6 +85,18 @@ run --session ID --bogus < "$body"
 code_is 2 "unknown flag"
 has "$work/err" "unknown argument: --bogus" "unknown flag"
 no_rex "unknown flag"
+
+# An option is not a value: a missing value exits 2 without calling rex.
+# A literal value that starts with - stays available through --name=value.
+for opt in --session --server --display --body-file; do
+  run "$opt" --bogus < "$body"
+  code_is 2 "missing value for $opt"
+  has "$work/err" "$opt needs a value" "missing value for $opt"
+  no_rex "missing value for $opt"
+done
+run --session=-ID < "$body"
+code_is 0 "--session= with a - value"
+has "$log.stdin" '"session_id":"-ID"' "--session= with a - value"
 
 # An empty update and an unknown display exit 1, and rex is never called.
 printf '  \n\n' > "$work/empty"
@@ -116,6 +135,14 @@ run --session ID < "$work/quotes"
 code_is 0 "escapes"
 has "$req" 'say \"hi\" \\ it'"'"'\\'"'"''"'"'s' "escapes"
 has "$req" 'a\ttab' "tab"
+
+# A value that ends with a newline keeps it as a JSON \n.
+nl='
+'
+run --session "ID${nl}" < "$body"
+code_is 0 "trailing newline"
+has "$log.stdin" '"session_id":"ID\n"' "trailing newline"
+lacks "$log.stdin" '"session_id":"ID"' "trailing newline"
 
 # No --server, no -S: rex uses its own default server.
 run --session ID < "$body"
