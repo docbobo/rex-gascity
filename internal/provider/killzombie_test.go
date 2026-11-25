@@ -335,10 +335,12 @@ func TestKillObjectZombieRereadsForeground(t *testing.T) {
 }
 
 // TestKillObjectZombieExitedRereadKeepsForeground guards the fresh read's
-// foreground on an exited reply. boxState reads the box running; the later
-// read reports both an exit status and foreground 100. The walk still runs
-// from 100, finds no agent and kills, as before the pane-liveness module. A
-// read that dropped the foreground on an exited reply would answer changed.
+// foreground on an exited reply. boxState reads the box running under
+// foreground 200, which the host snapshot does not list; the later read
+// reports both an exit status and foreground 100. The walk runs from 100,
+// finds no agent and kills, as before the pane-liveness module. A read that
+// reused boxState's root 200 would answer changed, and one that dropped the
+// foreground on an exited reply would answer changed too.
 func TestKillObjectZombieExitedRereadKeepsForeground(t *testing.T) {
 	ctx := context.Background()
 	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
@@ -350,7 +352,7 @@ func TestKillObjectZombieExitedRereadKeepsForeground(t *testing.T) {
 	}
 	block := blockOf(t, p, name)
 	fake.ProcessFunc = sequencedProcess(
-		rex.ProcessInfo{Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+		rex.ProcessInfo{Foreground: &rex.Process{PID: 200, Name: "sleep"}},
 		rex.ProcessInfo{LastExit: &rex.ExitStatus{}, Foreground: &rex.Process{PID: 100, Name: "sleep"}},
 	)
 
