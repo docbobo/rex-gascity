@@ -25,6 +25,29 @@ local actions = require("gascity.actions")
 
 local fixture = root .. "/tests/fixtures"
 
+-- The closed icon set Rex accepts. A name outside it is dropped.
+local REX_ICONS = {}
+for _, name in ipairs({
+	"document",
+	"folder",
+	"branch",
+	"terminal",
+	"code",
+	"server",
+	"database",
+	"package",
+	"globe",
+	"link",
+	"person",
+	"tag",
+	"clock",
+	"star",
+	"gear",
+	"plus",
+}) do
+	REX_ICONS[name] = true
+end
+
 -- The stub that stands in for Rex -----------------------------------------
 
 local stub = {
@@ -833,6 +856,11 @@ test("rigs: suspending offers every rig, by name and state", function()
 	equal(stub.picks.items[1].detail, "running", "its state")
 	equal(stub.picks.items[2].detail, "suspended, HQ", "and the second's")
 
+	for _, item in ipairs(stub.picks.items) do
+		truthy(REX_ICONS[item.icon], "a known Rex icon: " .. tostring(item.icon))
+		equal(item.icon, "clock", "the suspend icon")
+	end
+
 	equal(result.city, "/cities/one", "the city it listed")
 	equal(result.output, "suspended: alpha, beta", "what gc printed")
 	equal(#stub.layers, 0, "no pane on the screen")
@@ -860,6 +888,10 @@ test("rigs: resuming says resume", function()
 	local ok = run_rig("resume")
 	truthy(ok, "no error")
 	equal(stub.picks.title, "Resume which rigs?", "the question")
+	for _, item in ipairs(stub.picks.items) do
+		truthy(REX_ICONS[item.icon], "a known Rex icon: " .. tostring(item.icon))
+		equal(item.icon, "plus", "the resume icon")
+	end
 	contains(stub.blocks[2].options.command[3], "'rig' 'resume' 'beta'", "resume, not suspend")
 end)
 
@@ -996,6 +1028,12 @@ test("menu: it lists the Gas City commands and nothing else", function()
 	equal(stub.picks.items[3].title, "Resume a Rig…", "the third")
 	equal(stub.picks.items[4].title, "Where This Runs…", "the fourth")
 	truthy(stub.picks.items[1].subtitle ~= nil, "each says what it does")
+	equal(stub.picks.items[2].icon, "clock", "suspend uses the clock")
+	equal(stub.picks.items[3].icon, "plus", "resume uses the plus")
+	truthy(stub.picks.items[2].icon ~= stub.picks.items[3].icon, "and they differ")
+	for _, item in ipairs(stub.picks.items) do
+		truthy(REX_ICONS[item.icon], "a known Rex icon: " .. tostring(item.icon))
+	end
 end)
 
 test("menu: choosing a command runs it, questions and all", function()
