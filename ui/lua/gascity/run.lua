@@ -95,20 +95,26 @@ function M.pane(ctx, opts)
 	return result.layer_id
 end
 
--- Opens an interactive shell block, a split in the session `ctx` names.
--- `opts.cwd` is the directory it starts in. Returns the block id, or nil
--- and an error.
+-- Opens an interactive shell block in a split beside the block `ctx` names,
+-- so it lands in a visible window. `opts.cwd` is the directory it starts in.
+-- Returns the block id, or nil and an error.
 function M.shell(ctx, opts)
-	local block, err = rex.session.new_block({
+	local split, err = rex.session.new_split({
 		session_id = ctx.session_id,
-		flavor = TERMINAL,
-		label = opts.label or "gascity",
-		options = { cwd = opts.cwd },
+		anchor_id = ctx.block_id,
+		direction = "horizontal",
+		side = "after",
+		focus = true,
+		layout = rex.layout.block({
+			flavor = TERMINAL,
+			label = opts.label or "gascity",
+			options = { cwd = opts.cwd },
+		}),
 	})
-	if block == nil then
+	if split == nil then
 		return nil, tostring(err)
 	end
-	return block.block_id
+	return split.block_ids and split.block_ids[1]
 end
 
 -- Shows `opts.text` in a floating pane that stays up until it is closed.

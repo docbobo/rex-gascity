@@ -267,6 +267,9 @@ local function commands(app, settings)
 		if type(name) == "string" and text.trim(name) ~= "" then
 			name = text.trim(name)
 		else
+			if #items == 0 then
+				error("no rig listed in " .. (found.city or "the city of this pane") .. " has a path", 0)
+			end
 			local picked, why = prompt("pick", {
 				title = "Open which rig?",
 				placeholder = "Filter rigs",

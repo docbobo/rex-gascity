@@ -64,10 +64,12 @@ local stub = {
 	layer_error = nil,
 	format = nil,
 	block_error = nil,
+	split_error = nil,
 	json_text = nil,
 	json_value = nil,
 	json_error = nil,
 	blocks = {},
+	splits = {},
 	closed = {},
 	picks = nil,
 	pick_count = 0,
@@ -89,12 +91,14 @@ function stub.reset()
 	stub.layer_error = nil
 	stub.format = nil
 	stub.blocks = {}
+	stub.splits = {}
 	stub.closed = {}
 	stub.picks = nil
 	stub.pick_count = 0
 	stub.picked = nil
 	stub.pick_why = nil
 	stub.block_error = nil
+	stub.split_error = nil
 	stub.json_text = nil
 	stub.json_value = nil
 	stub.json_error = nil
@@ -174,6 +178,16 @@ rex = {
 			end
 			stub.blocks[#stub.blocks + 1] = args
 			return { block_id = "block:probe" }
+		end,
+		new_split = function(args)
+			if stub.split_error ~= nil then
+				return nil, stub.split_error
+			end
+			if args.anchor_id == nil and args.window_id == nil then
+				return nil, "session.new_split needs an anchor_id or a window_id"
+			end
+			stub.splits[#stub.splits + 1] = args
+			return { window_id = "window:1", block_ids = { "block:probe" } }
 		end,
 		new_layer = function(args)
 			if stub.layer_error ~= nil then
@@ -402,13 +416,17 @@ end)
 
 -- The shell helper -------------------------------------------------------
 
-test("The shell helper: an interactive shell in the chosen directory", function()
-	stub.pane_cwd = "/work/alpha"
-	local id = run.shell({ session_id = "session:1" }, { cwd = "/work/alpha", label = "gascity:alpha" })
+test("The shell helper: a visible split in the chosen directory", function()
+	local id = run.shell({ session_id = "session:1", block_id = "block:1" }, { cwd = "/work/alpha", label = "gascity:alpha" })
 	equal(id, "block:probe", "returns the block id")
 
-	local block = stub.blocks[1]
-	equal(block.session_id, "session:1", "the session it was asked for")
+	local split = stub.splits[1]
+	equal(split.session_id, "session:1", "the session it was asked for")
+	equal(split.anchor_id, "block:1", "split beside the block in ctx")
+	equal(split.direction, "horizontal", "side by side")
+	equal(split.side, "after", "to the right")
+	equal(split.focus, true, "the window is made active")
+	local block = split.layout.block
 	equal(block.flavor, "com.superlogical.terminal.shell", "a terminal")
 	equal(block.label, "gascity:alpha", "the label")
 	equal(block.options.cwd, "/work/alpha", "the directory, unchanged")
@@ -416,8 +434,8 @@ test("The shell helper: an interactive shell in the chosen directory", function(
 end)
 
 test("The shell helper: an error from the session is returned", function()
-	stub.block_error = "boom"
-	local id, err = run.shell({ session_id = "session:1" }, { cwd = "/work/alpha" })
+	stub.split_error = "boom"
+	local id, err = run.shell({ session_id = "session:1", block_id = "block:1" }, { cwd = "/work/alpha" })
 	equal(id, nil, "no block")
 	equal(err, "boom", "the error, as a string")
 end)
@@ -1057,8 +1075,9 @@ test("rigs open: the picker lists the rigs and the pane gets the path", function
 	equal(stub.picks.confirm, "Open", "the label")
 	equal(stub.picks.items[1].subtitle, "/work/alpha", "the rig's path")
 
-	local block = stub.blocks[#stub.blocks]
-	equal(block.session_id, "session:1", "the pane's session")
+	local split = stub.splits[#stub.splits]
+	equal(split.session_id, "session:1", "the pane's session")
+	local block = split.layout.block
 	equal(block.flavor, "com.superlogical.terminal.shell", "a terminal")
 	equal(block.label, "gascity:alpha", "the label")
 	equal(block.options.cwd, "/work/alpha", "the directory")
@@ -1108,6 +1127,15 @@ test("rigs open: a rig with no path is not offered", function()
 	contains(tostring(result), "has no path", "the reason")
 end)
 
+test("rigs open: no rig has a path, so no picker", function()
+	rigs_fixture({ { name = "alpha" }, { name = "beta" } })
+	local ok, result = run_open()
+	falsy(ok, "reports an error")
+	contains(tostring(result), "has a path", "the reason")
+	equal(stub.pick_count, 0, "no question")
+	equal(#stub.splits, 0, "nothing opened")
+end)
+
 test("rigs open: cancel is quiet", function()
 	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
 	stub.picked = nil
@@ -1123,7 +1151,7 @@ test("rigs open: a tilde path is passed through", function()
 	stub.picked = "alpha"
 	local ok = run_open()
 	truthy(ok, "no error")
-	equal(stub.blocks[#stub.blocks].options.cwd, "~/src/alpha", "byte for byte")
+	equal(stub.splits[#stub.splits].layout.block.options.cwd, "~/src/alpha", "byte for byte")
 end)
 
 test("rigs open: a picker failure that is not a cancel is logged", function()
