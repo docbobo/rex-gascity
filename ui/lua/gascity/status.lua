@@ -288,14 +288,15 @@ end
 
 -- Whether an import `Source` is this pack. Both live spellings count:
 -- github.com/docbobo/rex-gascity//pack and .../tree/<ref>/pack, with or
--- without a scheme, a .git on the repository, or a trailing slash.
+-- without a scheme, a .git on the repository, repeated slashes, or a
+-- trailing slash.
 function M.is_this_pack(source)
 	if type(source) ~= "string" then
 		return false
 	end
 	local s = source:gsub("^%a[%w+.%-]*://", ""):gsub("/+$", "")
-	s = s:gsub("^(github%.com/docbobo/rex%-gascity)%.git", "%1")
-	if s == "github.com/docbobo/rex-gascity//pack" then
+	s = s:gsub("^(github%.com/docbobo/rex%-gascity)%.git", "%1"):gsub("/+", "/")
+	if s == "github.com/docbobo/rex-gascity/pack" then
 		return true
 	end
 	return s:match("^github%.com/docbobo/rex%-gascity/tree/[^/]+/pack$") ~= nil
