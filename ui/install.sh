@@ -168,7 +168,10 @@ remove_block() { # remove_block <file>; 0 removed, 1 error, 2 no managed block
     warn "$_file has the start of the rex-gascity-ui block but not its end; refusing to rewrite it"
     return 1
   fi
-  _tmp=$_file.gascity-ui.$$
+  _tmp=$(mktemp "$_file.gascity-ui.XXXXXX") || {
+    warn "cannot create a temporary file beside $_file"
+    return 1
+  }
   # Seed the rewrite with the original's mode and owner. A fresh file would
   # take the umask's mode and the current user's ownership, which can make a
   # 0600 config readable by others.
@@ -576,7 +579,7 @@ fi
 # ---------------------------------------------------------------------------
 
 mkdir -p "$(dirname "$stub")" || die "cannot create $(dirname "$stub")"
-stub_staging=$stub.$$
+stub_staging=$(mktemp "$stub.XXXXXX") || die "cannot create a temporary file beside $stub"
 {
   printf '%s\n' "-- rex-gascity-ui loader. Written by rex-gascity ui/install.sh."
   printf '%s\n' "-- Installed root: $installed_root. Version: $version. Delete this file to remove."
