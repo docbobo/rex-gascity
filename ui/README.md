@@ -32,7 +32,7 @@ installs, so the first download is only the way to get the script.
 
 ```sh
 mkdir -p ~/gascity-ui-install && cd ~/gascity-ui-install
-curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.06/gascity-ui.tar.gz
+curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.07/gascity-ui.tar.gz
 tar -xzf gascity-ui.tar.gz
 sh ui/install.sh
 ```
@@ -46,7 +46,7 @@ Import the pack, then let the doctor fix install the UI. The fix runs
 `ui/install.sh` for you. See [`docs/rex-gascity-ui.md`](../docs/rex-gascity-ui.md).
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.07
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 ```
@@ -296,10 +296,12 @@ the one that owns the panes - and says when they are the same. It also reports
 the pane's directory, the city it is in, the cities gc lists, and the recipient.
 
 From the palette or its key it opens a pane with the facts, an icon for each,
-labels in grey and the heading in cyan; anything in trouble, such as a missing
-settings file, stands out in red. The pane stays up so it can be read, and says
-how to close it. Run it with `rex do` - anything without a person at the app -
-and the same facts are printed plainly instead, with no pane.
+labels in grey and the heading in cyan. A fact that is in trouble, such as a
+missing settings file, stands out in red. The icon and the colour come from the
+fact itself, not from its text. A path with the word "missing" in it stays
+plain. The pane stays up so it can be read, and says how to close it. Run it
+with `rex do` - anything without a person at the app - and the same facts are
+printed plainly instead, with no pane.
 
 ## Layout
 
