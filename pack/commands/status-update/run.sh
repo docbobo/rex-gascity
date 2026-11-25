@@ -104,11 +104,18 @@ render_text() {
 		section = ""
 	}
 	function paint(code, s) { return E "[" code "m" s E "[0m" }
-	function inline(s) {
+	# span: a styled run inside the base style of the line. Its reset turns the
+	# base back on, so the text after the span keeps the base color.
+	function span(base, code, s) {
+		return E "[" code "m" s E "[0m" (base == "" ? "" : E "[" base "m")
+	}
+	function inline(s, base) {
+		if (base != "") s = E "[" base "m" s
 		while (match(s, /\*\*[^*]+\*\*/))
-			s = substr(s, 1, RSTART - 1) paint("1", substr(s, RSTART + 2, RLENGTH - 4)) substr(s, RSTART + RLENGTH)
+			s = substr(s, 1, RSTART - 1) span(base, "1", substr(s, RSTART + 2, RLENGTH - 4)) substr(s, RSTART + RLENGTH)
 		while (match(s, /`[^`]+`/))
-			s = substr(s, 1, RSTART - 1) paint("38;5;81", substr(s, RSTART + 1, RLENGTH - 2)) substr(s, RSTART + RLENGTH)
+			s = substr(s, 1, RSTART - 1) span(base, "38;5;81", substr(s, RSTART + 1, RLENGTH - 2)) substr(s, RSTART + RLENGTH)
+		if (base != "") s = s E "[0m"
 		return s
 	}
 	function icon(name) {
@@ -135,9 +142,8 @@ render_text() {
 		next
 	}
 	/^[-*] / {
-		item = inline(substr($0, 3))
-		if (section == "Blocked" || section == "Needs you") item = paint("38;5;203", item)
-		print "    • " item
+		base = (section == "Blocked" || section == "Needs you") ? "38;5;203" : ""
+		print "    • " inline(substr($0, 3), base)
 		next
 	}
 	/^[ \t]*$/ { print ""; next }

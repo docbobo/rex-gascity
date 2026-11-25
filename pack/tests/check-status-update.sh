@@ -85,7 +85,8 @@ PY
 }
 
 body=$work/body.md
-printf '%s\n' '# Status update — alpha' '## Done' '- shipped **it**' '## Blocked' '- waiting on `ci`' > "$body"
+printf '%s\n' '# Status update — alpha' '## Done' '- shipped **it**' '## Blocked' \
+  '- waiting on `ci` before deploy' '## Needs you' '- approve **the change** today' > "$body"
 
 # --template prints the template next to the script, or from GC_PACK_DIR.
 run --template < /dev/null
@@ -156,9 +157,13 @@ has "$req" '✅  \u001b[1;38;5;109mDone' "Done section"
 has "$req" '⛔  \u001b[1;38;5;109mBlocked' "Blocked section"
 has "$req" '    • shipped \u001b[1mit\u001b[0m' "bold item"
 has "$req" '\u001b[38;5;203mwaiting on \u001b[38;5;81mci\u001b[0m' "red Blocked item with code"
+has "$req" '\u001b[38;5;203mwaiting on \u001b[38;5;81mci\u001b[0m\u001b[38;5;203m before deploy' "red after a code span"
+has "$req" '\u001b[38;5;203mapprove \u001b[1mthe change\u001b[0m\u001b[38;5;203m today' "red after a bold span"
 has "$req" '\u001b[38;5;240mClose this pane when you are done.' "footer"
 json_ok "$req" "request"
 pane_look "$req" "request"
+has "$work/pane-out" "$(printf '\033')[38;5;203m before deploy" "pane red after a code span"
+has "$work/pane-out" "$(printf '\033')[1mthe change$(printf '\033')[0m$(printf '\033')[38;5;203m today" "pane red after a bold span"
 
 # --body-file sends the same request as stdin.
 cp "$req" "$work/stdin-request"
