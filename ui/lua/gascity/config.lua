@@ -108,7 +108,10 @@ function M.resolve(path)
 	end
 
 	settings.gc_bin = M.expand(settings.gc_bin)
-	settings.city = M.expand(settings.city)
+	-- settings.city stays as written. A leading ~ means the home of the machine
+	-- that runs the action, so the script there expands it; expanding it here
+	-- would use this machine's home and target the wrong path on a session that
+	-- runs elsewhere.
 	-- Where the settings came from, for messages that tell the person what to
 	-- edit. Not a setting of its own.
 	settings.file = path ~= nil and path ~= "" and path or M.default_path()

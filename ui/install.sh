@@ -120,6 +120,25 @@ case $stub in
   *) die "REX_GASCITY_UI must contain a path (got: $stub)" ;;
 esac
 
+# The stub is the installer's own file. It must never be the user's settings
+# file or the config file: the loader would replace settings, and uninstall
+# could delete them. Compare the paths after resolving a symlinked directory.
+stub_marker='-- rex-gascity-ui loader.'
+settings_file=$rex_config_dir/gascity.lua
+canonical() { # canonical <path>: resolve the directory, keep the name
+  _d=$(dirname -- "$1" 2>/dev/null); _b=$(basename -- "$1" 2>/dev/null)
+  _d=$(CDPATH= cd -- "$_d" 2>/dev/null && pwd -P) || _d=
+  if [ -n "$_d" ]; then printf '%s/%s' "$_d" "$_b"; else printf '%s' "$1"; fi
+}
+stub_canon=$(canonical "$stub")
+if [ "$stub_canon" = "$(canonical "$config_file")" ] ||
+   [ "$stub_canon" = "$(canonical "$settings_file")" ]; then
+  die "REX_GASCITY_UI points at the user's settings or config file ($stub); choose another path"
+fi
+if [ -z "$uninstall" ] && [ -e "$stub" ] && ! grep -qF -- "$stub_marker" "$stub" 2>/dev/null; then
+  die "$stub exists and is not a rex-gascity-ui stub; move it aside or set REX_GASCITY_UI to another path"
+fi
+
 marker_start='-- >>> rex-gascity-ui'
 marker_end='-- <<< rex-gascity-ui'
 
@@ -137,16 +156,31 @@ fi
 # Uninstall: the stub and the block, nothing else
 # ---------------------------------------------------------------------------
 
-remove_block() { # remove_block <file>
+remove_block() { # remove_block <file>; 0 removed, 1 error, 2 no managed block
   _file=$1
-  [ -f "$_file" ] || return 0
+  [ -f "$_file" ] || return 2
   if [ -L "$_file" ]; then
     warn "$_file is a symlink; remove the marked block where that file is generated"
     return 1
   fi
-  grep -qF -- "$marker_start" "$_file" || return 0
+  grep -qF -- "$marker_start" "$_file" || return 2
+  if ! grep -qF -- "$marker_end" "$_file"; then
+    warn "$_file has the start of the rex-gascity-ui block but not its end; refusing to rewrite it"
+    return 1
+  fi
   _tmp=$_file.gascity-ui.$$
-  if ! awk -v start="$marker_start" -v end="$marker_end" '
+  # Seed the rewrite with the original's mode and owner. A fresh file would
+  # take the umask's mode and the current user's ownership, which can make a
+  # 0600 config readable by others.
+  _mode=$(stat -c '%a' "$_file" 2>/dev/null || stat -f '%Lp' "$_file" 2>/dev/null || true)
+  _owner=$(stat -c '%u:%g' "$_file" 2>/dev/null || stat -f '%u:%g' "$_file" 2>/dev/null || true)
+  cp -p "$_file" "$_tmp" 2>/dev/null || cp "$_file" "$_tmp" 2>/dev/null || {
+    rm -f "$_tmp"
+    warn "cannot copy $_file"
+    return 1
+  }
+  _awk_rc=0
+  awk -v start="$marker_start" -v end="$marker_end" '
     index($0, start) == 1 {
       n = blank - 1
       while (n > 0) { print ""; n-- }
@@ -158,12 +192,18 @@ remove_block() { # remove_block <file>
     skipping { next }
     $0 == "" { blank++; next }
     { while (blank > 0) { print ""; blank-- } print }
-    END { while (blank > 0) { print ""; blank-- } }
-  ' "$_file" > "$_tmp"; then
+    END {
+      if (skipping) { exit 3 }
+      while (blank > 0) { print ""; blank-- }
+    }
+  ' "$_file" > "$_tmp" || _awk_rc=$?
+  if [ "$_awk_rc" -ne 0 ]; then
     rm -f "$_tmp"
-    warn "cannot rewrite $_file"
+    warn "cannot rewrite $_file: an unclosed rex-gascity-ui block"
     return 1
   fi
+  [ -z "$_mode" ] || chmod "$_mode" "$_tmp" 2>/dev/null || true
+  [ -z "$_owner" ] || chown "$_owner" "$_tmp" 2>/dev/null || true
   if command -v rex >/dev/null 2>&1; then
     if ! rex config check "$_tmp" >/dev/null 2>&1; then
       rm -f "$_tmp"
@@ -179,19 +219,48 @@ remove_block() { # remove_block <file>
   note "removed the rex-gascity-ui block from $_file"
 }
 
+remove_stub() { # remove_stub: delete only an installer-owned stub
+  [ -e "$stub" ] || return 0
+  if [ -L "$stub" ]; then
+    warn "kept $stub: it is a symlink, not a rex-gascity-ui stub"
+    return 1
+  fi
+  if ! grep -qF -- "$stub_marker" "$stub" 2>/dev/null; then
+    warn "kept $stub: it is not a rex-gascity-ui stub"
+    return 1
+  fi
+  rm -f "$stub" || { warn "cannot remove $stub"; return 1; }
+  note "removed $stub"
+}
+
 if [ -n "$uninstall" ]; then
   status=0
   # The stub goes only after the config stops naming it: a symlinked or
   # otherwise unwritten config keeps its reference, so the stub must stay too.
-  if ! remove_block "$config_file"; then
+  block_rc=0
+  remove_block "$config_file" || block_rc=$?
+  if [ "$block_rc" -eq 1 ]; then
     status=1
     if [ -e "$stub" ]; then
       warn "kept $stub: $config_file still loads it"
       warn "remove the rex-gascity-ui block by hand (or from the file that generates it), then delete $stub"
     fi
-  elif [ -e "$stub" ]; then
-    rm -f "$stub" || { warn "cannot remove $stub"; status=1; }
-    [ "$status" -ne 0 ] || note "removed $stub"
+  elif [ "$block_rc" -eq 2 ]; then
+    # No managed block. A hand-written dofile line may still load the stub.
+    _stub_name=$(basename -- "$stub")
+    _manual_ref=
+    for _name in "$_stub_name" gascity-ui.lua; do
+      if grep -qF -- "$_name" "$config_file" 2>/dev/null; then _manual_ref=1; break; fi
+    done
+    if [ -n "$_manual_ref" ] && [ -e "$stub" ]; then
+      status=1
+      warn "kept $stub: $config_file still loads it by hand"
+      warn "remove the dofile line for $_stub_name from $config_file, then delete $stub"
+    else
+      remove_stub || status=1
+    fi
+  else
+    remove_stub || status=1
   fi
   note "left the cache copy at $cache_root/$version/ui and the settings file gascity.lua alone"
   exit "$status"
@@ -326,6 +395,17 @@ stage_tree() {
     [ -d "$_old" ] && mv "$_old" "$_parent/ui" || true
     rm -rf "$_staging"
     die "cannot move the staged tree into place"
+  fi
+  # Keep the previous tree until the new one loads. A checkout with a Lua error
+  # must not replace a tree that works: the config that already loads this path
+  # is the probe, so a broken candidate fails here and the old tree comes back.
+  if [ -d "$_old" ] && [ -n "$loads" ] && [ "$live_root" = "$installed_root" ] &&
+     command -v rex >/dev/null 2>&1; then
+    if ! rex config check "$config_file" >/dev/null 2>&1; then
+      rm -rf "$_parent/ui"
+      mv "$_old" "$_parent/ui" || true
+      die "the new extension tree does not load; the previous tree was restored"
+    fi
   fi
   rm -rf "$_old"
 }

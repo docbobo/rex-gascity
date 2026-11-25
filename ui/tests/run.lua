@@ -311,6 +311,11 @@ test("config: a leading ~ is expanded", function()
 	equal(settings.gc_bin, (os.getenv("HOME") or "") .. "/bin/gc", "expanded")
 end)
 
+test("config: a city keeps its ~ for the session machine to expand", function()
+	local settings = config.resolve(fixture .. "/tilde.lua")
+	equal(settings.city, "~/cities/two", "the city is not expanded here")
+end)
+
 test("config: a home with a percent is expanded literally", function()
 	equal(config.expand("~/city", "/home/a%0"), "/home/a%0/city", "the percent is kept")
 	equal(config.expand("~", "/home/a%0"), "/home/a%0", "a bare tilde too")

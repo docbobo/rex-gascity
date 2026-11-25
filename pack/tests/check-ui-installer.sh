@@ -85,6 +85,13 @@ elif [ -n "${REX_GASCITY_ROOT:-}" ]; then
   root=$REX_GASCITY_ROOT
 fi
 
+# A tree that no longer parses: a refresh must restore the previous copy.
+if [ -n "$root" ] && [ -f "$root/init.lua" ] &&
+   grep -q 'FAKE-REX-BROKEN-TREE' "$root/init.lua" 2>/dev/null; then
+  echo "$root/init.lua:1: unexpected symbol near 'end'" >&2
+  exit 1
+fi
+
 if [ -n "$json" ]; then
   if [ -n "$root" ]; then
     printf '{"path":"%s","exists":true,"bindings":1,"removals":0,"modes":0,"actions":[\n' "$cfg"
@@ -167,6 +174,7 @@ run_install() { # run_install [args...]
     TMPDIR="$tmpdir" \
     FAKE_RELEASES="${case_releases:-$work/releases}" \
     ${REX_GASCITY_ROOT:+REX_GASCITY_ROOT="$REX_GASCITY_ROOT"} \
+    ${REX_GASCITY_UI:+REX_GASCITY_UI="$REX_GASCITY_UI"} \
     ${FAKE_REX_FAIL_APPEND:+FAKE_REX_FAIL_APPEND="$FAKE_REX_FAIL_APPEND"} \
     sh "$installer" "$@"
 }
@@ -429,5 +437,102 @@ cmp -s "$cfg" "$work/$name-orig" || fail "$name: uninstall did not restore the p
 expect_ok
 [ "$(count_block "$cfg")" = 1 ] || fail "$name: the second install wrote no single block"
 grep -qF 'rex.bind("keep", function() end)' "$cfg" || fail "$name: the user config was lost"
+
+# --- case 16: a stub path that is the settings file is refused --------------
+
+new_case stub-is-settings
+printf '%s\n' '-- existing config' > "$cfg"
+printf '%s\n' 'return { recipient = "mayor" }' > "$home/.config/rex/gascity.lua"
+settings_before=$(cat "$home/.config/rex/gascity.lua")
+REX_GASCITY_UI=$home/.config/rex/gascity.lua
+expect_fail
+unset REX_GASCITY_UI
+[ "$(cat "$home/.config/rex/gascity.lua")" = "$settings_before" ] ||
+  fail "$name: the settings file was overwritten"
+grep -q "points at the user's settings" "$work/out.txt" ||
+  fail "$name: the settings path was not refused"
+[ -e "$stub" ] && fail "$name: a stub was written"
+
+# --- case 17: an existing non-stub file at the stub path is not overwritten --
+
+new_case stub-not-ours
+printf '%s\n' '-- existing config' > "$cfg"
+printf '%s\n' '-- a user file, not a loader' > "$stub"
+stub_before=$(cat "$stub")
+expect_fail
+[ "$(cat "$stub")" = "$stub_before" ] || fail "$name: the user file was replaced"
+grep -q 'is not a rex-gascity-ui stub' "$work/out.txt" ||
+  fail "$name: the non-stub file was not refused"
+
+# --- case 18: uninstall keeps the stub when the config loads it by hand -----
+
+new_case uninstall-manual-reference
+printf '%s\n' 'rex.bind("keep", function() end)' > "$cfg"
+expect_ok
+# Replace the managed block with the manual line the installer reports.
+printf '%s\n' 'rex.bind("keep", function() end)' \
+  'dofile(os.getenv("HOME") .. "/.config/rex/gascity-ui.lua")' > "$cfg"
+expect_fail --uninstall
+[ -f "$stub" ] || fail "$name: the stub was removed while the config still loads it"
+grep -q 'still loads it by hand' "$work/out.txt" ||
+  fail "$name: the manual reference was not reported"
+grep -qF 'rex.bind("keep", function() end)' "$cfg" ||
+  fail "$name: the user config was lost"
+
+# --- case 19: an unclosed block is not rewritten ---------------------------
+
+new_case uninstall-unclosed-block
+printf '%s\n' 'rex.bind("keep", function() end)' \
+  '-- >>> rex-gascity-ui (managed; do not edit this block)' \
+  'rex.bind("after", function() end)' > "$cfg"
+orig=$(cat "$cfg")
+expect_fail --uninstall
+[ "$(cat "$cfg")" = "$orig" ] || fail "$name: the unclosed block was rewritten"
+grep -q 'not its end' "$work/out.txt" || fail "$name: the unclosed block was not named"
+[ -e "$stub" ] && fail "$name: a stub was written"
+
+# --- case 20: uninstall preserves the config mode --------------------------
+
+new_case uninstall-mode
+printf '%s\n' 'rex.bind("keep", function() end)' > "$cfg"
+chmod 0600 "$cfg"
+expect_ok
+chmod 0600 "$cfg"
+expect_ok --uninstall
+mode=$(stat -c '%a' "$cfg" 2>/dev/null || stat -f '%Lp' "$cfg" 2>/dev/null)
+[ "$mode" = "600" ] || fail "$name: the config mode became $mode"
+
+# --- case 21: a broken refresh restores the previous tree -------------------
+
+new_case source-refresh-broken
+printf '%s\n' '-- existing config' > "$cfg"
+expect_ok
+[ -f "$installed/init.lua" ] || fail "$name: no tree after the first install"
+good_tree=$(cat "$installed/init.lua")
+broken=$work/case-$case_no-broken
+mkdir -p "$broken"
+cp -R "$repo/ui/." "$broken"
+printf '%s\n' '-- FAKE-REX-BROKEN-TREE' >> "$broken/init.lua"
+if env -i HOME="$home" PATH="$work/tools:$tool_path" TMPDIR="$tmpdir" \
+     FAKE_RELEASES="$work/releases" \
+     sh "$broken/install.sh" --from-source > "$work/out.txt" 2>&1; then
+  cat "$work/out.txt" >&2
+  fail "$name: the broken refresh succeeded"
+fi
+[ "$(cat "$installed/init.lua")" = "$good_tree" ] ||
+  fail "$name: the previous tree was not restored"
+grep -q 'previous tree was restored' "$work/out.txt" ||
+  fail "$name: the rollback was not reported"
+
+# --- case 22: uninstall leaves a non-stub file at the stub path ------------
+
+new_case uninstall-not-ours
+printf '%s\n' 'rex.bind("keep", function() end)' > "$cfg"
+printf '%s\n' '-- a user file, not a loader' > "$stub"
+stub_before=$(cat "$stub")
+expect_fail --uninstall
+[ "$(cat "$stub")" = "$stub_before" ] || fail "$name: the user file was removed"
+grep -q 'is not a rex-gascity-ui stub' "$work/out.txt" ||
+  fail "$name: the non-stub file was not reported"
 
 echo "check-ui-installer: ok ($case_no cases)"
