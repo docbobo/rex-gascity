@@ -75,6 +75,7 @@ function stub.reset()
 	stub.json_text = nil
 	stub.json_value = nil
 	stub.json_error = nil
+	rex.ui = stub.ui_saved
 end
 
 function stub.logged(level, needle)
@@ -194,6 +195,20 @@ rex = {
 		end,
 	},
 }
+
+-- The prompt API is saved so a case can remove it and reset restores it.
+stub.ui_saved = rex.ui
+
+-- How many warnings a case logged.
+local function warns()
+	local count = 0
+	for _, entry in ipairs(stub.logs) do
+		if entry[1] == "warn" then
+			count = count + 1
+		end
+	end
+	return count
+end
 
 -- A tiny test runner -----------------------------------------------------
 
@@ -1051,6 +1066,62 @@ test("menu: cancelling runs nothing", function()
 	equal(#stub.layers, 0, "no pane")
 	equal(#stub.logs, 0, "cancelling is quiet")
 end)
+
+-- Without the prompt API, an older server ---------------------------------
+
+test("prompt without rex.ui logs once and does not crash", function()
+	actions.register(app_with({}))
+	stub.pane_cwd = "/work/city"
+	rex.ui = nil
+	stub.logs = {}
+
+	local ok, result = pcall(
+		stub.actions.gascity_menu.run,
+		{ block_id = "block:1", session_id = "session:1" }
+	)
+	truthy(ok, "the menu does not crash: " .. tostring(result))
+	equal(result, nil, "the menu sends nothing")
+	equal(warns(), 1, "one warning for the menu try")
+	truthy(
+		stub.logged("warn", "rex.ui.pick needs control API revision 17. This server is older"),
+		"names the prompt and the revision"
+	)
+
+	stub.logs = {}
+	ok, result = pcall(
+		stub.actions.gascity_mail_mayor.run,
+		{ block_id = "block:1", session_id = "session:1" },
+		{}
+	)
+	truthy(ok, "the mail action does not crash: " .. tostring(result))
+	equal(result, nil, "the mail action sends nothing")
+	equal(warns(), 1, "one warning for the mail try")
+	truthy(
+		stub.logged("warn", "rex.ui.input needs control API revision 17. This server is older"),
+		"names the input prompt and the revision"
+	)
+	equal(#stub.execs, 0, "no side effect ran")
+	equal(#stub.layers, 0, "no pane was made")
+end)
+
+test("prompt with a partial rex.ui degrades the same way", function()
+	actions.register(app_with({}))
+	local saved = rex.ui
+	rex.ui = {}
+	stub.logs = {}
+
+	local ok, result = pcall(
+		stub.actions.gascity_menu.run,
+		{ block_id = "block:1", session_id = "session:1" }
+	)
+	rex.ui = saved
+	truthy(ok, "no crash: " .. tostring(result))
+	equal(result, nil, "nothing sent")
+	equal(warns(), 1, "one warning")
+	truthy(stub.logged("warn", "revision 17"), "names the revision")
+	equal(#stub.layers, 0, "no pane")
+end)
+
 
 -- The report's look ------------------------------------------------------
 
