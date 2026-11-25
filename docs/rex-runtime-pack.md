@@ -207,11 +207,11 @@ through `rex api call session.new_layer`, and it finds `rex` on `PATH` or in
 
 | Exit | Meaning |
 |---|---|
-| 0 | The pane opened. |
-| 1 | The update is empty, or the display is not available. |
+| 0 | `--template` printed the template, or the pane opened. |
+| 1 | A read failure, an empty update, or an unknown `--display`. |
 | 2 | A usage error, such as a missing `--session`. |
 | 127 | No `rex` on `PATH` and none in `$REX_BIN_DIR`. |
-| other | `rex` failed, and its status and stderr are passed through. |
+| other | `rex` failed, and its status and stderr are passed through. It can overlap a status above. |
 
 ## Source checkout
 
