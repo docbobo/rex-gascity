@@ -1026,6 +1026,116 @@ test("rigs: a command that never answers is reported", function()
 	equal(stub.closed[1], "block:probe", "the hidden block is closed anyway")
 end)
 
+-- Opening a rig -----------------------------------------------------------
+
+local function run_open(args)
+	actions.register(app_with({}))
+	return pcall(
+		stub.actions.gascity_rigs_open.run,
+		{ block_id = "block:1", session_id = "session:1" },
+		args or {}
+	)
+end
+
+local function rigs_fixture(rigs)
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.json_value = { rigs = rigs }
+end
+
+test("rigs open: the picker lists the rigs and the pane gets the path", function()
+	rigs_fixture({
+		{ name = "alpha", path = "/work/alpha" },
+		{ name = "beta", path = "/work/beta" },
+	})
+	stub.picked = "alpha"
+
+	local ok, result = run_open()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(stub.picks.title, "Open which rig?", "the question")
+	equal(stub.picks.multiple, nil, "one rig at a time")
+	equal(stub.picks.confirm, "Open", "the label")
+	equal(stub.picks.items[1].subtitle, "/work/alpha", "the rig's path")
+
+	local block = stub.blocks[#stub.blocks]
+	equal(block.session_id, "session:1", "the pane's session")
+	equal(block.flavor, "com.superlogical.terminal.shell", "a terminal")
+	equal(block.label, "gascity:alpha", "the label")
+	equal(block.options.cwd, "/work/alpha", "the directory")
+	equal(block.options.command, nil, "an interactive shell")
+	equal(result.cwd, "/work/alpha", "the result names the path")
+end)
+
+test("rigs open: rig= skips the picker", function()
+	rigs_fixture({
+		{ name = "alpha", path = "/work/alpha" },
+		{ name = "beta", path = "/work/beta" },
+	})
+	stub.picked = nil
+
+	local ok, result = run_open({ rig = "beta" })
+	truthy(ok, "no error: " .. tostring(result))
+	equal(stub.pick_count, 0, "no question")
+	equal(result.cwd, "/work/beta", "the rig's path")
+end)
+
+test("rigs open: an unknown name is an error and opens nothing", function()
+	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
+	local ok, result = run_open({ rig = "gamma" })
+	falsy(ok, "reports an error")
+	contains(tostring(result), "no rig named gamma", "the reason")
+	equal(#stub.blocks, 1, "only the rig list was asked for")
+end)
+
+test("rigs open: no rigs is an error", function()
+	rigs_fixture({})
+	local ok, result = run_open()
+	falsy(ok, "reports an error")
+	contains(tostring(result), "no rigs listed", "the reason")
+	equal(#stub.blocks, 1, "only the rig list was asked for")
+end)
+
+test("rigs open: a rig with no path is not offered", function()
+	rigs_fixture({ { name = "alpha" }, { name = "beta", path = "/work/beta" } })
+	stub.picked = "beta"
+	local ok = run_open()
+	truthy(ok, "no error")
+	equal(#stub.picks.items, 1, "only the rig with a path")
+	equal(stub.picks.items[1].title, "beta", "the one with a path")
+
+	local ok_named, result = run_open({ rig = "alpha" })
+	falsy(ok_named, "an unopenable rig is an error")
+	contains(tostring(result), "has no path", "the reason")
+end)
+
+test("rigs open: cancel is quiet", function()
+	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
+	stub.picked = nil
+	local ok, result = run_open()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result, nil, "nothing opened")
+	equal(#stub.logs, 0, "nothing logged")
+	equal(#stub.blocks, 1, "only the rig list was asked for")
+end)
+
+test("rigs open: a tilde path is passed through", function()
+	rigs_fixture({ { name = "alpha", path = "~/src/alpha" } })
+	stub.picked = "alpha"
+	local ok = run_open()
+	truthy(ok, "no error")
+	equal(stub.blocks[#stub.blocks].options.cwd, "~/src/alpha", "byte for byte")
+end)
+
+test("rigs open: a picker failure that is not a cancel is logged", function()
+	rigs_fixture({ { name = "alpha", path = "/work/alpha" } })
+	stub.picked = nil
+	stub.pick_why = "no ui"
+	local ok, result = run_open()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result, nil, "nothing opened")
+	truthy(stub.logged("warn", "gascity_rigs_open"), "the failure is logged")
+end)
+
 -- The Gas City menu ------------------------------------------------------
 
 local function run_menu(choice, ctx)
@@ -1044,11 +1154,12 @@ test("menu: it lists the Gas City commands and nothing else", function()
 
 	truthy(stub.picks ~= nil, "asked")
 	equal(stub.picks.title, "Gas City", "the title")
-	equal(#stub.picks.items, 4, "four commands")
+	equal(#stub.picks.items, 5, "five commands")
 	equal(stub.picks.items[1].title, "Message the Mayor…", "the first")
 	equal(stub.picks.items[2].title, "Suspend a Rig…", "the second")
 	equal(stub.picks.items[3].title, "Resume a Rig…", "the third")
-	equal(stub.picks.items[4].title, "Where This Runs…", "the fourth")
+	equal(stub.picks.items[4].title, "Open a Rig…", "the fourth")
+	equal(stub.picks.items[5].title, "Where This Runs…", "the fifth")
 	truthy(stub.picks.items[1].subtitle ~= nil, "each says what it does")
 	equal(stub.picks.items[2].icon, "clock", "suspend uses the clock")
 	equal(stub.picks.items[3].icon, "plus", "resume uses the plus")
@@ -1077,6 +1188,15 @@ test("menu: a rig command reaches its own picker", function()
 	-- the first pick was the menu, the second the rigs
 	equal(stub.picks.title, "Suspend which rigs?", "the rig question")
 	equal(result, nil, "and nothing was ticked")
+end)
+
+test("menu: the rig open command reaches its own picker", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.json_value = { rigs = { { name = "alpha", path = "/work/alpha" } } }
+	run_menu("rigs_open")
+	-- the first pick was the menu, the second the rigs
+	equal(stub.picks.title, "Open which rig?", "the rig question")
 end)
 
 test("doctor: the report is a pane with icons and colour", function()

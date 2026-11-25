@@ -237,6 +237,86 @@ local function commands(app, settings)
 		}
 	end
 
+	local function rigs_open(ctx, args)
+		args = args or {}
+		local found, err = app.rigs.find(settings, ctx, {
+			city = args.city or settings.city,
+			cwd = app.pane.cwd(ctx.block_id),
+		})
+		if found == nil then
+			error(err, 0)
+		end
+		if #found.rigs == 0 then
+			error("no rigs listed in " .. (found.city or "the city of this pane"), 0)
+		end
+
+		-- A rig without a path cannot be opened, so it is not offered.
+		local items = {}
+		for _, rig in ipairs(found.rigs) do
+			if type(rig.path) == "string" then
+				items[#items + 1] = {
+					id = rig.name,
+					title = rig.name,
+					subtitle = rig.path,
+					icon = "package",
+				}
+			end
+		end
+
+		local name = args.rig
+		if type(name) == "string" and text.trim(name) ~= "" then
+			name = text.trim(name)
+		else
+			local picked, why = prompt("pick", {
+				title = "Open which rig?",
+				placeholder = "Filter rigs",
+				confirm = "Open",
+				items = items,
+			})
+			if picked == nil then
+				if why ~= "cancelled" and why ~= "unsupported" then
+					rex.log("warn", "gascity_rigs_open: " .. tostring(why or "no answer"))
+				end
+				return nil
+			end
+			name = picked
+		end
+
+		local rig
+		for _, candidate in ipairs(found.rigs) do
+			if candidate.name == name then
+				rig = candidate
+				break
+			end
+		end
+		if rig == nil then
+			error(
+				"no rig named " .. tostring(name) .. " in " .. (found.city or "the city of this pane"),
+				0
+			)
+		end
+		if type(rig.path) ~= "string" then
+			error("rig " .. tostring(name) .. " has no path", 0)
+		end
+
+		local block_id, open_err = app.run.shell(ctx, {
+			cwd = rig.path,
+			label = "gascity:" .. rig.name,
+		})
+		if block_id == nil then
+			error(open_err, 0)
+		end
+
+		rex.log("info", "gascity: opened " .. rig.name .. " in " .. rig.path)
+		return {
+			output = "Opened " .. rig.name .. " in " .. rig.path,
+			city = found.city,
+			rig = rig.name,
+			cwd = rig.path,
+			block_id = block_id,
+		}
+	end
+
 	local function doctor(ctx)
 		local facts = app.report.facts(app, ctx.block_id, ctx)
 		local printed = app.report.text(facts)
@@ -295,6 +375,18 @@ local function commands(app, settings)
 			args = { city = "string?", rigs = "string?" },
 			run = function(ctx, args)
 				return rigs_move(ctx, args, "resume")
+			end,
+		},
+		{
+			id = "rigs_open",
+			name = "gascity_rigs_open",
+			title = "Open a Rig…",
+			description = "Open a terminal pane in a rig's directory.",
+			keywords = "gascity rig open pane shell terminal directory cd",
+			icon = "package",
+			args = { city = "string?", rig = "string?" },
+			run = function(ctx, args)
+				return rigs_open(ctx, args)
 			end,
 		},
 		{
