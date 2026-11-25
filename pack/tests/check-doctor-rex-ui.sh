@@ -1,0 +1,380 @@
+#!/bin/sh
+# Every row of pack/doctor/rex-ui/run.sh, and what --fix can and cannot repair.
+#
+# The check is driven through a fake `rex`: `rex config check --json` is the one
+# probe the check makes, and the fake answers it the way the real CLI does —
+# loading the config in the ambient REX_CONFIG, reporting each action's
+# `source`, and failing when the file does not load.
+set -eu
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+work=$(mktemp -d "${TMPDIR:-/tmp}/check-doctor-rex-ui.XXXXXX")
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+version=$(
+  awk -F'"' '
+    /^[[:space:]]*\[pack\][[:space:]]*$/ { in_pack = 1; next }
+    /^[[:space:]]*\[/ { in_pack = 0 }
+    in_pack && /^[[:space:]]*version[[:space:]]*=/ { print $2; exit }
+  ' "$repo/pack/pack.toml"
+)
+[ -n "$version" ] || { echo "check-doctor-rex-ui: cannot read [pack] version" >&2; exit 1; }
+
+# A checkout: the pack with the extension beside it, exactly as fix.sh looks for it.
+tree=$work/tree
+mkdir -p "$tree/pack/doctor" "$tree/pack/bin"
+cp "$repo/pack/pack.toml" "$tree/pack/pack.toml"
+cp "$repo/pack/bin/_lib.sh" "$tree/pack/bin/_lib.sh"
+cp -R "$repo/pack/doctor/rex-ui" "$tree/pack/doctor/rex-ui"
+cp -R "$repo/ui" "$tree/ui"
+
+# A pack with no checkout beside it, for the fetch path of fix.sh.
+tree2=$work/tree2
+mkdir -p "$tree2/pack/doctor" "$tree2/pack/bin"
+cp "$repo/pack/pack.toml" "$tree2/pack/pack.toml"
+cp "$repo/pack/bin/_lib.sh" "$tree2/pack/bin/_lib.sh"
+cp -R "$repo/pack/doctor/rex-ui" "$tree2/pack/doctor/rex-ui"
+
+tools=$work/tools
+mkdir -p "$tools"
+
+# Fake rex: answers the one probe. --json output is what the check parses;
+# without it the shape is the human one.
+cat > "$tools/rex" <<'EOF'
+#!/bin/sh
+[ -n "${REX_CALL_LOG:-}" ] && echo "$*" >> "$REX_CALL_LOG"
+sub=$1; shift
+[ "$sub" = config ] || exit 2
+[ "${1:-}" = check ] || exit 2
+shift
+json=0
+cfg=
+for arg in "$@"; do
+  case "$arg" in
+    --json) json=1 ;;
+    -*) ;;
+    *) cfg=$arg ;;
+  esac
+done
+[ -n "$cfg" ] || cfg=${REX_CONFIG:-}
+[ -n "$cfg" ] || { echo "rex: no config file to check" >&2; exit 1; }
+[ -e "$cfg" ] || { echo "rex: $cfg does not exist" >&2; exit 1; }
+if grep -qF -- 'FAKE-REX-BROKEN' "$cfg"; then
+  echo "rex: $cfg:1: unexpected symbol near '!'" >&2
+  exit 1
+fi
+root=
+if grep -qF -- '>>> rex-gascity-ui' "$cfg"; then
+  stub=${REX_GASCITY_UI:-$(dirname -- "$cfg")/gascity-ui.lua}
+  root=$(sed -n 's/.*local root = os.getenv("REX_GASCITY_ROOT") or "\(.*\)".*/\1/p' "$stub" | head -n 1)
+  [ -n "$root" ] || root=${REX_GASCITY_ROOT:-}
+fi
+if [ -n "$root" ]; then
+  if [ "$json" = 1 ]; then
+    printf '{"actions":[{"name":"gascity_mail_mayor","kind":"lua","source":"%s/lua/gascity/actions.lua:296"}]}\n' "$root"
+  else
+    printf '%s/lua/gascity/actions.lua:296  gascity_mail_mayor\n' "$root"
+  fi
+else
+  if [ "$json" = 1 ]; then
+    printf '{"actions":[{"name":"core_ping","kind":"lua","source":"%s:12"}]}\n' "$cfg"
+  else
+    printf '%s:12  core_ping\n' "$cfg"
+  fi
+fi
+EOF
+chmod +x "$tools/rex"
+
+# Fake curl: serves the fixture release. fix.sh fetches checksums.txt first.
+cat > "$tools/curl" <<'EOF'
+#!/bin/sh
+dest=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift; dest=$1 ;;
+    -*) ;;
+    *) url=$1 ;;
+  esac
+  shift
+done
+[ -n "$dest" ] && [ -n "$url" ] || exit 2
+src=${FAKE_RELEASES:-}/$(printf '%s' "$url" | sed -n 's#.*/releases/download/##p')
+[ -f "$src" ] || { echo "curl: (22) HTTP 404 for $url" >&2; exit 22; }
+cp "$src" "$dest"
+EOF
+chmod +x "$tools/curl"
+
+# The release that fix.sh fetches: the extension tree, the way release.yml
+# publishes it, beside one checksums.txt.
+releases=$work/releases/v$version
+mkdir -p "$releases"
+tar -czf "$releases/gascity-ui.tar.gz" -C "$repo" ui
+if command -v sha256sum >/dev/null 2>&1; then
+  sum=$(sha256sum "$releases/gascity-ui.tar.gz" | cut -d' ' -f1)
+else
+  sum=$(shasum -a 256 "$releases/gascity-ui.tar.gz" | cut -d' ' -f1)
+fi
+printf '%s  gascity-ui.tar.gz\n' "$sum" > "$releases/checksums.txt"
+
+case_no=0
+home=
+cfg=
+stub=
+installed=
+
+new_case() {
+  case_no=$((case_no + 1))
+  home=$work/case-$case_no-home
+  mkdir -p "$home/.config/rex"
+  cfg=$home/.config/rex/init.lua
+  stub=$home/.config/rex/gascity-ui.lua
+  REX_CONFIG=$cfg
+  REX_GASCITY_UI=$stub
+  REX_GASCITY_ROOT=
+  installed=$home/.cache/rex-gascity/$version/ui
+  mkdir -p "$home/.cache/rex-gascity/$version"
+  [ -e "$installed" ] || mkdir -p "$installed"
+  printf '%s\n' "$version" > "$installed/version"
+  rm -f "$home/rex-calls"
+}
+
+# A stub and a reference block written the way ui/install.sh writes them.
+write_reference() { # write_reference <root>
+  {
+    printf '%s\n' '-- >>> rex-gascity-ui (managed; do not edit this block)'
+    printf '%s\n' 'dofile((os.getenv("REX_GASCITY_UI") or (os.getenv("XDG_CONFIG_HOME") or ((os.getenv("HOME") or "") .. "/.config")) .. "/rex/gascity-ui.lua"))'
+    printf '%s\n' '-- <<< rex-gascity-ui'
+  } >> "$cfg"
+  {
+    printf '%s\n' '-- >>> rex-gascity-ui (managed; do not edit this file)'
+    printf 'local root = os.getenv("REX_GASCITY_ROOT") or "%s"\n' "$1"
+    printf '%s\n' 'package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path'
+    printf '%s\n' 'require("gascity").setup()'
+    printf '%s\n' '-- <<< rex-gascity-ui'
+  } > "$stub"
+}
+
+# The runs use `env -i`: this machine exports XDG_CACHE_HOME and
+# XDG_CONFIG_HOME, and both outrank HOME in the pack's cache helper, so
+# without a clean environment every case would read the developer's own cache.
+run_check() { # run_check [pack-tree]
+  check_status=0
+  check_out=
+  set +e
+  check_out=$(env -i HOME="$home" PATH="$tools:/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$work" \
+    XDG_CACHE_HOME="$home/.cache" XDG_CONFIG_HOME="$home/.config" \
+    REX_CONFIG="$cfg" REX_GASCITY_UI="$stub" REX_CALL_LOG="$home/rex-calls" \
+    sh "${1:-$tree}/pack/doctor/rex-ui/run.sh" 2>&1)
+  check_status=$?
+  set -e
+}
+
+run_fix() { # run_fix [pack-tree] [extra argument]
+  fix_status=0
+  fix_out=
+  set +e
+  fix_out=$(env -i HOME="$home" PATH="$tools:/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$work" \
+    XDG_CACHE_HOME="$home/.cache" XDG_CONFIG_HOME="$home/.config" \
+    REX_CONFIG="$cfg" REX_GASCITY_UI="$stub" REX_CALL_LOG="$home/rex-calls" \
+    FAKE_RELEASES="$work/releases" GC_RUNTIME_CACHE_DIR="$home/.cache/rex-gascity" \
+    sh "${1:-$tree}/pack/doctor/rex-ui/fix.sh" ${2:-} 2>&1)
+  fix_status=$?
+  set -e
+}
+
+fail() {
+  echo "check-doctor-rex-ui: case $case_no: $1" >&2
+  printf '%s\n' '--- check output ---' >&2
+  printf '%s\n' "$check_out" >&2
+  [ -z "${fix_out:-}" ] || { printf '%s\n' '--- fix output ---' >&2; printf '%s\n' "$fix_out" >&2; }
+  exit 1
+}
+
+expect_status() {
+  [ "$check_status" -eq "$1" ] || fail "expected the check to exit $1, got $check_status"
+}
+
+expect_fix_status() {
+  [ "$fix_status" -eq "$1" ] || fail "expected the fix to exit $1, got $fix_status"
+}
+
+expect_out() {
+  case "$check_out" in
+    *"$1"*) ;;
+    *) fail "the check output does not contain: $1" ;;
+  esac
+}
+
+expect_no_out() {
+  case "$check_out" in
+    *"$1"*) fail "the check output should not contain: $1" ;;
+  esac
+}
+
+expect_fix_out() {
+  case "$fix_out" in
+    *"$1"*) ;;
+    *) fail "the fix output does not contain: $1" ;;
+  esac
+}
+
+# 1. A machine with nothing installed: a warning, not an error, and the probe is
+#    never asked about a config that does not exist yet.
+new_case
+run_check
+expect_status 1
+expect_out "the Gas City UI is not installed"
+expect_out "gc doctor --check rex-gascity-runtime:rex-ui --fix"
+[ ! -e "$home/rex-calls" ] || fail "the check probed a config file that does not exist"
+
+# 2. The stub is there but the config does not load it, and the config can be
+#    written: the fix is offered.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+printf '%s\n' '-- >>> rex-gascity-ui (managed; do not edit this file)' > "$stub"
+run_check
+expect_status 1
+expect_out "does not load it"
+expect_out "--fix"
+expect_no_out "cannot be written"
+
+# 3. The same, with a config the account cannot write: the check prints the line
+#    to add where that file is generated instead of a fix it cannot run.
+new_case
+printf '%s\n' '-- generated, do not edit' > "$cfg"
+chmod 0444 "$cfg"
+printf '%s\n' '-- >>> rex-gascity-ui (managed; do not edit this file)' > "$stub"
+run_check
+expect_status 1
+expect_out "cannot be written by this account"
+expect_out 'dofile((os.getenv("REX_GASCITY_UI")'
+chmod 0644 "$cfg"
+
+# 4. Loaded from the installed copy at this pack's version: the pass.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+write_reference "$installed"
+run_check
+expect_status 0
+expect_out "loaded from the installed copy"
+expect_out "$installed"
+expect_out "version $version"
+
+# 5. Loaded from another version of the same pack: a warning that names both.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+other=$home/.cache/rex-gascity/0.0.1/ui
+mkdir -p "$other"
+printf '%s\n' '0.0.1' > "$other/version"
+write_reference "$other"
+run_check
+expect_status 1
+expect_out "version 0.0.1"
+expect_out "ships $version"
+
+# 6. Loaded from somewhere else entirely (a development checkout): a warning, and
+#    the check names both paths without touching anything.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+printf '%s\n' '-- >>> rex-gascity-ui (managed; do not edit this block)' >> "$cfg"
+printf '%s\n' 'dofile("/home/someone/checkout/ui/init.lua")' >> "$cfg"
+printf '%s\n' '-- <<< rex-gascity-ui' >> "$cfg"
+{
+  printf '%s\n' '-- >>> rex-gascity-ui (managed; do not edit this file)'
+  printf 'local root = os.getenv("REX_GASCITY_ROOT") or "%s"\n' "$home/checkout/ui"
+  printf '%s\n' '-- <<< rex-gascity-ui'
+} > "$stub"
+mkdir -p "$home/checkout/ui/lua/gascity"
+printf '%s\n' '-- fake' > "$home/checkout/ui/lua/gascity/actions.lua"
+before=$(cat "$cfg")
+run_check
+expect_status 1
+expect_out "another copy"
+expect_out "$installed"
+[ "$before" = "$(cat "$cfg")" ] || fail "the check rewrote the config"
+
+# 7. A config that does not load: an error, because nothing can be repaired by
+#    writing into a broken file.
+new_case
+printf '%s\n' '-- FAKE-REX-BROKEN' > "$cfg"
+run_check
+expect_status 2
+expect_out "does not load"
+expect_out "Fix that complaint first"
+
+# 8. No rex on PATH: an error, not a silent pass.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+norex=$work/no-rex
+mkdir -p "$norex"
+check_status=0
+set +e
+check_out=$(env -i HOME="$home" PATH="$norex:/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$work" \
+  XDG_CACHE_HOME="$home/.cache" XDG_CONFIG_HOME="$home/.config" \
+  REX_CONFIG="$cfg" REX_GASCITY_UI="$stub" GC_REX_BIN=rex \
+  sh "$tree/pack/doctor/rex-ui/run.sh" 2>&1)
+check_status=$?
+set -e
+expect_status 2
+expect_out "not on PATH"
+
+# 9. --fix from a checkout installs and wires the extension: the check passes
+#    afterwards.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+run_fix
+expect_fix_status 0
+[ -f "$stub" ] || fail "the fix did not write the stub"
+grep -qF -- '>>> rex-gascity-ui (managed; do not edit this block)' "$cfg" \
+  || fail "the fix did not add the reference block"
+run_check
+expect_status 0
+expect_out "loaded from the installed copy"
+
+# 10. The one the fix cannot repair: an unwritable config. The fix exits 0 after
+#     printing the line to add, and the check keeps warning.
+new_case
+printf '%s\n' '-- generated, do not edit' > "$cfg"
+chmod 0444 "$cfg"
+run_fix
+expect_fix_status 0
+expect_fix_out "is not writable"
+expect_fix_out 'dofile((os.getenv("REX_GASCITY_UI")'
+run_check
+expect_status 1
+expect_out "does not load it"
+chmod 0644 "$cfg"
+
+# 11. --fix on a pack with no checkout beside it fetches the release asset,
+#     verifies it against checksums.txt, and leaves the pack directory clean.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+before=$(find "$tree2/pack" -type f | sort)
+run_fix "$tree2"
+expect_fix_status 0
+after=$(find "$tree2/pack" -type f | sort)
+[ "$before" = "$after" ] || fail "the fix wrote into the pack directory"
+grep -qF -- '>>> rex-gascity-ui (managed; do not edit this block)' "$cfg" \
+  || fail "the fetched fix did not add the reference block"
+run_check
+expect_status 0
+expect_out "loaded from the installed copy"
+
+# 12. A release asset that does not match checksums.txt is refused, and nothing
+#     is written.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+cp "$work/releases/v$version/gascity-ui.tar.gz" "$work/releases/v$version/gascity-ui.tar.gz.good"
+printf '%s\n' '0000000000000000000000000000000000000000000000000000000000000000  gascity-ui.tar.gz' > "$work/releases/v$version/checksums.txt"
+run_fix "$tree2"
+expect_fix_status 1
+case "$fix_out" in
+  *"does not match checksums.txt"*) ;;
+  *) fail "the fix did not refuse the mismatched asset" ;;
+esac
+[ ! -e "$stub" ] || fail "the fix wrote the stub from an unverified asset"
+mv "$work/releases/v$version/gascity-ui.tar.gz.good" "$work/releases/v$version/gascity-ui.tar.gz"
+printf '%s  gascity-ui.tar.gz\n' "$sum" > "$work/releases/v$version/checksums.txt"
+
+echo "check-doctor-rex-ui: ok ($case_no cases)"
