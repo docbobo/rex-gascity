@@ -1,6 +1,7 @@
 -- The actions the extension adds, the keys they are bound to, and the menu that
 -- gathers them.
 
+local gc = require("gascity.gc")
 local text = require("gascity.text")
 
 local M = {}
@@ -173,6 +174,79 @@ local function commands(app, settings)
 			subject = subject,
 			city = city,
 			layer_id = layer_id,
+		}
+	end
+
+	-- Ask the mayor for a status update. The pane's machine names the pack's
+	-- binding and the session's server; the mail names them to the mayor,
+	-- whose answer opens a floating pane through the pack's status-update
+	-- command. This action renders nothing itself.
+	local function status_update(ctx, args)
+		args = args or {}
+		local cwd = app.pane.cwd(ctx.block_id)
+
+		-- The city, in the same order as mail.
+		local city = args.city or settings.city
+		if city == nil then
+			local found = app.machine.ask(settings, ctx, { cwd = cwd })
+			if found ~= nil and found.city == nil and #found.cities > 0 then
+				city = choose(found.cities)
+				if city == nil then
+					return nil
+				end
+			end
+		end
+
+		local display = args.display or settings.status_display or "text"
+
+		local found, err = app.status.ask(settings, ctx, { city = city, cwd = cwd })
+		if found == nil then
+			error(err, 0)
+		end
+		local where = city or found.city or "the pane's city"
+
+		-- gc first, before the binding: pack_binding skips only the import
+		-- lookup, so a missing gc is an error with or without it.
+		if found.gc_missing then
+			error(gc.MISSING, 0)
+		end
+
+		local binding = app.status.binding(found.imports, settings.pack_binding)
+		if binding == nil then
+			if found.config_status ~= nil and found.config_status ~= 0 then
+				error(
+					"gc config show failed for " .. where .. " (exit " .. found.config_status .. "): "
+						.. (found.error or ""),
+					0
+				)
+			end
+			error(
+				where .. " does not import the rex-gascity pack. Import it (docs/rex-runtime-pack.md), or set pack_binding in "
+					.. settings.file,
+				0
+			)
+		end
+		if found.server == nil then
+			error("could not find the Rex server that owns session " .. tostring(ctx.session_id), 0)
+		end
+
+		local layer_id, send_err = app.send.message(app, ctx, {
+			body = app.status.body(binding, found.server, ctx.session_id, display),
+			subject = app.status.SUBJECT,
+			city = city,
+		})
+		if layer_id == nil then
+			error(send_err, 0)
+		end
+
+		rex.log("info", "gascity: asked " .. settings.recipient .. " for a status update")
+		return {
+			output = "Asked " .. settings.recipient .. " for a status update in " .. where,
+			city = city,
+			binding = binding,
+			server = found.server,
+			session_id = ctx.session_id,
+			display = display,
 		}
 	end
 
@@ -354,6 +428,18 @@ local function commands(app, settings)
 			args = { body = "string?", subject = "string?", city = "string?" },
 			run = function(ctx, args)
 				return mail(ctx, args)
+			end,
+		},
+		{
+			id = "status_update",
+			name = "gascity_status_update",
+			title = "Ask the Mayor for a Status Update…",
+			description = "Ask the mayor for a status update, shown in a floating pane of this session.",
+			keywords = "gascity mayor status update report progress",
+			icon = "document",
+			args = { city = "string?", display = "string?" },
+			run = function(ctx, args)
+				return status_update(ctx, args)
 			end,
 		},
 		{

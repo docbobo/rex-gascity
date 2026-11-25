@@ -8,6 +8,9 @@ local text = require("gascity.text")
 
 local M = {}
 
+-- What a script says, and an action raises, when the machine has no gc.
+M.MISSING = "gc is not on this machine. Install Gas City, or set gc_bin in ~/.config/rex/gascity.lua."
+
 -- Where gc might be when PATH misses it.
 M.places = {
 	"/run/current-system/sw/bin/gc",
@@ -50,7 +53,7 @@ function M.guard(opts)
 	local stop = opts.exiting == false and "return 127" or "exit 127"
 	return {
 		'if ! command -v "$gc" >/dev/null 2>&1; then',
-		"\tprintf 'gc is not on this machine. Install Gas City, or set gc_bin in ~/.config/rex/gascity.lua.\\n' >&2",
+		"\tprintf '%s\\n' " .. text.quote(M.MISSING) .. " >&2",
 		"\t" .. stop,
 		"fi",
 	}

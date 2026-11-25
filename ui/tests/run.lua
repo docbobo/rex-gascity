@@ -21,6 +21,7 @@ local machine = require("gascity.machine")
 local probe = require("gascity.probe")
 local send = require("gascity.send")
 local report = require("gascity.report")
+local status = require("gascity.status")
 local actions = require("gascity.actions")
 
 local fixture = root .. "/tests/fixtures"
@@ -373,6 +374,27 @@ test("config: a home with a percent is expanded literally", function()
 	equal(config.expand("~", "/home/a%0"), "/home/a%0", "a bare tilde too")
 end)
 
+test("config: the status settings have defaults", function()
+	local settings = config.resolve(nil)
+	equal(settings.pack_binding, nil, "pack_binding")
+	equal(settings.status_display, "text", "status_display")
+end)
+
+test("config: the status settings can be set", function()
+	local settings = config.resolve(fixture .. "/status.lua")
+	equal(settings.pack_binding, "mine", "pack_binding")
+	equal(settings.status_display, "markdown", "status_display")
+	equal(#stub.logs, 0, "no warnings")
+end)
+
+test("config: a status setting of the wrong type is reported", function()
+	local settings = config.resolve(fixture .. "/status-wrongtype.lua")
+	equal(settings.pack_binding, nil, "pack_binding keeps its default")
+	equal(settings.status_display, "text", "status_display keeps its default")
+	truthy(stub.logged("warn", "pack_binding"), "names pack_binding")
+	truthy(stub.logged("warn", "status_display"), "names status_display")
+end)
+
 -- Text -------------------------------------------------------------------
 
 test("text: trim and collapse", function()
@@ -546,6 +568,7 @@ local function app_with(overrides)
 		run = run,
 		send = send,
 		report = report,
+		status = status,
 	}
 	for key, value in pairs(overrides or {}) do
 		app[key] = value
@@ -1164,6 +1187,560 @@ test("rigs open: a picker failure that is not a cancel is logged", function()
 	truthy(stub.logged("warn", "gascity_rigs_open"), "the failure is logged")
 end)
 
+-- The status update -------------------------------------------------------
+
+-- Runs `command` in /bin/sh on this machine and returns what it printed.
+local function sh(command)
+	local pipe = assert(io.popen(command))
+	local out = pipe:read("*a")
+	pipe:close()
+	return out
+end
+
+local function write_file(path, content)
+	local file = assert(io.open(path, "w"))
+	file:write(content)
+	file:close()
+end
+
+test("status: both live spellings of the pack's source match", function()
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity//pack"), "//pack")
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity//pack/"), "trailing slash")
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity.git//pack"), ".git")
+	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity/tree/main/pack"), "/tree/main/pack")
+	truthy(status.is_this_pack("github.com/docbobo/rex-gascity/tree/v2026.11.06/pack"), "no scheme, a tag")
+	falsy(status.is_this_pack("https://github.com/gastownhall/gascity-packs/tree/main/gascity"), "another pack")
+	falsy(status.is_this_pack("https://github.com/docbobo/rex-gascity//ui"), "another directory")
+	falsy(status.is_this_pack("https://github.com/docbobo/rex-gascity-fork//pack"), "another repository")
+	falsy(status.is_this_pack(nil), "no source")
+end)
+
+test("status: the override wins, then the first matching key in sorted order", function()
+	local rex_pack = "https://github.com/docbobo/rex-gascity//pack"
+	local other = "https://github.com/gastownhall/gascity-packs/tree/main/gascity"
+	equal(status.binding({}, "mine"), "mine", "the override needs no import")
+	equal(status.binding({ { key = "rex", source = rex_pack } }, nil), "rex", "one match")
+	equal(
+		status.binding({
+			{ key = "zz", source = "https://github.com/docbobo/rex-gascity/tree/main/pack" },
+			{ key = "aa", source = rex_pack },
+		}, nil),
+		"aa",
+		"two matches"
+	)
+	equal(status.binding({ { key = "gc", source = other } }, nil), nil, "no match")
+	equal(status.binding({ { key = "rex", source = rex_pack } }, ""), "rex", "an empty override is no override")
+end)
+
+test("status: the mail names the template, the command, and its target", function()
+	local body = status.body("rex", "/tmp/rex.sock", "s1", "text")
+	contains(body, "gc 'rex' status-update --template", "the template command")
+	contains(
+		body,
+		"gc 'rex' status-update --server '/tmp/rex.sock' --session 's1' --display 'text'",
+		"the command"
+	)
+end)
+
+test("status: every value in the mail arrives as one word", function()
+	local body = status.body("my pack;x", "/tmp/a b.sock", "s 1'x", "te'xt")
+	local line = body:match("\n%s*(gc [^\n]*%-%-display [^\n]*)$")
+	truthy(line, "the command line")
+	local words = sh("set -- " .. line .. "; for w; do printf '[%s]\\n' \"$w\"; done")
+	equal(
+		words,
+		"[gc]\n[my pack;x]\n[status-update]\n[--server]\n[/tmp/a b.sock]\n[--session]\n[s 1'x]\n[--display]\n[te'xt]\n",
+		"the words"
+	)
+end)
+
+test("status: the answer is read across wrapped rows", function()
+	local found = status.parse(table.concat({
+		"@@city|/cities/alp",
+		"ha",
+		"@@server|unix:///Users/me/Library/Application%20Sup",
+		"port/rex/server.sock",
+		"@@config|0",
+		"@@import|rex|https://github.com/docbobo/rex-ga",
+		"scity//pack",
+		"@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity",
+	}, "\n"))
+	equal(found.city, "/cities/alpha", "the city")
+	equal(found.server, "unix:///Users/me/Library/Application%20Support/rex/server.sock", "the server")
+	equal(found.config_status, 0, "the lookup status")
+	equal(#found.imports, 2, "two imports")
+	equal(found.imports[1].key, "rex", "the first key")
+	equal(found.imports[1].source, "https://github.com/docbobo/rex-gascity//pack", "its source")
+	falsy(found.gc_missing, "gc was there")
+end)
+
+test("status: an empty server line is no server", function()
+	local found = status.parse("@@city|-\n@@server|\n@@config|0")
+	equal(found.city, nil, "no city")
+	equal(found.server, nil, "no server")
+end)
+
+-- A scratch directory with a fake gc and a fake rex in it.
+--
+-- The fake gc prints the fixture for `config show --json`, or fails like a
+-- broken city.toml when FAKE_GC_FAIL is set. The fake rex succeeds only for
+-- a read-only check (--autostart=false) of session s1.
+local function probe_tools()
+	local dir = text.trim(sh('mktemp -d "${TMPDIR:-/tmp}/gascity-status-test.XXXXXX"'))
+	write_file(dir .. "/gc", table.concat({
+		"#!/bin/sh",
+		'printf "%s\\n" "$*" > gc.args',
+		'case " $* " in *" config show --json "*) ;; *) exit 9 ;; esac',
+		'if [ -n "${FAKE_GC_FAIL:-}" ]; then printf "bad city.toml\\nline two\\n" >&2; exit 1; fi',
+		'cat "$FIXTURE"',
+	}, "\n") .. "\n")
+	write_file(dir .. "/rex", table.concat({
+		"#!/bin/sh",
+		'case " $* " in *" --autostart=false "*) ;; *) exit 8 ;; esac',
+		'case " $* " in *" -s s1 "*) exit 0 ;; esac',
+		"exit 3",
+	}, "\n") .. "\n")
+	sh("chmod +x " .. text.quote(dir .. "/gc") .. " " .. text.quote(dir .. "/rex"))
+	return dir
+end
+
+-- Runs a probe script the way the hidden block does: /bin/sh, in `dir`, with
+-- `dir` first on PATH and only the environment named in `env`. A last line
+-- shows whether the script ran to its end.
+-- The fixture by its absolute path, since the probe runs in another directory.
+local function fixture_path(name)
+	local path = fixture .. "/" .. name
+	if path:sub(1, 1) ~= "/" then
+		path = text.trim(sh("pwd")) .. "/" .. path
+	end
+	return path
+end
+
+local function run_probe(script, dir, env)
+	write_file(dir .. "/probe.sh", script .. "\nprintf 'END\\n'\n")
+	return sh(
+		"cd " .. text.quote(dir) .. " && env -i HOME=\"$HOME\" PATH=" .. text.quote(dir .. ":/usr/bin:/bin")
+			.. " FIXTURE=" .. text.quote(fixture_path("config-show.json"))
+			.. " " .. (env or "")
+			.. " /bin/sh probe.sh 2>/dev/null"
+	)
+end
+
+local function remove(dir)
+	sh("rm -rf " .. text.quote(dir))
+end
+
+test("status: the probe lists only the top-level imports", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/named", "s1"), dir)
+	local args = sh("cat " .. text.quote(dir .. "/gc.args"))
+	remove(dir)
+	equal(args, "--city /cities/named config show --json\n", "the named city is passed to gc")
+	contains(output, "@@city|/cities/alpha\n", "the city gc read")
+	contains(output, "@@config|0\n", "the lookup succeeded")
+	contains(output, "@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity\n", "gc")
+	contains(output, "@@import|rex|https://github.com/docbobo/rex-gascity//pack\n", "rex")
+	falsy(output:find("rig-rex", 1, true), "no rig-level import")
+	falsy(output:find("roles", 1, true), "no default rig import")
+	local _, count = output:gsub("@@import|", "")
+	equal(count, 2, "two imports")
+	contains(output, "END", "the script ran to its end")
+end)
+
+test("status: without a named city, gc finds it from the pane's directory", function()
+	local script = status.script(config.resolve(nil), nil, "s1")
+	falsy(script:find("--city", 1, true), "no --city")
+	local dir = probe_tools()
+	local output = run_probe(script, dir)
+	local args = sh("cat " .. text.quote(dir .. "/gc.args"))
+	remove(dir)
+	equal(args, "config show --json\n", "gc gets no --city")
+	contains(output, "@@city|/cities/alpha\n", "the city gc found")
+end)
+
+test("status: the probe verifies the server without starting one", function()
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	contains(script, "--autostart=false api call session.list_blocks -s 's1' </dev/null >/dev/null 2>&1", "read-only")
+
+	local dir = probe_tools()
+	local owned = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	local foreign = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s2"), dir, "REX_SERVER=/tmp/other.sock")
+	local unset = run_probe(script, dir)
+	remove(dir)
+	contains(owned, "@@server|/tmp/other.sock\n", "the server that owns s1")
+	contains(foreign, "@@server|\n", "a server that does not own s2")
+	contains(unset, "@@server|\n", "no REX_SERVER")
+end)
+
+test("status: a failed config show reports its status and stderr", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir, "FAKE_GC_FAIL=1")
+	remove(dir)
+	contains(output, "@@config|1\n", "the status")
+	contains(output, "@@error|bad city.toml line two", "stderr on one line")
+	falsy(output:find("@@import|", 1, true), "no imports")
+	contains(output, "END", "the script ran to its end")
+end)
+
+test("status: no gc says so and still reaches the end", function()
+	local dir = probe_tools()
+	local settings = config.resolve(nil)
+	settings.gc_bin = "/nowhere/gc"
+	local output = run_probe(status.script(settings, "/cities/alpha", "s1"), dir)
+	remove(dir)
+	contains(output, "@@gc|missing\n", "gc is missing")
+	falsy(output:find("@@config|", 1, true), "no lookup")
+	contains(output, "END", "the script ran to its end")
+end)
+
+test("status: pack_binding skips the import lookup, not the server check or the gc check", function()
+	local settings = config.resolve(nil)
+	settings.pack_binding = "mine"
+	local script = status.script(settings, nil, "s1")
+	falsy(script:find("config show", 1, true), "no config show")
+	contains(script, "--autostart=false", "the server check")
+	contains(script, "has_gc", "the gc check")
+
+	local dir = probe_tools()
+	local found = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	settings.gc_bin = "/nowhere/gc"
+	local missing = run_probe(status.script(settings, nil, "s1"), dir, "REX_SERVER=/tmp/other.sock")
+	remove(dir)
+	falsy(found:find("@@gc|", 1, true), "gc is there")
+	falsy(found:find("@@config|", 1, true), "no lookup with gc")
+	contains(missing, "@@server|/tmp/other.sock\n", "the server is still checked")
+	contains(missing, "@@gc|missing\n", "a missing gc is still reported")
+	falsy(missing:find("@@config|", 1, true), "no lookup without gc")
+	contains(missing, "END", "the script ran to its end")
+end)
+
+test("status: the lookup keeps its files in a private directory and removes it", function()
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	contains(script, 'mktemp -d "${TMPDIR:-/tmp}/gascity-status.XXXXXX"', "a private directory")
+	falsy(script:find(".err", 1, true), "no predictable sibling file")
+
+	local dir = probe_tools()
+	sh("mkdir " .. text.quote(dir .. "/tmp"))
+	local tmpdir = "TMPDIR=" .. text.quote(dir .. "/tmp")
+	local passed = run_probe(script, dir, tmpdir)
+	local left_after_pass = sh("ls -A " .. text.quote(dir .. "/tmp"))
+	local failed = run_probe(script, dir, tmpdir .. " FAKE_GC_FAIL=1")
+	local left_after_fail = sh("ls -A " .. text.quote(dir .. "/tmp"))
+	local no_dir = run_probe(script, dir, "TMPDIR=" .. text.quote(dir .. "/missing"))
+	remove(dir)
+	contains(passed, "@@config|0\n", "the lookup ran")
+	equal(left_after_pass, "", "nothing left after a lookup that passed")
+	contains(failed, "@@error|bad city.toml line two", "stderr was read from the private directory")
+	equal(left_after_fail, "", "nothing left after a lookup that failed")
+	contains(no_dir, "@@config|1\n", "no directory is a failed lookup")
+	contains(no_dir, "@@error|cannot make a temporary directory\n", "and says why")
+	falsy(no_dir:find("@@import|", 1, true), "no imports")
+	contains(no_dir, "END", "the script ran to its end")
+end)
+
+test("status: a value that holds the probe's end marker survives", function()
+	local server = "unix:///tmp/a<<gascity-end.sock"
+	local dir = probe_tools()
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"REX_SERVER=" .. text.quote(server)
+	)
+	remove(dir)
+
+	-- The terminal shows the writer's rows between the probe's markers.
+	stub.format = probe_answer({ output })
+	local answer = assert(probe.run({ session_id = "s1" }, "true"))
+	local found = status.parse(answer.output)
+	equal(found.server, server, "the whole server comes back")
+	equal(#found.imports, 2, "the imports after it survive")
+end)
+
+-- Writes a `gc config show --json` answer into the scratch directory and
+-- returns its path, so a probe can run against a value the checked-in
+-- fixture does not hold.
+local function probe_fixture(dir, json)
+	local path = dir .. "/fixture.json"
+	write_file(path, json)
+	return path
+end
+
+test("status: an import key that holds a pipe keeps its own value", function()
+	local dir = probe_tools()
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"/cities/alpha","config":{"Imports":{"custom|name":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path)
+	)
+	remove(dir)
+	local found = status.parse((output:gsub("END\n$", "")))
+	equal(#found.imports, 1, "one import")
+	equal(found.imports[1].key, "custom|name", "the key comes back whole")
+	equal(found.imports[1].source, "https://github.com/docbobo/rex-gascity//pack", "the source is its own value")
+	equal(status.binding(found.imports, nil), "custom|name", "the binding is found")
+end)
+
+test("status: a JSON escape in a value is decoded", function()
+	local dir = probe_tools()
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"/cities/city\\"literal\\u003cb","config":{"Imports":{"rex":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path)
+	)
+	remove(dir)
+	local found = status.parse(output)
+	equal(found.city, '/cities/city"literal<b', "the quote and the code point come back")
+	equal(#found.imports, 1, "the import is still read")
+	equal(found.imports[1].key, "rex", "its key")
+end)
+
+test("status: rex is found in REX_BIN_DIR when it is not on PATH", function()
+	local dir = probe_tools()
+	sh("rm " .. text.quote(dir .. "/rex"))
+	local bin = dir .. "/bin dir"
+	sh("mkdir " .. text.quote(bin))
+	write_file(bin .. "/rex", "#!/bin/sh\ncase \" $* \" in *\" -s s1 \"*) exit 0 ;; esac\nexit 3\n")
+	sh("chmod +x " .. text.quote(bin .. "/rex"))
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	local found = run_probe(script, dir, "REX_SERVER=/tmp/other.sock REX_BIN_DIR=" .. text.quote(bin))
+	local absent = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	remove(dir)
+	contains(found, "@@server|/tmp/other.sock\n", "the fallback finds rex")
+	contains(absent, "@@server|\n", "no rex anywhere is no server")
+	contains(absent, "END", "the script ran to its end")
+end)
+
+test("status: a percent, a tab, a newline, and a carriage return survive", function()
+	local dir = probe_tools()
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"/cities/a\\tb","config":{"Imports":{"rex":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local server = "unix:///tmp/a%0Ab\nc\rd\te"
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path) .. " REX_SERVER=" .. text.quote(server)
+	)
+	remove(dir)
+	local found = status.parse((output:gsub("END\n$", "")))
+	equal(found.city, "/cities/a\tb", "a tab from the JSON comes back")
+	equal(found.server, server, "the percent, newline, tab, and carriage return come back")
+end)
+
+test("status: a filter that fails is a probe error, not an empty lookup", function()
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	local dir = probe_tools()
+	write_file(dir .. "/awk", "#!/bin/sh\necho 'awk: boom' >&2\nexit 2\n")
+	sh("chmod +x " .. text.quote(dir .. "/awk"))
+	sh("mkdir " .. text.quote(dir .. "/tmp"))
+	local output = run_probe(script, dir, "TMPDIR=" .. text.quote(dir .. "/tmp"))
+	local left = sh("ls -A " .. text.quote(dir .. "/tmp"))
+	remove(dir)
+	contains(output, "@@config|0\n", "the lookup itself succeeded")
+	contains(output, "@@error|the config filter failed", "the filter failure has its own error")
+	falsy(output:find("@@import|", 1, true), "no imports")
+	contains(output, "END", "the script ran to its end")
+	equal(left, "", "the private directory was removed")
+end)
+
+test("status: ask returns the filter error and no answer", function()
+	stub.format = probe_answer({ "@@config|0", "@@error|the config filter failed" })
+	local answer, why = status.ask(config.resolve(nil), { session_id = "s1" }, {})
+	equal(answer, nil, "no answer")
+	equal(why, "the config filter failed", "the reason")
+end)
+
+test("status: a wrapped import source may hold the row separator", function()
+	local found = status.parse(table.concat({
+		"@@config|0",
+		"@@import|rex|https://github.com/docbobo/rex-gascity/tree/release%40%40sta",
+		"ble/pack",
+	}, "\n"))
+	equal(#found.imports, 1, "one import")
+	equal(
+		found.imports[1].source,
+		"https://github.com/docbobo/rex-gascity/tree/release@@stable/pack",
+		"the @ signs come back"
+	)
+	equal(status.binding(found.imports, nil), "rex", "the binding is found")
+end)
+
+test("status: a percent sign in a value is not read as an escape", function()
+	local found = status.parse("@@server|unix:///tmp/a%2540.sock")
+	equal(found.server, "unix:///tmp/a%40.sock", "the percent comes back")
+end)
+
+test("status: a value may hold the probe's end marker", function()
+	local found = status.parse(
+		"@@server|unix:///tmp/a%3C%3Cgascity-end.sock\n@@import|rex|https://github.com/docbobo/rex-gascity//pack"
+	)
+	equal(found.server, "unix:///tmp/a<<gascity-end.sock", "the < signs come back")
+	equal(status.binding(found.imports, nil), "rex", "the next row is read")
+end)
+
+-- The status update action -------------------------------------------------
+
+local REX_PACK = "https://github.com/docbobo/rex-gascity//pack"
+
+-- Runs the action with a spy in place of send.message. Returns ok, the result,
+-- and the messages it sent.
+local function run_status(args, settings)
+	local sent = {}
+	local app = app_with({
+		send = {
+			message = function(_, _, message)
+				sent[#sent + 1] = message
+				return "layer:1", nil, message.subject
+			end,
+		},
+	})
+	for key, value in pairs(settings or {}) do
+		app.config[key] = value
+	end
+	actions.register(app)
+	local ok, result = pcall(
+		stub.actions.gascity_status_update.run,
+		{ block_id = "block:1", session_id = "s1" },
+		args or {}
+	)
+	return ok, result, sent
+end
+
+test("status action: it is registered with a title, an icon, and optional arguments", function()
+	run_status({})
+	local definition = stub.actions.gascity_status_update
+	truthy(definition, "registered")
+	equal(definition.title, "Gas City: Ask the Mayor for a Status Update…", "title")
+	equal(definition.args.city, "string?", "city")
+	equal(definition.args.display, "string?", "display")
+end)
+
+test("status action: without a city argument it asks and uses the chosen city", function()
+	stub.pane_cwd = "/work/nowhere"
+	stub.format = {
+		probe_answer({ "city|/cities/one", "city|/cities/two" }),
+		probe_answer({ "@@city|/cities/two", "@@server|/tmp/rex.sock", "@@config|0", "@@import|rex|" .. REX_PACK }),
+	}
+	stub.picked = "/cities/two"
+	local ok, result, sent = run_status({})
+	truthy(ok, "no error: " .. tostring(result))
+	truthy(stub.picks ~= nil, "asked")
+	equal(stub.picks.title, "Which city?", "the question")
+	equal(#stub.picks.items, 2, "both cities")
+	equal(result.city, "/cities/two", "the chosen city")
+	contains(stub.blocks[2].options.command[3], "city='/cities/two'", "the probe checks the chosen city")
+	equal(sent[1].city, "/cities/two", "the mail names the chosen city")
+end)
+
+test("status action: it mails the mayor the command, the session, the server, and the display", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|/tmp/rex.sock", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, result, sent = run_status({ city = "/cities/alpha" })
+	truthy(ok, "no error: " .. tostring(result))
+	equal(#sent, 1, "one mail")
+	equal(sent[1].subject, "Status update requested", "the subject")
+	equal(sent[1].city, "/cities/alpha", "the city")
+	contains(sent[1].body, "gc 'rex' status-update --template", "the template")
+	contains(sent[1].body, "--server '/tmp/rex.sock' --session 's1' --display 'text'", "the target")
+	equal(result.binding, "rex", "binding")
+	equal(result.server, "/tmp/rex.sock", "server")
+	equal(result.session_id, "s1", "session")
+	equal(result.display, "text", "display")
+	equal(#stub.layers, 0, "the action opens no pane of its own")
+	contains(stub.blocks[1].options.command[3], "-s 's1'", "the probe checks this session")
+end)
+
+test("status action: a non-default server is the one named", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|/tmp/other.sock", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, result, sent = run_status({ city = "/cities/alpha" })
+	truthy(ok, "no error: " .. tostring(result))
+	contains(sent[1].body, "--server '/tmp/other.sock'", "the other server")
+end)
+
+test("status action: the display comes from the argument, then the setting", function()
+	stub.format = probe_answer({ "@@city|-", "@@server|S", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local _, _, sent = run_status({ city = "/c", display = "markdown" }, { status_display = "other" })
+	contains(sent[1].body, "--display 'markdown'", "the argument")
+	stub.reset()
+	stub.format = probe_answer({ "@@city|-", "@@server|S", "@@config|0", "@@import|rex|" .. REX_PACK })
+	_, _, sent = run_status({ city = "/c" }, { status_display = "other" })
+	contains(sent[1].body, "--display 'other'", "the setting")
+end)
+
+test("status action: pack_binding names the binding with no import", function()
+	stub.format = probe_answer({ "@@city|-", "@@server|S" })
+	local ok, result, sent = run_status({ city = "/c" }, { pack_binding = "mine" })
+	truthy(ok, "no error: " .. tostring(result))
+	contains(sent[1].body, "gc 'mine' status-update", "the override")
+	falsy(stub.blocks[1].options.command[3]:find("config show", 1, true), "no lookup")
+end)
+
+test("status action: pack_binding does not skip the gc check, and no mail goes", function()
+	stub.format = probe_answer({ "@@server|/tmp/rex.sock", "@@gc|missing" })
+	local ok, err, sent = run_status({ city = "/c" }, { pack_binding = "mine" })
+	falsy(ok, "an error")
+	contains(err, "gc is not on this machine", "the gc.guard message")
+	equal(#sent, 0, "no mail")
+	contains(stub.blocks[1].options.command[3], "has_gc", "the probe checks gc")
+end)
+
+test("status action: a city without the pack is told how to fix it, and no mail goes", function()
+	stub.format = probe_answer({
+		"@@city|/cities/alpha",
+		"@@server|S",
+		"@@config|0",
+		"@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity",
+	})
+	local ok, err, sent = run_status({ city = "alpha" }, { file = "/home/me/.config/rex/gascity.lua" })
+	falsy(ok, "an error")
+	equal(
+		err,
+		"alpha does not import the rex-gascity pack. Import it (docs/rex-runtime-pack.md), or set pack_binding in /home/me/.config/rex/gascity.lua",
+		"the error"
+	)
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: a failed config show is named as that, and no mail goes", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|S", "@@config|1", "@@error|bad city.toml" })
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	equal(err, "gc config show failed for alpha (exit 1): bad city.toml", "the error")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: no gc on the machine is named, and no mail goes", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|S", "@@gc|missing" })
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	contains(err, "gc is not on this machine", "the gc.guard message")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: an unverified server is an error, and no mail goes", function()
+	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	equal(err, "could not find the Rex server that owns session s1", "the error")
+	equal(#sent, 0, "no mail")
+end)
+
+test("status action: a machine that does not answer is an error, and no mail goes", function()
+	stub.format = "nothing yet"
+	local ok, err, sent = run_status({ city = "alpha" })
+	falsy(ok, "an error")
+	equal(err, "the machine did not answer in time", "the probe's reason")
+	equal(#sent, 0, "no mail")
+end)
+
 -- The Gas City menu ------------------------------------------------------
 
 local function run_menu(choice, ctx)
@@ -1182,16 +1759,18 @@ test("menu: it lists the Gas City commands and nothing else", function()
 
 	truthy(stub.picks ~= nil, "asked")
 	equal(stub.picks.title, "Gas City", "the title")
-	equal(#stub.picks.items, 5, "five commands")
+	equal(#stub.picks.items, 6, "six commands")
 	equal(stub.picks.items[1].title, "Message the Mayor…", "the first")
-	equal(stub.picks.items[2].title, "Suspend a Rig…", "the second")
-	equal(stub.picks.items[3].title, "Resume a Rig…", "the third")
-	equal(stub.picks.items[4].title, "Open a Rig…", "the fourth")
-	equal(stub.picks.items[5].title, "Where This Runs…", "the fifth")
+	equal(stub.picks.items[2].title, "Ask the Mayor for a Status Update…", "the second")
+	equal(stub.picks.items[3].title, "Suspend a Rig…", "the third")
+	equal(stub.picks.items[4].title, "Resume a Rig…", "the fourth")
+	equal(stub.picks.items[5].title, "Open a Rig…", "the fifth")
+	equal(stub.picks.items[6].title, "Where This Runs…", "the sixth")
 	truthy(stub.picks.items[1].subtitle ~= nil, "each says what it does")
-	equal(stub.picks.items[2].icon, "clock", "suspend uses the clock")
-	equal(stub.picks.items[3].icon, "plus", "resume uses the plus")
-	truthy(stub.picks.items[2].icon ~= stub.picks.items[3].icon, "and they differ")
+	equal(stub.picks.items[2].icon, "document", "the status update uses the document")
+	equal(stub.picks.items[3].icon, "clock", "suspend uses the clock")
+	equal(stub.picks.items[4].icon, "plus", "resume uses the plus")
+	truthy(stub.picks.items[3].icon ~= stub.picks.items[4].icon, "and they differ")
 	for _, item in ipairs(stub.picks.items) do
 		truthy(REX_ICONS[item.icon], "a known Rex icon: " .. tostring(item.icon))
 	end
@@ -1464,6 +2043,7 @@ test("entry: init.lua registers the actions and the binding", function()
 	truthy(ok, "loads: " .. tostring(err))
 	truthy(stub.actions.gascity_mail_mayor ~= nil, "registers the message action")
 	truthy(stub.actions.gascity_doctor ~= nil, "registers the report action")
+	truthy(stub.actions.gascity_status_update ~= nil, "registers the status update action")
 	equal(stub.binds["ctrl+b>g"], "gascity_menu", "binds the key to the menu")
 end)
 

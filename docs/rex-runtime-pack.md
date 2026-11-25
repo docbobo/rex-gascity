@@ -35,11 +35,11 @@ No pack registry is involved. gc clones the git repository and uses the
 against git tags with `git ls-remote`.
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
 ```
 
-- `--version` takes the bare version `2026.11.05`. The tag is `v2026.11.05`,
-  so `--version v2026.11.05` matches no tag.
+- `--version` takes the bare version `2026.11.06`. The tag is `v2026.11.06`,
+  so `--version v2026.11.06` matches no tag.
 - The tag must be pushed before the import.
 - A public repository needs no credentials. A private repository needs git
   credentials for `git ls-remote` and the fetch.
@@ -156,14 +156,14 @@ To upgrade, re-pin the import and reinstall:
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
 ```
 
 To roll back, use the previous version in the same commands. A caret
-constraint tracks the major line: `--version '^2026.11.05'` matches later
+constraint tracks the major line: `--version '^2026.11.06'` matches later
 2026 releases and not a 2027 release. `gc import upgrade rex` then moves to
 the newest matching tag.
 
@@ -176,6 +176,44 @@ error (exit 2). The check is read-only. `gc doctor --check rex-gascity-runtime:r
 installs the UI for the pack's version and wires the Rex config. Install,
 doctor rows, the unwritable `init.lua` case, upgrade and uninstall are in
 [`rex-gascity-ui.md`](rex-gascity-ui.md).
+
+## Status update command
+
+`gc <binding> status-update` shows a status update in a floating Rex pane
+that stays open until you close it. `<binding>` is the name the city imports
+this pack under, usually `rex`. The Gas City UI action **Gas City: Ask the
+Mayor for a Status Update…** mails the mayor the exact command to run, so
+the mayor normally runs it, not you.
+
+```text
+gc rex status-update --template
+gc rex status-update --session ID [--server SERVER] [--display text] [--body-file FILE]
+```
+
+- `--template` prints the Markdown template: a `# Status update — <city>`
+  title and the sections Summary, Done, In progress, Blocked, Needs you, and
+  Next.
+- The filled-in update is read from stdin, or from `--body-file`.
+- `--session` names the Rex session to open the pane in. `--server` names
+  the Rex server that owns it. Without `--server`, `rex` uses its own default
+  server.
+- `--display` is `text`, the only display today. It renders the update in
+  the look of the UI's doctor report.
+
+Terminal control bytes in the update are removed before it is rendered, so
+an update cannot clear or retitle the pane. The command opens the pane
+through `rex api call session.new_layer`, and it finds `rex` on `PATH` or in
+`$REX_BIN_DIR`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | `--template` printed the template, or the pane opened. |
+| 1 | A read failure, an empty update, or an unknown `--display`. |
+| 2 | A usage error, such as a missing `--session`. |
+| 127 | No `rex` on `PATH` and none in `$REX_BIN_DIR`. |
+
+If `rex` fails, the command returns the same nonzero exit status and passes
+through its stderr. The status can match a code in this table.
 
 ## Source checkout
 
@@ -194,10 +232,10 @@ path.
 `pack/release.sh` is the only publisher. CI builds into the draft that the
 script creates and never publishes.
 
-Run `sh pack/release.sh v2026.11.05 --dry-run` to print the resolved commit and
-asset names without changing remote state. Run `sh pack/release.sh v2026.11.05`
+Run `sh pack/release.sh v2026.11.06 --dry-run` to print the resolved commit and
+asset names without changing remote state. Run `sh pack/release.sh v2026.11.06`
 to create the draft, build, verify, ask, and publish. Run
-`sh pack/release.sh v2026.11.05 --resume` to continue an existing draft.
+`sh pack/release.sh v2026.11.06 --resume` to continue an existing draft.
 
 It refuses a dirty tracked tree, a branch other than `main`, a tag that
 disagrees with `[pack] version`, a tag that points at another commit, and a

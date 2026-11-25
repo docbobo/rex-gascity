@@ -17,6 +17,8 @@ M.defaults = {
 	recipient = "mayor", -- who the mayor action sends to
 	notify = true, -- nudge the recipient after sending
 	subject_width = 72, -- longest subject line made from the message
+	pack_binding = nil, -- the key the city imports this pack under; nil finds it
+	status_display = "text", -- how the mayor's status update is shown
 }
 
 -- Every setting name, including the ones that default to nil.
@@ -26,6 +28,8 @@ local KNOWN = {
 	recipient = "string",
 	notify = "boolean",
 	subject_width = "number",
+	pack_binding = "string",
+	status_display = "string",
 }
 
 -- Where the settings file lives when nothing names another one.
