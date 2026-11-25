@@ -2069,7 +2069,9 @@ test("report: severity is declared, not sniffed from the value", function()
 	local ok_facts = some_facts_with("/work/missing-dir", { "host|test-machine" })
 	local directory = directory_of(ok_facts)
 	equal(directory.severity, "normal", "user data does not set the severity")
-	local printed = report.terminal(ok_facts)
+	-- Only the directory fact: other facts (a missing settings file, say) may
+	-- be trouble for reasons this assertion is not about.
+	local printed = report.terminal({ directory })
 	contains(printed, "missing-dir", "the path renders")
 	falsy(printed:find("\27[38;5;203m", 1, true), "nothing is in trouble colour")
 
