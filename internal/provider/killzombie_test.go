@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/docbobo/rex-gascity/internal/prochost"
@@ -296,5 +297,71 @@ func TestKillObjectZombieChangedForAdoptedPane(t *testing.T) {
 	}
 	if res != "changed" {
 		t.Errorf("result = %q, want changed for an adopted pane", res)
+	}
+}
+
+// TestKillObjectZombieRereadsForeground guards kill-object's fresh read: the
+// zombie root comes from a read later than boxState's. boxState reads root 100
+// (sleep); every later read names root 200, the agent, so the kill answers
+// changed and closes nothing. Reusing boxState's reading would walk from 100,
+// find no agent and reap a live one.
+func TestKillObjectZombieRereadsForeground(t *testing.T) {
+	ctx := context.Background()
+	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
+	fake, p := zombieStarted(t, zombieSnapshot(nil,
+		zombieRow(100, 1, "sleep", "sleep 300"),
+		zombieRow(200, 1, "gc-rpp-no-such-process", "gc-rpp-no-such-process"),
+	), env)
+	name := "Indigo--dog-1"
+	ans, err := p.Observe(ctx, name, nil)
+	if err != nil || ans.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
+	}
+	fake.ProcessFunc = sequencedProcess(
+		rex.ProcessInfo{Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+		rex.ProcessInfo{Foreground: &rex.Process{PID: 200}},
+	)
+
+	res, err := p.KillObject(ctx, name, provider.KillObjectRequest{Object: *ans.Object, Mode: "zombie"})
+	if err != nil {
+		t.Fatalf("KillObject: %v", err)
+	}
+	if res != "changed" {
+		t.Errorf("result = %q, want changed: the fresh read names the live agent", res)
+	}
+	if len(fake.ClosedBlocks) != 0 {
+		t.Errorf("ClosedBlocks = %v, want none", fake.ClosedBlocks)
+	}
+}
+
+// TestKillObjectZombieExitedRereadKeepsForeground guards the fresh read's
+// foreground on an exited reply. boxState reads the box running; the later
+// read reports both an exit status and foreground 100. The walk still runs
+// from 100, finds no agent and kills, as before the pane-liveness module. A
+// read that dropped the foreground on an exited reply would answer changed.
+func TestKillObjectZombieExitedRereadKeepsForeground(t *testing.T) {
+	ctx := context.Background()
+	env := map[string]string{"GT_PROCESS_NAMES": "gc-rpp-no-such-process"}
+	fake, p := zombieStarted(t, zombieSnapshot(nil, zombieRow(100, 1, "sleep", "sleep 300")), env)
+	name := "Indigo--dog-1"
+	ans, err := p.Observe(ctx, name, nil)
+	if err != nil || ans.Object == nil {
+		t.Fatalf("Observe = %+v, %v; want a box with an object", ans, err)
+	}
+	block := blockOf(t, p, name)
+	fake.ProcessFunc = sequencedProcess(
+		rex.ProcessInfo{Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+		rex.ProcessInfo{LastExit: &rex.ExitStatus{}, Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+	)
+
+	res, err := p.KillObject(ctx, name, provider.KillObjectRequest{Object: *ans.Object, Mode: "zombie"})
+	if err != nil {
+		t.Fatalf("KillObject: %v", err)
+	}
+	if res != "killed" {
+		t.Errorf("result = %q, want killed: the exited reread still names root 100", res)
+	}
+	if !slices.Equal(fake.ClosedBlocks, []rex.BlockID{block}) {
+		t.Errorf("ClosedBlocks = %v, want [%s]", fake.ClosedBlocks, block)
 	}
 }
