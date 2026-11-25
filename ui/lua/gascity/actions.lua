@@ -202,7 +202,11 @@ local function commands(app, settings)
 		local printed = text.trim(answer.output or "")
 		if answer.status ~= 0 then
 			rex.log("error", "gascity: " .. kind .. ": " .. printed)
-			error(first_line(printed) or ("gc exited with status " .. answer.status), 0)
+			local reason = first_line(printed)
+			if reason == "" then
+				reason = "gc exited with status " .. answer.status
+			end
+			error(reason, 0)
 		end
 
 		local list = table.concat(names, ", ")

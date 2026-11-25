@@ -147,9 +147,18 @@ remove_block() { # remove_block <file>
   grep -qF -- "$marker_start" "$_file" || return 0
   _tmp=$_file.gascity-ui.$$
   if ! awk -v start="$marker_start" -v end="$marker_end" '
-    index($0, start) == 1 { skipping = 1; next }
+    index($0, start) == 1 {
+      n = blank - 1
+      while (n > 0) { print ""; n-- }
+      blank = 0
+      skipping = 1
+      next
+    }
     index($0, end) == 1 { skipping = 0; next }
-    !skipping { print }
+    skipping { next }
+    $0 == "" { blank++; next }
+    { while (blank > 0) { print ""; blank-- } print }
+    END { while (blank > 0) { print ""; blank-- } }
   ' "$_file" > "$_tmp"; then
     rm -f "$_tmp"
     warn "cannot rewrite $_file"
@@ -268,9 +277,15 @@ case "$live_root" in
   "")
     : ;; # nothing loaded: install the stub, then try the reference block
   "$installed_root")
-    note "the extension is already loaded from $installed_root (version $version)"
-    note "nothing to do"
-    exit 0
+    if [ -n "$from_source" ]; then
+      # --from-source refreshes the tree in place. The config already loads this
+      # path, so a changed checkout must not be mistaken for a finished install.
+      note "the extension is loaded from $installed_root (version $version); refreshing it from source"
+    else
+      note "the extension is already loaded from $installed_root (version $version)"
+      note "nothing to do"
+      exit 0
+    fi
     ;;
   "$cache_root"/*/ui)
     note "the config loads version ${live_root#"$cache_root"/} (from $live_root); installing $version"

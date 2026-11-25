@@ -335,8 +335,11 @@ fails without it.
 4. Release plumbing: `gascity-ui.tar.gz` in `.github/workflows/release.yml`,
    checksummed with the provider assets.
 5. Docs.
-6. Migrate the development machine: install from the checkout
-   (`--from-source`), then delete the hand-written block from `user.lua`, and
+6. Migrate the development machine: delete the hand-written checkout load
+   from `user.lua` first. Then install from the checkout
+   (`ui/install.sh --from-source`). While `user.lua` still loads the checkout,
+   the installer sees a load it does not own and writes nothing. The cached
+   copy, the stub, and the reference block all stay unwritten. Reload Rex, then
    confirm the detection row "loaded from the installed root".
 
 Uninstall is part of step 1: `ui/install.sh --uninstall` removes the marker

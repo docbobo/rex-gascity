@@ -30,7 +30,7 @@ local function script(settings)
 
 	-- Any absolute path in gc's list counts, so this does not depend on how gc
 	-- lines its table up. A gc that does not answer simply lists nothing.
-	add('"$gc" cities 2>/dev/null | tr -s " \t" "\\n\\n" | sed -n \'s#^\\(/.*\\)$#city|\\1#p\'')
+	add('"$gc" cities 2>/dev/null | awk \'{ sub(/^[ \\t]+/, ""); if ($0 ~ /^\\//) print "city|" $0 }\'')
 	return table.concat(lines, "\n")
 end
 

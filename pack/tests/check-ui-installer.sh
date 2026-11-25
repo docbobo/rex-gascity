@@ -405,4 +405,29 @@ case_releases=
 [ -e "$installed" ] && fail "$name: a mismatched release was installed"
 grep -q 'declares version' "$work/out.txt" || fail "$name: the mismatch was not named"
 
+# --- case 14: --from-source refreshes an already loaded copy --------------
+
+new_case source-refresh
+printf '%s\n' '-- existing config' > "$cfg"
+expect_ok --from-source
+[ -f "$installed/init.lua" ] || fail "$name: the first source install wrote no tree"
+touch "$installed/stale-file"
+expect_ok --from-source
+[ -e "$installed/stale-file" ] && fail "$name: a second --from-source did not refresh the loaded copy"
+grep -q 'refreshing it from source' "$work/out.txt" || fail "$name: the refresh was not reported"
+
+# --- case 15: install, uninstall, then install again ----------------------
+# The uninstall must leave the config byte-identical to the pre-install copy,
+# or the second install finds a differing backup and refuses to run.
+
+new_case reinstall-after-uninstall
+printf '%s\n' 'rex.bind("keep", function() end)' > "$cfg"
+cp "$cfg" "$work/$name-orig"
+expect_ok
+expect_ok --uninstall
+cmp -s "$cfg" "$work/$name-orig" || fail "$name: uninstall did not restore the pre-install bytes"
+expect_ok
+[ "$(count_block "$cfg")" = 1 ] || fail "$name: the second install wrote no single block"
+grep -qF 'rex.bind("keep", function() end)' "$cfg" || fail "$name: the user config was lost"
+
 echo "check-ui-installer: ok ($case_no cases)"

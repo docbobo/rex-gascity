@@ -65,7 +65,17 @@ function M.facts(app, block_id, ctx)
 	if cwd == nil then
 		add("directory", "the pane reported none", "terminal")
 	else
-		local where = readable(cwd) and "on this machine" or "on another machine"
+		-- Base this on the machine that owns the pane, not on whether the local
+		-- process can read the path: a remote pane can name a path that happens
+		-- to be readable here, and that path is still not on this machine.
+		local where
+		if found == nil then
+			where = "machine not named"
+		elseif found.host == this_machine then
+			where = "on this machine"
+		else
+			where = "on another machine"
+		end
 		add("directory", cwd .. "  (" .. where .. ")", "terminal")
 	end
 

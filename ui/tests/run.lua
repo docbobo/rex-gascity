@@ -311,6 +311,11 @@ test("config: a leading ~ is expanded", function()
 	equal(settings.gc_bin, (os.getenv("HOME") or "") .. "/bin/gc", "expanded")
 end)
 
+test("config: a home with a percent is expanded literally", function()
+	equal(config.expand("~/city", "/home/a%0"), "/home/a%0/city", "the percent is kept")
+	equal(config.expand("~", "/home/a%0"), "/home/a%0", "a bare tilde too")
+end)
+
 -- Text -------------------------------------------------------------------
 
 test("text: trim and collapse", function()
@@ -432,6 +437,12 @@ test("run: without gc_bin the script looks in the usual places", function()
 	contains(script, "gc=gc", "the PATH name")
 	contains(script, "/run/current-system/sw/bin/gc", "the Nix place")
 	contains(script, "$HOME/.nix-profile/bin/gc", "the profile place")
+end)
+
+test("run: each fallback program path is quoted", function()
+	local script = run.script(config.resolve(nil), { { "rig", "list" } })
+	contains(script, '"$HOME/.local/bin/gc"', "a space in HOME cannot split the path")
+	contains(script, '"$HOME/go/bin/gc"', "and the next one")
 end)
 
 test("probe: never stops before its end marker", function()
@@ -686,6 +697,19 @@ test("machine: asks for its name, the pane's city, and gc's list", function()
 	contains(script, "cities", "asks gc for its list")
 end)
 
+test("machine: reads a city path with a space in it", function()
+	local answer = machine.parse("city|/srv/Gas City")
+	equal(answer.cities[1], "/srv/Gas City", "the space is kept")
+end)
+
+test("machine: the city list is parsed without splitting on spaces", function()
+	stub.format = probe_answer({ "host|Mac-Mini" })
+	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = "/work" })
+	local script = stub.blocks[1].options.command[3]
+	contains(script, "awk", "parses whole path fields")
+	falsy(script:find("tr -s", 1, true), "does not split fields on white space")
+end)
+
 -- Rigs -------------------------------------------------------------------
 
 local RIG_JSON = '{"city_name":"one","rigs":[{"name":"alpha","path":"/work/alpha","suspended":false},{"name":"beta","path":"/work/beta","suspended":true,"hq":true}]}'
@@ -713,6 +737,13 @@ test("rigs: the JSON is joined back up across the rows of the screen", function(
 		return { rigs = {} }
 	end)
 	equal(stub.json_text, '{"rigs":[{"name":"alpha"}]}', "no newlines left")
+end)
+
+test("rigs: a city path wrapped across rows is recovered", function()
+	local answer = rigs.parse("city|/srv/very-long/\nGas City\nrigs|{}", function()
+		return { rigs = {} }
+	end)
+	equal(answer.city, "/srv/very-long/Gas City", "the wrapped rows are joined")
 end)
 
 test("rigs: a city of - means the pane was in none", function()
@@ -904,6 +935,14 @@ test("rigs: gc failing is the action's error, in one line", function()
 	truthy(stub.logged("error", "second line"), "the whole output is logged")
 end)
 
+test("rigs: a silent failure still reports the exit status", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({}, 2)
+	local ok, result = run_rig("suspend", { rigs = "alpha" })
+	falsy(ok, "reports an error")
+	contains(tostring(result), "status 2", "names the exit status")
+end)
+
 test("rigs: a command that never answers is reported", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = "<<gascity-begin>>\nnothing yet"
@@ -1070,7 +1109,7 @@ end)
 
 test("report: names the machine, checkout, settings, and pane", function()
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "host|test-machine" })
+	stub.format = probe_answer({ "host|other-machine" })
 	local app = app_with({})
 	local output = report.build(app, "block:1", { origin = "palette", client_id = "client:1" })
 
@@ -1116,8 +1155,17 @@ end)
 
 test("report: says when the pane is on this machine", function()
 	stub.pane_cwd = fixture .. "/city/rig"
+	stub.format = probe_answer({ "host|test-machine" })
 	local output = report.build(app_with({}), "block:1", nil)
 	contains(output, "on this machine", "says the pane is here")
+end)
+
+test("report: a readable path on another machine is not on this machine", function()
+	stub.pane_cwd = fixture .. "/city/rig"
+	stub.format = probe_answer({ "host|other-machine" })
+	local output = report.build(app_with({}), "block:1", nil)
+	contains(output, "on another machine", "the pane's machine is not this one")
+	falsy(output:find("on this machine", 1, true), "never claims the local machine")
 end)
 
 test("report: says when the settings file is missing", function()

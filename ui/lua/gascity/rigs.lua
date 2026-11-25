@@ -59,7 +59,13 @@ function M.parse(answer, decode)
 		return rex.json.decode(source)
 	end
 
-	local city = answer:match("city|([^\n]*)")
+	-- The terminal wraps a long city path across rows, so the path is read up
+	-- to the next marker and then unfolded. The rigs JSON below does the same
+	-- thing by dropping its newlines before decoding.
+	local city = answer:match("city|(.-)rigs|")
+	if city ~= nil then
+		city = city:gsub("\n", "")
+	end
 	if city == "-" then
 		city = nil
 	end

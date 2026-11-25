@@ -22,10 +22,16 @@ function M.words(settings)
 	if settings.gc_bin then
 		return { "gc=" .. text.quote(settings.gc_bin) }
 	end
+	-- Each place is quoted so a space in $HOME or $USER cannot split it into
+	-- two words; the double quotes still let the shell expand those variables.
+	local places = {}
+	for _, place in ipairs(M.places) do
+		places[#places + 1] = '"' .. place .. '"'
+	end
 	return {
 		"gc=gc",
 		"if ! command -v gc >/dev/null 2>&1; then",
-		"\tfor p in " .. table.concat(M.places, " ") .. "; do",
+		"\tfor p in " .. table.concat(places, " ") .. "; do",
 		'\t\tif [ -x "$p" ]; then gc="$p"; break; fi',
 		"\tdone",
 		"fi",

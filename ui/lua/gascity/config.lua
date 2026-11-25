@@ -38,16 +38,22 @@ function M.default_path()
 end
 
 -- Expands a leading ~ to the home directory. Paths reach a program, so they
--- are expanded here rather than by a shell.
-function M.expand(path)
+-- are expanded here rather than by a shell. `home` defaults to $HOME and is a
+-- parameter so a test can name a home that holds a "%".
+function M.expand(path, home)
 	if type(path) ~= "string" or path == "" then
 		return path
 	end
-	local home = os.getenv("HOME") or ""
+	home = home or os.getenv("HOME") or ""
 	if path == "~" then
 		return home
 	end
-	return (path:gsub("^~/", home:gsub("%%", "%%") .. "/"))
+	-- Plain concatenation, not a gsub replacement: a "%" in HOME would be read
+	-- as the start of an escape.
+	if path:sub(1, 2) == "~/" then
+		return home .. "/" .. path:sub(3)
+	end
+	return path
 end
 
 local function readable(path)
