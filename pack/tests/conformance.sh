@@ -4,9 +4,10 @@
 #   pack/tests/conformance.sh [--binary <path>]
 #
 # Never builds. The binary comes from --binary, else gc-runtime-rex on PATH.
-# It runs in a scratch city and state root, so a fetched pack/ (pack.toml, no
-# go.mod, no source, no repo checkout) is enough. Python 3 reads the JSON
-# report. gc supplies GC_EXEC_CITY_NAME, so GC_REX_CITY is never set here.
+# It runs in a per-attempt scratch city and state root, so a fetched pack/
+# (pack.toml, no go.mod, no source, no repo checkout) is enough. Python 3 reads
+# the JSON report. gc supplies GC_EXEC_CITY_NAME, so GC_REX_CITY is never set
+# here.
 #
 # Exit 0 means gc reported ok:true with no failed requirement. v2_ready and
 # v2_failed are recorded as evidence, never gated by this script: v2_failed
@@ -54,18 +55,15 @@ command -v python3 >/dev/null 2>&1 || { echo "conformance: python3 is required t
 scratch=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/rexconf.XXXXXX")" && pwd -P)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-city=$pack/../testdata/city
-if [ ! -f "$city/city.toml" ]; then
-  # A fetched pack has no repo testdata. A scratch city that includes the
-  # pack gives gc everything it needs to resolve [runtimes.rex].
-  city=$scratch/city
-  mkdir -p "$city"
-  printf '[workspace]\nname = "rex-conf"\nincludes = ["%s"]\n' "$pack" > "$city/city.toml"
-fi
-
-export GC_EXEC_STATE_DIR=$scratch/state
 report=$scratch/conformance.json
 log=$scratch/conformance.log
+
+# gc needs a city that includes the pack to resolve [runtimes.rex]. Build one
+# per attempt, under the scratch root, so no attempt reuses another's city.
+build_city() { # <dir>
+  mkdir -p "$1"
+  printf '[workspace]\nname = "rex-conf"\nincludes = ["%s"]\n' "$pack" > "$1/city.toml"
+}
 
 # report_failures names every failed requirement, by code and detail, before a
 # retry overwrites the report. The JSON report is the only place gc says what
@@ -93,6 +91,12 @@ attempts=0
 while :; do
   attempts=$((attempts + 1))
   status=0
+  # Each attempt gets its own city and state root: a driving op may already
+  # have typed when it fails, and its input or session would otherwise stay in
+  # the shared state root and make the retry fail the same way.
+  city=$scratch/city-$attempts
+  build_city "$city"
+  export GC_EXEC_STATE_DIR=$scratch/state-$attempts
   "$gc" runtime conformance "$binary" --city "$city" --json > "$report" 2> "$log" || status=$?
   [ ! -s "$log" ] || cat "$log" >&2
   if [ "$status" -eq 0 ]; then

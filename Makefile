@@ -42,7 +42,7 @@ verify: ## Run the pack check scripts (pack/tests/verify.sh)
 check: build ## Build and run gc runtime check against testdata/city
 	PATH="$(abspath $(BIN_DIR)):$$PATH" GC_REX_CITY="$(GC_REX_CITY)" gc runtime check rex --city "$(CITY_DIR)"
 
-conformance: build ## Build and run gc runtime conformance against testdata/city
+conformance: build ## Build and run gc runtime conformance in a scratch city
 	./pack/tests/conformance.sh --binary "$(abspath $(BIN))"
 
 timings: ## Report p50 and p90 CI job wall time for the last 30 days
