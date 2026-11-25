@@ -32,7 +32,7 @@ installs, so the first download is only the way to get the script.
 
 ```sh
 mkdir -p ~/gascity-ui-install && cd ~/gascity-ui-install
-curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.05/gascity-ui.tar.gz
+curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.06/gascity-ui.tar.gz
 tar -xzf gascity-ui.tar.gz
 sh ui/install.sh
 ```
@@ -46,7 +46,7 @@ Import the pack, then let the doctor fix install the UI. The fix runs
 `ui/install.sh` for you. See [`docs/rex-gascity-ui.md`](../docs/rex-gascity-ui.md).
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 ```
@@ -138,6 +138,7 @@ the line you added where that file is generated.
   rex do gascity_mail_mayor body="Build is green" subject="Build"
   rex do gascity_mail_mayor body="Hello" city="~/cities/two"
   rex do gascity_rigs_suspend rigs="alpha, beta"
+  rex do gascity_status_update city="~/cities/two"
   rex do gascity_doctor
   ```
 
@@ -248,6 +249,8 @@ return {
 	city = "~/cities/two", -- default: the city the pane is in
 	gc_bin = "/run/current-system/sw/bin/gc", -- default: found from PATH
 	subject_width = 72,    -- longest subject line made from a message
+	pack_binding = "rex",  -- default: found from the city's imports
+	status_display = "text", -- how the mayor's status update is shown
 }
 ```
 
@@ -258,6 +261,8 @@ return {
 | `city` | none | City to send to, when it should not be the pane's own. |
 | `gc_bin` | none | Absolute path to `gc`, for a PATH that misses it. Without it the script uses `gc` from `PATH`, then looks in `/run/current-system/sw/bin`, `/etc/profiles/per-user/$USER/bin`, `~/.nix-profile/bin`, `~/.local/bin`, and `~/go/bin`. |
 | `subject_width` | `72` | Longest subject line made from a message. |
+| `pack_binding` | none | The binding to use. Set it when the city imports the pack from a local path. With it set, the import lookup is skipped. |
+| `status_display` | `text` | The `--display` the mail asks for. The action's `display` argument wins over it. |
 
 A settings file with a mistake is reported in the Rex log and the rest of the
 settings still apply.
@@ -312,6 +317,7 @@ lua/gascity/send.lua     sending a message, from question to pane
 lua/gascity/rigs.lua     the rigs of the pane's city, and suspending them
 lua/gascity/run.lua      the shell script a pane runs, and the pane itself
 lua/gascity/report.lua   the `gascity_doctor` report
+lua/gascity/status.lua   asks the mayor for a status update: binding, server, mail
 lua/gascity/actions.lua  the commands, the menu, and the key binding
 lua/gascity/text.lua     string helpers
 tests/run.lua            tests, with a stub `rex`

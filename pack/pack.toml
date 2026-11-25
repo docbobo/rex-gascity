@@ -1,6 +1,6 @@
 [pack]
 name = "rex-gascity-runtime"
-version = "2026.11.05"
+version = "2026.11.06"
 schema = 2
 description = "Gas City runtime pack for Rex: a native Rex session provider speaking RPP v0."
 

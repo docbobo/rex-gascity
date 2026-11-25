@@ -33,7 +33,7 @@ Import the pack as in [`rex-runtime-pack.md`](rex-runtime-pack.md), then run the
 UI check with `--fix`:
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 gc doctor --check rex-gascity-runtime:rex-ui
@@ -55,7 +55,7 @@ against `checksums.txt` before it installs.
 
 ```sh
 mkdir -p ~/gascity-ui-install && cd ~/gascity-ui-install
-curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.05/gascity-ui.tar.gz
+curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.06/gascity-ui.tar.gz
 tar -xzf gascity-ui.tar.gz
 sh ui/install.sh
 ```
@@ -115,7 +115,7 @@ steps are in [`rex-binary-install.md`](rex-binary-install.md#sha-imports-and-ver
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 ```
@@ -130,7 +130,7 @@ only after that succeeds. It leaves the cache copy and `gascity.lua` alone. The
 installed tree carries its own installer:
 
 ```sh
-sh "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.05/ui/install.sh" --uninstall
+sh "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.06/ui/install.sh" --uninstall
 ```
 
 When `init.lua` is a symlink, the installer cannot edit it. It keeps the stub
@@ -138,8 +138,38 @@ and prints the block to remove. Remove that line where the file is generated,
 then delete the stub. To reclaim the space, remove the cache copy:
 
 ```sh
-rm -rf "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.05/ui"
+rm -rf "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.06/ui"
 ```
+
+## Ask the mayor for a status update
+
+**Gas City: Ask the Mayor for a Status Update…** mails the mayor one
+instruction: print the template with `gc <binding> status-update --template`,
+fill it in, and pipe it to `gc <binding> status-update` with this session's
+server, session id, and display. The mayor's command then opens the update in
+a floating pane of this session. The action itself renders nothing and does
+not wait for the reply.
+
+Before it sends anything, the action asks the pane's machine two things:
+
+- The binding: the key under which `gc config show --json` lists this pack in
+  the city's top-level imports. Rig-level imports do not count. Both source
+  spellings match: `https://github.com/docbobo/rex-gascity//pack` and
+  `https://github.com/docbobo/rex-gascity/tree/<ref>/pack`.
+- The server: `$REX_SERVER`, once a read-only check shows that it owns this
+  session. The check runs `rex … --autostart=false`, so it never starts a
+  server.
+
+If any of these fail, the action raises an error and sends no mail: `gc` is
+missing, `gc config show` fails, the city does not import the pack, or the
+server cannot be confirmed.
+
+Two settings in `~/.config/rex/gascity.lua` change it:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `pack_binding` | none | The binding to use. Set it when the city imports the pack from a local path. With it set, the import lookup is skipped. |
+| `status_display` | `text` | The `--display` the mail asks for. The action's `display` argument wins over it. |
 
 ## Settings and overrides
 
