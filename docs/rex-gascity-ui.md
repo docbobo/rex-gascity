@@ -124,17 +124,17 @@ Old `<version>/ui` directories stay until you remove them by hand.
 
 ## Uninstall
 
-`--uninstall` removes the marked block from `init.lua` and deletes the stub. It
-leaves the cache copy and `gascity.lua` alone. The installed tree carries its
-own installer:
+`--uninstall` removes the marked block from `init.lua`. It deletes the stub
+only after that succeeds. It leaves the cache copy and `gascity.lua` alone. The
+installed tree carries its own installer:
 
 ```sh
 sh "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.03/ui/install.sh" --uninstall
 ```
 
-When `init.lua` is a symlink, the installer cannot edit it: remove the line you
-added where that file is generated. To reclaim the space, remove the cache
-copy:
+When `init.lua` is a symlink, the installer cannot edit it. It keeps the stub
+and prints the block to remove. Remove that line where the file is generated,
+then delete the stub. To reclaim the space, remove the cache copy:
 
 ```sh
 rm -rf "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.03/ui"

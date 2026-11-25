@@ -417,6 +417,12 @@ sums=$(step_script "Write checksums.txt")
 [ -n "$pkg" ] || fail "release.yml has no 'Package the UI' step with a run block"
 [ -n "$sums" ] || fail "release.yml has no 'Write checksums.txt' run block"
 
+# The gate runs both version guards, so a tag that disagrees with ui/version
+# stops the release before build and upload.
+gate=$(awk '/^  gate:/ { in_gate = 1 } in_gate && /^  [a-z]+:/ && !/^  gate:/ { exit } in_gate' "$wf")
+printf '%s\n' "$gate" | grep -q 'sh pack/tests/check-ui-version.sh' ||
+  fail "release.yml's gate does not run pack/tests/check-ui-version.sh"
+
 tar=tar
 if ! tar --version 2>/dev/null | grep -q 'GNU tar'; then
   command -v gtar >/dev/null 2>&1 && tar=gtar
@@ -458,9 +464,12 @@ for name in gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 \
 done
 
 # The same shell the runner uses; $pkg runs from the repo root, $sums in dist.
-( cd "$work/uiwf" && PATH="$work/bin-gnu:$PATH" bash -eo pipefail -c "$pkg" ) ||
+# The scripts go to files, not `bash -c`, so nothing in the YAML is re-parsed.
+printf '%s\n' "$pkg" > "$work/pkg.sh"
+printf '%s\n' "$sums" > "$work/sums.sh"
+( cd "$work/uiwf" && PATH="$work/bin-gnu:$PATH" bash -eo pipefail "$work/pkg.sh" ) ||
   fail "the 'Package the UI' step failed"
-( cd "$work/uiwf/dist" && PATH="$work/bin-gnu:$PATH" bash -eo pipefail -c "$sums" ) >/dev/null ||
+( cd "$work/uiwf/dist" && PATH="$work/bin-gnu:$PATH" bash -eo pipefail "$work/sums.sh" ) >/dev/null ||
   fail "the 'Write checksums.txt' step failed"
 
 ui_asset=$work/uiwf/dist/gascity-ui.tar.gz
@@ -485,7 +494,7 @@ done
 
 # Same tree, same bytes.
 ( cd "$work/uiwf" && rm dist/gascity-ui.tar.gz &&
-  PATH="$work/bin-gnu:$PATH" bash -eo pipefail -c "$pkg" )
+  PATH="$work/bin-gnu:$PATH" bash -eo pipefail "$work/pkg.sh" )
 [ "$(sha_of "$ui_asset")" = "$ui_sha" ] || fail "gascity-ui.tar.gz is not deterministic"
 
 # A mismatch must be caught: a changed archive no longer matches its line.

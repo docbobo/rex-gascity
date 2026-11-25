@@ -67,6 +67,13 @@ if grep -q 'FAKE-REX-BROKEN' "$cfg"; then
   echo "$cfg:2: unexpected symbol near ')'" >&2
   exit 1
 fi
+# A config that loads before the append and fails after it: the installer must
+# restore the backup it was given, whatever created it.
+if [ -n "${FAKE_REX_FAIL_APPEND:-}" ] &&
+   grep -qF -- '-- >>> rex-gascity-ui' "$cfg"; then
+  echo "$cfg:7: unexpected symbol near 'end'" >&2
+  exit 1
+fi
 
 root=
 if grep -qF -- '-- >>> rex-gascity-ui' "$cfg"; then
@@ -160,6 +167,7 @@ run_install() { # run_install [args...]
     TMPDIR="$tmpdir" \
     FAKE_RELEASES="${case_releases:-$work/releases}" \
     ${REX_GASCITY_ROOT:+REX_GASCITY_ROOT="$REX_GASCITY_ROOT"} \
+    ${FAKE_REX_FAIL_APPEND:+FAKE_REX_FAIL_APPEND="$FAKE_REX_FAIL_APPEND"} \
     sh "$installer" "$@"
 }
 
@@ -281,6 +289,45 @@ grep -qF 'rex.bind("keep", function() end)' "$cfg" || fail "$name: the rest of t
 [ -e "$stub" ] && fail "$name: the stub survived"
 [ -f "$installed/init.lua" ] || fail "$name: the cache copy was removed"
 [ -f "$home/.config/rex/gascity.lua" ] || fail "$name: the settings file was removed"
+
+# --- case 9b: uninstall keeps the stub while the config still loads it ------
+
+new_case uninstall-symlink
+real=$home/real-init.lua
+printf '%s\n' '-- generated elsewhere' > "$real"
+ln -s "$real" "$cfg"
+expect_ok
+[ -f "$stub" ] || fail "$name: the install wrote no stub"
+expect_fail --uninstall
+[ -f "$stub" ] || fail "$name: the stub was removed while the symlinked config still loads it"
+[ -L "$cfg" ] || fail "$name: the symlink was replaced"
+grep -q 'remove the rex-gascity-ui block by hand' "$work/out.txt" ||
+  fail "$name: the manual removal steps were not reported"
+
+# --- case 9c: a failed append restores a pre-existing matching backup ------
+
+new_case restore-existing-backup
+printf '%s\n' 'rex.bind("keep", function() end)' > "$cfg"
+cp "$cfg" "$cfg.rex-gascity-ui.bak"
+orig=$(cat "$cfg")
+FAKE_REX_FAIL_APPEND=1
+expect_fail
+FAKE_REX_FAIL_APPEND=
+[ "$(count_block "$cfg")" = 0 ] || fail "$name: the block that does not load survived"
+[ "$(cat "$cfg")" = "$orig" ] || fail "$name: the config was not restored from the backup"
+grep -q 'the backup was restored' "$work/out.txt" ||
+  fail "$name: the restore was not reported"
+
+# --- case 9d: a pre-existing matching backup survives a good install -------
+
+new_case existing-backup
+printf '%s\n' 'rex.bind("keep", function() end)' > "$cfg"
+cp "$cfg" "$cfg.rex-gascity-ui.bak"
+orig=$(cat "$cfg")
+expect_ok
+[ "$(count_block "$cfg")" = 1 ] || fail "$name: no block was added"
+[ "$(cat "$cfg.rex-gascity-ui.bak")" = "$orig" ] ||
+  fail "$name: the backup no longer holds the pre-install config"
 
 # --- case 10: fetch install, with checksums --------------------------------
 

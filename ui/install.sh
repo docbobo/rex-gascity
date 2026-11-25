@@ -172,8 +172,15 @@ remove_block() { # remove_block <file>
 
 if [ -n "$uninstall" ]; then
   status=0
-  remove_block "$config_file" || status=1
-  if [ -e "$stub" ]; then
+  # The stub goes only after the config stops naming it: a symlinked or
+  # otherwise unwritten config keeps its reference, so the stub must stay too.
+  if ! remove_block "$config_file"; then
+    status=1
+    if [ -e "$stub" ]; then
+      warn "kept $stub: $config_file still loads it"
+      warn "remove the rex-gascity-ui block by hand (or from the file that generates it), then delete $stub"
+    fi
+  elif [ -e "$stub" ]; then
     rm -f "$stub" || { warn "cannot remove $stub"; status=1; }
     [ "$status" -ne 0 ] || note "removed $stub"
   fi
@@ -543,10 +550,8 @@ fi
 
 before_size=$(wc -c < "$config_file" | tr -d ' ')
 before_mtime=$(ls -ln "$config_file" 2>/dev/null | awk '{ print $6, $7, $8 }')
-backup_made=
 if [ ! -e "$backup" ]; then
   cp "$config_file" "$backup" || die "cannot write the backup $backup"
-  backup_made=1
 fi
 
 after_size=$(wc -c < "$config_file" | tr -d ' ')
@@ -570,17 +575,27 @@ block=$work/block.lua
   printf '%s\n' "$marker_end"
 } > "$block" || die "cannot write the block"
 
+# restore_backup <what happened>: the verified backup is the config's earlier
+# bytes, whether this run made it or an earlier run did.
+restore_backup() { # restore_backup <what happened>
+  if cp "$backup" "$config_file" 2>/dev/null; then
+    warn "$config_file $1; the backup was restored"
+  else
+    warn "$config_file $1, and the backup could not be restored"
+    warn "restore it by hand from $backup"
+  fi
+}
+
 if ! printf '\n' >> "$config_file" || ! cat "$block" >> "$config_file"; then
-  if [ -n "$backup_made" ]; then cp "$backup" "$config_file" 2>/dev/null || true; fi
-  die "cannot append the block to $config_file (nothing was changed)"
+  restore_backup "could not take the block"
+  die "cannot append the block to $config_file"
 fi
 
 # The appended block must load. `rex config check` reads the file without
 # touching the running server, so a bad edit fails here instead of at the next
 # restart.
 if ! check_out=$(rex config check "$config_file" 2>&1); then
-  if [ -n "$backup_made" ]; then cp "$backup" "$config_file" 2>/dev/null || true; fi
-  warn "$config_file does not load after the append; the backup was restored"
+  restore_backup "does not load after the append"
   [ -z "$check_out" ] || warn "$check_out"
   die "the reference block was not added"
 fi

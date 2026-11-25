@@ -99,11 +99,40 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$dest" ] && [ -n "$url" ] || exit 2
+[ -z "${FAKE_CURL_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
 src=${FAKE_RELEASES:-}/$(printf '%s' "$url" | sed -n 's#.*/releases/download/##p')
 [ -f "$src" ] || { echo "curl: (22) HTTP 404 for $url" >&2; exit 22; }
 cp "$src" "$dest"
 EOF
 chmod +x "$tools/curl"
+
+# Fake gh: serves the same fixture release, so a curl failure can fall back to
+# the authenticated download the private-release docs describe.
+cat > "$tools/gh" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = release ] && [ "${2:-}" = download ] || exit 2
+tag=$3
+shift 3
+dir=
+pats=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -R) shift 2 ;;
+    -p) pats="$pats $2"; shift 2 ;;
+    --dir) dir=$2; shift 2 ;;
+    --clobber) shift ;;
+    *) shift ;;
+  esac
+done
+[ -n "$dir" ] || exit 2
+printf '%s\n' "$*" >> "$(dirname "${FAKE_RELEASES:?}")/gh-calls"
+src=${FAKE_RELEASES:?}/$tag
+for p in $pats; do
+  [ -f "$src/$p" ] || { echo "gh: no asset $p in $tag" >&2; exit 1; }
+  cp "$src/$p" "$dir/$p" || exit 1
+done
+EOF
+chmod +x "$tools/gh"
 
 # The release that fix.sh fetches: the extension tree, the way release.yml
 # publishes it, beside one checksums.txt.
@@ -178,6 +207,7 @@ run_fix() { # run_fix [pack-tree] [extra argument]
     XDG_CACHE_HOME="$home/.cache" XDG_CONFIG_HOME="$home/.config" \
     REX_CONFIG="$cfg" REX_GASCITY_UI="$stub" REX_CALL_LOG="$home/rex-calls" \
     FAKE_RELEASES="$work/releases" GC_RUNTIME_CACHE_DIR="$home/.cache/rex-gascity" \
+    ${FAKE_CURL_FAIL:+FAKE_CURL_FAIL="$FAKE_CURL_FAIL"} \
     sh "${1:-$tree}/pack/doctor/rex-ui/fix.sh" ${2:-} 2>&1)
   fix_status=$?
   set -e
@@ -376,5 +406,17 @@ esac
 [ ! -e "$stub" ] || fail "the fix wrote the stub from an unverified asset"
 mv "$work/releases/v$version/gascity-ui.tar.gz.good" "$work/releases/v$version/gascity-ui.tar.gz"
 printf '%s  gascity-ui.tar.gz\n' "$sum" > "$work/releases/v$version/checksums.txt"
+
+# 13. curl is installed but cannot download a private release: the fix falls
+#     back to gh, verifies the checksum, and adds the reference block.
+new_case
+printf '%s\n' '-- my rex config' > "$cfg"
+FAKE_CURL_FAIL=1
+run_fix "$tree2"
+FAKE_CURL_FAIL=
+expect_fix_status 0
+grep -qF -- '>>> rex-gascity-ui (managed; do not edit this block)' "$cfg" \
+  || fail "the gh fallback did not add the reference block"
+[ -s "$work/gh-calls" ] || fail "the fix never tried gh after curl failed"
 
 echo "check-doctor-rex-ui: ok ($case_no cases)"

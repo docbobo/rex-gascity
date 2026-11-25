@@ -64,15 +64,19 @@ deadline=${GC_RUNTIME_INSTALL_DEADLINE:-300}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/rex-ui-fix.XXXXXX") || die "cannot create a temporary directory"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
+# curl first (no token needed for a public release), gh second: a curl that is
+# installed but cannot reach an authenticated asset must not end the fetch.
 fetch() {
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 2 --max-time "$deadline" -o "$2" "$1"
-  elif command -v gh >/dev/null 2>&1; then
+  if command -v curl >/dev/null 2>&1 &&
+    curl -fsSL --retry 2 --max-time "$deadline" -o "$2" "$1"; then
+    return 0
+  fi
+  if command -v gh >/dev/null 2>&1; then
     GITHUB_TOKEN=${GITHUB_TOKEN:-${GH_TOKEN:-}} gh release download "v$declared_version" \
       -R "$repo" -p "$(basename -- "$1")" --dir "$tmp" --clobber
-  else
-    die "neither curl nor gh is installed; install curl, or install the extension from a checkout instead"
+    return
   fi
+  die "cannot download $(basename -- "$1"): curl failed or is not installed, and gh is not installed; install curl, or install the extension from a checkout instead"
 }
 
 fetch "$base/checksums.txt" "$tmp/checksums.txt" || die "cannot download checksums.txt for release v$declared_version"
