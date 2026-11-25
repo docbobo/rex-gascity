@@ -1624,6 +1624,23 @@ test("status action: it is registered with a title, an icon, and optional argume
 	equal(definition.args.display, "string?", "display")
 end)
 
+test("status action: without a city argument it asks and uses the chosen city", function()
+	stub.pane_cwd = "/work/nowhere"
+	stub.format = {
+		probe_answer({ "city|/cities/one", "city|/cities/two" }),
+		probe_answer({ "@@city|/cities/two", "@@server|/tmp/rex.sock", "@@config|0", "@@import|rex|" .. REX_PACK }),
+	}
+	stub.picked = "/cities/two"
+	local ok, result, sent = run_status({})
+	truthy(ok, "no error: " .. tostring(result))
+	truthy(stub.picks ~= nil, "asked")
+	equal(stub.picks.title, "Which city?", "the question")
+	equal(#stub.picks.items, 2, "both cities")
+	equal(result.city, "/cities/two", "the chosen city")
+	contains(stub.blocks[2].options.command[3], "city='/cities/two'", "the probe checks the chosen city")
+	equal(sent[1].city, "/cities/two", "the mail names the chosen city")
+end)
+
 test("status action: it mails the mayor the command, the session, the server, and the display", function()
 	stub.format = probe_answer({ "@@city|/cities/alpha", "@@server|/tmp/rex.sock", "@@config|0", "@@import|rex|" .. REX_PACK })
 	local ok, result, sent = run_status({ city = "/cities/alpha" })
