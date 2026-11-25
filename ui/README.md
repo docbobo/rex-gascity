@@ -128,6 +128,9 @@ the line you added where that file is generated.
   arguments, so a key cannot ask it for one category. The menu is a `rex.ui.pick`
   over the Gas City commands, and each of them still stands on its own in the
   app's palette under **Gas City**.
+
+  Prompts need control API revision 17. On an older server the menu and every
+  command that needs a prompt log one warning and send nothing.
 - CLI, without a prompt:
 
   ```sh

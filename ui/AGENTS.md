@@ -27,4 +27,7 @@
   server's action list. Keep it that way: the list is stale until
   `rex config reload`. The list may only decide whether to try that reload
   once after the block is appended. A failed reload never changes the verdict.
+- Never index `rex.ui` outside the `prompt` helper in
+  `lua/gascity/actions.lua`. A server older than control API revision 17 has no
+  `rex.ui`; the helper logs once and returns `nil, "unsupported"`.
 - `ui/` carries no Go and no pack files. `pack/` carries no Lua.
