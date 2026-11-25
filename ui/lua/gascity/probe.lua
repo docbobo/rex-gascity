@@ -13,42 +13,12 @@
 
 local M = {}
 
+local codec = require("gascity.codec")
+
 local TERMINAL = "com.superlogical.terminal"
-local BEGIN_MARK = "<<gascity-begin>>"
-local END_MARK = "<<gascity-end"
 local NAP = "0.05"
 local TURNS = 60 -- a turn is 50 ms, so three seconds at most
 local PATIENCE = 400 -- and twenty seconds for something slow
-
--- What the block runs: the markers come first and last, so nothing else the
--- terminal shows, such as a login greeting, can be mistaken for the answer.
--- The end marker carries the script's exit status.
-local function wrap(script)
-	return table.concat({
-		"printf '\\n" .. BEGIN_MARK .. "\\n'",
-		script,
-		"status=$?",
-		'printf "\\n' .. END_MARK .. ' %s>>\\n" "$status"',
-		-- Rex keeps a block that still has a program in it; this one waits to
-		-- be closed, so the answer is there to read.
-		"sleep 30",
-	}, "\n")
-end
-
-local function read(text)
-	local first = text:find(BEGIN_MARK, 1, true)
-	if first == nil then
-		return nil
-	end
-	local last = text:find(END_MARK, first, true)
-	if last == nil then
-		return nil
-	end
-
-	local output = text:sub(first + #BEGIN_MARK, last - 1):gsub("^%s+", ""):gsub("%s+$", "")
-	local status = text:sub(last + #END_MARK):match("^%s*(%-?%d+)>>")
-	return { output = output, status = tonumber(status) or 0 }
-end
 
 -- Runs `script` in a hidden block of the session `ctx` names.
 --
@@ -65,7 +35,7 @@ function M.run(ctx, script, opts)
 		options = {
 			cwd = opts.cwd,
 			shell = "none",
-			command = { "/bin/sh", "-c", wrap(script) },
+			command = { "/bin/sh", "-c", codec.wrap(script) },
 		},
 	})
 	if block == nil then
@@ -82,7 +52,11 @@ function M.run(ctx, script, opts)
 		local screen = rex.block.call(TERMINAL, "format", { block_id = block_id, trim = true })
 		local content = screen and (screen.content or screen.text)
 		if content ~= nil then
-			local answer = read(content)
+			local answer, reason = codec.read(content)
+			if reason ~= nil then
+				close()
+				return nil, reason
+			end
 			if answer ~= nil then
 				close()
 				return answer
