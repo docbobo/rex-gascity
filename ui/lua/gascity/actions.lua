@@ -1,0 +1,354 @@
+-- The actions the extension adds, the keys they are bound to, and the menu that
+-- gathers them.
+
+local text = require("gascity.text")
+
+local M = {}
+
+-- Asks which city to send to when the pane is in none of them and the machine
+-- has more than one. Returns the chosen path, or nil when nothing was chosen.
+local function choose(cities)
+	if #cities == 1 then
+		return cities[1]
+	end
+
+	local items = {}
+	for _, path in ipairs(cities) do
+		items[#items + 1] = {
+			id = path,
+			title = text.basename(path),
+			subtitle = path,
+			icon = "folder",
+		}
+	end
+
+	local picked, why = rex.ui.pick({
+		title = "Which city?",
+		placeholder = "Filter cities",
+		confirm = "Send",
+		items = items,
+	})
+	if picked == nil then
+		if why ~= "cancelled" then
+			rex.log("warn", "gascity_mail_mayor: " .. tostring(why or "no answer"))
+		end
+		return nil
+	end
+	return picked
+end
+
+local function first_line(value)
+	return ((value or ""):match("^[^\n]*"))
+end
+
+-- The rigs named in an argument, such as "alpha, beta", or nil when there is
+-- no argument to name them with.
+local function named_rigs(list)
+	if list == nil or text.trim(list) == "" then
+		return nil
+	end
+	local names = {}
+	for name in tostring(list):gmatch("[^,]+") do
+		name = text.trim(name)
+		if name ~= "" then
+			names[#names + 1] = name
+		end
+	end
+	return names
+end
+
+-- Asks which rigs to act on. Returns the names, or nil when nothing was chosen.
+local function ask(rigs, kind)
+	local suspending = kind == "suspend"
+
+	local items = {}
+	for _, rig in ipairs(rigs) do
+		local detail = rig.suspended and "suspended" or "running"
+		if rig.hq then
+			detail = detail .. ", HQ"
+		end
+		items[#items + 1] = {
+			id = rig.name,
+			title = rig.name,
+			subtitle = rig.path,
+			detail = detail,
+			icon = "package",
+		}
+	end
+
+	local names, why = rex.ui.pick({
+		title = suspending and "Suspend which rigs?" or "Resume which rigs?",
+		placeholder = "Filter rigs",
+		multiple = true,
+		confirm = suspending and "Suspend" or "Resume",
+		items = items,
+	})
+	if names == nil then
+		if why ~= "cancelled" then
+			rex.log("warn", "gascity_rigs_" .. kind .. ": " .. tostring(why or "no answer"))
+		end
+		return nil
+	end
+	if type(names) ~= "table" then
+		return nil
+	end
+	return names
+end
+
+-- The commands, in the order the menu shows them.
+--
+-- Each is one action's work: the palette, a key, and the menu all reach it
+-- through `run`. The menu calls these directly rather than through
+-- rex.invoke, because a prompt does not work in an action that rex.invoke
+-- runs, and every one of these asks something.
+local function commands(app, settings)
+	local function mail(ctx, args)
+		local body = args.body
+		if body == nil then
+			local answer, why = rex.ui.input({
+				title = "Message the mayor",
+				placeholder = "What should the mayor know?",
+				confirm = "Send to " .. settings.recipient,
+			})
+			if answer == nil then
+				if why ~= "cancelled" then
+					rex.log("warn", "gascity_mail_mayor: " .. tostring(why or "no answer"))
+				end
+				return nil
+			end
+			body = answer
+		end
+
+		body = text.trim(body)
+		if body == "" then
+			return nil
+		end
+
+		-- A named city wins. Otherwise the pane's own city does, and only when
+		-- the pane is in none does it ask - which takes a question to the
+		-- pane's machine, since the cities are there.
+		local city = args.city or settings.city
+		if city == nil then
+			local found = app.machine.ask(settings, ctx, { cwd = app.pane.cwd(ctx.block_id) })
+			if found ~= nil and found.city == nil and #found.cities > 0 then
+				city = choose(found.cities)
+				if city == nil then
+					return nil
+				end
+			end
+		end
+
+		local layer_id, err, subject = app.send.message(app, ctx, {
+			body = body,
+			subject = args.subject,
+			city = city,
+		})
+		if layer_id == nil then
+			error(err, 0)
+		end
+
+		rex.log("info", "gascity: sending to " .. settings.recipient .. ": " .. subject)
+		return {
+			output = "Sending to " .. settings.recipient .. " in " .. (city or "the pane's city"),
+			recipient = settings.recipient,
+			subject = subject,
+			city = city,
+			layer_id = layer_id,
+		}
+	end
+
+	-- Suspend or resume rigs. Without names, the pane's machine is asked which
+	-- rigs it has, since the city and its rigs are there.
+	local function rigs_move(ctx, args, kind)
+		local suspending = kind == "suspend"
+		local city = args.city or settings.city
+		local names = named_rigs(args.rigs)
+
+		-- Naming the rigs skips both the question and the trip to the pane's
+		-- machine: gc finds the city from the pane's directory.
+		if names == nil then
+			local found, err = app.rigs.find(settings, ctx, {
+				city = city,
+				cwd = app.pane.cwd(ctx.block_id),
+			})
+			if found == nil then
+				error(err, 0)
+			end
+			if #found.rigs == 0 then
+				error("no rigs listed in " .. (found.city or "the city of this pane"), 0)
+			end
+			city = found.city
+			names = ask(found.rigs, kind)
+			if names == nil then
+				return nil
+			end
+		end
+		if #names == 0 then
+			return nil
+		end
+
+		-- Hidden: the work runs in a block that is never placed, so nothing
+		-- flashes up. Its output is the answer instead, and a failure comes
+		-- back as this action's error.
+		local answer, run_err = app.run.quiet(ctx, settings, app.rigs.commands(kind, names), {
+			city = city,
+			cwd = app.pane.cwd(ctx.block_id),
+			patience = true,
+		})
+		if answer == nil then
+			error(run_err, 0)
+		end
+
+		local printed = text.trim(answer.output or "")
+		if answer.status ~= 0 then
+			rex.log("error", "gascity: " .. kind .. ": " .. printed)
+			error(first_line(printed) or ("gc exited with status " .. answer.status), 0)
+		end
+
+		local list = table.concat(names, ", ")
+		rex.log("info", "gascity: " .. kind .. " " .. list)
+		return {
+			output = printed ~= "" and printed or ((suspending and "Suspended " or "Resumed ") .. list),
+			city = city,
+			rigs = names,
+		}
+	end
+
+	local function doctor(ctx)
+		local facts = app.report.facts(app, ctx.block_id, ctx)
+		local printed = app.report.text(facts)
+		rex.log("info", "gascity report:\n" .. printed)
+
+		-- The app does not show what an action returns, so a pane shows the
+		-- report to whoever is at the app. Anything run without a person -
+		-- rex do, a script - gets the text as its result instead.
+		if ctx.origin == "key" or ctx.origin == "palette" then
+			local _, err = app.run.show(ctx, {
+				text = app.report.terminal(facts, { footer = "Close this pane when you are done." }),
+				label = "gascity-report",
+				cwd = app.pane.cwd(ctx.block_id),
+			})
+			if err ~= nil then
+				rex.log("error", "gascity_doctor: " .. tostring(err))
+				error(err, 0)
+			end
+		end
+
+		return { output = printed }
+	end
+
+	return {
+		{
+			id = "mail_mayor",
+			name = "gascity_mail_mayor",
+			title = "Message the Mayor…",
+			description = "Send a mail message to the mayor of the city the pane is in.",
+			keywords = "gascity mayor mail message send nudge",
+			icon = "person",
+			args = { body = "string?", subject = "string?", city = "string?" },
+			run = function(ctx, args)
+				return mail(ctx, args)
+			end,
+		},
+		{
+			id = "rigs_suspend",
+			name = "gascity_rigs_suspend",
+			title = "Suspend a Rig…",
+			description = "Suspend rigs of the city the pane belongs to.",
+			keywords = "gascity rig suspend agents pause stop",
+			icon = "package",
+			args = { city = "string?", rigs = "string?" },
+			run = function(ctx, args)
+				return rigs_move(ctx, args, "suspend")
+			end,
+		},
+		{
+			id = "rigs_resume",
+			name = "gascity_rigs_resume",
+			title = "Resume a Rig…",
+			description = "Resume rigs of the city the pane belongs to.",
+			keywords = "gascity rig resume agents start",
+			icon = "package",
+			args = { city = "string?", rigs = "string?" },
+			run = function(ctx, args)
+				return rigs_move(ctx, args, "resume")
+			end,
+		},
+		{
+			id = "doctor",
+			name = "gascity_doctor",
+			title = "Where This Runs…",
+			description = "Report the machine, checkout, settings, and pane that this extension sees.",
+			keywords = "gascity doctor where host machine diagnose",
+			icon = "server",
+			run = function(ctx)
+				return doctor(ctx)
+			end,
+		},
+	}
+end
+
+-- Registers the actions. `app` holds the resolved `config` and the modules.
+function M.register(app)
+	local list = commands(app, app.config)
+
+	for _, command in ipairs(list) do
+		rex.action({
+			name = command.name,
+			title = "Gas City: " .. command.title,
+			description = command.description,
+			category = "Gas City",
+			keywords = command.keywords,
+			args = command.args,
+			run = command.run,
+		})
+	end
+
+	-- The command palette is the app's, and it opens with no filter: its action
+	-- takes no arguments, so a key cannot ask it for one category. This is that
+	-- key instead - the Gas City commands, and nothing else.
+	rex.action({
+		name = "gascity_menu",
+		title = "Gas City: Commands…",
+		description = "Every Gas City command in one list.",
+		category = "Gas City",
+		keywords = "gascity menu commands list all",
+		run = function(ctx)
+			local items = {}
+			for _, command in ipairs(list) do
+				items[#items + 1] = {
+					id = command.id,
+					title = command.title,
+					subtitle = command.description,
+					icon = command.icon,
+				}
+			end
+
+			local picked, why = rex.ui.pick({
+				title = "Gas City",
+				placeholder = "Filter commands",
+				confirm = "Run",
+				items = items,
+			})
+			if picked == nil then
+				if why ~= "cancelled" then
+					rex.log("warn", "gascity_menu: " .. tostring(why or "no answer"))
+				end
+				return nil
+			end
+
+			for _, command in ipairs(list) do
+				if command.id == picked then
+					-- Called here, not through rex.invoke: only a direct call
+					-- may ask a question.
+					return command.run(ctx, {})
+				end
+			end
+			return nil
+		end,
+	})
+
+	rex.bind("ctrl+b>g", "gascity_menu")
+end
+
+return M
