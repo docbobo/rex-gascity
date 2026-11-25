@@ -17,10 +17,34 @@ M.SUBJECT = "Status update requested"
 -- of the top-level config.Imports in `gc config show --json`. It prints
 -- nothing for the rig-level imports (Defaults.Rig.Imports, Rigs[].Imports),
 -- which can reuse a key. The whole JSON is too large to read back off a
--- probe's screen, so only these lines leave the machine. It tracks strings, escapes, and the key at each
--- depth; that is all it needs from JSON. A string is decoded from its JSON
--- escapes before it is escaped for the row. The program holds no single
--- quote, so it can sit in a single-quoted shell word.
+-- probe's screen, so only these lines leave the machine. It tracks strings,
+-- escapes, and the key at each depth; that is all it needs from JSON. A
+-- string is decoded from its JSON escapes before it is escaped for the row.
+-- The program holds no single quote, so it can sit in a single-quoted shell
+-- word.
+
+-- The row encoding: % is %25, @ is %40, < is %3C, | is %7C, a tab %09, a
+-- newline %0A, a carriage return %0D. The filter and the probe's shell share
+-- this one function, so the two encoders cannot drift.
+local ENCODE = [[
+function enc(v,   r, i, n, ch) {
+	r = ""
+	n = length(v)
+	for (i = 1; i <= n; i++) {
+		ch = substr(v, i, 1)
+		if (ch == "%") r = r "%25"
+		else if (ch == "@") r = r "%40"
+		else if (ch == "<") r = r "%3C"
+		else if (ch == "|") r = r "%7C"
+		else if (ch == "\t") r = r "%09"
+		else if (ch == "\n") r = r "%0A"
+		else if (ch == "\r") r = r "%0D"
+		else r = r ch
+	}
+	return r
+}
+]]
+
 M.FILTER = [==[
 function hex(s,   i, v, c) {
 	if (length(s) < 4) return -1
@@ -68,20 +92,7 @@ function dec(v,   r, i, n, c, e, u, l) {
 	}
 	return r
 }
-function enc(v,   r, i, ch) {
-	r = ""
-	for (i = 1; i <= length(v); i++) {
-		ch = substr(v, i, 1)
-		if (ch == "%") r = r "%25"
-		else if (ch == "@") r = r "%40"
-		else if (ch == "<") r = r "%3C"
-		else if (ch == "|") r = r "%7C"
-		else if (ch == "\n") r = r "%0A"
-		else if (ch == "\r") r = r "%0D"
-		else r = r ch
-	}
-	return r
-}
+]==] .. ENCODE .. [==[
 {
 	n = length($0)
 	for (i = 1; i <= n; i++) {
@@ -129,9 +140,10 @@ function M.script(settings, city, session_id)
 	end
 
 	-- Escape a value so it cannot split a row at @@ or | or end the answer
-	-- early: % is %25, @ is %40, < is %3C, | is %7C, a newline %0A, a
-	-- carriage return %0D. The same mapping as the awk function above.
-	add([[esc() { printf '%s' "$1" | awk '{ if (NR > 1) v = v "%0A"; v = v $0 } END { gsub(/%/, "%25", v); gsub(/@/, "%40", v); gsub(/</, "%3C", v); gsub(/\|/, "%7C", v); printf "%s", v }'; }]])
+	-- early. The awk `enc` above is the only mapping. awk reads records, so
+	-- it joins their lines first and cannot keep a trailing newline: a value
+	-- for this helper carries none.
+	add("esc() { printf '%s' \"$1\" | awk '" .. ENCODE .. " { if (NR > 1) v = v \"\\n\"; v = v $0 } END { printf \"%s\", enc(v) }'; }")
 
 	-- A named city is passed to gc. Without one, gc finds the city from the
 	-- pane's directory itself, which also works from inside a rig; the city
@@ -187,7 +199,13 @@ function M.script(settings, city, session_id)
 	add('\t\t"$gc" "$@" config show --json >"$tmp/out" 2>"$tmp/err" || code=$?')
 	add('\t\tprintf \'@@config|%s\\n\' "$code"')
 	add('\t\tif [ "$code" -eq 0 ]; then')
-	add("\t\t\tawk '" .. M.FILTER .. "' \"$tmp/out\"")
+	-- A filter that fails must not look like a city with no imports: it
+	-- reports its own error, and M.ask returns it.
+	add('\t\t\tif awk \'' .. M.FILTER .. '\' "$tmp/out" >"$tmp/rows" 2>"$tmp/err"; then')
+	add('\t\t\t\tcat "$tmp/rows"')
+	add("\t\t\telse")
+	add('\t\t\t\tprintf \'@@error|the config filter failed: %s\\n\' "$(esc "$(tr \'\\n\' \' \' <"$tmp/err")")"')
+	add("\t\t\tfi")
 	add("\t\telse")
 	add('\t\t\tprintf \'@@error|%s\\n\' "$(esc "$(tr \'\\n\' \' \' <"$tmp/err")")"')
 	add("\t\tfi")
@@ -198,10 +216,10 @@ function M.script(settings, city, session_id)
 	return table.concat(lines, "\n")
 end
 
--- The probe escapes every %, @, <, |, newline, and carriage return in a
--- value, so a value cannot split a row at @@ or | or end the answer early at
--- the probe's end marker. This reads it back: %25 is %, %40 is @, %3C is <,
--- %7C is |, %0A is a newline, %0D is a carriage return.
+-- The probe escapes every %, @, <, |, tab, newline, and carriage return in
+-- a value, so a value cannot split a row at @@ or | or end the answer early
+-- at the probe's end marker. This reads it back: %25 is %, %40 is @, %3C is
+-- <, %7C is |, %09 is a tab, %0A a newline, %0D a carriage return.
 local function unescape(value)
 	return (value:gsub("%%(%x%x)", function(code)
 		if code == "25" then
@@ -212,6 +230,8 @@ local function unescape(value)
 			return "<"
 		elseif code == "7C" then
 			return "|"
+		elseif code == "09" then
+			return "\t"
 		elseif code == "0A" then
 			return "\n"
 		elseif code == "0D" then
@@ -306,6 +326,8 @@ end
 
 -- Asks the pane's machine. `opts.city` names the city, `opts.cwd` the
 -- directory to ask from. Returns the parsed answer, or nil and a reason.
+-- A probe error (a failed lookup or filter) is a reason, not an answer with
+-- no imports (REQ-003).
 function M.ask(settings, ctx, opts)
 	opts = opts or {}
 	local answer, err = probe.run(ctx, M.script(settings, opts.city, ctx.session_id), {
@@ -315,7 +337,11 @@ function M.ask(settings, ctx, opts)
 	if answer == nil then
 		return nil, err
 	end
-	return M.parse(answer.output)
+	local parsed = M.parse(answer.output)
+	if parsed.error ~= nil then
+		return nil, parsed.error
+	end
+	return parsed
 end
 
 return M

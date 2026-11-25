@@ -1517,6 +1517,46 @@ test("status: rex is found in REX_BIN_DIR when it is not on PATH", function()
 	contains(absent, "END", "the script ran to its end")
 end)
 
+test("status: a percent, a tab, a newline, and a carriage return survive", function()
+	local dir = probe_tools()
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"/cities/a\\tb","config":{"Imports":{"rex":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local server = "unix:///tmp/a%0Ab\nc\rd\te"
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path) .. " REX_SERVER=" .. text.quote(server)
+	)
+	remove(dir)
+	local found = status.parse((output:gsub("END\n$", "")))
+	equal(found.city, "/cities/a\tb", "a tab from the JSON comes back")
+	equal(found.server, server, "the percent, newline, tab, and carriage return come back")
+end)
+
+test("status: a filter that fails is a probe error, not an empty lookup", function()
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	local dir = probe_tools()
+	write_file(dir .. "/awk", "#!/bin/sh\necho 'awk: boom' >&2\nexit 2\n")
+	sh("chmod +x " .. text.quote(dir .. "/awk"))
+	sh("mkdir " .. text.quote(dir .. "/tmp"))
+	local output = run_probe(script, dir, "TMPDIR=" .. text.quote(dir .. "/tmp"))
+	local left = sh("ls -A " .. text.quote(dir .. "/tmp"))
+	remove(dir)
+	contains(output, "@@config|0\n", "the lookup itself succeeded")
+	contains(output, "@@error|the config filter failed", "the filter failure has its own error")
+	falsy(output:find("@@import|", 1, true), "no imports")
+	contains(output, "END", "the script ran to its end")
+	equal(left, "", "the private directory was removed")
+end)
+
+test("status: ask returns the filter error and no answer", function()
+	stub.format = probe_answer({ "@@config|0", "@@error|the config filter failed" })
+	local answer, why = status.ask(config.resolve(nil), { session_id = "s1" }, {})
+	equal(answer, nil, "no answer")
+	equal(why, "the config filter failed", "the reason")
+end)
 
 test("status: a wrapped import source may hold the row separator", function()
 	local found = status.parse(table.concat({
