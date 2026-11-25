@@ -33,7 +33,7 @@ Import the pack as in [`rex-runtime-pack.md`](rex-runtime-pack.md), then run the
 UI check with `--fix`:
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.04
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 gc doctor --check rex-gascity-runtime:rex-ui
@@ -55,7 +55,7 @@ against `checksums.txt` before it installs.
 
 ```sh
 mkdir -p ~/gascity-ui-install && cd ~/gascity-ui-install
-curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.06/gascity-ui.tar.gz
+curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.04/gascity-ui.tar.gz
 tar -xzf gascity-ui.tar.gz
 sh ui/install.sh
 ```
@@ -115,7 +115,7 @@ steps are in [`rex-binary-install.md`](rex-binary-install.md#sha-imports-and-ver
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.04
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 ```
@@ -130,7 +130,7 @@ only after that succeeds. It leaves the cache copy and `gascity.lua` alone. The
 installed tree carries its own installer:
 
 ```sh
-sh "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.06/ui/install.sh" --uninstall
+sh "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.04/ui/install.sh" --uninstall
 ```
 
 When `init.lua` is a symlink, the installer cannot edit it. It keeps the stub
@@ -138,7 +138,7 @@ and prints the block to remove. Remove that line where the file is generated,
 then delete the stub. To reclaim the space, remove the cache copy:
 
 ```sh
-rm -rf "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.06/ui"
+rm -rf "${GC_RUNTIME_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rex-gascity}/2026.11.04/ui"
 ```
 
 ## Ask the mayor for a status update

@@ -2,13 +2,13 @@
 
 A Gas City runtime pack. Runtime `rex` runs agent sessions as native Rex panes instead of tmux panes. The pack ships one executable, `gc-runtime-rex`. It speaks the Runtime Provider Protocol (RPP v0) and drives the `rex` CLI. Gas City runs it once per operation.
 
-## Status: release target, v2026.11.06
+## Status: released, v2026.11.04
 
-Version `2026.11.06` (tag `v2026.11.06`) is the target version. The tag is not published yet. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
+Version `2026.11.04` (tag `v2026.11.04`) is the current release. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
 
 The installer never replaces a working provider with an asset that cannot answer `inventory`. A test fixture or a broken release cannot break a city (PR #38).
 
-CI runs `gc runtime check` and `gc runtime conformance` with no failed requirement, in a scratch city and state root. The conformance report also records `v2_ready`. That value is evidence and not a gate. The pack is not in a pack registry. Import it from this repository by tag, once that tag is published.
+CI runs `gc runtime check` and `gc runtime conformance` with no failed requirement, in a scratch city and state root. The conformance report also records `v2_ready`. That value is evidence and not a gate. The pack is not in a pack registry. Import it from this repository by tag.
 
 ## Layout
 
@@ -42,15 +42,15 @@ rex-gascity/
 The pack's binding is `rex`. Import it under that name. The pack runs agent
 sessions as native Rex panes instead of tmux panes. It ships one executable,
 `bin/gc-runtime-rex`, which gc runs from the installed pack. It installs the
-matching release binary. The tag-based commands in this section are usable
-after `v2026.11.06` is published.
+matching release binary. The tag-based commands in this section import the
+published release.
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.04
 ```
 
-`pack/pack.toml` declares `version = "2026.11.06"`, and the release tag is
-`v2026.11.06`. `--version` takes the bare version, so the tag must be pushed
+`pack/pack.toml` declares `version = "2026.11.04"`, and the release tag is
+`v2026.11.04`. `--version` takes the bare version, so the tag must be pushed
 first. The provider binary installed for that version is the one a session
 runs. A provider that reports another version fails the doctor check, which
 names the mismatch.
@@ -103,7 +103,7 @@ the provider. See [`docs/rex-gascity-ui.md`](docs/rex-gascity-ui.md) and
 ### Upgrade and roll back
 
 `gc import upgrade rex` moves the import to the newest tag that matches its
-constraint. The constraint must allow more than one tag: `--version '^2026.11.06'`
+constraint. The constraint must allow more than one tag: `--version '^2026.11.04'`
 matches later 2026 releases and not a 2027 release.
 
 The install example pins a bare version, so convert it once. Remove the import
@@ -111,7 +111,7 @@ and add it again with a caret constraint.
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version '^2026.11.06'
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version '^2026.11.04'
 ```
 
 Then run the upgrade, install and verify.
@@ -132,7 +132,7 @@ form.
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.04
 gc import install
 gc import check
 gc doctor --check rex-gascity-runtime:rex-binary --fix
@@ -187,7 +187,7 @@ The provider check is `rex-gascity-runtime:rex-binary`. The UI check, `rex-gasci
 | Shim | `[pack] version`, `bin/_lib.sh` or the cache path is missing. No release asset exists for this platform. | |
 | rex CLI | It is not on `PATH` (or in `GC_REX_BIN`). It is not executable. It is older than `pack/rex-min-version`. | The version cannot be determined. |
 
-The provider version compares equal after a leading `v` and any `+build-metadata` suffix are stripped. A tagged `v2026.11.06` and a `-ldflags`-stamped `2026.11.06` match. `make build` stamps `[pack] version`.
+The provider version compares equal after a leading `v` and any `+build-metadata` suffix are stripped. A tagged `v2026.11.04` and a `-ldflags`-stamped `2026.11.04` match. `make build` stamps `[pack] version`.
 
 The check compares versions only. It cannot tell two builds of one version apart.
 
