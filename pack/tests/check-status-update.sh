@@ -56,6 +56,34 @@ no_rex() { # no_rex <what>
   [ ! -e "$log.argv" ] || fail "$1: rex was called"
 }
 
+# json_ok <file> <what>: the captured request parses and has the layer shape.
+json_ok() { # json_ok <file> <what>
+  python3 - "$1" <<'PY' || fail "$2: request is not the expected JSON: $(head -c 300 "$1")"
+import json, sys
+
+req = json.load(open(sys.argv[1]))
+assert isinstance(req["session_id"], str), req
+assert req["bounds"] == [0.08, 0.16, 0.84, 0.56], req
+assert req["focus"] is True, req
+block = req["layout"]["block"]
+assert block["flavor"] == "com.superlogical.terminal.shell", block
+assert block["label"] == "gascity-status", block
+opts = block["options"]
+assert opts["exit"] == {"on_completion": False}, opts
+assert opts["command"][:2] == ["/bin/sh", "-c"], opts
+PY
+}
+
+# pane_out <request> <want> <what>: the pane command prints exactly <want>.
+pane_out() { # pane_out <request> <want> <what>
+  python3 - "$1" > "$work/pane-script" <<'PY' || fail "$3: request has no pane command"
+import json, sys
+print(json.load(open(sys.argv[1]))["layout"]["block"]["options"]["command"][2])
+PY
+  sh "$work/pane-script" > "$work/pane-out"
+  cmp -s "$work/pane-out" "$2" || fail "$3: pane output differs from $(basename "$2")"
+}
+
 body=$work/body.md
 printf '%s\n' '# Status update — alpha' '## Done' '- shipped **it**' '## Blocked' '- waiting on `ci`' > "$body"
 
@@ -122,6 +150,8 @@ has "$req" '"bounds":[0.08,0.16,0.84,0.56],"focus":true' "request"
 has "$req" '"layout":{"block":{"flavor":"com.superlogical.terminal.shell","label":"gascity-status"' "request"
 has "$req" '"command":["/bin/sh","-c","printf '"'"'%s\\n'"'"' '"'" "request"
 has "$req" '"exit":{"on_completion":false}' "request"
+json_ok "$req" "request"
+pane_out "$req" "$body" "request"
 
 # --body-file sends the same request as stdin.
 cp "$req" "$work/stdin-request"
@@ -135,6 +165,8 @@ run --session ID < "$work/quotes"
 code_is 0 "escapes"
 has "$req" 'say \"hi\" \\ it'"'"'\\'"'"''"'"'s' "escapes"
 has "$req" 'a\ttab' "tab"
+json_ok "$req" "escapes"
+pane_out "$req" "$work/quotes" "escapes"
 
 # A value that ends with a newline keeps it as a JSON \n.
 nl='
