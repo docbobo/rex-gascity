@@ -580,6 +580,10 @@ fi
 
 mkdir -p "$(dirname "$stub")" || die "cannot create $(dirname "$stub")"
 stub_staging=$(mktemp "$stub.XXXXXX") || die "cannot create a temporary file beside $stub"
+# mktemp creates 0600. A plain redirection would have used the umask's mode,
+# and the Rex server may run as another account, so restore that mode.
+_umask=$(umask)
+chmod "$(printf '%o' $(( 0666 & ~0$_umask )))" "$stub_staging" 2>/dev/null || true
 {
   printf '%s\n' "-- rex-gascity-ui loader. Written by rex-gascity ui/install.sh."
   printf '%s\n' "-- Installed root: $installed_root. Version: $version. Delete this file to remove."

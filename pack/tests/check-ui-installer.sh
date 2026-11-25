@@ -535,4 +535,13 @@ expect_fail --uninstall
 grep -q 'is not a rex-gascity-ui stub' "$work/out.txt" ||
   fail "$name: the non-stub file was not reported"
 
+# --- case 23: the stub keeps the umask's mode ------------------------------
+
+new_case stub-mode
+printf '%s\n' '-- existing config' > "$cfg"
+expect_ok
+expected_mode=$(printf '%o' $(( 0666 & ~0$(umask) )))
+mode=$(stat -c '%a' "$stub" 2>/dev/null || stat -f '%Lp' "$stub" 2>/dev/null)
+[ "$mode" = "$expected_mode" ] || fail "$name: the stub mode is $mode, expected $expected_mode"
+
 echo "check-ui-installer: ok ($case_no cases)"
