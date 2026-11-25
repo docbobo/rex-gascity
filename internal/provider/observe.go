@@ -227,11 +227,7 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 // agent subtree. It answers 0 when Rex cannot name it, which makes the agent
 // unknown rather than dead.
 func (p *Provider) foregroundPID(ctx context.Context, bd Binding) int {
-	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
-	if err != nil || info.Foreground == nil {
-		return 0
-	}
-	return info.Foreground.PID
+	return readPaneLife(ctx, p.client, bd.SessionID, bd.BlockID).foregroundPID()
 }
 
 // observeUnreadable reports a Rex answer Observe cannot get: the backend is
@@ -248,9 +244,8 @@ func observeUnreadable(err error) bool {
 // answer for an unreadable backend. It is a read: a vanished record is left for
 // the next Start or Stop to replace.
 func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, error) {
-	info, err := p.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
-	switch {
-	case errors.Is(err, rex.ErrNotFound):
+	l := readPaneLife(ctx, p.client, bd.SessionID, bd.BlockID)
+	if l.state == paneGone {
 		// Find a live pane under the record's labels, without ResolveLive's
 		// stale-record drop or its save: Observe is a read, and only Start or
 		// Stop replaces the record.
@@ -261,20 +256,14 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 		if !ok {
 			return ObserveAbsent, Binding{}, nil
 		}
-		info, err := p.client.BlockProcess(ctx, live.SessionID, live.BlockID)
-		if errors.Is(err, rex.ErrNotFound) {
-			return ObserveAbsent, Binding{}, nil
-		}
-		if err != nil {
-			return "", Binding{}, err
-		}
-		if info.LastExit != nil {
-			return ObserveDead, live, nil
-		}
-		return ObserveRunning, live, nil
-	case err != nil:
-		return "", Binding{}, err
-	case info.LastExit != nil:
+		bd, l = live, readPaneLife(ctx, p.client, live.SessionID, live.BlockID)
+	}
+	switch l.state {
+	case paneGone:
+		return ObserveAbsent, Binding{}, nil
+	case paneUnknown:
+		return "", Binding{}, l.err
+	case paneExited:
 		return ObserveDead, bd, nil
 	default:
 		return ObserveRunning, bd, nil

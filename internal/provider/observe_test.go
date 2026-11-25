@@ -1029,3 +1029,71 @@ func TestInventoryOmitsAProvisionalRecord(t *testing.T) {
 		t.Errorf("inventory read %q for a record with no block yet", c.Op)
 	}
 }
+
+// sequencedProcess answers the first BlockProcess call with first and every
+// later call with later. It is a faketest ProcessFunc, called with the fake's
+// lock held, so it touches only its own counter.
+func sequencedProcess(first, later rex.ProcessInfo) func(rex.BlockID) rex.ProcessInfo {
+	calls := 0
+	return func(rex.BlockID) rex.ProcessInfo {
+		calls++
+		if calls == 1 {
+			return first
+		}
+		return later
+	}
+}
+
+// processReads counts the BlockProcess calls the fake recorded.
+func processReads(fake *faketest.Fake) int {
+	n := 0
+	for _, c := range fake.BlockCalls {
+		if c.Op == "process" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestObserveAgentRootFromFreshRead guards RPP-OBSERVE-006's read order: the
+// agent root comes from a fresh foreground read after boxState, and the one
+// host snapshot is walked from that root. The first read names root 100
+// (sleep); every later read names root 200, the agent. Taking the root from
+// boxState's reading would make one read and answer dead.
+func TestObserveAgentRootFromFreshRead(t *testing.T) {
+	ctx := context.Background()
+	fake := faketest.New()
+	host := &prochost.Fake{}
+	snapshots := 0
+	host.OnTable = func(int, bool) (prochost.Table, error) {
+		snapshots++
+		return prochost.Table{
+			100: {PID: 100, PPID: 1, Comm: "sleep", Args: "sleep 300", Reliable: true},
+			200: {PID: 200, PPID: 1, Comm: "gc-rpp-no-such-process", Args: "gc-rpp-no-such-process", Reliable: true},
+		}, nil
+	}
+	p := provider.New("acme", fake, provider.WithProcessHost(host))
+	name := "Indigo--dog-1"
+	if err := p.Start(ctx, name, provider.Config{Argv: []string{"sleep", "300"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fake.ProcessFunc = sequencedProcess(
+		rex.ProcessInfo{Foreground: &rex.Process{PID: 100, Name: "sleep"}},
+		rex.ProcessInfo{Foreground: &rex.Process{PID: 200}},
+	)
+
+	before := processReads(fake)
+	ans, err := p.Observe(ctx, name, []string{"gc-rpp-no-such-process"})
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if ans.Agent != "alive" || ans.AgentPID != "200" {
+		t.Errorf("agent = %q pid = %q, want alive and 200 from the fresh read", ans.Agent, ans.AgentPID)
+	}
+	if got := processReads(fake) - before; got != 2 {
+		t.Errorf("Observe made %d process reads, want 2 (boxState, then the fresh foreground read)", got)
+	}
+	if snapshots != 1 {
+		t.Errorf("Observe took %d host snapshots, want 1", snapshots)
+	}
+}

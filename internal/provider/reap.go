@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/prochost"
-	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // Reaping bounds. herdr-core bounds the reap at these waits; the vars let tests
@@ -85,24 +83,14 @@ func survivorProcs(recs []Survivor) []prochost.Ident {
 // block.close fails to reap is still visible here. A pane that block.close
 // already removed reports no process and is the no-pane case.
 func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]prochost.Ident, error) {
-	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
-	if errors.Is(err, rex.ErrNotFound) {
+	life := readPaneLife(ctx, p.client, b.SessionID, b.BlockID)
+	switch life.state {
+	case paneGone:
 		return nil, nil
+	case paneUnknown:
+		return nil, life.err
 	}
-	if err != nil {
-		return nil, err
-	}
-	reported := make(map[int]string)
-	if fg := info.Foreground; fg != nil && fg.PID > 0 {
-		reported[fg.PID] = fg.Name
-	}
-	for _, a := range info.Ancestors {
-		if a.PID > 0 {
-			if _, ok := reported[a.PID]; !ok {
-				reported[a.PID] = a.Name
-			}
-		}
-	}
+	reported := life.reported()
 	if len(reported) == 0 {
 		return nil, nil
 	}
@@ -113,8 +101,8 @@ func (p *Provider) paneSubtree(ctx context.Context, b Binding) ([]prochost.Ident
 	// The walk starts at the reported foreground. Without one, it starts at
 	// every reported pid with no reported ancestor.
 	var roots []int
-	if fg := info.Foreground; fg != nil && fg.PID > 0 {
-		roots = append(roots, fg.PID)
+	if fg, ok := life.foreground(); ok {
+		roots = append(roots, fg)
 	} else {
 		set := make(map[int]bool, len(reported))
 		for pid := range reported {

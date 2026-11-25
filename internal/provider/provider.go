@@ -897,11 +897,8 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 	if err != nil || !ok {
 		return "", ErrNoScreen
 	}
-	info, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID)
-	if errors.Is(err, rex.ErrNotFound) || errors.Is(err, rex.ErrUnavailable) {
-		return "", ErrNoScreen
-	}
-	if err != nil {
+	life := readPaneLife(ctx, p.client, binding.SessionID, binding.BlockID)
+	if err := life.peekErr(); err != nil {
 		return "", err
 	}
 	out, err := p.client.BlockFormat(ctx, binding.SessionID, binding.BlockID)
@@ -917,13 +914,7 @@ func (p *Provider) PeekLines(ctx context.Context, name string, lines int) (strin
 		// can exit between the two calls, so an empty capture re-reads the
 		// process state before the blank screen is accepted; a re-read that
 		// fails leaves the earlier answer standing.
-		dead := info.LastExit != nil
-		if !dead {
-			if after, err := p.client.BlockProcess(ctx, binding.SessionID, binding.BlockID); err == nil {
-				dead = after.LastExit != nil
-			}
-		}
-		if dead {
+		if life.exitedAfterEmptyCapture(ctx, p.client, binding.SessionID, binding.BlockID) {
 			return "", fmt.Errorf("peek %s: the dead box's capture wrote nothing", name)
 		}
 	}
