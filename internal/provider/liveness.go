@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,12 +125,10 @@ func processOpaque(p rex.Process) bool {
 // inspects LastExit: a live probe showed Rex runs a launched command as the
 // default shell with argv0 set to the command, so process-name heuristics
 // misclassify live panes. last_exit is the v1 liveness truth. A pane Rex no
-// longer knows (its command exited and closed the block) is not running. It
-// delegates to the Binder's liveOnly so the provider and the resolver share one
-// liveness check.
+// longer knows (its command exited and closed the block) is not running. The
+// read is readPaneLife's (panelive.go), the one the Binder's liveOnly makes too.
 func (p *Provider) paneAlive(ctx context.Context, b Binding) (bool, error) {
-	_, alive, err := p.binder.liveOnly(ctx, b)
-	return alive, err
+	return readPaneLife(ctx, p.client, b.SessionID, b.BlockID).alive()
 }
 
 // ProcessAlive reports whether one of names is the foreground process or an
@@ -144,18 +141,11 @@ func (p *Provider) ProcessAlive(ctx context.Context, name string, names []string
 	if err != nil || !ok {
 		return LivenessDead, err
 	}
-	info, err := p.client.BlockProcess(ctx, b.SessionID, b.BlockID)
-	if errors.Is(err, rex.ErrNotFound) {
-		// A pane that vanished between resolve and process has no live agent.
-		return LivenessDead, nil
-	}
-	if err != nil {
-		// The process table could not be read (a transient Rex error or a lost
-		// reply). Cannot tell: do not report the agent dead.
-		return LivenessUnknown, nil
-	}
-	// Legacy bindings started before GCBin was persisted carry none; fall back
-	// to the provider's own environment so an already-running wrapped gc is
-	// still recognised (herdr-core reads gc_bin from stored meta).
-	return processAlive(info, expandProcessNames(names, bindingGCBin(b))), nil
+	// A pane that vanished between resolve and process has no live agent. A
+	// process table that could not be read (a transient Rex error or a lost
+	// reply) cannot tell, so the agent is not reported dead. Legacy bindings
+	// started before GCBin was persisted carry none; fall back to the
+	// provider's own environment so an already-running wrapped gc is still
+	// recognised (herdr-core reads gc_bin from stored meta).
+	return readPaneLife(ctx, p.client, b.SessionID, b.BlockID).match(expandProcessNames(names, bindingGCBin(b))), nil
 }

@@ -339,17 +339,12 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 }
 
 // liveOnly reports bd with true when its pane still has a live terminal. A pane
-// Rex no longer knows has exited and closed its block, so it is not alive.
+// Rex no longer knows has exited and closed its block, so it is not alive. The
+// read and its error policy are readPaneLife's (panelive.go).
 func (b *Binder) liveOnly(ctx context.Context, bd Binding) (Binding, bool, error) {
-	info, err := b.client.BlockProcess(ctx, bd.SessionID, bd.BlockID)
-	if errors.Is(err, rex.ErrNotFound) {
-		return Binding{}, false, nil
-	}
-	if err != nil {
+	alive, err := readPaneLife(ctx, b.client, bd.SessionID, bd.BlockID).alive()
+	if err != nil || !alive {
 		return Binding{}, false, err
-	}
-	if info.LastExit != nil {
-		return Binding{}, false, nil
 	}
 	return bd, true, nil
 }
