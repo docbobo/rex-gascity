@@ -72,15 +72,18 @@ fi
 c1_lead=$(printf '\302')
 c1_low=$(printf '\200')
 c1_high=$(printf '\237')
+# Each stage runs on its own: a pipeline reports only its last stage's status,
+# so a failed read could pass a partial body to Rex.
 strip_controls() {
-	LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed "s/${c1_lead}[${c1_low}-${c1_high}]//g"
+	noc0=$(LC_ALL=C tr -d '\000-\010\013-\037\177') || return 1
+	printf '%s' "$noc0" | LC_ALL=C sed "s/${c1_lead}[${c1_low}-${c1_high}]//g"
 }
 
 if [ -n "$body_file" ]; then
 	[ -r "$body_file" ] || die "cannot read $body_file"
-	body=$(strip_controls < "$body_file")
+	body=$(strip_controls < "$body_file") || die "cannot read $body_file"
 else
-	body=$(strip_controls)
+	body=$(strip_controls) || die "cannot read the status update"
 fi
 
 [ -n "$(printf '%s' "$body" | tr -d ' \t\n')" ] || die "the status update is empty"

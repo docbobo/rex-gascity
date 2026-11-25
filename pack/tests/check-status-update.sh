@@ -229,4 +229,18 @@ LC_ALL=C awk '
   END { exit bad }
 ' "$req" || fail "controls: an ESC in the request is not an SGR sequence"
 
+# A filter that fails after it reads part of the body is a read error: exit 1
+# and no rex call, so a partial body can never become a partial update.
+cat > "$tools/tr" <<'FAKE'
+#!/bin/sh
+printf '%s\n' '## Blocked' '- partial'
+exit 1
+FAKE
+chmod +x "$tools/tr"
+run --session ID < "$body"
+code_is 1 "read error"
+has "$work/err" "cannot read the status update" "read error"
+no_rex "read error"
+rm -f "$tools/tr"
+
 echo "check-status-update: ok"
