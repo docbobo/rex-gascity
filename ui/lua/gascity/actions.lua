@@ -54,10 +54,6 @@ local function choose(cities)
 	return picked
 end
 
-local function first_line(value)
-	return ((value or ""):match("^[^\n]*"))
-end
-
 -- The rigs named in an argument, such as "alpha, beta", or nil when there is
 -- no argument to name them with.
 local function named_rigs(list)
@@ -300,7 +296,7 @@ local function commands(app, settings)
 		local printed = text.trim(answer.output or "")
 		if answer.status ~= 0 then
 			rex.log("error", "gascity: " .. kind .. ": " .. printed)
-			local reason = first_line(printed)
+			local reason = printed
 			if reason == "" then
 				reason = "gc exited with status " .. answer.status
 			end
