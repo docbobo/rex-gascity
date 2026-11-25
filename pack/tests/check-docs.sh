@@ -1,6 +1,7 @@
 #!/bin/sh
 # Guard for the operator docs: run every command in a sh fence of
-# docs/rex-runtime-pack.md and docs/rex-binary-install.md against a scratch city.
+# docs/rex-runtime-pack.md, docs/rex-binary-install.md and docs/rex-gascity-ui.md
+# against a scratch city.
 #
 # The docs are the input, not the fixture: the fences are extracted and run in
 # order. A command that cannot run is a docs bug, so this fails on it.
@@ -19,6 +20,7 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 readme=$repo/docs/rex-runtime-pack.md
 guide=$repo/docs/rex-binary-install.md
+uidoc=$repo/docs/rex-gascity-ui.md
 pack=$repo/pack
 # The docs fences pin the current pack version, so the fixture takes that tag
 # from pack.toml and adds a newer tag too. A version bump must not need an edit
@@ -38,6 +40,7 @@ fail() {
 
 [ -f "$readme" ] || fail "docs/rex-runtime-pack.md does not exist"
 [ -f "$guide" ] || fail "docs/rex-binary-install.md does not exist"
+[ -f "$uidoc" ] || fail "docs/rex-gascity-ui.md does not exist"
 command -v gc >/dev/null 2>&1 || fail "gc is not on PATH"
 command -v git >/dev/null 2>&1 || fail "git is not on PATH"
 # Only the gc and git binaries, never their directories: gc's directory may
@@ -93,6 +96,37 @@ cat > "$work/tools/rex" <<'FAKE'
 exit 0
 FAKE
 
+# The UI doc's flow needs the one probe the installer and the doctor check use:
+# `rex config check --json`. This stub answers it from the files on disk: a
+# gascity_ action whose source is the stub's installed root when the config
+# carries the marked block, and no actions otherwise. Every other call is exit 0.
+mkdir -p "$work/ui-tools"
+cat > "$work/ui-tools/rex" <<'FAKE'
+#!/bin/sh
+[ "${1:-}" = config ] && [ "${2:-}" = check ] || exit 0
+cfg=${REX_CONFIG:-$HOME/.config/rex/init.lua}
+shift 2
+for a in "$@"; do
+  case $a in
+    --json) ;;
+    *) cfg=$a ;;
+  esac
+done
+stub=${REX_GASCITY_UI:-$HOME/.config/rex/gascity-ui.lua}
+if [ -f "$stub" ] && grep -qF '>>> rex-gascity-ui' "$cfg" 2>/dev/null; then
+  root=$(sed -n 's/^-- Installed root: \(.*\)\. Version: .*/\1/p' "$stub")
+  printf '{\n"actions":[\n{\n"name":"gascity_doctor",\n"source":"%s/lua/gascity/actions.lua:1"\n}\n]\n}\n' "$root"
+else
+  printf '{"actions":[]}\n'
+fi
+FAKE
+chmod 755 "$work/ui-tools/rex"
+
+chmod 755 "$work/tools/curl" "$work/tools/gh"
+cp "$work/tools/curl" "$work/tools/gh" "$work/ui-tools/"
+ln -s "$(command -v gc)" "$work/ui-tools/gc"
+ln -s "$(command -v git)" "$work/ui-tools/git"
+
 chmod 755 "$work/tools/curl" "$work/tools/gh" "$work/tools/rex"
 
 # --- fixture repository -----------------------------------------------------
@@ -120,6 +154,7 @@ case "$(uname -m)" in
   *) fail "unsupported host machine: $(uname -m)" ;;
 esac
 asset=gc-runtime-rex_${os}_${arch}
+ui_asset=gascity-ui.tar.gz
 
 release() { # release <version>
   version=$1
@@ -139,12 +174,19 @@ release() { # release <version>
     git tag "v$version"
   ) || fail "cannot commit fixture pack $version"
   provider_asset "$dir/$asset" "$version"
+  # The UI asset: the ui/ tree with ui/version rewritten to this release, as
+  # the release workflow stamps it. Entries spell ui/...
+  rm -rf "$work/uitree"; mkdir -p "$work/uitree"
+  cp -R "$repo/ui" "$work/uitree/ui"
+  printf '%s\n' "$version" > "$work/uitree/ui/version"
+  COPYFILE_DISABLE=1 tar -czf "$dir/$ui_asset" -C "$work/uitree" ui ||
+    fail "cannot pack $ui_asset for release v$version"
   (
     cd "$dir" || exit 1
     if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum "$asset" > checksums.txt
+      sha256sum "$asset" "$ui_asset" > checksums.txt
     else
-      shasum -a 256 "$asset" > checksums.txt
+      shasum -a 256 "$asset" "$ui_asset" > checksums.txt
     fi
   ) || fail "cannot checksum release v$version"
 }
@@ -179,8 +221,12 @@ split_fences() { # split_fences <name> -> prints the number of fences
   printf '%s' "$n"
 }
 
-run_doc() { # run_doc <doc> <name> <minimum fences> [expect a hand-run install]
-  doc=$1 name=$2 minimum=$3 manual=${4:-}
+# run_doc <doc> <name> <minimum fences> [manual] [ui]
+#   manual: expect a hand-run `sh pack/install.sh` fence.
+#   ui:     the doc installs the Gas City UI, not the provider. Skip the provider
+#           cache assertions and assert the UI's own instead.
+run_doc() {
+  doc=$1 name=$2 minimum=$3 manual=${4:-} ui=${5:-}
   : > "$work/$name.list"
   extract "$doc" "$name"
   grep -q '```' "$work/$name.list" || fail "$name has no sh fence"
@@ -190,6 +236,14 @@ run_doc() { # run_doc <doc> <name> <minimum fences> [expect a hand-run install]
 
   city=$work/city-$name
   mkdir -p "$city/pack" "$city/home/.gc-city"
+  tools=$work/tools
+  if [ -n "$ui" ]; then
+    # A machine with a Rex config that loads nothing yet, and a rex that
+    # answers the config probe.
+    tools=$work/ui-tools
+    mkdir -p "$city/home/.config/rex"
+    printf '%s\n' '-- fixture init.lua' > "$city/home/.config/rex/init.lua"
+  fi
   printf '[city]
 name = "%s"
 ' "$name" > "$city/city.toml"
@@ -207,13 +261,24 @@ name = "%s"
     if ! ( cd "$city" && env -i \
       HOME="$city/home" \
       GC_HOME="$city/home/.gc-city" \
-      PATH="$work/tools:$city/home/.local/bin:$tool_path" \
+      PATH="$tools:$city/home/.local/bin:$tool_path" \
       FAKE_RELEASES="$work/releases" \
       TMPDIR="$tmpdir" \
       sh -eu "$script.run" ) > "$script.log" 2>&1; then
       echo "check-docs: $name fence $i failed:" >&2
       cat "$script.log" >&2
       exit 1
+    fi
+    # The UI doc's first fence is the install with the provider. Prove that it
+    # installed the tree, wrote the stub and appended the block, before the
+    # later fences move on to upgrade and uninstall.
+    if [ -n "$ui" ] && [ "$i" -eq 0 ]; then
+      tree=$city/home/.cache/rex-gascity/$base/ui
+      [ -f "$tree/init.lua" ] || fail "$name: the first fence left no UI tree in the cache"
+      [ -f "$city/home/.config/rex/gascity-ui.lua" ] ||
+        fail "$name: the first fence wrote no load stub"
+      grep -qF '>>> rex-gascity-ui' "$city/home/.config/rex/init.lua" ||
+        fail "$name: the first fence added no block to init.lua"
     fi
     i=$((i + 1))
   done
@@ -223,10 +288,25 @@ name = "%s"
   # The fence env above leaves GC_RUNTIME_CACHE_DIR and XDG_CACHE_HOME unset, so
   # the root is $HOME/.cache. The last import fence pins $base exactly, so the
   # newer $next tag must be ignored.
-  cached=$city/home/.cache/rex-gascity/$base/$os-$arch/gc-runtime-rex
-  [ -x "$cached" ] || fail "$name left no provider in the version-keyed cache"
-  "$cached" version | grep -q "\"version\":\"$base\"" ||
-    fail "$name left a provider that is not $base"
+  if [ -z "$ui" ]; then
+    cached=$city/home/.cache/rex-gascity/$base/$os-$arch/gc-runtime-rex
+    [ -x "$cached" ] || fail "$name left no provider in the version-keyed cache"
+    "$cached" version | grep -q "\"version\":\"$base\"" ||
+      fail "$name left a provider that is not $base"
+  fi
+
+  # The UI doc ends with an uninstall and a cache removal: the stub, the
+  # init.lua block and the tree are gone, and the settings file was never made.
+  if [ -n "$ui" ]; then
+    [ ! -e "$city/home/.cache/rex-gascity/$base/ui" ] ||
+      fail "$name left the UI tree after the cache removal"
+    [ ! -e "$city/home/.config/rex/gascity-ui.lua" ] ||
+      fail "$name left the load stub after the uninstall"
+    ! grep -q 'rex-gascity-ui' "$city/home/.config/rex/init.lua" ||
+      fail "$name left the init.lua block after the uninstall"
+    [ ! -e "$city/home/.config/rex/gascity.lua" ] ||
+      fail "$name wrote the settings file"
+  fi
 
   # A hand-run `sh pack/install.sh` fence installs onto PATH, not into the
   # cache: assert its target directly, or the fence could pass and leave no
@@ -246,5 +326,6 @@ name = "%s"
 
 run_doc "$readme" readme 4
 run_doc "$guide" guide 3 manual
+run_doc "$uidoc" ui 5 "" ui
 
 echo "check-docs: ok"
