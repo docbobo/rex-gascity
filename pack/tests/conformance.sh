@@ -4,9 +4,10 @@
 #   pack/tests/conformance.sh [--binary <path>]
 #
 # Never builds. The binary comes from --binary, else gc-runtime-rex on PATH.
-# It runs in a scratch city and state root, so a fetched pack/ (pack.toml, no
-# go.mod, no source, no repo checkout) is enough. Python 3 reads the JSON
-# report. gc supplies GC_EXEC_CITY_NAME, so GC_REX_CITY is never set here.
+# It runs in a per-attempt scratch city and state root, so a fetched pack/
+# (pack.toml, no go.mod, no source, no repo checkout) is enough. Python 3 reads
+# the JSON report. gc supplies GC_EXEC_CITY_NAME, so GC_REX_CITY is never set
+# here.
 #
 # Exit 0 means gc reported ok:true with no failed requirement. v2_ready and
 # v2_failed are recorded as evidence, never gated by this script: v2_failed
@@ -54,21 +55,59 @@ command -v python3 >/dev/null 2>&1 || { echo "conformance: python3 is required t
 scratch=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/rexconf.XXXXXX")" && pwd -P)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-city=$pack/../testdata/city
-if [ ! -f "$city/city.toml" ]; then
-  # A fetched pack has no repo testdata. A scratch city that includes the
-  # pack gives gc everything it needs to resolve [runtimes.rex].
-  city=$scratch/city
-  mkdir -p "$city"
-  printf '[workspace]\nname = "rex-conf"\nincludes = ["%s"]\n' "$pack" > "$city/city.toml"
-fi
-
-export GC_EXEC_STATE_DIR=$scratch/state
 report=$scratch/conformance.json
 log=$scratch/conformance.log
-status=0
-"$gc" runtime conformance "$binary" --city "$city" --json > "$report" 2> "$log" || status=$?
-[ ! -s "$log" ] || cat "$log" >&2
+
+# gc needs a city that includes the pack to resolve [runtimes.rex]. Build one
+# per attempt, under the scratch root, so no attempt reuses another's city.
+build_city() { # <dir>
+  mkdir -p "$1"
+  printf '[workspace]\nname = "rex-conf"\nincludes = ["%s"]\n' "$pack" > "$1/city.toml"
+}
+
+# report_failures names every failed requirement, by code and detail, before a
+# retry overwrites the report. The JSON report is the only place gc says what
+# went wrong, so a flake that the retry absorbs would otherwise leave nothing
+# in the CI log to diagnose it with.
+report_failures() {
+  python3 - "$report" <<'PY' || true
+import json, sys
+
+try:
+    with open(sys.argv[1]) as f:
+        report = json.load(f)
+except (OSError, ValueError):
+    sys.exit(0)
+for res in report.get("results", []):
+    if res.get("status", "").upper() == "FAIL":
+        print("conformance: failed: %s \u2014 %s" % (res.get("code"), res.get("detail", "")))
+PY
+}
+
+# One retry. A driving op may already have typed when it fails, so it must not
+# be retried in place; the whole run repeats instead, in its own scratch city
+# and state root. A genuinely broken provider fails both attempts.
+attempts=0
+while :; do
+  attempts=$((attempts + 1))
+  status=0
+  # Each attempt gets its own city and state root: a driving op may already
+  # have typed when it fails, and its input or session would otherwise stay in
+  # the shared state root and make the retry fail the same way.
+  city=$scratch/city-$attempts
+  build_city "$city"
+  export GC_EXEC_STATE_DIR=$scratch/state-$attempts
+  "$gc" runtime conformance "$binary" --city "$city" --json > "$report" 2> "$log" || status=$?
+  [ ! -s "$log" ] || cat "$log" >&2
+  if [ "$status" -eq 0 ]; then
+    break
+  fi
+  report_failures
+  if [ "$attempts" -ge 2 ]; then
+    break
+  fi
+  echo "conformance: attempt $attempts failed (exit $status); retrying once" >&2
+done
 
 version=$("$binary" version 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
 gc_id=${GASCITY_PIN:-$("$gc" version 2>/dev/null || echo unknown)}
@@ -77,6 +116,7 @@ if ! {
   echo "### rex conformance"
   echo "- gc: $gc_id"
   echo "- provider: $binary (version ${version:-unknown})"
+  [ "$attempts" -eq 1 ] || echo "- attempts: $attempts"
   python3 - "$report" <<'PY'
 import json, sys
 

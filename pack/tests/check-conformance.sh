@@ -71,6 +71,41 @@ fi
 if grep -qx 'failed: 0' "$bad_summary"; then
   fail "a failing provider was reported with failed: 0"
 fi
+grep -q 'failed: RPP-' "$tmp/bad-out" ||
+  fail "a failing provider's failed requirement was not reported"
+
+# One transient provider failure must not fail the gate: the run is retried
+# once. A broken provider still fails both attempts, so the check above holds.
+flake=$tmp/flaky-provider
+marker=$tmp/flake-fired
+states=$tmp/flake-states
+cat > "$flake" <<EOF
+#!/bin/sh
+case \${1:-} in
+  send-keys|clear-scrollback|interrupt)
+    printf '%s\n' "\${GC_EXEC_STATE_DIR:-}" >> "$states"
+    if [ ! -f "$marker" ]; then
+      : > "$marker"
+      echo 'flaky provider: transient failure' >&2
+      exit 1
+    fi
+    ;;
+esac
+exec "$binary" "\$@"
+EOF
+chmod +x "$flake"
+GITHUB_STEP_SUMMARY=$tmp/flake-summary.md "$here/conformance.sh" --binary "$flake" \
+  > "$tmp/flake-out" 2>&1 || {
+  cat "$tmp/flake-out" >&2
+  fail "a provider with one transient failure failed the gate"
+}
+grep -qx 'ok: true' "$tmp/flake-summary.md" ||
+  fail "a retried run did not report ok: true"
+grep -q 'retrying once' "$tmp/flake-out" ||
+  fail "a transient failure was not reported as retried"
+# The retry must run in its own state root, not the failed attempt's.
+[ "$(grep -v '^$' "$states" | sort -u | wc -l | tr -d ' ')" -ge 2 ] ||
+  fail "the retry reused the first attempt's state root"
 
 # A relative TMPDIR must not leak into GC_EXEC_STATE_DIR.
 ( cd "$tmp" && TMPDIR=. GITHUB_STEP_SUMMARY=$tmp/rel-summary.md \
