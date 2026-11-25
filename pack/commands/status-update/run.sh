@@ -65,11 +65,22 @@ fi
 
 # --- the body ----------------------------------------------------------------
 
+# Terminal controls in the body could drive the pane (clear it, retitle it,
+# move the cursor). Drop every C0 byte except tab and newline, DEL, and the
+# two-byte UTF-8 C1 controls (U+0080-U+009F). What is left of an escape
+# sequence, such as "[2J", stays as plain text.
+c1_lead=$(printf '\302')
+c1_low=$(printf '\200')
+c1_high=$(printf '\237')
+strip_controls() {
+	LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed "s/${c1_lead}[${c1_low}-${c1_high}]//g"
+}
+
 if [ -n "$body_file" ]; then
 	[ -r "$body_file" ] || die "cannot read $body_file"
-	body=$(cat < "$body_file")
+	body=$(strip_controls < "$body_file")
 else
-	body=$(cat)
+	body=$(strip_controls)
 fi
 
 [ -n "$(printf '%s' "$body" | tr -d ' \t\n')" ] || die "the status update is empty"
@@ -82,9 +93,61 @@ sh_quote() {
 	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-# Task 2 replaces this with the doctor report's look.
+# The doctor report's look (ui/lua/gascity/report.lua, M.terminal) for the
+# template's Markdown subset. Reads the sanitized body on stdin.
 render_text() {
-	cat
+	awk '
+	BEGIN {
+		E = "\033"
+		rule = ""
+		for (i = 0; i < 48; i++) rule = rule "─"
+		section = ""
+	}
+	function paint(code, s) { return E "[" code "m" s E "[0m" }
+	function inline(s) {
+		while (match(s, /\*\*[^*]+\*\*/))
+			s = substr(s, 1, RSTART - 1) paint("1", substr(s, RSTART + 2, RLENGTH - 4)) substr(s, RSTART + RLENGTH)
+		while (match(s, /`[^`]+`/))
+			s = substr(s, 1, RSTART - 1) paint("38;5;81", substr(s, RSTART + 1, RLENGTH - 2)) substr(s, RSTART + RLENGTH)
+		return s
+	}
+	function icon(name) {
+		if (name == "Summary") return "📋"
+		if (name == "Done") return "✅"
+		if (name == "In progress") return "🔄"
+		if (name == "Blocked") return "⛔"
+		if (name == "Needs you") return "🙋"
+		if (name == "Next") return "⏭️"
+		return "•"
+	}
+	/^# / {
+		title = substr($0, 3)
+		print ""
+		print "  " paint("1;38;5;81", "Gas City") paint("38;5;245", "    " title)
+		print "  " paint("38;5;238", rule)
+		next
+	}
+	/^## / {
+		section = substr($0, 4)
+		sub(/[ \t]+$/, "", section)
+		print ""
+		print "  " icon(section) "  " paint("1;38;5;109", section)
+		next
+	}
+	/^[-*] / {
+		item = inline(substr($0, 3))
+		if (section == "Blocked" || section == "Needs you") item = paint("38;5;203", item)
+		print "    • " item
+		next
+	}
+	/^[ \t]*$/ { print ""; next }
+	{ print "  " inline($0) }
+	END {
+		print ""
+		print "  " paint("38;5;240", "Close this pane when you are done.")
+		print ""
+	}
+	'
 }
 
 # Each display turns the body into the script the pane runs.
