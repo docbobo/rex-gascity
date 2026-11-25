@@ -1455,6 +1455,68 @@ test("status: a value that holds the probe's end marker survives", function()
 	equal(#found.imports, 2, "the imports after it survive")
 end)
 
+-- Writes a `gc config show --json` answer into the scratch directory and
+-- returns its path, so a probe can run against a value the checked-in
+-- fixture does not hold.
+local function probe_fixture(dir, json)
+	local path = dir .. "/fixture.json"
+	write_file(path, json)
+	return path
+end
+
+test("status: an import key that holds a pipe keeps its own value", function()
+	local dir = probe_tools()
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"/cities/alpha","config":{"Imports":{"custom|name":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path)
+	)
+	remove(dir)
+	local found = status.parse((output:gsub("END\n$", "")))
+	equal(#found.imports, 1, "one import")
+	equal(found.imports[1].key, "custom|name", "the key comes back whole")
+	equal(found.imports[1].source, "https://github.com/docbobo/rex-gascity//pack", "the source is its own value")
+	equal(status.binding(found.imports, nil), "custom|name", "the binding is found")
+end)
+
+test("status: a JSON escape in a value is decoded", function()
+	local dir = probe_tools()
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"/cities/city\\"literal\\u003cb","config":{"Imports":{"rex":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path)
+	)
+	remove(dir)
+	local found = status.parse(output)
+	equal(found.city, '/cities/city"literal<b', "the quote and the code point come back")
+	equal(#found.imports, 1, "the import is still read")
+	equal(found.imports[1].key, "rex", "its key")
+end)
+
+test("status: rex is found in REX_BIN_DIR when it is not on PATH", function()
+	local dir = probe_tools()
+	sh("rm " .. text.quote(dir .. "/rex"))
+	local bin = dir .. "/bin dir"
+	sh("mkdir " .. text.quote(bin))
+	write_file(bin .. "/rex", "#!/bin/sh\ncase \" $* \" in *\" -s s1 \"*) exit 0 ;; esac\nexit 3\n")
+	sh("chmod +x " .. text.quote(bin .. "/rex"))
+	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
+	local found = run_probe(script, dir, "REX_SERVER=/tmp/other.sock REX_BIN_DIR=" .. text.quote(bin))
+	local absent = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	remove(dir)
+	contains(found, "@@server|/tmp/other.sock\n", "the fallback finds rex")
+	contains(absent, "@@server|\n", "no rex anywhere is no server")
+	contains(absent, "END", "the script ran to its end")
+end)
+
 
 test("status: a wrapped import source may hold the row separator", function()
 	local found = status.parse(table.concat({

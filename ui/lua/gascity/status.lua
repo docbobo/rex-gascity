@@ -18,9 +18,56 @@ M.SUBJECT = "Status update requested"
 -- nothing for the rig-level imports (Defaults.Rig.Imports, Rigs[].Imports),
 -- which can reuse a key. The whole JSON is too large to read back off a
 -- probe's screen, so only these lines leave the machine. It tracks strings, escapes, and the key at each
--- depth; that is all it needs from JSON. It holds no single quote, so it can
--- sit in a single-quoted shell word.
+-- depth; that is all it needs from JSON. A string is decoded from its JSON
+-- escapes before it is escaped for the row. The program holds no single
+-- quote, so it can sit in a single-quoted shell word.
 M.FILTER = [==[
+function hex(s,   i, v, c) {
+	if (length(s) < 4) return -1
+	v = 0
+	for (i = 1; i <= 4; i++) {
+		c = index("0123456789abcdef", tolower(substr(s, i, 1)))
+		if (c == 0) return -1
+		v = v * 16 + c - 1
+	}
+	return v
+}
+function utf8(n) {
+	if (n < 128) return sprintf("%c", n)
+	if (n < 2048) return sprintf("%c%c", 192 + int(n / 64), 128 + n % 64)
+	if (n < 65536) return sprintf("%c%c%c", 224 + int(n / 4096), 128 + int(n / 64) % 64, 128 + n % 64)
+	return sprintf("%c%c%c%c", 240 + int(n / 262144), 128 + int(n / 4096) % 64, 128 + int(n / 64) % 64, 128 + n % 64)
+}
+# The JSON string content with escapes turned back into characters.
+function dec(v,   r, i, n, c, e, u, l) {
+	r = ""
+	n = length(v)
+	for (i = 1; i <= n; i++) {
+		c = substr(v, i, 1)
+		if (c != "\\") { r = r c; continue }
+		i++
+		e = substr(v, i, 1)
+		if (e == "\"" || e == "\\" || e == "/") r = r e
+		else if (e == "b") r = r sprintf("%c", 8)
+		else if (e == "f") r = r sprintf("%c", 12)
+		else if (e == "n") r = r sprintf("%c", 10)
+		else if (e == "r") r = r sprintf("%c", 13)
+		else if (e == "t") r = r sprintf("%c", 9)
+		else if (e == "u") {
+			u = hex(substr(v, i + 1, 4))
+			if (u < 0) { r = r e; continue }
+			i += 4
+			if (u >= 55296 && u <= 56319 && substr(v, i + 1, 2) == "\\u") {
+				l = hex(substr(v, i + 3, 4))
+				if (l >= 56320 && l <= 57343) { u = 65536 + (u - 55296) * 1024 + (l - 56320); i += 6 }
+			}
+			if (u >= 55296 && u <= 57343) u = 65533
+			r = r utf8(u)
+		}
+		else r = r e
+	}
+	return r
+}
 function enc(v,   r, i, ch) {
 	r = ""
 	for (i = 1; i <= length(v); i++) {
@@ -28,6 +75,9 @@ function enc(v,   r, i, ch) {
 		if (ch == "%") r = r "%25"
 		else if (ch == "@") r = r "%40"
 		else if (ch == "<") r = r "%3C"
+		else if (ch == "|") r = r "%7C"
+		else if (ch == "\n") r = r "%0A"
+		else if (ch == "\r") r = r "%0D"
 		else r = r ch
 	}
 	return r
@@ -47,9 +97,9 @@ function enc(v,   r, i, ch) {
 		else if (c == ":") { if (have) key[d] = s; have = 0 }
 		else if (c == "," || c == "}" || c == "]") {
 			if (have && d == 1 && key[1] == "city_path")
-				print "@@city|" enc(s)
+				print "@@city|" enc(dec(s))
 			if (have && d == 4 && key[1] == "config" && key[2] == "Imports" && key[4] == "Source")
-				print "@@import|" enc(key[3]) "|" enc(s)
+				print "@@import|" enc(dec(key[3])) "|" enc(dec(s))
 			have = 0
 			if (c != ",") d--
 		}
@@ -78,9 +128,10 @@ function M.script(settings, city, session_id)
 		lines[#lines + 1] = line
 	end
 
-	-- Escape a value so it cannot split a row at @@ or end the answer early:
-	-- % is %25, @ is %40, < is %3C. The same order as the awk function above.
-	add("esc() { printf '%s' \"$1\" | sed -e 's/%/%25/g' -e 's/@/%40/g' -e 's/</%3C/g'; }")
+	-- Escape a value so it cannot split a row at @@ or | or end the answer
+	-- early: % is %25, @ is %40, < is %3C, | is %7C, a newline %0A, a
+	-- carriage return %0D. The same mapping as the awk function above.
+	add([[esc() { printf '%s' "$1" | awk '{ if (NR > 1) v = v "%0A"; v = v $0 } END { gsub(/%/, "%25", v); gsub(/@/, "%40", v); gsub(/</, "%3C", v); gsub(/\|/, "%7C", v); printf "%s", v }'; }]])
 
 	-- A named city is passed to gc. Without one, gc finds the city from the
 	-- pane's directory itself, which also works from inside a rig; the city
@@ -147,9 +198,10 @@ function M.script(settings, city, session_id)
 	return table.concat(lines, "\n")
 end
 
--- The probe escapes every %, @, and < in a value, so a value cannot split a
--- row at @@ or end the answer early at the probe's end marker. This reads it
--- back: %25 is %, %40 is @, %3C is <.
+-- The probe escapes every %, @, <, |, newline, and carriage return in a
+-- value, so a value cannot split a row at @@ or | or end the answer early at
+-- the probe's end marker. This reads it back: %25 is %, %40 is @, %3C is <,
+-- %7C is |, %0A is a newline, %0D is a carriage return.
 local function unescape(value)
 	return (value:gsub("%%(%x%x)", function(code)
 		if code == "25" then
@@ -158,6 +210,12 @@ local function unescape(value)
 			return "@"
 		elseif code == "3C" then
 			return "<"
+		elseif code == "7C" then
+			return "|"
+		elseif code == "0A" then
+			return "\n"
+		elseif code == "0D" then
+			return "\r"
 		end
 		return "%" .. code
 	end))
