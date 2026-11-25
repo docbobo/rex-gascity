@@ -3,6 +3,7 @@
 -- The question goes to the pane's machine, in a block, because the city and
 -- its rigs are there.
 
+local codec = require("gascity.codec")
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
 local text = require("gascity.text")
@@ -42,8 +43,8 @@ local function script(settings, city)
 	end
 
 	add('if [ -n "$city" ]; then set -- --city "$city"; else set --; fi')
-	add('printf \'city|%s\\n\' "${city:--}"')
-	add("printf 'rigs|'")
+	add(codec.emit("city", '"${city:--}"'))
+	add(codec.emit_pipe("rigs"))
 	add('"$gc" "$@" rig list --json 2>/dev/null | tr -d \'\\n\'')
 	add("printf '\\n'")
 
@@ -59,19 +60,21 @@ function M.parse(answer, decode)
 		return rex.json.decode(source)
 	end
 
-	-- The terminal wraps a long city path across rows, so the path is read up
-	-- to the next marker and then unfolded. The rigs JSON below does the same
-	-- thing by dropping its newlines before decoding.
-	local city = answer:match("city|(.-)rigs|")
-	if city ~= nil then
-		city = city:gsub("\n", "")
+	-- The codec joins the rows the terminal wrapped. Take the first value of
+	-- each field.
+	local values = {}
+	for _, row in ipairs(codec.rows(answer, { "city", "rigs" })) do
+		if values[row.kind] == nil then
+			values[row.kind] = row.value
+		end
 	end
+
+	local city = values.city
 	if city == "-" then
 		city = nil
 	end
 
-	local json = answer:gsub("^.-rigs|", ""):gsub("\n", "")
-	local data, err = decode(json)
+	local data, err = decode(values.rigs or "")
 	if data == nil then
 		return nil, "gc's rig list could not be read: " .. tostring(err)
 	end
