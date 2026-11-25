@@ -294,8 +294,8 @@ function M.is_this_pack(source)
 	if type(source) ~= "string" then
 		return false
 	end
-	local s = source:gsub("^%a[%w+.%-]*://", ""):gsub("/+$", "")
-	s = s:gsub("^(github%.com/docbobo/rex%-gascity)%.git", "%1"):gsub("/+", "/")
+	local s = source:gsub("^%a[%w+.%-]*://", ""):gsub("/+$", ""):gsub("/+", "/")
+	s = s:gsub("^(github%.com/docbobo/rex%-gascity)%.git", "%1")
 	if s == "github.com/docbobo/rex-gascity/pack" then
 		return true
 	end
