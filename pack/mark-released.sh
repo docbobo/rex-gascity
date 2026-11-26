@@ -4,8 +4,9 @@
 #
 #   pack/mark-released.sh v<version> [--dry-run]
 #
-# Refuses unless `gh release view <tag>` shows a published release: not a
-# draft and not a prerelease. It rewrites only the README release-state text:
+# Refuses unless `gh release view <tag>` shows a published release that is
+# also the latest one: not a draft and not a prerelease. It rewrites only the
+# README release-state text:
 # the "## Status: released, ..." heading, the "Version ... is the current
 # release" paragraph, the install --version pins (bare and caret), and the
 # "pack/pack.toml declares version = ..." lines. It drops the release-target
@@ -19,7 +20,7 @@
 set -eu
 
 usage() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -52,14 +53,34 @@ json_field() {
   printf '%s' "$1" | python3 -c "import json,sys; print(json.load(sys.stdin)['$2'])"
 }
 
+# Pin every gh lookup to the repository that receives the commit. gh reads
+# GH_REPO and the caller's directory otherwise, so a shell in another repo could
+# check a release that this checkout never publishes.
+remote=$(git -C "$root" config --get remote.origin.url) ||
+  die "no origin remote in $root; cannot tell which repository to check"
+no_scheme=${remote%.git}
+repo_name=${no_scheme##*[:/]}
+repo_owner=${no_scheme%/*}
+repo_owner=${repo_owner##*[:/]}
+repo_slug=$repo_owner/$repo_name
+
 # The release must be public: a README that advertises an install a user cannot
 # complete is the defect this script exists to prevent.
-release_json=$("$GH" release view "$tag" --json isDraft,isPrerelease 2>/dev/null) ||
-  die "no release $tag found; mark a release only after it is published"
+release_json=$("$GH" release view "$tag" --repo "$repo_slug" --json isDraft,isPrerelease 2>/dev/null) ||
+  die "no release $tag found in $repo_slug; mark a release only after it is published"
 [ "$(json_field "$release_json" isDraft)" = "False" ] ||
   die "release $tag is a draft; publish it first"
 [ "$(json_field "$release_json" isPrerelease)" = "False" ] ||
   die "release $tag is a prerelease; mark only a full release"
+
+# The README names the current release. An older published tag would move the
+# pins backward, so accept only the latest release. A repeated run for that
+# release still matches, and the unchanged README below makes it a no-op.
+latest_json=$("$GH" release view --json tagName --repo "$repo_slug" 2>/dev/null) ||
+  die "cannot read the latest release of $repo_slug"
+latest=$(json_field "$latest_json" tagName)
+[ "$latest" = "$tag" ] ||
+  die "$tag is not the latest release of $repo_slug (latest is $latest); refusing to move the README pins backward"
 
 [ -f "$readme" ] || die "README.md not found at $readme"
 

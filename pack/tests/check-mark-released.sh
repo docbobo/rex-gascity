@@ -26,20 +26,31 @@ mkdir -p "$work/bin" "$state"
 # --- fake gh ----------------------------------------------------------------
 # `gh release view <tag> --json isDraft,isPrerelease` answers from a file named
 # release-<tag> in $FAKE_GH. The file holds the two JSON booleans as
-# "<isDraft> <isPrerelease>". No file means no such release. Every call is
-# logged, so the check can prove the script never creates or edits a release.
+# "<isDraft> <isPrerelease>". No file means no such release. The latest-release
+# lookup (`release view --json tagName`) answers from the file "latest".
+# Every call must carry `--repo <owner/repo>`, so the check proves the script
+# pins the lookup instead of trusting GH_REPO or the caller's directory. Every
+# call is logged, so the check can prove the script never creates a release.
 cat > "$work/bin/gh" <<'FAKEGH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GH/calls.log"
-if [ "$1 $2" = "release view" ]; then
-  f=$FAKE_GH/release-$3
-  [ -f "$f" ] || { echo "release not found" >&2; exit 1; }
-  read -r draft pre < "$f"
-  printf '{"isDraft": %s, "isPrerelease": %s}\n' "$draft" "$pre"
+[ "$1 $2" = "release view" ] || { echo "fake gh: unexpected call: $*" >&2; exit 99; }
+repo=
+prev=
+for a in "$@"; do
+  [ "$prev" = "--repo" ] && repo=$a
+  prev=$a
+done
+[ -n "$repo" ] || { echo "fake gh: missing --repo" >&2; exit 1; }
+if [ "$3" = "--json" ]; then
+  [ -f "$FAKE_GH/latest" ] || { echo "release not found" >&2; exit 1; }
+  printf '{"tagName": "%s"}\n' "$(cat "$FAKE_GH/latest")"
   exit 0
 fi
-echo "fake gh: unexpected call: $*" >&2
-exit 99
+f=$FAKE_GH/release-$3
+[ -f "$f" ] || { echo "release not found" >&2; exit 1; }
+read -r draft pre < "$f"
+printf '{"isDraft": %s, "isPrerelease": %s}\n' "$draft" "$pre"
 FAKEGH
 chmod 0755 "$work/bin/gh"
 
@@ -99,6 +110,7 @@ head_sha() { git -C "$repo" rev-parse HEAD; }
 origin_sha() { git -C "$origin" rev-parse main; }
 
 # A published release and a few that must be refused.
+echo v2026.11.05 > "$state/latest"
 echo "false false" > "$state/release-v2026.11.05"
 echo "false false" > "$state/release-v2026.11.06"
 echo "true false"  > "$state/release-v2026.11.07"
@@ -126,6 +138,13 @@ printf '%s\n' "$out" | grep -q '^+## Status: released, v2026.11.05$' ||
 [ "$(cat "$repo/README.md")" = "$readme_before" ] || fail "--dry-run changed README.md"
 [ "$(head_sha)" = "$seed" ] || fail "--dry-run committed"
 [ "$(origin_sha)" = "$seed" ] || fail "--dry-run pushed"
+
+# --- the lookup is pinned to the repo, not GH_REPO or the caller's directory --
+slug=$(basename "$work")/origin
+out=$(GH_REPO=other/repo mark v2026.11.05 --dry-run 2>&1) ||
+  fail "a GH_REPO from another repository broke the pinned lookup: $out"
+grep -q -- "--repo $slug" "$state/calls.log" || fail "gh was not pinned with --repo $slug"
+grep -q 'other/repo' "$state/calls.log" && fail "the lookup used GH_REPO"
 
 # --- a local commit that is not on origin is refused -----------------------
 echo local > "$repo/local-only.txt"
@@ -170,6 +189,12 @@ after=$(head_sha)
 mark v2026.11.05 >/dev/null 2>&1 || fail "a repeated run failed"
 [ "$(head_sha)" = "$after" ] || fail "a repeated run committed again"
 [ "$(origin_sha)" = "$after" ] || fail "a repeated run pushed"
+
+# --- an older published tag cannot move the pins backward -------------------
+echo v2026.11.06 > "$state/latest"
+if mark v2026.11.05 >/dev/null 2>&1; then fail "an older tag moved the README pins backward"; fi
+[ "$(head_sha)" = "$after" ] || fail "the older-tag refusal committed"
+grep -q '^## Status: released, v2026.11.05$' "$readme" || fail "the older-tag refusal changed README.md"
 
 # --- released -> released: the next release moves every pin -----------------
 mark v2026.11.06 >/dev/null 2>&1 || fail "marking the next release failed"
