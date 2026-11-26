@@ -906,8 +906,9 @@ Pack vs gc v1.5.1; not resolved.
    (`890a58a3e`: `internal/runtime/protocol.go:236-242`,
    `internal/runtime/exec/hoststage.go:47-70`), so against it the pack's
    narrative holds and gc does the host work. Against `v1.5.1` it does not.
-   Rex declares neither, so its path does not change (ADR-0008). Consistent,
-   not a bug, but the pack's default narrative does not match `v1.5.1`.
+   Rex declares `locality: local` but not `fs.host`, so its path does not
+   change. Consistent, not a bug, but the pack's default narrative does not
+   match `v1.5.1`.
 4. **Readiness and startup dialogs** (pack-vs-gc compatibility / Rex comparisons):
    - **The pack types the nudge itself and waits up to 60 s for readiness.** gc:
      `nudge` is typed by the script once the agent is ready
