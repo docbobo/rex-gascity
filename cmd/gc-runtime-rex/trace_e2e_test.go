@@ -135,6 +135,22 @@ func TestE2ETraceStartAndPeek(t *testing.T) {
 		t.Errorf("set-meta line: %+v, want set-meta/set-meta/error/%d", last, exitFail)
 	}
 
+	// A successful nudge traces the provider method its handler invokes, not
+	// the op name (REQ-003).
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"nudge", dog}, strings.NewReader("hello"), &stdout, &stderr, d); code != exitOK {
+		t.Fatalf("nudge: exit %d, stderr %q", code, stderr.String())
+	}
+	lines = readTrace(t, tracePath)
+	last = lines[len(lines)-1]
+	if last.Op != "nudge" || last.Method != "NudgeReport" {
+		t.Errorf("nudge line: op/method = %q/%q, want nudge/NudgeReport", last.Op, last.Method)
+	}
+	if last.Outcome != "ok" || last.ExitCode == nil || *last.ExitCode != 0 {
+		t.Errorf("nudge line: outcome/exit = %q/%v, want ok/0", last.Outcome, last.ExitCode)
+	}
+
 	// Redaction: a planted start-config secret in the environment never
 	// appears in the trace.
 	t.Setenv("GC_RUNTIME_START_SECRET", "TRACE-SECRET-SENTINEL")
