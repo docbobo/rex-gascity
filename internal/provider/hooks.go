@@ -75,10 +75,10 @@ func (p *Provider) hookBatch(ctx context.Context, commands []string, phase, work
 	}
 }
 
-// preStartHooks runs the start config's pre_start hooks through the Runner
+// runPreStartHooks runs the start config's pre_start hooks through the Runner
 // seam. A failing or timed-out hook warns and the start continues; only a
 // cancelled start aborts.
-func (p *Provider) preStartHooks(ctx context.Context, plan launch.Plan, cfg Config) error {
+func (p *Provider) runPreStartHooks(ctx context.Context, plan launch.Plan, cfg Config) error {
 	if len(cfg.PreStart) == 0 {
 		return nil
 	}
