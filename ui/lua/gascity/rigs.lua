@@ -4,6 +4,7 @@
 -- its rigs are there.
 
 local codec = require("gascity.codec")
+local fragments = require("gascity.fragments")
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
 local text = require("gascity.text")
@@ -29,13 +30,9 @@ local function script(settings, city)
 		add("esac")
 	else
 		-- No city named: the pane's directory decides, as it does for gc.
-		add("city=")
-		add('d="$(pwd)"')
-		add('while [ -n "$d" ]; do')
-		add('\tif [ -f "$d/city.toml" ] || [ -d "$d/.gc" ]; then city="$d"; break; fi')
-		add('\t[ "$d" = "/" ] && break')
-		add('\td="$(dirname "$d")"')
-		add("done")
+		for _, line in ipairs(fragments.walk_up_city("city")) do
+			add(line)
+		end
 	end
 
 	for _, line in ipairs(gc.words(settings)) do
@@ -45,21 +42,14 @@ local function script(settings, city)
 	add('if [ -n "$city" ]; then set -- --city "$city"; else set --; fi')
 	add(codec.emit("city", '"${city:--}"'))
 	add(codec.emit_pipe("rigs"))
-	add('"$gc" "$@" rig list --json 2>/dev/null | tr -d \'\\n\'')
+	add('"$gc" "$@" rig list --json 2>/dev/null | ' .. fragments.one_line_json())
 	add("printf '\\n'")
 
 	return table.concat(lines, "\n")
 end
 
 -- Reads the answer into `{ city = path or nil, rigs = { ... } }`.
---
--- `decode` turns the JSON into a value; it is rex.json.decode unless a test
--- gives another one.
-function M.parse(answer, decode)
-	decode = decode or function(source)
-		return rex.json.decode(source)
-	end
-
+function M.parse(answer)
 	-- The codec joins the rows the terminal wrapped. Take the first value of
 	-- each field.
 	local values = {}
@@ -74,7 +64,7 @@ function M.parse(answer, decode)
 		city = nil
 	end
 
-	local data, err = decode(values.rigs or "")
+	local data, err = rex.json.decode(values.rigs or "")
 	if data == nil then
 		return nil, "gc's rig list could not be read: " .. tostring(err)
 	end

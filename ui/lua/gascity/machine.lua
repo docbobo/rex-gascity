@@ -4,8 +4,9 @@
 -- The question is asked of that machine, in a block, because the action's own
 -- Lua may run somewhere else entirely.
 
-local gc = require("gascity.gc")
 local codec = require("gascity.codec")
+local fragments = require("gascity.fragments")
+local gc = require("gascity.gc")
 local probe = require("gascity.probe")
 
 local M = {}
@@ -22,19 +23,16 @@ local function script(settings)
 
 	add(codec.emit("host", '"$(hostname 2>/dev/null)"'))
 
-	add('d="$(pwd)"')
-	add('while [ -n "$d" ]; do')
-	add('\tif [ -f "$d/city.toml" ] || [ -d "$d/.gc" ]; then')
-	add('\t\t' .. codec.emit("pane", '"$d"'))
-	add('\t\tbreak')
-	add('\tfi')
-	add('\t[ "$d" = "/" ] && break')
-	add('\td="$(dirname "$d")"')
-	add("done")
+	for _, line in ipairs(fragments.walk_up_city("pane")) do
+		add(line)
+	end
+	add('if [ -n "$pane" ]; then')
+	add('\t' .. codec.emit("pane", '"$pane"'))
+	add("fi")
 
 	-- Any absolute path in gc's list counts, so this does not depend on how gc
 	-- lines its table up. A gc that does not answer simply lists nothing.
-	add('"$gc" cities 2>/dev/null | awk \'{ sub(/^[ \\t]+/, ""); if ($0 ~ /^\\//) print }\' | while IFS= read -r path; do')
+	add('"$gc" cities 2>/dev/null | ' .. fragments.cities_awk() .. ' | while IFS= read -r path; do')
 	add('\t' .. codec.emit("city", '"$path"'))
 	add("done")
 	return table.concat(lines, "\n")
