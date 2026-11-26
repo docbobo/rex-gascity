@@ -657,6 +657,11 @@ code_is 0 "--json with --scope attention"
 if ! cmp -s "$work/out" "$work/json-scope-working.json"; then
   fail "--scope attention changed JSON membership"
 fi
+run_fx "$hook" "$work/outside" --json --scope all -C "$tools/rig"
+code_is 0 "--json with --scope all"
+if ! cmp -s "$work/out" "$work/json-scope-working.json"; then
+  fail "--scope all changed JSON membership"
+fi
 run_fx "$hook" "$work/outside" --json --status hooked -C "$tools/rig"
 code_is 0 "--json with --status hooked"
 has "$work/out" '"hook-bead"' "--status hooked is honored by --json"
