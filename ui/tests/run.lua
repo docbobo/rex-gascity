@@ -403,11 +403,13 @@ local function run_wrapped(script, opts)
 	return run_fragment(script, opts)
 end
 
--- Runs a generated script with a stub gc on PATH that prints its arguments.
+-- Runs a generated script with stub `gc` and `sleep` on PATH. `gc` prints
+-- its arguments; `sleep` returns at once, as in `run_wrapped`.
 local function run_script(source, opts)
 	opts = opts or {}
 	opts.dir = opts.dir or scratch()
 	install(opts.dir .. "/bin", "gc", GC_ECHO)
+	install(opts.dir .. "/bin", "sleep", "#!/bin/sh\nexit 0\n")
 	opts.path = opts.dir .. "/bin:" .. (opts.path or "/usr/bin:/bin")
 	return run_fragment(source, opts)
 end
@@ -1310,8 +1312,10 @@ test("rigs: a named city is used with named rigs", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = probe_answer({ "resumed" }, 0)
 	run_rig("resume", { rigs = "alpha", city = "/cities/two" })
+	local started = os.time()
 	local out, dir = run_script(stub.blocks[1].options.command[3])
 	remove(dir)
+	truthy(os.time() - started < 10, "the wrapped probe does not wait out its sleep")
 	local rows = assert(codec.read(out))
 	equal(rows.output, "[--city]\n[/cities/two]\n[rig]\n[resume]\n[alpha]", "the city and the rig")
 	equal(rows.status, 0, "gc succeeded")
