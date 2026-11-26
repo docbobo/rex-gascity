@@ -163,7 +163,11 @@ if [ "$release_exists" -eq 0 ]; then
   # The workflow gate resolves refs/tags/$tag and a draft release creates no
   # tag, so the tag must exist before the dispatch. Push it at this commit.
   if [ "$remote_tag" -eq 0 ]; then
-    git -C "$root" push --quiet origin "$commit:refs/tags/$tag" ||
+    # A signed annotated tag so `git tag -v` vouches for the release commit.
+    # -f makes a retry after a failed push idempotent; the commit is fixed.
+    git -C "$root" tag -s -f "$tag" -m "rex runtime pack $tag" "$commit" ||
+      die "cannot create signed tag $tag (is a signing key configured?)"
+    git -C "$root" push --quiet origin "refs/tags/$tag" ||
       die "cannot push tag $tag at $commit"
   fi
   "$GH" release create "$tag" --draft --title "rex runtime pack $tag"     --notes "Rex runtime pack $tag. See docs/rex-runtime-pack.md to import and install."

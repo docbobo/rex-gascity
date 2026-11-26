@@ -138,6 +138,11 @@ repo=$work/repo
 git init -q "$repo"
 git -C "$repo" config user.email test@example.test
 git -C "$repo" config user.name "check-release"
+# Signing key for the release tag. release.sh pushes a signed annotated tag;
+# ssh signing keeps the test hermetic (no gpg keyring, no passphrase).
+ssh-keygen -t ed25519 -N '' -f "$work/tagkey" -q
+git -C "$repo" config gpg.format ssh
+git -C "$repo" config user.signingkey "$work/tagkey.pub"
 mkdir -p "$repo/pack/tests"
 cp "$release" "$repo/pack/release.sh"
 chmod 0755 "$repo/pack/release.sh"
@@ -397,6 +402,10 @@ grep -q 'release edit v0.2.0 --draft=false' "$state/calls.log" ||
 [ -f "$state/published" ] || fail "release is not published"
 [ "$(git -C "$work/origin.git" rev-parse "refs/tags/v0.2.0^{commit}")" = "$(git -C "$repo" rev-parse HEAD)" ] ||
   fail "release did not push the tag at HEAD"
+[ "$(git -C "$work/origin.git" cat-file -t refs/tags/v0.2.0)" = tag ] ||
+  fail "release pushed a lightweight tag"
+git -C "$work/origin.git" cat-file tag refs/tags/v0.2.0 | grep -q 'BEGIN SSH SIGNATURE' ||
+  fail "release tag is not signed"
 grep -q 'https://example.test/releases/tag/v0.2.0' "$work/out" ||
   fail "success does not print the release URL"
 grep -q 'gc-runtime-rex_' "$work/out" || fail "success does not print the asset list"
