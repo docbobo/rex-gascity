@@ -4,20 +4,16 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -536,35 +532,9 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 	// warn on stderr and keep starting (docs/reference/exec-session-provider.md
 	// at v1.5.1, "pre_start"). Only cancellation of the whole start aborts; a
 	// hook's own failure or timeout does not. The state lock is not held here:
-	// a slow hook must not stall the rest of the city. Each hook is bounded by
-	// the per-hook timeout, capped by whatever remains of the start budget
-	// (the op context's deadline when it carries one, else startBudget).
-	if len(cfg.PreStart) > 0 {
-		merged := plan.MergedEnv(os.Environ())
-		budgetDeadline := time.Now().Add(p.startBudget)
-		if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
-			budgetDeadline = d
-		}
-		for i, cmd := range cfg.PreStart {
-			remaining := time.Until(budgetDeadline)
-			if remaining <= 0 {
-				if err := ctx.Err(); err != nil {
-					return startResult{}, fmt.Errorf("pre_start[%d]: start canceled: %w", i, err)
-				}
-				p.warnf("pre_start[%d] start budget %s exhausted before the hook ran", i, p.startBudget)
-				break
-			}
-			hookTimeout := p.preStartHookTimeout
-			if remaining < hookTimeout {
-				hookTimeout = remaining
-			}
-			if err := runPreStartWithTimeout(ctx, cmd, cfg.WorkDir, merged, hookTimeout); err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return startResult{}, fmt.Errorf("pre_start[%d]: start canceled: %w", i, ctxErr)
-				}
-				p.warnf("pre_start[%d] %v", i, err)
-			}
-		}
+	// a slow hook must not stall the rest of the city.
+	if err := p.preStartHooks(ctx, plan, cfg); err != nil {
+		return startResult{}, err
 	}
 	// A pre_start hook is the documented way to create the launch work dir
 	// (the gastown worktree recipe points work_dir at a worktree that
@@ -1091,101 +1061,6 @@ func (p *Provider) livePane(ctx context.Context, name string) (Binding, error) {
 	return binding, nil
 }
 
-// runPreStart runs one pre_start shell command. It honours ctx cancellation.
-// The command runs in workDir when that directory already exists and in "/"
-// otherwise, mirroring runtime-herdr-core's _setup_cwd, so a pre_start can
-// create the work dir before the launch.
-func runPreStart(ctx context.Context, command, workDir string, env []string) error {
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	cmd.Dir = preStartCwd(workDir)
-	cmd.Env = env
-	// Run the hook in its own process group so a cancel kills the whole
-	// group: killing only the shell leaves a child (e.g. sleep) holding the
-	// output pipe open.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-
-	var out lockedBuffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%s: %w", command, err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	var err error
-	select {
-	case err = <-done:
-	case <-ctx.Done():
-		// A live ctx keeps the wait open, so a hook that backgrounds its work
-		// and exits still runs until that work closes the pipe. Only a
-		// cancelled hook is bounded, so a child that escaped the process group
-		// cannot hold the start past the hook deadline.
-		select {
-		case err = <-done:
-		case <-time.After(preStartCancelGrace):
-			// cmd.Cancel stops running once cmd.Wait has seen the shell exit,
-			// so a child that escaped the process group would survive it and
-			// keep the output pipe open. Kill the group again; ESRCH only
-			// means it is already gone.
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			err = ctx.Err()
-		}
-	}
-	if err != nil {
-		// A cancelled or timed-out ctx means the command did not fail on its
-		// own; surface that so the caller can name the timeout or cancellation.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			err = ctxErr
-		}
-		if got := out.String(); got != "" {
-			return fmt.Errorf("%s: %w\n%s", command, err, got)
-		}
-		return fmt.Errorf("%s: %w", command, err)
-	}
-	return nil
-}
-
-// preStartCancelGrace bounds the pipe wait after a pre_start hook's context
-// ends. The group kill normally closes the pipes at once; the grace covers a
-// child that left the process group.
-const preStartCancelGrace = 200 * time.Millisecond
-
-// lockedBuffer collects a command's output while a copy goroutine may still
-// write into it after runPreStart stops waiting.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// runPreStartWithTimeout runs one pre_start hook under a per-hook timeout. A
-// hook that outlives timeout fails with a "timed out after" message; a hook
-// that fails on its own carries its combined output as before. The caller
-// derives timeout from the op budget, so the whole pre_start phase cannot
-// outlive the start op.
-func runPreStartWithTimeout(ctx context.Context, command, workDir string, env []string, timeout time.Duration) error {
-	hctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	err := runPreStart(hctx, command, workDir, env)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%s: timed out after %s", command, timeout)
-	}
-	return err
-}
-
 // sessionLiveSkipped is the one warning a non-empty session_live produces.
 // gc's session_live styles and binds a tmux server; the Rex provider runs no
 // tmux server, so applying it would reach an unrelated one
@@ -1214,25 +1089,21 @@ func (p *Provider) runSessionSetup(ctx context.Context, name string, res startRe
 	// by whatever remains of the start budget, so a slow setup hook cannot run
 	// until the outer deadline cuts the whole op (herdr-core reserves the
 	// first-turn margin; herdrcore/lifecycle.py:616-624).
-	budgetDeadline := time.Now().Add(p.startBudget)
-	if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
-		budgetDeadline = d
-	}
-	runHook := func(command string) error {
-		hookTimeout := min(p.preStartHookTimeout, time.Until(budgetDeadline))
-		if hookTimeout <= 0 {
-			return fmt.Errorf("start budget %s exhausted before the hook ran", p.startBudget)
-		}
-		return runPreStartWithTimeout(ctx, command, cfg.WorkDir, env, hookTimeout)
-	}
-	for i, command := range cfg.SessionSetup {
-		if err := runHook(command); err != nil {
-			p.warnf("session_setup[%d] %v", i, err)
-		}
+	commands := append([]string(nil), cfg.SessionSetup...)
+	labels := make([]string, len(commands))
+	for i := range labels {
+		labels[i] = fmt.Sprintf("session_setup[%d]", i)
 	}
 	if cfg.SessionSetupScript != "" {
-		if err := runHook(cfg.SessionSetupScript); err != nil {
-			p.warnf("session_setup_script %v", err)
+		commands = append(commands, cfg.SessionSetupScript)
+		labels = append(labels, "session_setup_script")
+	}
+	for _, r := range runHooks(ctx, p.runner, p.hookBatch(ctx, commands, "session_setup", cfg.WorkDir, env)) {
+		switch {
+		case r.BudgetExhausted:
+			p.warnf("%s start budget %s exhausted before the hook ran", labels[r.Index], p.startBudget)
+		case r.Err != nil:
+			p.warnf("%s %v", labels[r.Index], r.Err)
 		}
 	}
 	if len(cfg.SessionLive) > 0 {
