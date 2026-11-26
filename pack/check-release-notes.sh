@@ -68,7 +68,11 @@ case $first in
     ;;
 esac
 
-printf '%s\n' "$body" | grep -Fq "pack $tag" ||
+# The target token must not run into another digit: "pack v2026.11.060" names
+# a different version than "pack v2026.11.06". A period after the target (a
+# sentence continues) still matches.
+printf '%s\n' "$body" |
+  grep -Eq "pack $(printf '%s' "$tag" | sed 's/\./\\./g')([^0-9]|$)" ||
   die "body of $tag does not name the target version as \"pack $tag\""
 
 bullets=$(printf '%s\n' "$body" | grep -cE '^- #[0-9]+ — ' || true)
