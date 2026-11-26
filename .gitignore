@@ -24,3 +24,7 @@ bin/
 # marker file is tracked.
 /plans/*
 !/plans/.gc-plans
+
+# Python bytecode (the dashboard pack command is Python)
+__pycache__/
+*.pyc

@@ -215,6 +215,45 @@ through `rex api call session.new_layer`, and it finds `rex` on `PATH` or in
 If `rex` fails, the command returns the same nonzero exit status and passes
 through its stderr. The status can match a code in this table.
 
+## Dashboard command
+
+`gc <binding> dashboard` draws the workstreams a rig is working on and the
+bead graph under each one, straight in the terminal. `<binding>` is usually
+`rex`.
+
+```text
+gc rex dashboard [--rig DIR] [--scope working|attention|all]
+                 [--all] [--layout box|tree] [--columns N]
+                 [--watch] [--interval SECONDS] [--json]
+```
+
+A *workstream* is the top-level origin bead a unit of work was launched for.
+The command rolls every bead up under its origin using the ancestry in bead
+metadata and convoy `tracks` edges, then prints one box per stream (or an
+indented tree with `--layout tree`).
+
+Without `--rig` it shows the rig that contains the current directory: it asks
+`gc rig list --json` for the city's rigs and picks the one whose path contains
+cwd, nearest first. Run it from a rig checkout, a rig subdirectory, or the
+city root. `--rig DIR` targets a rig explicitly.
+
+- `--scope` picks the streams: `working` (an in-progress bead, the default),
+  `attention` (working plus blocked/hooked), or `all`.
+- `--all` shows closed beads too and implies `--scope all`.
+- `-w, --watch` re-renders on an interval; `q` quits and `r` refreshes.
+- `--json` prints the resolved model instead of the drawing.
+- `--no-color` and `--width` control the output for pipes and tests.
+
+It reads the graph with one `bd export` in the target rig and needs `python3`
+on `PATH`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | The dashboard was drawn, or `--json` printed the model. |
+| 1 | `bd` failed, or `bd` is not on `PATH`. |
+| 2 | A usage error. |
+| 127 | No `python3` on `PATH`. |
+
 ## Source checkout
 
 From a git checkout of this repository, with a Go toolchain:
