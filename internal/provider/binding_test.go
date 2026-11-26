@@ -68,6 +68,46 @@ func TestResolveScanFallback(t *testing.T) {
 	}
 }
 
+// TestResolveFreshStartEnvFindsEnvDerivedPane proves a lost sidecar record
+// still finds a pane whose labels came from the start env: the short pool name
+// alone cannot derive the rig tab.
+func TestResolveFreshStartEnvFindsEnvDerivedPane(t *testing.T) {
+	b, _, _ := newTestBinder(t, rex.Window{ID: "window:Indigo", Label: "Rig: Indigo",
+		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}})
+
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{
+		Name: "dog-1", StartEnv: map[string]string{"GC_RIG": "Indigo"}, Mode: ResolveFresh,
+	})
+	if err != nil || !ok || got.BlockID != "block:dog-1" || got.TabLabel != "Rig: Indigo" {
+		t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
+	}
+}
+
+// TestResolveReadWritesNothing checks the read-only seam: a stored record
+// whose address went stale still finds the pane restored under its labels, and
+// the store keeps the record as it was. Proof for AC-3 and BR-9.
+func TestResolveReadWritesNothing(t *testing.T) {
+	b, store, _ := newTestBinder(t, indigoWindow())
+	stale := indigoBinding()
+	stale.SessionID = "session:old"
+	store.Save(stale)
+
+	got, ok, err := b.ResolveRead(context.Background(), stale.Name, stale)
+	if err != nil || !ok || got.BlockID != "block:dog-1" {
+		t.Fatalf("ResolveRead = %+v, %v, %v", got, ok, err)
+	}
+	if !got.CreatedAt.IsZero() {
+		t.Errorf("read-only binding claims a creation time: %+v", got)
+	}
+	saved, found := store.Load(stale.Name)
+	if !found {
+		t.Fatal("ResolveRead dropped the record")
+	}
+	if !reflect.DeepEqual(saved, stale) {
+		t.Errorf("ResolveRead wrote the store: %+v", saved)
+	}
+}
+
 func TestResolveNotFound(t *testing.T) {
 	b, _, _ := newTestBinder(t, indigoWindow())
 	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--cat", Mode: ResolveFresh})
@@ -234,33 +274,28 @@ func TestResolveLegacyWindowLabel(t *testing.T) {
 func TestScanFindsLegacyWindowLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name, windowLabel, blockLabel string
-		// hint is the env-derived label Start supplies; the legacy window
-		// label must still be found when it is set.
-		hint string
-		// legacyTab is the pre-GCREX-72 GC_RIG label Start supplies, which
-		// the name alone cannot derive for a short pool name.
-		legacyTab string
+		// rig is the start env's GC_RIG. The env derives the same labels
+		// Start used to supply by hand, so the pre-GCREX-72 window label
+		// must still be found from legacyTabLabelFor(name, env).
+		rig string
 	}{
-		{"Indigo--dog-1", "Indigo", "dog-1", "", ""},
-		{"mayor", legacyTownTab, "mayor", "", ""},
-		{"Indigo--dog-1", "Indigo", "dog-1", "Rig: Indigo", ""},
-		{"mayor", legacyTownTab, "mayor", "my-city", ""},
-		{"dog-1", "Indigo", "dog-1", "Rig: Indigo", "Indigo"},
-		{"Indigo--dog-1", "other-rig", "dog-1", "Rig: other-rig", "other-rig"},
+		{"Indigo--dog-1", "Indigo", "dog-1", ""},
+		{"mayor", legacyTownTab, "mayor", ""},
+		{"Indigo--dog-1", "Indigo", "dog-1", "Indigo"},
+		// A start env with a rig that differs from the name must still try
+		// the name-derived legacy tab: the pre-GCREX-72 window carries it.
+		{"Indigo--dog-1", "Indigo", "dog-1", "other-rig"},
+		{"mayor", "my-city", "mayor", "my-city"},
+		{"dog-1", "Indigo", "dog-1", "Indigo"},
+		{"Indigo--dog-1", "other-rig", "dog-1", "other-rig"},
 	} {
-		t.Run(tc.name+"/hint="+tc.hint, func(t *testing.T) {
+		t.Run(tc.name+"/rig="+tc.rig, func(t *testing.T) {
 			b, _, _ := newTestBinder(t, rex.Window{ID: "window:old", Label: tc.windowLabel,
 				Blocks: []rex.Block{{ID: "block:old", Label: tc.blockLabel}}})
 
-			req := ResolveRequest{Name: SessionName(tc.name), Mode: ResolveFresh}
-			if tc.hint != "" {
-				req.Hint = Binding{Name: SessionName(tc.name), TabLabel: tc.hint, PaneLabel: tc.blockLabel}
-			}
-			if tc.legacyTab != "" {
-				// Derive the candidate the way Start does, not by hand.
-				req.LegacyTabs = []string{legacyTabLabelFor(SessionName(tc.name), map[string]string{"GC_RIG": tc.legacyTab})}
-			}
-			got, ok, err := b.Resolve(context.Background(), req)
+			got, ok, err := b.Resolve(context.Background(), ResolveRequest{
+				Name: SessionName(tc.name), StartEnv: map[string]string{"GC_RIG": tc.rig}, Mode: ResolveFresh,
+			})
 			if err != nil || !ok || got.BlockID != "block:old" || got.TabLabel != tc.windowLabel {
 				t.Fatalf("Resolve = %+v, %v, %v", got, ok, err)
 			}

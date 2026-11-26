@@ -162,7 +162,7 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	// particular, a provisional start has labels but no block ID to probe.
 	if !ok || bd.BlockID == "" {
 		var err error
-		bd, ok, err = p.binder.find(ctx, n, bd, nil)
+		bd, ok, err = p.binder.ResolveRead(ctx, n, bd)
 		if err != nil {
 			if observeUnreadable(err) {
 				return ObserveAnswer{State: ObserveUnknown}, nil
@@ -249,7 +249,7 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 		// Find a live pane under the record's labels, without ResolveLive's
 		// stale-record drop or its save: Observe is a read, and only Start or
 		// Stop replaces the record.
-		live, ok, err := p.binder.find(ctx, bd.Name, bd, nil)
+		live, ok, err := p.binder.ResolveRead(ctx, bd.Name, bd)
 		if err != nil {
 			return "", Binding{}, err
 		}

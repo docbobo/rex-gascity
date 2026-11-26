@@ -223,7 +223,7 @@ const paneLabelShortForm = "#"
 
 // fitPaneLabel renders "<agent> (<suffix>)" at or under Rex's limit. Only the
 // agent is shortened: the parenthesised suffix is the discovery identity
-// (Binder.scan), so cutting it would make two sessions differing at the tail
+// (Binder.findLive), so cutting it would make two sessions differing at the tail
 // share a label. A short-form suffix carries paneLabelShortForm, so the mark
 // costs one rune of the agent budget. A shortened agent is marked (paneLabelShortened) and names no
 // session; ok is false when not even the marked agent and the suffix fit — no

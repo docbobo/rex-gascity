@@ -474,7 +474,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 	attempt := rand.Text()
 	// Build the one launch plan up front: it projects pool routing for every
 	// later step and owns the Rex block layout. The launch label must come
-	// from the same projected env as the hint and the record, or pool
+	// from the same projected env as the start labels and the record, or pool
 	// routing makes them disagree and a restart launches a duplicate pane.
 	env := launch.Project(cfg.Env)
 	plan := launch.NewPlan(launch.Config{
@@ -484,20 +484,6 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		Label:   paneLabelFor(n, env),
 	})
 	cfg.Env = plan.Env
-	// The env-derived labels let Resolve rediscover a live pane whose sidecar
-	// record was lost (gc 1.5.1's pool names carry no rig, so the name alone
-	// cannot place the pane in its rig tab).
-	hint := Binding{
-		TabLabel:  tabLabel(n, cfg.Env, p.townTab),
-		PaneLabel: paneLabelFor(n, cfg.Env),
-		Aliases:   aliasesFor(n, cfg.Env),
-	}
-	// A pane started before GC_TEMPLATE drove the agent prefix carries the
-	// legacy label; find it rather than launch a duplicate beside it.
-	var legacyPanes []string
-	if legacy := legacyPaneLabelFor(n, cfg.Env); legacy != hint.PaneLabel {
-		legacyPanes = []string{legacy}
-	}
 
 	// A binding kept by a stop or a failed launch whose descendant could not
 	// be reaped is the only name for that process once its pane is gone.
@@ -508,11 +494,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 	}
 
 	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
-		Name: n, Hint: hint, Mode: ResolveFresh,
-		// A window started before GCREX-72 carries the bare GC_RIG, which
-		// the name alone cannot derive for short pool names.
-		LegacyTabs:  []string{legacyTabLabelFor(n, cfg.Env)},
-		LegacyPanes: legacyPanes,
+		Name: n, StartEnv: cfg.Env, Mode: ResolveFresh,
 	})
 	if err != nil {
 		return startResult{}, err
@@ -608,7 +590,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		name:     n,
 		attempt:  attempt,
 		session:  sid,
-		tab:      hint.TabLabel,
+		tab:      tabLabel(n, cfg.Env, p.townTab),
 		spec:     plan.Spec,
 		relaunch: found,
 		cfg:      cfg,
