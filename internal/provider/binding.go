@@ -543,6 +543,10 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 		lbl.pane = paneLabelFor(name, pol.startEnv)
 		lbl.aliases = aliasesFor(name, pol.startEnv)
 		lbl.tabs = appendLabel(nil, tabLabel(name, pol.startEnv, b.townTab))
+		// A pane started before GCREX-72 can sit in the name-derived rig tab,
+		// which the pre-GC_RIG start env did not record. Keep that candidate
+		// before the env-derived legacy tab.
+		lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, nil))
 		lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, pol.startEnv))
 		if legacy := legacyPaneLabelFor(name, pol.startEnv); legacy != lbl.pane {
 			lbl.legacyPanes = []string{legacy}

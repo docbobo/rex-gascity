@@ -282,6 +282,9 @@ func TestScanFindsLegacyWindowLabel(t *testing.T) {
 		{"Indigo--dog-1", "Indigo", "dog-1", ""},
 		{"mayor", legacyTownTab, "mayor", ""},
 		{"Indigo--dog-1", "Indigo", "dog-1", "Indigo"},
+		// A start env with a rig that differs from the name must still try
+		// the name-derived legacy tab: the pre-GCREX-72 window carries it.
+		{"Indigo--dog-1", "Indigo", "dog-1", "other-rig"},
 		{"mayor", "my-city", "mayor", "my-city"},
 		{"dog-1", "Indigo", "dog-1", "Indigo"},
 		{"Indigo--dog-1", "other-rig", "dog-1", "other-rig"},
