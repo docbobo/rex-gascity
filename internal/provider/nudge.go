@@ -181,14 +181,6 @@ type NudgeReport struct {
 	Confirm time.Duration
 }
 
-// programStatusSnapshot is the newest program_status record of a pane.
-type programStatusSnapshot struct {
-	Present bool
-	State   string
-	Kind    string
-	Latest  time.Time
-}
-
 // Nudge types text into the agent's pane and submits it. It reads the pane
 // program's program_status first: a working or blocked pane is refused with a
 // typed error and nothing is typed, so gc can retry without duplicating input.
@@ -594,23 +586,6 @@ func (p *Provider) nudgeSubmitContext(parent context.Context) (context.Context, 
 // but the Enter did not, so the split is visible after the error is gone.
 func (p *Provider) recordNudgeSubmitFailure(b Binding, err error) {
 	_ = p.metaSet(b.Name, NudgeSubmitFailedMetaKey, err.Error())
-}
-
-// programStatusSnapshot returns the newest program_status record of a pane.
-// It reports Present false when Rex has no records for the pane.
-func (p *Provider) programStatusSnapshot(ctx context.Context, b Binding) (programStatusSnapshot, error) {
-	status, err := p.client.BlockProgramStatus(ctx, b.SessionID, b.BlockID)
-	if err != nil {
-		return programStatusSnapshot{}, err
-	}
-	var snap programStatusSnapshot
-	for _, rec := range status.Records {
-		// ">=" keeps the last record on a tie, including all-zero timestamps.
-		if !snap.Present || !rec.UpdatedAt.Before(snap.Latest) {
-			snap = programStatusSnapshot{Present: true, State: rec.State, Kind: rec.Kind, Latest: rec.UpdatedAt}
-		}
-	}
-	return snap, nil
 }
 
 // nudgeDiagnostic is written when a nudge was delivered but its turn start was
