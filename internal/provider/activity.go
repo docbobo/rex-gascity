@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
-
-	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // ActivitySource names where a LastActivity timestamp came from.
@@ -108,36 +106,21 @@ func (p *Provider) GetLastActivity(ctx context.Context, name string) (LastActivi
 // its screen. It is the read half of GetLastActivity, shared with inventory so
 // both report the same time for a box that has reported one.
 func (p *Provider) statusActivity(ctx context.Context, binding Binding) (time.Time, bool, error) {
-	status, err := p.client.BlockProgramStatus(ctx, binding.SessionID, binding.BlockID)
+	snap, err := p.programStatusSnapshot(ctx, binding)
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	latest, state, present := newestProgramStatus(status.Records)
-	if !present {
+	if !snap.Present {
 		return time.Time{}, false, nil
 	}
 	inputAt := p.inputFloor(binding)
-	if state == "working" || state == "blocked" {
+	if snap.State == "working" || snap.State == "blocked" {
 		return laterOf(time.Now().UTC(), inputAt), true, nil
 	}
-	if latest.IsZero() {
+	if snap.Latest.IsZero() {
 		return time.Time{}, false, nil
 	}
-	return laterOf(latest, inputAt), true, nil
-}
-
-// newestProgramStatus returns the newest program_status record's updated time
-// and state. A tie keeps the later record.
-func newestProgramStatus(records []rex.ProgramStatusRecord) (time.Time, string, bool) {
-	var latest time.Time
-	var state string
-	present := false
-	for _, rec := range records {
-		if !present || !rec.UpdatedAt.Before(latest) {
-			latest, state, present = rec.UpdatedAt, rec.State, true
-		}
-	}
-	return latest, state, present
+	return laterOf(snap.Latest, inputAt), true, nil
 }
 
 // inputFloor is the recorded pack-input time for the pane's current

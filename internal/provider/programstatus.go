@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/docbobo/rex-gascity/internal/rex"
 )
 
 // ProgramStatusValidity is the judged validity of a program-status reading, the
@@ -101,6 +103,39 @@ func (p *Provider) ProgramStatus(ctx context.Context, name string) (ProgramStatu
 		Updated:  snap.Latest,
 		Reported: true,
 	}, nil
+}
+
+// programStatusSnapshot is the newest program_status record of a pane.
+type programStatusSnapshot struct {
+	Present bool
+	State   string
+	Kind    string
+	Latest  time.Time
+}
+
+// programStatusSnapshot returns the newest program_status record of a pane.
+// It reports Present false when Rex has no records for the pane. It is the
+// provider's only BlockProgramStatus read: delivery, readiness, idle,
+// activity and ProgramStatus all go through it, so they share one rule for
+// "newest" (reduceProgramStatus).
+func (p *Provider) programStatusSnapshot(ctx context.Context, b Binding) (programStatusSnapshot, error) {
+	status, err := p.client.BlockProgramStatus(ctx, b.SessionID, b.BlockID)
+	if err != nil {
+		return programStatusSnapshot{}, err
+	}
+	return reduceProgramStatus(status.Records), nil
+}
+
+// reduceProgramStatus picks the newest record. ">=" keeps the last record on
+// a tie, including all-zero timestamps.
+func reduceProgramStatus(records []rex.ProgramStatusRecord) programStatusSnapshot {
+	var snap programStatusSnapshot
+	for _, rec := range records {
+		if !snap.Present || !rec.UpdatedAt.Before(snap.Latest) {
+			snap = programStatusSnapshot{Present: true, State: rec.State, Kind: rec.Kind, Latest: rec.UpdatedAt}
+		}
+	}
+	return snap
 }
 
 // knownProgramState reports whether state is an OSC 7501 root word
