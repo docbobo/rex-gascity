@@ -7,6 +7,7 @@
 
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
+local shell = require("gascity.shell")
 local text = require("gascity.text")
 
 local M = {}
@@ -151,9 +152,9 @@ function M.script(settings, city, session_id)
 	-- it found comes back as city_path.
 	if city ~= nil and city ~= "" then
 		add("city=" .. text.quote(city))
-		add('case "$city" in')
-		add('\t"~/"*) city="$HOME/${city#\\~/}" ;;')
-		add("esac")
+		for _, line in ipairs(shell.tilde("city")) do
+			add(line)
+		end
 		add('set -- --city "$city"')
 	else
 		add("set --")

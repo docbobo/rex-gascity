@@ -8,6 +8,7 @@ local codec = require("gascity.codec")
 local fragments = require("gascity.fragments")
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
+local shell = require("gascity.shell")
 
 local M = {}
 
@@ -21,20 +22,30 @@ local function script(settings)
 		lines[#lines + 1] = line
 	end
 
-	add(codec.emit("host", '"$(hostname 2>/dev/null)"'))
-
-	for _, line in ipairs(fragments.walk_up_city("pane")) do
-		add(line)
+	add("has_gc() {")
+	for _, line in ipairs(gc.guard({ exiting = false })) do
+		add("\t" .. line)
 	end
-	add('if [ -n "$pane" ]; then')
-	add('\t' .. codec.emit("pane", '"$pane"'))
+	add("}")
+	add("missing=")
+	add("if ! has_gc")
+	add("then missing=1")
 	add("fi")
 
+	add(codec.emit("host", '"$(hostname 2>/dev/null)"'))
+
+	for _, line in ipairs(shell.city_walk("d", { codec.emit("pane", '"$d"') })) do
+		add(line)
+	end
+
 	-- Any absolute path in gc's list counts, so this does not depend on how gc
-	-- lines its table up. A gc that does not answer simply lists nothing.
-	add('"$gc" cities 2>/dev/null | ' .. fragments.cities_awk() .. ' | while IFS= read -r path; do')
-	add('\t' .. codec.emit("city", '"$path"'))
-	add("done")
+	-- lines its table up. The list is best-effort, so its stderr is dropped:
+	-- it would land after the pane row and corrupt that row.
+	add('if [ -z "$missing" ]; then')
+	add('\t"$gc" cities 2>/dev/null | ' .. fragments.cities_awk() .. ' | while IFS= read -r path; do')
+	add('\t\t' .. codec.emit("city", '"$path"'))
+	add("\tdone")
+	add("fi")
 	return table.concat(lines, "\n")
 end
 

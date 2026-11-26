@@ -7,6 +7,7 @@
 
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
+local shell = require("gascity.shell")
 local text = require("gascity.text")
 
 local M = {}
@@ -16,12 +17,11 @@ local TERMINAL = "com.superlogical.terminal.shell"
 -- The lines that put the city in $city, expanding a leading ~. This runs on the
 -- machine that has the city, so that is the home it means.
 local function city_lines(city)
-	return {
-		"city=" .. text.quote(city),
-		'case "$city" in',
-		'\t"~/"*) city="$HOME/${city#\\~/}" ;;',
-		"esac",
-	}
+	local lines = { "city=" .. text.quote(city) }
+	for _, line in ipairs(shell.tilde("city")) do
+		lines[#lines + 1] = line
+	end
+	return lines
 end
 
 -- A POSIX shell script that runs gc commands in order, stopping at the first

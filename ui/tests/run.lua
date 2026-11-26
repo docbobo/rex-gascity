@@ -27,6 +27,7 @@ local status = require("gascity.status")
 local actions = require("gascity.actions")
 local codec = require("gascity.codec")
 local fragments = require("gascity.fragments")
+local shell = require("gascity.shell")
 
 local fixture = root .. "/tests/fixtures"
 
@@ -464,6 +465,91 @@ test("fragments: the tr strip leaves one JSON line", function()
 	equal(out, '{"rigs":[{"name":"alpha"}]}\n__status=0\n', "the same bytes, no newline")
 end)
 
+local function shell_case(variable, value)
+	return variable .. "=" .. text.quote(value) .. "\n"
+		.. table.concat(shell.tilde(variable), "\n")
+		.. '\nprintf "%s\\n" "$' .. variable .. '"'
+end
+
+test("shell: the walk stops at the nearest ancestor with city.toml", function()
+	local dir = scratch()
+	sh("mkdir -p " .. text.quote(dir .. "/a/b/c"))
+	write_file(dir .. "/a/city.toml", "")
+	local out = run_fragment(table.concat(shell.city_walk("city"), "\n") .. WALK_PRINT, {
+		dir = dir,
+		workdir = "a/b/c",
+	})
+	remove(dir)
+	equal(out, dir .. "/a\n__status=0\n", "the nearest ancestor")
+end)
+
+test("shell: a .gc directory also marks the city", function()
+	local dir = scratch()
+	sh("mkdir -p " .. text.quote(dir .. "/a/.gc") .. " " .. text.quote(dir .. "/a/b"))
+	local out = run_fragment(table.concat(shell.city_walk("city"), "\n") .. WALK_PRINT, {
+		dir = dir,
+		workdir = "a/b",
+	})
+	remove(dir)
+	equal(out, dir .. "/a\n__status=0\n", "the directory with .gc")
+end)
+
+test("shell: the walk leaves the city empty when there is none", function()
+	local dir = scratch()
+	local out = run_fragment(table.concat(shell.city_walk("city"), "\n") .. WALK_PRINT, {
+		dir = dir,
+		workdir = "a/b",
+	})
+	remove(dir)
+	equal(out, "__status=0\n", "nothing, and no loop")
+end)
+
+test("shell: a leading ~ is expanded with the running machine's home", function()
+	local dir = scratch()
+	local out = run_fragment(shell_case("city", "~/cities/two"), { dir = dir, env = "HOME=/home/tester" })
+	remove(dir)
+	equal(out, "/home/tester/cities/two\n__status=0\n", "HOME plus the tail")
+end)
+
+test("shell: a bare ~ is the home", function()
+	local dir = scratch()
+	local out = run_fragment(shell_case("city", "~"), { dir = dir, env = "HOME=/home/tester" })
+	remove(dir)
+	equal(out, "/home/tester\n__status=0\n", "HOME alone")
+end)
+
+test("shell: another path is unchanged", function()
+	local dir = scratch()
+	local out = run_fragment(shell_case("city", "/abs/two"), { dir = dir })
+	remove(dir)
+	equal(out, "/abs/two\n__status=0\n", "the same path")
+end)
+
+test("rigs: a missing gc is reported as gc.MISSING", function()
+	local dir = scratch()
+	-- gc_bin skips PATH and the fallback places, so the host's gc cannot answer.
+	local settings = config.resolve(nil)
+	settings.gc_bin = dir .. "/nothing/gc"
+	-- A decoy gc on PATH proves gc_bin bypasses the lookup.
+	install(dir .. "/bin", "gc", GC_ECHO)
+	stub.format = probe_answer({})
+	rigs.find(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		env = "HOME=" .. dir .. "/home",
+		workdir = "work",
+	})
+	remove(dir)
+	local rows = assert(codec.read(out))
+	contains(rows.output, gc.MISSING, "the guard's message")
+	contains(rows.output, "gc|missing", "the marker row")
+	equal(rows.status, 0, "the script still ends")
+	local answer, err = rigs.parse(rows.output)
+	equal(answer, nil, "no answer")
+	equal(err, gc.MISSING, "gc.MISSING, not the list's error")
+end)
+
+-- Settings ---------------------------------------------------------------
 -- Settings ---------------------------------------------------------------
 
 test("config: defaults when no file is named", function()
@@ -1095,6 +1181,29 @@ test("machine: the city list is parsed without splitting on spaces", function()
 	remove(dir)
 	local answer = machine.parse(assert(codec.read(out)).output)
 	same(answer.cities, { "/srv/Gas City", "/cities/two" }, "whole paths, spaces kept")
+end)
+
+test("machine: a missing gc still prints its facts", function()
+	local dir = scratch()
+	-- gc_bin skips PATH and the fallback places, so the host's gc cannot answer.
+	local settings = config.resolve(nil)
+	settings.gc_bin = dir .. "/nothing/gc"
+	install(dir .. "/bin", "hostname", "#!/bin/sh\nprintf 'm\\n'\n")
+	write_file(dir .. "/city.toml", "")
+	stub.format = probe_answer({})
+	machine.ask(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		workdir = "work",
+	})
+	remove(dir)
+	contains(out, "gc is not on this machine", "the message reaches the people")
+	local rows = assert(codec.read(out))
+	local answer = machine.parse(rows.output)
+	equal(answer.host, "m", "the name")
+	equal(answer.city, dir, "the pane's city")
+	equal(#answer.cities, 0, "no cities while gc is missing")
+	equal(rows.status, 0, "and the script finished")
 end)
 
 -- Rigs -------------------------------------------------------------------
