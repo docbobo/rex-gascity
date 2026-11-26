@@ -718,10 +718,12 @@ test("message: the argv for gc mail send", function()
 end)
 
 test("message: a failing pane returns nil and the error", function()
-	local app = app_with({})
-	app.run = {
-		script = run.script,
-		pane = function() return nil, "no pane" end,
+	local app = {
+		config = config.resolve(nil),
+		run = {
+			script = run.script,
+			pane = function() return nil, "no pane" end,
+		},
 	}
 	local id, err = message.message(app, { block_id = "block:1" }, { body = "hello" })
 	equal(id, nil, "no layer")
