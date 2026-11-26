@@ -125,7 +125,8 @@ function dec(v,   r, i, n, c, e, u, l) {
 -- import key cannot look like a marker, because every value is escaped.
 --
 --   @@city|<path>             the city gc read (its city_path)
---   @@server|<address or>     $REX_SERVER, only once it is seen to own the session
+--   @@server|<address or>     the endpoint that owns the session: $REX_SERVER when
+--                             it is set, otherwise the endpoint rex itself uses
 --   @@server_error|<reason>   why the check did not pass, when the row above is empty
 --   @@gc|missing              no gc, so no import lookup
 --   @@config|<status>         how `gc config show --json` exited
@@ -165,17 +166,46 @@ function M.script(settings, city, session_id)
 	-- --autostart=false keeps the check read-only: an address with no server
 	-- behind it fails instead of starting one. A check that does not pass puts
 	-- the reason in @@server_error, so the action can name it.
+	--
+	-- $REX_SERVER is the pane's environment, and a pane on a remote server may
+	-- have none: its server process can start without it. So REX_SERVER is the
+	-- first candidate only when it is set. Otherwise the endpoint rex connects
+	-- to on this machine (`whoami --json`) is the candidate, and the same
+	-- ownership check decides. The session lives on the machine the probe runs
+	-- on (probe.run makes its block in that session), so that endpoint is the
+	-- one that owns it.
 	add('rex=')
 	add('if [ -n "${REX_BIN_DIR:-}" ] && [ -x "$REX_BIN_DIR/rex" ]; then rex="$REX_BIN_DIR/rex"; fi')
 	add('if [ -z "$rex" ]; then rex=$(command -v rex 2>/dev/null) || rex=; fi')
 	add("server=")
 	add("why=")
-	add('if [ -z "${REX_SERVER:-}" ]; then why="REX_SERVER is not set"')
-	add('elif [ -z "$rex" ]; then why="no rex on PATH and none in REX_BIN_DIR (REX_SERVER=$REX_SERVER)"')
-	add('elif out=$("$rex" -S "$REX_SERVER" --autostart=false api call session.list_blocks -s '
+	add('if [ -z "$rex" ]; then why="no rex on PATH and none in REX_BIN_DIR${REX_SERVER:+ (REX_SERVER=$REX_SERVER)}"')
+	add('elif [ -n "${REX_SERVER:-}" ]; then')
+	add("\tcode=0")
+	add('\tout=$("$rex" -S "$REX_SERVER" --autostart=false api call session.list_blocks -s '
 		.. text.quote(session_id or "")
-		.. ' </dev/null 2>&1); then server=$REX_SERVER')
-	add('else why="rex -S $REX_SERVER api call session.list_blocks failed (exit $?): $out"')
+		.. ' </dev/null 2>&1) || code=$?')
+	add('\tif [ "$code" -eq 0 ]; then server=$REX_SERVER')
+	add('\telse why="rex -S $REX_SERVER api call session.list_blocks failed (exit $code): $out"')
+	add("\tfi")
+	add("else")
+	add("\tcode=0")
+	add('\tout=$("$rex" --autostart=false whoami --json 2>&1) || code=$?')
+	add("\tendpoint=")
+	add('\tif [ "$code" -eq 0 ]; then')
+	add("\t\tendpoint=$(printf '%s\\n' \"$out\" | sed -n 's/.*\"endpoint\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')")
+	add("\tfi")
+	add('\tif [ "$code" -ne 0 ]; then why="rex --autostart=false whoami --json failed (exit $code): $out"')
+	add('\telif [ -z "$endpoint" ]; then why="rex whoami reported no endpoint: $out"')
+	add("\telse")
+	add("\t\tcode=0")
+	add('\t\tout=$("$rex" -S "$endpoint" --autostart=false api call session.list_blocks -s '
+		.. text.quote(session_id or "")
+		.. ' </dev/null 2>&1) || code=$?')
+	add('\t\tif [ "$code" -eq 0 ]; then server=$endpoint')
+	add('\t\telse why="rex -S $endpoint api call session.list_blocks failed (exit $code): $out"')
+	add("\t\tfi")
+	add("\tfi")
 	add("fi")
 	add('if [ -n "$why" ]; then printf \'@@server_error|%s\\n\' "$(esc "$(printf \'%s\' "$why" | tr \'\\n\' \' \')")"; fi')
 	add('printf \'@@server|%s\\n\' "$(esc "$server")"')
