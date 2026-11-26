@@ -33,7 +33,6 @@ type hookResult struct {
 // runHooks runs each command under the per-hook timeout, capped by what
 // remains of the batch budget. It returns one result per command, in order.
 func runHooks(ctx context.Context, r Runner, batch hookBatch) []hookResult {
-	cwd := preStartCwd(batch.WorkDir)
 	results := make([]hookResult, 0, len(batch.Commands))
 	for i, command := range batch.Commands {
 		remaining := time.Until(batch.Budget)
@@ -44,6 +43,9 @@ func runHooks(ctx context.Context, r Runner, batch hookBatch) []hookResult {
 			continue
 		}
 		timeout := min(batch.Timeout, remaining)
+		// Resolve the cwd per hook: an earlier hook may create a WorkDir that
+		// did not exist yet, and the later hooks must run inside it.
+		cwd := preStartCwd(batch.WorkDir)
 		hctx, cancel := context.WithTimeout(ctx, timeout)
 		err := r.RunHook(hctx, HookCall{Command: command, Dir: cwd, Env: batch.Env})
 		cancelled := ctx.Err() != nil
