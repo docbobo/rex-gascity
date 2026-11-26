@@ -44,9 +44,11 @@ FAKEGH
 chmod 0755 "$work/bin/gh"
 
 # --- throwaway repo ---------------------------------------------------------
-# Copy the real README and the script. README starts in the release-target
-# state (pack.toml ahead of the last release), which is the state the script
-# exists to fix.
+# Copy the script and write a fixed README in the release-target state
+# (pack.toml ahead of the last release), which is the state the script exists
+# to fix. Do not copy the repository README: a real run changes that copy, and
+# the dry-run assertions would then fail. The lines below exercise every
+# rewrite rule.
 repo=$work/repo
 origin=$work/origin.git
 git init -q --bare -b main "$origin"
@@ -57,7 +59,31 @@ git -C "$repo" config commit.gpgsign false
 git -C "$repo" remote add origin "$origin"
 mkdir -p "$repo/pack" "$repo/ui"
 cp "$script" "$repo/pack/mark-released.sh"
-cp "$src/README.md" "$repo/README.md"
+cat > "$repo/README.md" <<'README'
+# rex-gascity
+
+## Status: release target, v2026.11.05
+
+Version `2026.11.05` (tag `v2026.11.05`) is the target version. The tag is not published yet. The provider is self-installing.
+
+CI runs `gc runtime check` and `gc runtime conformance` with no failed requirement. Import it from this repository by tag, once that tag is published.
+
+### Import by tag
+
+It installs the
+matching release binary. The tag-based commands in this section are usable
+after `v2026.11.05` is published.
+
+```sh
+gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.05
+```
+
+`pack/pack.toml` declares `version = "2026.11.05"`, and the release tag is
+`v2026.11.05`. `--version` takes the bare version, so the tag must be pushed
+first.
+
+constraint. The constraint must allow more than one tag: `--version '^2026.11.05'`.
+README
 printf '[pack]\nversion = "2026.11.05"\n' > "$repo/pack/pack.toml"
 printf '2026.11.05\n' > "$repo/ui/version"
 git -C "$repo" add -A
@@ -100,6 +126,17 @@ printf '%s\n' "$out" | grep -q '^+## Status: released, v2026.11.05$' ||
 [ "$(cat "$repo/README.md")" = "$readme_before" ] || fail "--dry-run changed README.md"
 [ "$(head_sha)" = "$seed" ] || fail "--dry-run committed"
 [ "$(origin_sha)" = "$seed" ] || fail "--dry-run pushed"
+
+# --- a local commit that is not on origin is refused -----------------------
+echo local > "$repo/local-only.txt"
+git -C "$repo" add local-only.txt
+git -C "$repo" commit -q -m "local only"
+if mark v2026.11.05 >/dev/null 2>&1; then
+  fail "a local commit that is not on origin was accepted"
+fi
+git -C "$repo" reset -q --hard origin/main
+[ "$(head_sha)" = "$seed" ] || fail "the local-only reset did not return to the seed"
+[ "$(cat "$repo/README.md")" = "$readme_before" ] || fail "the local-only refusal changed README.md"
 
 # --- real run: marks v2026.11.05 released -----------------------------------
 mark v2026.11.05 >/dev/null 2>&1 || fail "real run for a published release failed"

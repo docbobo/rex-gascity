@@ -137,8 +137,11 @@ now_branch=$(git -C "$root" rev-parse --abbrev-ref HEAD)
   die "on branch $now_branch; run this on $branch"
 git -C "$root" fetch -q origin "$branch" ||
   die "cannot fetch origin $branch"
-git -C "$root" merge-base --is-ancestor "origin/$branch" HEAD ||
-  die "$branch is behind origin/$branch; pull first"
+# HEAD must equal origin/$branch. A local commit that is not on the remote
+# would otherwise ride along with the README commit on push.
+git -C "$root" merge-base --is-ancestor "origin/$branch" HEAD &&
+  git -C "$root" merge-base --is-ancestor HEAD "origin/$branch" ||
+  die "$branch is not level with origin/$branch; pull or push first"
 
 cat "$tmp" > "$readme"
 git -C "$root" add README.md
