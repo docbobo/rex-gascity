@@ -199,8 +199,8 @@ grep -q '^## Status: released, v2026.11.05$' "$readme" || fail "the older-tag re
 # --- released -> released: the next release moves every pin -----------------
 mark v2026.11.06 >/dev/null 2>&1 || fail "marking the next release failed"
 grep -q '^## Status: released, v2026.11.06$' "$readme" || fail "heading did not move to the next release"
-grep -q 'v2026.11.05' "$readme" && grep -q -- '--version 2026.11.05\|\^2026.11.05\|Status: released, v2026.11.05' "$readme" &&
-  fail "an old release pin survived the move"
+grep -q '2026\.11\.05' "$readme" && fail "an old release pin survived the move"
+grep -q -- '--version 2026\.11\.06$' "$readme" || fail "the bare --version pin did not move"
 grep -q -- "--version '\^2026.11.06'" "$readme" || fail "caret constraint did not move"
 
 # --- the script never tags, builds or publishes -----------------------------
