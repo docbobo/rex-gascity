@@ -56,13 +56,12 @@ local function script(settings, city)
 	add('if [ -n "$city" ]; then set -- --city "$city"; else set --; fi')
 	add(codec.emit("city", '"${city:--}"'))
 	add('if [ -n "$missing" ]; then')
-	add("\tprintf 'gc|missing\\n'")
-	add("\tprintf 'rigs|\\n'")
+	add("\tprintf '@@gc|missing\\n'")
+	add("\tprintf '@@rigs|\\n'")
 	add("else")
-	add("\t" .. codec.emit_pipe("rigs"))
 	-- gc's stderr is kept, so a real failure is reported in gc's own words.
-	add('\t"$gc" "$@" rig list --json 2>&1 | ' .. fragments.one_line_json())
-	add("\tprintf '\\n'")
+	add('\trigs_json=$("$gc" "$@" rig list --json 2>&1 | ' .. fragments.one_line_json() .. ')')
+	add("\t" .. codec.emit("rigs", '"$rigs_json"'))
 	add("fi")
 
 	return table.concat(lines, "\n")
@@ -72,10 +71,14 @@ end
 function M.parse(answer)
 	-- The codec joins the rows the terminal wrapped. Take the first value of
 	-- each field.
+	local rows, reason = codec.rows(answer, { "city", "rigs", "gc" })
+	if rows == nil then
+		return nil, reason
+	end
 	local values = {}
-	for _, row in ipairs(codec.rows(answer, { "city", "rigs", "gc" })) do
+	for _, row in ipairs(rows) do
 		if values[row.kind] == nil then
-			values[row.kind] = row.value
+			values[row.kind] = codec.value(row)
 		end
 	end
 

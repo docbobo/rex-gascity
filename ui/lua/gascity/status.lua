@@ -5,6 +5,7 @@
 -- the session - and mails the mayor one instruction that names them. The
 -- mayor then runs the pack's `status-update` command, which opens the pane.
 
+local codec = require("gascity.codec")
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
 local shell = require("gascity.shell")
@@ -142,11 +143,7 @@ function M.script(settings, city, session_id)
 		lines[#lines + 1] = line
 	end
 
-	-- Escape a value so it cannot split a row at @@ or | or end the answer
-	-- early. The awk `enc` above is the only mapping. awk reads records, so
-	-- it joins their lines first and cannot keep a trailing newline: a value
-	-- for this helper carries none.
-	add("esc() { printf '%s' \"$1\" | awk '" .. ENCODE .. " { if (NR > 1) v = v \"\\n\"; v = v $0 } END { printf \"%s\", enc(v) }'; }")
+	-- The shell `esc` function comes from codec.wrap, so it is not added here.
 
 	-- A named city is passed to gc. Without one, gc finds the city from the
 	-- pane's directory itself, which also works from inside a rig; the city
@@ -257,60 +254,35 @@ function M.script(settings, city, session_id)
 	return table.concat(lines, "\n")
 end
 
--- The probe escapes every %, @, <, |, tab, newline, and carriage return in
--- a value, so a value cannot split a row at @@ or | or end the answer early
--- at the probe's end marker. This reads it back: %25 is %, %40 is @, %3C is
--- <, %7C is |, %09 is a tab, %0A a newline, %0D a carriage return.
-local function unescape(value)
-	return (value:gsub("%%(%x%x)", function(code)
-		if code == "25" then
-			return "%"
-		elseif code == "40" then
-			return "@"
-		elseif code == "3C" then
-			return "<"
-		elseif code == "7C" then
-			return "|"
-		elseif code == "09" then
-			return "\t"
-		elseif code == "0A" then
-			return "\n"
-		elseif code == "0D" then
-			return "\r"
-		end
-		return "%" .. code
-	end))
-end
-
 -- Reads the answer into `{ city, server, server_error, gc_missing,
 -- config_status, error, imports = { { key = ..., source = ... }, ... } }`.
 --
 -- The screen wraps a long line into rows, so the rows are joined and the
 -- answer is split again at each @@. The probe escapes a value that holds @@.
 function M.parse(output)
-	local joined = (output or ""):gsub("\n", "")
+	local rows = codec.rows(output, { "city", "server", "server_error", "gc", "config", "error", "import" }) or {}
 	local answer = { gc_missing = false, imports = {} }
-	for line in (joined .. "@@"):gmatch("(.-)@@") do
-		local kind, rest = line:match("^([%a_]+)|(.*)$")
+	for _, row in ipairs(rows) do
+		local kind = row.kind
 		if kind == "city" then
-			local value = unescape(rest)
+			local value = codec.value(row)
 			answer.city = (value ~= "" and value ~= "-") and value or nil
 		elseif kind == "server" then
-			local value = unescape(rest)
+			local value = codec.value(row)
 			answer.server = value ~= "" and value or nil
 		elseif kind == "server_error" then
-			local value = text.trim(unescape(rest))
+			local value = text.trim(codec.value(row))
 			answer.server_error = value ~= "" and value or nil
 		elseif kind == "gc" then
-			answer.gc_missing = rest == "missing"
+			answer.gc_missing = row.value == "missing"
 		elseif kind == "config" then
-			answer.config_status = tonumber(rest)
+			answer.config_status = tonumber(row.value)
 		elseif kind == "error" then
-			answer.error = text.trim(unescape(rest))
+			answer.error = text.trim(codec.value(row))
 		elseif kind == "import" then
-			local key, source = rest:match("^([^|]*)|(.*)$")
-			if key ~= nil and key ~= "" then
-				answer.imports[#answer.imports + 1] = { key = unescape(key), source = unescape(source) }
+			local parts = codec.parts(row.value) or {}
+			if parts[1] ~= nil and parts[1] ~= "" then
+				answer.imports[#answer.imports + 1] = { key = parts[1], source = parts[2] or "" }
 			end
 		end
 	end

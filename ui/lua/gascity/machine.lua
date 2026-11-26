@@ -50,18 +50,24 @@ local function script(settings)
 end
 
 -- Reads the answer into `{ host = name or nil, city = path or nil, cities = { paths } }`.
+-- A malformed answer returns nil and a reason.
 function M.parse(output)
+	local rows, reason = codec.rows(output or "", { "host", "pane", "city" })
+	if rows == nil then
+		return nil, reason
+	end
 	local answer = { host = nil, city = nil, cities = {} }
 	local seen = {}
 
-	for _, row in ipairs(codec.rows(output or "", { "host", "pane", "city" })) do
+	for _, row in ipairs(rows) do
+		local value = codec.value(row)
 		if row.kind == "host" then
-			answer.host = row.value
+			answer.host = value
 		elseif row.kind == "pane" then
-			answer.city = row.value
-		elseif row.kind == "city" and not seen[row.value] then
-			seen[row.value] = true
-			answer.cities[#answer.cities + 1] = row.value
+			answer.city = value
+		elseif row.kind == "city" and not seen[value] then
+			seen[value] = true
+			answer.cities[#answer.cities + 1] = value
 		end
 	end
 
