@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -254,6 +255,34 @@ func TestNudgeConfirmsIdleToWorking(t *testing.T) {
 	}
 	if report.State != "working" {
 		t.Errorf("State = %q, want working", report.State)
+	}
+}
+
+// TestNudgeIdleBaselineIgnoresChangedScreen pins the baseline wiring: when a
+// program_status record is present and unchanged, every poll answers waiting
+// without a screen read, so a changed screen alone never confirms the turn.
+func TestNudgeIdleBaselineIgnoresChangedScreen(t *testing.T) {
+	fake := faketest.New()
+	early := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+		return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{ID: "a", State: "idle", UpdatedAt: early}}}
+	}
+	var formats int
+	fake.FormatFunc = func(rex.BlockID) string {
+		formats++
+		return fmt.Sprintf("screen %d", formats)
+	}
+	p := nudgeStarted(t, fake)
+
+	report, err := p.NudgeReport(context.Background(), activityName, "hello", provider.NudgeModeWait)
+	if err != nil {
+		t.Fatalf("NudgeReport: %v", err)
+	}
+	if !report.Delivered || report.Confirmed {
+		t.Errorf("report = %+v, want delivered and unconfirmed", report)
+	}
+	if formats != 0 {
+		t.Errorf("BlockFormat called %d times, want 0 with an idle record", formats)
 	}
 }
 
