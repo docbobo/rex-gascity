@@ -59,8 +59,9 @@ gc_runtime_bin_dir() {
 
 # version_cmp prints -1, 0 or 1 comparing the first argument against the
 # second as MAJOR.MINOR.PATCH[-preview.N]. It prints nothing when either string
-# is not that scheme. Fields compare one at a time, so no field has a packing
-# limit. A release ranks above any preview of the same MAJOR.MINOR.PATCH.
+# is not that scheme. The three numeric fields compare one at a time, so no
+# field has a packing limit. When those match, a release ranks above any
+# preview, and two previews compare by their numbers.
 version_cmp() {
   awk -v a="$1" -v b="$2" '
     function parse(s, v,   rel, pre) {
@@ -69,19 +70,23 @@ version_cmp() {
       if (s !~ /^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$/) return 0
       split(s, rel, "-")
       split(rel[1], v, ".")
-      v[4] = 999
+      v["release"] = (rel[2] == "")
+      v["preview"] = 0
       if (rel[2] != "") {
         split(rel[2], pre, ".")
-        v[4] = pre[2]
+        v["preview"] = pre[2] + 0
       }
       return 1
     }
     BEGIN {
       if (!parse(a, av) || !parse(b, bv)) exit
-      for (i = 1; i <= 4; i++) {
+      for (i = 1; i <= 3; i++) {
         if (av[i] + 0 < bv[i] + 0) { printf "-1"; exit }
         if (av[i] + 0 > bv[i] + 0) { printf "1"; exit }
       }
+      if (av["release"] != bv["release"]) { printf (av["release"] ? "1" : "-1"); exit }
+      if (av["preview"] < bv["preview"]) { printf "-1"; exit }
+      if (av["preview"] > bv["preview"]) { printf "1"; exit }
       printf "0"
     }
   '
