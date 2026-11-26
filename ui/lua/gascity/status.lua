@@ -5,6 +5,7 @@
 -- the session - and mails the mayor one instruction that names them. The
 -- mayor then runs the pack's `status-update` command, which opens the pane.
 
+local codec = require("gascity.codec")
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
 local shell = require("gascity.shell")
@@ -23,102 +24,6 @@ M.SUBJECT = "Status update requested"
 -- string is decoded from its JSON escapes before it is escaped for the row.
 -- The program holds no single quote, so it can sit in a single-quoted shell
 -- word.
-
--- The row encoding: % is %25, @ is %40, < is %3C, | is %7C, a tab %09, a
--- newline %0A, a carriage return %0D. The filter and the probe's shell share
--- this one function, so the two encoders cannot drift.
-local ENCODE = [[
-function enc(v,   r, i, n, ch) {
-	r = ""
-	n = length(v)
-	for (i = 1; i <= n; i++) {
-		ch = substr(v, i, 1)
-		if (ch == "%") r = r "%25"
-		else if (ch == "@") r = r "%40"
-		else if (ch == "<") r = r "%3C"
-		else if (ch == "|") r = r "%7C"
-		else if (ch == "\t") r = r "%09"
-		else if (ch == "\n") r = r "%0A"
-		else if (ch == "\r") r = r "%0D"
-		else r = r ch
-	}
-	return r
-}
-]]
-
-M.FILTER = [==[
-function hex(s,   i, v, c) {
-	if (length(s) < 4) return -1
-	v = 0
-	for (i = 1; i <= 4; i++) {
-		c = index("0123456789abcdef", tolower(substr(s, i, 1)))
-		if (c == 0) return -1
-		v = v * 16 + c - 1
-	}
-	return v
-}
-function utf8(n) {
-	if (n < 128) return sprintf("%c", n)
-	if (n < 2048) return sprintf("%c%c", 192 + int(n / 64), 128 + n % 64)
-	if (n < 65536) return sprintf("%c%c%c", 224 + int(n / 4096), 128 + int(n / 64) % 64, 128 + n % 64)
-	return sprintf("%c%c%c%c", 240 + int(n / 262144), 128 + int(n / 4096) % 64, 128 + int(n / 64) % 64, 128 + n % 64)
-}
-# The JSON string content with escapes turned back into characters.
-function dec(v,   r, i, n, c, e, u, l) {
-	r = ""
-	n = length(v)
-	for (i = 1; i <= n; i++) {
-		c = substr(v, i, 1)
-		if (c != "\\") { r = r c; continue }
-		i++
-		e = substr(v, i, 1)
-		if (e == "\"" || e == "\\" || e == "/") r = r e
-		else if (e == "b") r = r sprintf("%c", 8)
-		else if (e == "f") r = r sprintf("%c", 12)
-		else if (e == "n") r = r sprintf("%c", 10)
-		else if (e == "r") r = r sprintf("%c", 13)
-		else if (e == "t") r = r sprintf("%c", 9)
-		else if (e == "u") {
-			u = hex(substr(v, i + 1, 4))
-			if (u < 0) { r = r e; continue }
-			i += 4
-			if (u >= 55296 && u <= 56319 && substr(v, i + 1, 2) == "\\u") {
-				l = hex(substr(v, i + 3, 4))
-				if (l >= 56320 && l <= 57343) { u = 65536 + (u - 55296) * 1024 + (l - 56320); i += 6 }
-			}
-			if (u >= 55296 && u <= 57343) u = 65533
-			r = r utf8(u)
-		}
-		else r = r e
-	}
-	return r
-}
-]==] .. ENCODE .. [==[
-{
-	n = length($0)
-	for (i = 1; i <= n; i++) {
-		c = substr($0, i, 1)
-		if (instr) {
-			if (esc) { esc = 0; s = s c }
-			else if (c == "\\") { esc = 1; s = s c }
-			else if (c == "\"") { instr = 0; have = 1 }
-			else s = s c
-			continue
-		}
-		if (c == "\"") { instr = 1; s = ""; have = 0 }
-		else if (c == ":") { if (have) key[d] = s; have = 0 }
-		else if (c == "," || c == "}" || c == "]") {
-			if (have && d == 1 && key[1] == "city_path")
-				print "@@city|" enc(dec(s))
-			if (have && d == 4 && key[1] == "config" && key[2] == "Imports" && key[4] == "Source")
-				print "@@import|" enc(dec(key[3])) "|" enc(dec(s))
-			have = 0
-			if (c != ",") d--
-		}
-		else if (c == "{" || c == "[") { d++; key[d] = "" }
-	}
-}
-]==]
 
 -- The shell that answers, one fact per line. Each line starts with @@, so the
 -- rows of the screen can be joined and split again: a value such as an
@@ -142,11 +47,7 @@ function M.script(settings, city, session_id)
 		lines[#lines + 1] = line
 	end
 
-	-- Escape a value so it cannot split a row at @@ or | or end the answer
-	-- early. The awk `enc` above is the only mapping. awk reads records, so
-	-- it joins their lines first and cannot keep a trailing newline: a value
-	-- for this helper carries none.
-	add("esc() { printf '%s' \"$1\" | awk '" .. ENCODE .. " { if (NR > 1) v = v \"\\n\"; v = v $0 } END { printf \"%s\", enc(v) }'; }")
+	-- The shell `esc` function comes from codec.wrap, so it is not added here.
 
 	-- A named city is passed to gc. Without one, gc finds the city from the
 	-- pane's directory itself, which also works from inside a rig; the city
@@ -257,60 +158,35 @@ function M.script(settings, city, session_id)
 	return table.concat(lines, "\n")
 end
 
--- The probe escapes every %, @, <, |, tab, newline, and carriage return in
--- a value, so a value cannot split a row at @@ or | or end the answer early
--- at the probe's end marker. This reads it back: %25 is %, %40 is @, %3C is
--- <, %7C is |, %09 is a tab, %0A a newline, %0D a carriage return.
-local function unescape(value)
-	return (value:gsub("%%(%x%x)", function(code)
-		if code == "25" then
-			return "%"
-		elseif code == "40" then
-			return "@"
-		elseif code == "3C" then
-			return "<"
-		elseif code == "7C" then
-			return "|"
-		elseif code == "09" then
-			return "\t"
-		elseif code == "0A" then
-			return "\n"
-		elseif code == "0D" then
-			return "\r"
-		end
-		return "%" .. code
-	end))
-end
-
 -- Reads the answer into `{ city, server, server_error, gc_missing,
 -- config_status, error, imports = { { key = ..., source = ... }, ... } }`.
 --
 -- The screen wraps a long line into rows, so the rows are joined and the
 -- answer is split again at each @@. The probe escapes a value that holds @@.
 function M.parse(output)
-	local joined = (output or ""):gsub("\n", "")
+	local rows = codec.rows(output, { "city", "server", "server_error", "gc", "config", "error", "import" }) or {}
 	local answer = { gc_missing = false, imports = {} }
-	for line in (joined .. "@@"):gmatch("(.-)@@") do
-		local kind, rest = line:match("^([%a_]+)|(.*)$")
+	for _, row in ipairs(rows) do
+		local kind = row.kind
 		if kind == "city" then
-			local value = unescape(rest)
+			local value = codec.value(row)
 			answer.city = (value ~= "" and value ~= "-") and value or nil
 		elseif kind == "server" then
-			local value = unescape(rest)
+			local value = codec.value(row)
 			answer.server = value ~= "" and value or nil
 		elseif kind == "server_error" then
-			local value = text.trim(unescape(rest))
+			local value = text.trim(codec.value(row))
 			answer.server_error = value ~= "" and value or nil
 		elseif kind == "gc" then
-			answer.gc_missing = rest == "missing"
+			answer.gc_missing = row.value == "missing"
 		elseif kind == "config" then
-			answer.config_status = tonumber(rest)
+			answer.config_status = tonumber(row.value)
 		elseif kind == "error" then
-			answer.error = text.trim(unescape(rest))
+			answer.error = text.trim(codec.value(row))
 		elseif kind == "import" then
-			local key, source = rest:match("^([^|]*)|(.*)$")
-			if key ~= nil and key ~= "" then
-				answer.imports[#answer.imports + 1] = { key = unescape(key), source = unescape(source) }
+			local parts = codec.parts(row.value) or {}
+			if parts[1] ~= nil and parts[1] ~= "" then
+				answer.imports[#answer.imports + 1] = { key = parts[1], source = parts[2] or "" }
 			end
 		end
 	end

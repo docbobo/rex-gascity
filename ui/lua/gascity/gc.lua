@@ -54,6 +54,7 @@ function M.guard(opts)
 	return {
 		'if ! command -v "$gc" >/dev/null 2>&1; then',
 		"\tprintf '%s\\n' " .. text.quote(M.MISSING) .. " >&2",
+		"\tprintf '@@gc|missing\\n' >&2",
 		"\t" .. stop,
 		"fi",
 	}

@@ -128,11 +128,19 @@ end
 local BEGIN_MARK = "<<gascity-begin>>"
 local END_MARK = "<<gascity-end"
 
+-- A complete answer. `lines` are the fields a real script prints. A line
+-- without `@@` is plain text, kept as it is. The `esc` function's line stands
+-- in for the plumbing a real script prints first.
 local function probe_answer(lines, status)
+	local rows = {}
+	for _, line in ipairs(lines) do
+		rows[#rows + 1] = line
+	end
 	return "Last login: sometime\n"
 		.. BEGIN_MARK
 		.. "\n"
-		.. table.concat(lines, "\n")
+		.. "esc() { V=$1 awk 'function enc(v) { return v }'; }\n"
+		.. table.concat(rows, "\n")
 		.. "\n"
 		.. END_MARK
 		.. " "
@@ -163,10 +171,13 @@ rex = {
 				end
 				return { content = stub.format }
 			end
-			if stub.pane_cwd == nil then
-				return nil
+			if method == "process" then
+				if stub.pane_cwd == nil then
+					return nil
+				end
+				return { foreground = { cwd = stub.pane_cwd } }
 			end
-			return { foreground = { cwd = stub.pane_cwd } }
+			return nil
 		end,
 	},
 	call = function(method, args)
@@ -332,8 +343,8 @@ end
 local function sh(command)
 	local pipe = assert(io.popen(command))
 	local out = pipe:read("*a")
-	pipe:close()
-	return out
+	local closed = pipe:close()
+	return out, closed
 end
 
 local function write_file(path, content)
@@ -416,6 +427,105 @@ local function run_script(source, opts)
 	opts.path = opts.dir .. "/bin:" .. (opts.path or "/usr/bin:/bin")
 	return run_fragment(source, opts)
 end
+
+-- The codec --------------------------------------------------------------
+
+test("codec: a value line that looks like a field is data", function()
+	local dir = scratch()
+	local out = run_wrapped(
+		codec.wrap(
+			codec.emit("host", text.quote("alpha\nhost|forged"))
+				.. "\n"
+				.. codec.emit("pane", text.quote("/work"))
+		),
+		{ dir = dir }
+	)
+	remove(dir)
+	local rows = assert(codec.read(out))
+	local parsed = assert(codec.rows(rows.output, { "host", "pane" }))
+	equal(#parsed, 2, "two fields, not three")
+	equal(parsed[1].kind, "host", "the first")
+	equal(codec.value(parsed[1]), "alpha\nhost|forged", "the forged line stays data")
+	equal(codec.value(parsed[2]), "/work", "the second")
+end)
+
+test("codec: escaped values round-trip", function()
+	local values = {
+		"",
+		"|",
+		"@@",
+		"%",
+		"\t",
+		"\r",
+		"\n",
+		"<<gascity-begin>>",
+		"<<gascity-end 0>>",
+		"alpha\nhost|forged",
+		"Grüße — 東京",
+	}
+	for _, value in ipairs(values) do
+		local escaped = codec.escape(value)
+		falsy(escaped:find("@@", 1, true), "no raw @@ in " .. escaped)
+		falsy(escaped:find("|", 1, true), "no raw bar in " .. escaped)
+		equal(codec.unescape(escaped), value, "round trip")
+	end
+end)
+
+test("codec: a wrapped value gets no inserted newline", function()
+	local json = '{"rigs":[' .. string.rep('{"name":"alpha","path":"/work/alpha"},', 5) .. '{"name":"beta"}]}'
+	local escaped = codec.escape(json)
+	local split = "@@host|" .. escaped
+	for offset = 1, #split - 1, 7 do
+		local wrapped = split:sub(1, offset) .. "\n" .. split:sub(offset + 1)
+		local rows = assert(codec.rows(wrapped, { "host" }))
+		equal(#rows, 1, "one row at offset " .. offset)
+		equal(codec.value(rows[1]), json, "the whole value at offset " .. offset)
+	end
+	-- A split between the name and the bar.
+	local rows = assert(codec.rows("hos\nt|" .. escaped, { "host" }))
+	equal(codec.value(rows[1]), json, "the split between name and bar")
+	-- A split inside a %xx sequence.
+	local seq = "@@host|a%2\n5b"
+	rows = assert(codec.rows(seq, { "host" }))
+	equal(codec.value(rows[1]), "a%b", "the split inside %25")
+end)
+
+test("codec: an empty answer and an answer with no known field are empty", function()
+	local rows, reason = codec.rows("", { "host" })
+	equal(reason, nil, "no error")
+	equal(#rows, 0, "empty")
+	rows = assert(codec.rows("@@other|value", { "host" }))
+	equal(#rows, 0, "an unknown kind is not a field")
+end)
+
+test("codec: a malformed row is reported", function()
+	local rows, reason = codec.rows("@@host", { "host" })
+	equal(rows, nil, "no rows")
+	contains(reason, "no name and bar", "the reason")
+	rows, reason = codec.rows("@@host|%zz", { "host" })
+	equal(rows, nil, "no rows")
+	contains(reason, "bad escape", "the reason")
+	rows, reason = codec.rows("@@host|a%2", { "host" })
+	equal(rows, nil, "no rows")
+	contains(reason, "bad escape", "the reason")
+end)
+
+test("codec: the shell esc function matches the Lua escape table", function()
+	local dir = scratch()
+	local value = "a|b@@c%d<e\tf\ng\rh"
+	local out = run_wrapped(
+		codec.wrap(
+			"v=" .. text.quote(value) .. "\n" .. codec.emit("escaped", "\"$v\"")
+		),
+		{ dir = dir }
+	)
+	remove(dir)
+	local rows = assert(codec.read(out))
+	local parsed = assert(codec.rows(rows.output, { "escaped" }))
+	equal(#parsed, 1, "one row")
+	equal(parsed[1].value, codec.escape(value), "the shell and Lua encoders agree")
+	equal(codec.value(parsed[1]), value, "and it round-trips")
+end)
 
 -- The shell fragments ----------------------------------------------------
 
@@ -541,9 +651,9 @@ test("rigs: a missing gc is reported as gc.MISSING", function()
 	remove(dir)
 	local rows = assert(codec.read(out))
 	contains(rows.output, gc.MISSING, "the guard's message")
-	contains(rows.output, "gc|missing", "the marker row")
+	contains(rows.output, "@@gc|missing", "the marker row")
 	equal(rows.status, 0, "the script still ends")
-	local answer, err = rigs.parse(rows.output)
+	local answer, err = rigs.parse(rows.output:gsub("^[^\n]*\n", ""))
 	equal(answer, nil, "no answer")
 	equal(err, gc.MISSING, "gc.MISSING, not the list's error")
 end)
@@ -967,7 +1077,7 @@ end)
 
 test("action: a pane inside a city sends there without asking", function()
 	stub.pane_cwd = "/work/one"
-	stub.format = probe_answer({ "pane|/work/one", "city|/cities/two" })
+	stub.format = probe_answer({ "@@pane|/work/one", "@@city|/cities/two" })
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error: " .. tostring(result))
 	equal(stub.picks, nil, "did not ask")
@@ -979,7 +1089,7 @@ end)
 
 test("action: one city on the machine is used without asking", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "city|/cities/one" })
+	stub.format = probe_answer({ "@@pane|/work/nowhere", "@@city|/cities/one" })
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error: " .. tostring(result))
 	equal(stub.picks, nil, "did not ask")
@@ -988,7 +1098,7 @@ end)
 
 test("action: several cities are offered", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "city|/cities/one", "city|/cities/two" })
+	stub.format = probe_answer({ "@@pane|/work/nowhere", "@@city|/cities/one", "@@city|/cities/two" })
 	stub.picked = "/cities/two"
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error: " .. tostring(result))
@@ -1005,7 +1115,7 @@ end)
 
 test("action: cancelling the city question sends nothing", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "city|/cities/one", "city|/cities/two" })
+	stub.format = probe_answer({ "@@pane|/work/nowhere", "@@city|/cities/one", "@@city|/cities/two" })
 	stub.picked = nil
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error")
@@ -1075,10 +1185,10 @@ end)
 -- Which city -------------------------------------------------------------
 
 test("probe: returns what the block printed, and how it exited", function()
-	stub.format = probe_answer({ "pane|/work/city" }, 0)
+	stub.format = probe_answer({ "@@pane|/work/city" }, 0)
 	local answer, err = probe.run({ session_id = "session:1" }, "echo hi")
 	equal(err, nil, "no error")
-	equal(answer.output, "pane|/work/city", "the output")
+	equal(answer.output, "@@pane|/work/city", "the output")
 	equal(answer.status, 0, "the status")
 	equal(#stub.blocks, 1, "one block")
 	equal(stub.blocks[1].options.cwd, nil, "no directory asked for")
@@ -1131,7 +1241,7 @@ end)
 
 test("machine: reads the name, the pane's city, and the listed cities", function()
 	local answer = machine.parse(
-		"host|Mac-Mini\npane|/work/city\ncity|/a\ncity|/b\ncity|/a"
+		"@@host|Mac-Mini\n@@pane|/work/city\n@@city|/a\n@@city|/b\n@@city|/a"
 	)
 	equal(answer.host, "Mac-Mini", "the machine's name")
 	equal(answer.city, "/work/city", "the city the pane is in")
@@ -1162,17 +1272,21 @@ test("machine: asks for its name, the pane's city, and gc's list", function()
 	})
 	remove(dir)
 	local rows = assert(codec.read(out))
-	equal(rows.output, "host|test-machine\npane|" .. dir .. "\ncity|/cities/one\ncity|/cities/two", "the rows")
+	equal(
+		rows.output,
+		"@@host|test-machine\n@@pane|" .. dir .. "\n@@city|/cities/one\n@@city|/cities/two",
+		"the rows"
+	)
 	equal(rows.status, 0, "the status")
 end)
 
 test("machine: a city path wrapped across rows is recovered", function()
-	local answer = machine.parse("city|/srv/very-long/\nGas City\ncity|/other")
+	local answer = machine.parse("@@city|/srv/very-long/\nGas City\ncity|/other")
 	same(answer.cities, { "/srv/very-long/Gas City", "/other" }, "the wrapped path and the next city")
 end)
 
 test("machine: reads a city path with a space in it", function()
-	local answer = machine.parse("city|/srv/Gas City")
+	local answer = machine.parse("@@city|/srv/Gas City")
 	equal(answer.cities[1], "/srv/Gas City", "the space is kept")
 end)
 
@@ -1227,7 +1341,7 @@ test("rigs: reads the city and the rigs out of the answer", function()
 		{ name = "alpha", path = "/work/alpha", suspended = false },
 		{ name = "beta", path = "/work/beta", suspended = true, hq = true },
 	} }
-	local answer = rigs.parse("city|/cities/one\nrigs|" .. RIG_JSON)
+	local answer = rigs.parse("@@city|/cities/one\nrigs|" .. RIG_JSON)
 
 	equal(stub.json_text, RIG_JSON, "the JSON is read back exactly")
 	equal(answer.city, "/cities/one", "the city")
@@ -1240,26 +1354,26 @@ end)
 
 test("rigs: the JSON is joined back up across the rows of the screen", function()
 	stub.json_value = { rigs = {} }
-	rigs.parse("city|-\nrigs|{\"rigs\":[\n{\"name\":\"alpha\"}\n]}")
+	rigs.parse("@@city|-\nrigs|{\"rigs\":[\n{\"name\":\"alpha\"}\n]}")
 	equal(stub.json_text, '{"rigs":[{"name":"alpha"}]}', "no newlines left")
 end)
 
 test("rigs: a city path wrapped across rows is recovered", function()
 	stub.json_value = { rigs = {} }
-	local answer = rigs.parse("city|/srv/very-long/\nGas City\nrigs|{}")
+	local answer = rigs.parse("@@city|/srv/very-long/\nGas City\nrigs|{}")
 	equal(answer.city, "/srv/very-long/Gas City", "the wrapped rows are joined")
 end)
 
 test("rigs: a city of - means the pane was in none", function()
 	stub.json_value = { rigs = {} }
-	local answer = rigs.parse("city|-\nrigs|{}")
+	local answer = rigs.parse("@@city|-\nrigs|{}")
 	equal(answer.city, nil, "no city")
 	equal(#answer.rigs, 0, "no rigs")
 end)
 
 test("rigs: an unreadable list is reported", function()
 	stub.json_error = "text is not valid JSON"
-	local answer, err = rigs.parse("city|/c\nrigs|nonsense")
+	local answer, err = rigs.parse("@@city|/c\nrigs|nonsense")
 	equal(answer, nil, "no answer")
 	contains(err, "not valid JSON", "the reason")
 end)
@@ -1288,8 +1402,8 @@ test("rigs: asks the pane's machine, from the pane's directory", function()
 	remove(dir)
 	local rows = assert(codec.read(out))
 	equal(rows.status, 0, "gc's list was read")
-	contains(rows.output, "city|" .. dir .. "\n", "the pane's directory")
-	contains(rows.output, 'rigs|{"rigs":[]}', "gc's list on one line")
+	contains(rows.output, "@@city|" .. dir .. "\n", "the pane's directory")
+	contains(rows.output, '@@rigs|{"rigs":[]}', "gc's list on one line")
 end)
 
 -- Suspending and resuming rigs -------------------------------------------
@@ -1308,7 +1422,7 @@ test("rigs: suspending offers every rig, by name and state", function()
 	-- Two hidden blocks answer in turn: the one that lists the rigs, then the
 	-- one that does the work.
 	stub.format = {
-		probe_answer({ "city|/cities/one", "rigs|" .. RIG_JSON }, 0),
+		probe_answer({ "@@city|/cities/one", "@@rigs|" .. RIG_JSON }, 0),
 		probe_answer({ "suspended: alpha, beta" }, 0),
 	}
 	stub.json_value = { rigs = {
@@ -1350,7 +1464,7 @@ end)
 test("rigs: resuming says resume", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = {
-		probe_answer({ "city|/cities/one", "rigs|" .. RIG_JSON }, 0),
+		probe_answer({ "@@city|/cities/one", "@@rigs|" .. RIG_JSON }, 0),
 		probe_answer({ "resumed" }, 0),
 	}
 	stub.json_value = { rigs = { { name = "beta", path = "/work/beta", suspended = true } } }
@@ -1369,7 +1483,7 @@ end)
 test("rigs: one rig can be picked and sent on its own", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = {
-		probe_answer({ "city|/cities/one", "rigs|" .. RIG_JSON }, 0),
+		probe_answer({ "@@city|/cities/one", "@@rigs|" .. RIG_JSON }, 0),
 		probe_answer({ "ok" }, 0),
 	}
 	stub.json_value = { rigs = { { name = "alpha", path = "/work/alpha" } } }
@@ -1381,7 +1495,7 @@ end)
 
 test("rigs: ticking nothing sends nothing", function()
 	stub.pane_cwd = "/work/alpha"
-	stub.format = probe_answer({ "city|/cities/one", "rigs|" .. RIG_JSON })
+	stub.format = probe_answer({ "@@city|/cities/one", "@@rigs|" .. RIG_JSON })
 	stub.json_value = { rigs = { { name = "alpha" } } }
 	stub.picked = {}
 
@@ -1394,7 +1508,7 @@ end)
 
 test("rigs: cancelling sends nothing", function()
 	stub.pane_cwd = "/work/alpha"
-	stub.format = probe_answer({ "city|/cities/one", "rigs|" .. RIG_JSON })
+	stub.format = probe_answer({ "@@city|/cities/one", "@@rigs|" .. RIG_JSON })
 	stub.json_value = { rigs = { { name = "alpha" } } }
 	stub.picked = nil
 
@@ -1406,7 +1520,7 @@ end)
 
 test("rigs: a city with no rigs is reported", function()
 	stub.pane_cwd = "/work/alpha"
-	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" })
+	stub.format = probe_answer({ "@@city|/cities/one", "@@rigs|{}" })
 	stub.json_value = { rigs = {} }
 
 	local ok, result = run_rig("suspend")
@@ -1491,7 +1605,7 @@ end
 
 local function rigs_fixture(rigs)
 	stub.pane_cwd = "/work/alpha"
-	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.format = probe_answer({ "@@city|/cities/one", "@@rigs|{}" }, 0)
 	stub.json_value = { rigs = rigs }
 end
 
@@ -2072,7 +2186,7 @@ end)
 test("status action: without a city argument it asks and uses the chosen city", function()
 	stub.pane_cwd = "/work/nowhere"
 	stub.format = {
-		probe_answer({ "city|/cities/one", "city|/cities/two" }),
+		probe_answer({ "@@city|/cities/one", "@@city|/cities/two" }),
 		probe_answer({ "@@city|/cities/two", "@@server|/tmp/rex.sock", "@@config|0", "@@import|rex|" .. REX_PACK }),
 	}
 	stub.picked = "/cities/two"
@@ -2250,7 +2364,7 @@ end)
 
 test("menu: a rig command reaches its own picker", function()
 	stub.pane_cwd = "/work/alpha"
-	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.format = probe_answer({ "@@city|/cities/one", "@@rigs|{}" }, 0)
 	stub.json_value = { rigs = { { name = "alpha", path = "/work/alpha" } } }
 	local ok, result = run_menu("rigs_suspend")
 	truthy(ok, "no error: " .. tostring(result))
@@ -2261,7 +2375,7 @@ end)
 
 test("menu: the rig open command reaches its own picker", function()
 	stub.pane_cwd = "/work/alpha"
-	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" }, 0)
+	stub.format = probe_answer({ "@@city|/cities/one", "@@rigs|{}" }, 0)
 	stub.json_value = { rigs = { { name = "alpha", path = "/work/alpha" } } }
 	run_menu("rigs_open")
 	-- the first pick was the menu, the second the rigs
@@ -2270,7 +2384,7 @@ end)
 
 test("doctor: the report is a pane with icons and colour", function()
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "city|-", "rigs|{}" })
+	stub.format = probe_answer({ "@@city|-", "@@rigs|{}" })
 	local ok, result = run_menu("doctor", {
 		block_id = "block:1",
 		session_id = "session:1",
@@ -2297,7 +2411,7 @@ end)
 
 test("doctor: run without a person, it opens nothing", function()
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "city|-", "rigs|{}" })
+	stub.format = probe_answer({ "@@city|-", "@@rigs|{}" })
 	local ok, result = run_menu("doctor", {
 		block_id = "block:1",
 		session_id = "session:1",
@@ -2380,7 +2494,7 @@ local function some_facts()
 	local settings = config.resolve(nil)
 	settings.city = nil
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "city|-", "rigs|{}" })
+	stub.format = probe_answer({ "@@city|-", "@@rigs|{}" })
 	return report.facts(app_with({}), "block:1", { origin = "palette" })
 end
 
@@ -2461,7 +2575,7 @@ end)
 
 test("report: names the machine, checkout, settings, and pane", function()
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "host|other-machine" })
+	stub.format = probe_answer({ "@@host|other-machine" })
 	local app = app_with({})
 	local output = report.build(app, "block:1", { origin = "palette", client_id = "client:1" })
 
@@ -2476,7 +2590,7 @@ end)
 
 test("report: lists the cities the pane's machine offers", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "city|/cities/one", "city|/cities/two" })
+	stub.format = probe_answer({ "@@city|/cities/one", "@@city|/cities/two" })
 	local output = report.build(app_with({}), "block:1", nil)
 	contains(output, "none above the pane", "no pane city")
 	contains(output, "/cities/one, /cities/two", "both cities")
@@ -2491,7 +2605,7 @@ end)
 
 test("report: names both machines when they differ", function()
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "host|Mac-Mini", "pane|/work/city" })
+	stub.format = probe_answer({ "@@host|Mac-Mini", "@@pane|/work/city" })
 	local output = report.build(app_with({}), "block:1", nil)
 	contains(output, "runs on", "the machine running the action")
 	contains(output, "(the session's machine)", "and the one with the panes")
@@ -2500,21 +2614,21 @@ end)
 
 test("report: says when both are the same machine", function()
 	stub.pane_cwd = "/work"
-	stub.format = probe_answer({ "host|test-machine", "pane|/work/city" })
+	stub.format = probe_answer({ "@@host|test-machine", "@@pane|/work/city" })
 	local output = report.build(app_with({}), "block:1", nil)
 	contains(output, "(the same machine)", "one machine, said once")
 end)
 
 test("report: says when the pane is on this machine", function()
 	stub.pane_cwd = fixture .. "/city/rig"
-	stub.format = probe_answer({ "host|test-machine" })
+	stub.format = probe_answer({ "@@host|test-machine" })
 	local output = report.build(app_with({}), "block:1", nil)
 	contains(output, "on this machine", "says the pane is here")
 end)
 
 test("report: a readable path on another machine is not on this machine", function()
 	stub.pane_cwd = fixture .. "/city/rig"
-	stub.format = probe_answer({ "host|other-machine" })
+	stub.format = probe_answer({ "@@host|other-machine" })
 	local output = report.build(app_with({}), "block:1", nil)
 	contains(output, "on another machine", "the pane's machine is not this one")
 	falsy(output:find("on this machine", 1, true), "never claims the local machine")
