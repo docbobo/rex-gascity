@@ -508,7 +508,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 	}
 
 	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
-		Name: n, Hint: hint, Mode: ResolveFresh,
+		Name: n, StartEnv: cfg.Env, Hint: hint, Mode: ResolveFresh,
 		// A window started before GCREX-72 carries the bare GC_RIG, which
 		// the name alone cannot derive for short pool names.
 		LegacyTabs:  []string{legacyTabLabelFor(n, cfg.Env)},

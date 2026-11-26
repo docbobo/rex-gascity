@@ -263,6 +263,11 @@ const (
 // ResolveRequest is one resolution request.
 type ResolveRequest struct {
 	Name SessionName
+	// StartEnv is the projected start env that a fresh Start owns.
+	// Binder derives the tab, pane, alias and legacy labels from it.
+	// A lost sidecar record therefore still rediscovers its pane.
+	// Read ops and record-driven rescans leave it nil.
+	StartEnv map[string]string
 	// Hint carries the env-derived tab and pane labels a lost sidecar record
 	// used, so the fresh scan can rediscover a live pane started under a short
 	// pool name with no rig.
@@ -288,7 +293,7 @@ func (b *Binder) Resolve(ctx context.Context, req ResolveRequest) (Binding, bool
 	case ResolveLive:
 		return b.resolveLive(ctx, req.Name)
 	case ResolveFresh:
-		return b.resolveFresh(ctx, req.Name, req.Hint, req.LegacyTabs, req.LegacyPanes)
+		return b.resolveFresh(ctx, req.Name, req.Hint, req.LegacyTabs, req.LegacyPanes, req.StartEnv)
 	default:
 		cands := b.lookup(req.Name)
 		if len(cands) == 0 {
@@ -306,7 +311,7 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 	cands := b.lookup(name)
 	if len(cands) == 0 {
 		// Nothing cached: fall back to the label scan a fresh resolve performs.
-		bd, ok, err := b.resolveFresh(ctx, name, Binding{}, nil, nil)
+		bd, ok, err := b.resolveFresh(ctx, name, Binding{}, nil, nil, nil)
 		if err != nil || !ok {
 			return Binding{}, false, err
 		}
@@ -323,7 +328,7 @@ func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bo
 		if !ok {
 			// The stored address is stale; rediscover the pane under the
 			// labels it had, so a recreated instance still counts as alive.
-			if got, ok, err = b.scan(ctx, bd.Name, bd, nil, nil); err != nil {
+			if got, ok, err = b.scan(ctx, bd.Name, scanPolicy{hint: bd}); err != nil {
 				return Binding{}, false, err
 			}
 		}
@@ -386,7 +391,7 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 // its stored (or name-derived) labels. Any other view error is returned as is
 // and leaves the stored binding alone. A name with no pane is reported as false
 // with a nil error.
-func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding, legacy, legacyPanes []string) (Binding, bool, error) {
+func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Binding, legacy, legacyPanes []string, startEnv map[string]string) (Binding, bool, error) {
 	var stale []Binding
 	var hint Binding
 	for _, bd := range b.lookup(name) {
@@ -417,7 +422,7 @@ func (b *Binder) resolveFresh(ctx context.Context, name SessionName, envHint Bin
 			scanName, scanHint = hint.Name, hint
 		}
 	}
-	got, ok, err := b.scan(ctx, scanName, scanHint, legacy, legacyPanes)
+	got, ok, err := b.scan(ctx, scanName, scanPolicy{hint: scanHint, legacy: legacy, legacyPanes: legacyPanes, startEnv: startEnv})
 	if err != nil {
 		// Rex could not answer the scan: keep the stale records so a retry
 		// still sees that a binding existed.
@@ -514,12 +519,83 @@ func stillBound(view rex.SessionView, bd Binding, town string) bool {
 	return false
 }
 
+// scanPolicy is the caller knowledge one live-pane scan uses.
+type scanPolicy struct {
+	// hint carries the labels an earlier record used, or the env-derived
+	// labels Start supplies. Empty fields fall back to the labels the name
+	// implies.
+	hint Binding
+	// legacy is the caller's pre-GCREX-72 tab labels.
+	legacy []string
+	// legacyPanes is the caller's pre-GC_TEMPLATE pane labels.
+	legacyPanes []string
+	// startEnv is the projected start env a fresh Start owns. When it is set
+	// it wins over hint and the legacy labels: Binder derives the tab, pane,
+	// alias and legacy labels from the env and the name.
+	startEnv map[string]string
+	// save records an adopted pane. A read op leaves it false.
+	save bool
+}
+
+// resolvedLabels is the label candidate set one scan tries for a name.
+type resolvedLabels struct {
+	tabs        []string
+	pane        string
+	legacyPanes []string
+	aliases     []SessionName
+	// recordless is true when no tab attributes the scan, so a suffix label
+	// in any tab may still name the session.
+	recordless bool
+}
+
+// resolveLabels returns the label candidates one scan tries for name. A start
+// env supplies the labels a Start owns; without it the hint and the caller's
+// legacy labels apply, falling back to the labels the name implies.
+func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels {
+	var lbl resolvedLabels
+	if pol.startEnv != nil {
+		lbl.pane = paneLabelFor(name, pol.startEnv)
+		lbl.aliases = aliasesFor(name, pol.startEnv)
+		lbl.tabs = appendLabel(nil, tabLabel(name, pol.startEnv, b.townTab))
+		lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, pol.startEnv))
+		if legacy := legacyPaneLabelFor(name, pol.startEnv); legacy != lbl.pane {
+			lbl.legacyPanes = []string{legacy}
+		}
+		return lbl
+	}
+	lbl.pane = pol.hint.PaneLabel
+	if lbl.pane == "" {
+		lbl.pane = name.PaneLabel()
+	}
+	lbl.aliases = pol.hint.Aliases
+	lbl.legacyPanes = pol.legacyPanes
+	lbl.recordless = pol.hint.TabLabel == ""
+	primary := pol.hint.TabLabel
+	if primary == "" {
+		primary = tabLabel(name, nil, b.townTab)
+	}
+	lbl.tabs = appendLabel(nil, primary)
+	// A window started by a build before GCREX-72 still carries the old
+	// label; find it rather than start a second tab.
+	lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, nil))
+	for _, label := range pol.legacy {
+		lbl.tabs = appendLabel(lbl.tabs, label)
+	}
+	return lbl
+}
+
+// appendLabel appends label to labels unless it is already present.
+func appendLabel(labels []string, label string) []string {
+	if slices.Contains(labels, label) {
+		return labels
+	}
+	return append(labels, label)
+}
+
 // scan finds name by session label, tab label and pane label, and saves it.
-// hint supplies the labels an earlier record used, so a pane recreated under
-// env-derived labels is found again; empty fields fall back to the labels the
-// name implies.
-func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string) (Binding, bool, error) {
-	return b.scanWith(ctx, name, hint, legacy, legacyPanes, true)
+func (b *Binder) scan(ctx context.Context, name SessionName, pol scanPolicy) (Binding, bool, error) {
+	pol.save = true
+	return b.scanWith(ctx, name, pol)
 }
 
 // find is scan without the save: it returns the pane a scan would adopt but
@@ -530,10 +606,10 @@ func (b *Binder) scan(ctx context.Context, name SessionName, hint Binding, legac
 func (b *Binder) find(ctx context.Context, name SessionName, hint Binding, legacy []string) (Binding, bool, error) {
 	// A read op has no start env, so it cannot derive the pre-GC_TEMPLATE
 	// pane labels: it recognises only the labels the record and name imply.
-	return b.scanWith(ctx, name, hint, legacy, nil, false)
+	return b.scanWith(ctx, name, scanPolicy{hint: hint, legacy: legacy})
 }
 
-func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, legacy, legacyPanes []string, save bool) (Binding, bool, error) {
+func (b *Binder) scanWith(ctx context.Context, name SessionName, pol scanPolicy) (Binding, bool, error) {
 	// Search every accepted namespace, canonical first: a pane that exists only
 	// in a legacy session must still be found, and the canonical session not
 	// holding it is not evidence the city does not (CodeRabbit fix).
@@ -541,6 +617,7 @@ func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, l
 	if err != nil {
 		return Binding{}, false, err
 	}
+	lbl := b.resolveLabels(name, pol)
 	for _, sess := range sessions {
 		view, err := b.client.SessionView(ctx, sess.ID)
 		if errors.Is(err, rex.ErrNotFound) {
@@ -549,7 +626,7 @@ func (b *Binder) scanWith(ctx context.Context, name SessionName, hint Binding, l
 		if err != nil {
 			return Binding{}, false, err
 		}
-		if bd, ok := b.scanView(name, hint, legacy, legacyPanes, save, sess.ID, view); ok {
+		if bd, ok := b.scanView(name, lbl, pol, sess.ID, view); ok {
 			return bd, true, nil
 		}
 	}
@@ -576,31 +653,8 @@ func (b *Binder) acceptedSessions(ctx context.Context) ([]rex.Session, error) {
 }
 
 // scanView is scanWith's search of one session's view.
-func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []string, save bool, sid rex.SessionID, view rex.SessionView) (Binding, bool) {
-	primary := hint.TabLabel
-	if primary == "" {
-		primary = tabLabel(name, nil, b.townTab)
-	}
-	// A window started by a build before GCREX-72 still carries the old
-	// label; find it rather than start a second tab. Start always supplies
-	// a hint label, so this cannot be limited to the empty-hint path.
-	tabs := []string{primary}
-	addTab := func(label string) {
-		for _, seen := range tabs {
-			if seen == label {
-				return
-			}
-		}
-		tabs = append(tabs, label)
-	}
-	addTab(legacyTabLabelFor(name, nil))
-	for _, label := range legacy {
-		addTab(label)
-	}
-	pane := hint.PaneLabel
-	if pane == "" {
-		pane = name.PaneLabel()
-	}
+func (b *Binder) scanView(name SessionName, lbl resolvedLabels, pol scanPolicy, sid rex.SessionID, view rex.SessionView) (Binding, bool) {
+	pane := lbl.pane
 	// IsRunning and Stop resolve without a start env, so the fallback scan
 	// must recognise the session identity alone: a pane labelled
 	// "<agent> (<GC_SESSION_NAME>)" still belongs to name even though the agent
@@ -613,7 +667,7 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 		if label == pane || identityMatch(name, label) {
 			return true
 		}
-		for _, legacyPane := range legacyPanes {
+		for _, legacyPane := range lbl.legacyPanes {
 			if label == legacyPane {
 				return true
 			}
@@ -629,19 +683,19 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 			BlockID:      blk.ID,
 			TabLabel:     tab,
 			PaneLabel:    blk.Label,
-			Aliases:      hint.Aliases,
+			Aliases:      lbl.aliases,
 			// Launch details the labels do not carry: dropping them
 			// would silently disable the Stop-time drain diagnostic.
-			LaunchMode: hint.LaunchMode,
-			GCBin:      hint.GCBin,
-			WorkDir:    hint.WorkDir,
+			LaunchMode: pol.hint.LaunchMode,
+			GCBin:      pol.hint.GCBin,
+			WorkDir:    pol.hint.WorkDir,
 			// The pending survivor set is cleanup state, not identity: a
 			// replacement pane keeps it, or the stop forgets pids a closed
 			// pane no longer reports.
-			Survivors: hint.Survivors,
+			Survivors: pol.hint.Survivors,
 		}
-		if save {
-			if hint.BlockID != blk.ID {
+		if pol.save {
+			if pol.hint.BlockID != blk.ID {
 				// Adopted: a pane this provider did not start. The retired
 				// record's creation time and identity are not its, so keep the
 				// creation time unknown and mark it adopted; a later Observe
@@ -649,8 +703,8 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 				bd.CreatedAt = time.Time{}
 				bd.Adopted = true
 			} else {
-				bd.CreatedAt = hint.CreatedAt
-				bd.Adopted = hint.Adopted
+				bd.CreatedAt = pol.hint.CreatedAt
+				bd.Adopted = pol.hint.Adopted
 			}
 			_ = b.saveKeepingSurvivors(bd)
 		}
@@ -659,7 +713,7 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 	// Most specific first, so scan order never decides which pane a tab
 	// yields: a suffix-labelled pane names this session outright, while a
 	// bare label only belongs to it through the hint/record.
-	for _, tab := range tabs {
+	for _, tab := range lbl.tabs {
 		for _, w := range view.Windows {
 			if w.Label != tab {
 				continue
@@ -684,7 +738,7 @@ func (b *Binder) scanView(name SessionName, hint Binding, legacy, legacyPanes []
 	// same bare label (a rigless "other--worker" is labelled "worker"), so a
 	// bare label only counts where a tab or record supplies attribution. The
 	// stored-record/hint path stays tab-scoped above.
-	if hint.TabLabel == "" {
+	if lbl.recordless {
 		for _, w := range view.Windows {
 			for _, blk := range w.Blocks {
 				if identityMatch(name, blk.Label) {
