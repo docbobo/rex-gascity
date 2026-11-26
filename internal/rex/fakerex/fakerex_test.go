@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -452,13 +451,14 @@ func TestCloseBlockStopsTermIgnoringPane(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if processGone(pid) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("pane %d still runs after close", pid)
 }
+
 // TestCloseExpandsSurvivingPane proves closing a pane hands the split's rect
 // to the surviving subtree and scales its descendants, so later splits divide
 // the whole window.
