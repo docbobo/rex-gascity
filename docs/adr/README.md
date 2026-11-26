@@ -37,3 +37,4 @@ live in the `AGENTS.md` files.
 | [0004](0004-binder-start-env.md) | `Binder` derives its labels from the projected start env | Accepted |
 | [0005](0005-route-provider-hooks-through-the-runner-seam.md) | Provider hooks run through the `Runner` seam | Accepted |
 | [0006](0006-the-readme-release-block-changes-only-after-a-published-release.md) | The README release block changes only after a published release | Accepted |
+| [0007](0007-guard-opspec-method.md) | The `opSpec.method` and `startConfig` copies are guarded by table tests | Accepted |
