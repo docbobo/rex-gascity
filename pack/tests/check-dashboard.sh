@@ -477,6 +477,40 @@ wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(li
 assert not wide, "tree lines wider than 60 columns: %r" % (wide,)
 PY
 
+# --- an exhausted title budget drops the title, not the width bound --------
+
+# A 40-column ID and an 80-column title at --width 60 leave no room for the
+# title. truncate(0) means "no limit", so the row must omit the title.
+huge=$work/fixture-huge.jsonl
+"$python" - "$huge" <<'PY'
+import json
+import sys
+
+row = {
+    "id": "huge-" + "x" * 35,
+    "title": "w " * 40,
+    "status": "open",
+    "issue_type": "task",
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps({"_type": "issue", **row}) + "\n")
+PY
+
+run_fx "$huge" "$work/outside" --width 60 --scope all --layout tree --no-color -C "$tools/rig"
+code_is 0 "huge ID and title at width 60"
+"$python" - "$script" "$work/out" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(line) > 60]
+assert not wide, "huge row wider than 60 columns: %r" % (wide,)
+PY
+
 # --- bd export records split on the JSON Lines separator only ----------------
 
 # The Go encoder writes U+0085 literally, and str.splitlines() would split

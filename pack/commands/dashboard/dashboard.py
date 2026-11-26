@@ -682,13 +682,18 @@ class Renderer:
             if info["total"]:
                 tag += f" \u00b7 {self.progress_str(info)}"
             tagtxt = "[" + tag + "]"
-            # Budget the title from the real widths so a long ID and a long
-            # meta tag cannot push the row past the terminal width.
-            fixed = dwidth(origin["id"]) + 6 + dwidth(detail) + dwidth(tagtxt)
+            # Fit the ID and meta before the title: the title only gets the
+            # space that is left, and is dropped when none remains, because
+            # truncate(0) means "no limit".
+            room = self.width - (6 + dwidth(detail) + dwidth(tagtxt))
+            idtxt = clip_width(origin["id"], max(room, 1))
+            fixed = 6 + dwidth(idtxt) + dwidth(detail) + dwidth(tagtxt)
+            title = ""
+            if self.width > fixed:
+                title = truncate(origin.get("title", ""), self.width - fixed)
             self.lines.append(
-                f"{icon(origin, p)} {p(origin['id'], BOLD)} {p(DOT, DIM)} "
-                f"{truncate(origin.get('title', ''), max(self.width - fixed, 0))}"
-                f"{detail} {p(tagtxt, DIM)}"
+                f"{icon(origin, p)} {p(idtxt, BOLD)} {p(DOT, DIM)} "
+                f"{title}{detail} {p(tagtxt, DIM)}"
             )
             return
 
