@@ -256,9 +256,9 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	return report, nil
 }
 
-// nudgeSubmitContext bounds the write and the submit together. It uses the op
-// context's deadline when it has one, else a fixed default, so neither call
-// can wait forever.
+// nudgeSubmitContext bounds the write and the submit together. It uses the
+// configured submit budget, capped by the op context's earlier deadline, so
+// neither call can wait forever.
 func (p *Provider) nudgeSubmitContext(parent context.Context) (context.Context, context.CancelFunc) {
 	budget := p.nudge.nudgeSubmitBudget
 	if budget <= 0 {

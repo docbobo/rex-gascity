@@ -110,8 +110,8 @@ func WithNudgeConfirmation(window, interval time.Duration) Option {
 // (GCREX-69).
 var ErrNudgeClaimHeld = errors.New("provider: session holds a live claim")
 
-// defaultNudgeSubmitBudget bounds the write and the submit together when the
-// op context carries no deadline. gc's own op timeout is 30 s; this leaves
+// defaultNudgeSubmitBudget bounds the write and the submit together when no
+// submit budget is configured. gc's own op timeout is 30 s; this leaves
 // room for the confirmation window without risking a split submit.
 const defaultNudgeSubmitBudget = 10 * time.Second
 
@@ -121,8 +121,8 @@ const defaultNudgeSubmitBudget = 10 * time.Second
 const NudgeSubmitFailedMetaKey = "GC_NUDGE_SUBMIT_FAILED"
 
 // WithNudgeSubmitBudget sets how long the write and the submit may take
-// together when the op context has no earlier deadline. A value <= 0 keeps the
-// default.
+// together, capped by the op context's earlier deadline. A value <= 0 keeps
+// the default.
 func WithNudgeSubmitBudget(d time.Duration) Option {
 	return func(p *Provider) {
 		if d > 0 {

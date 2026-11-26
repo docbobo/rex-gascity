@@ -154,11 +154,12 @@ This is consistent with Rex paste-like insertion, but the wire mechanism
 observation; control bytes other than newline were not re-tested.
 
 The RPP `nudge` op rejects non-UTF-8 stdin with exit 1 before any Rex call, and
-bounds the `write` + Enter pair with one submit deadline (10 s, or the op
-context's earlier deadline). Once the write succeeds, Enter is attempted even if
-the parent context is cancelled, so a cancel cannot leave text typed and
-unsubmitted; a failed Enter is reported as "text was typed but submit key
-failed" and recorded under the `GC_NUDGE_SUBMIT_FAILED` meta key.
+bounds the `write` + Enter pair with one submit deadline, the configured
+budget (10 s default) capped by the op context's earlier deadline. Once the
+write succeeds, Enter is attempted even if the parent context is cancelled, so
+a cancel cannot leave text typed and unsubmitted; a failed Enter is reported as
+"text was typed but submit key failed" and recorded under the
+`GC_NUDGE_SUBMIT_FAILED` meta key.
 
 ## 7. Transport abstraction (must stay swappable)
 
