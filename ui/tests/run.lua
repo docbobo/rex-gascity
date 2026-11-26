@@ -482,7 +482,7 @@ test("codec: a wrapped value gets no inserted newline", function()
 		equal(codec.value(rows[1]), json, "the whole value at offset " .. offset)
 	end
 	-- A split between the name and the bar.
-	local rows = assert(codec.rows("hos\nt|" .. escaped, { "host" }))
+	local rows = assert(codec.rows("@@hos\nt|" .. escaped, { "host" }))
 	equal(codec.value(rows[1]), json, "the split between name and bar")
 	-- A split inside a %xx sequence.
 	local seq = "@@host|a%2\n5b"
@@ -1089,7 +1089,7 @@ end)
 
 test("action: one city on the machine is used without asking", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "@@pane|/work/nowhere", "@@city|/cities/one" })
+	stub.format = probe_answer({ "@@city|/cities/one" })
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error: " .. tostring(result))
 	equal(stub.picks, nil, "did not ask")
@@ -1098,7 +1098,7 @@ end)
 
 test("action: several cities are offered", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "@@pane|/work/nowhere", "@@city|/cities/one", "@@city|/cities/two" })
+	stub.format = probe_answer({ "@@city|/cities/one", "@@city|/cities/two" })
 	stub.picked = "/cities/two"
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error: " .. tostring(result))
@@ -1115,7 +1115,7 @@ end)
 
 test("action: cancelling the city question sends nothing", function()
 	stub.pane_cwd = "/work/nowhere"
-	stub.format = probe_answer({ "@@pane|/work/nowhere", "@@city|/cities/one", "@@city|/cities/two" })
+	stub.format = probe_answer({ "@@city|/cities/one", "@@city|/cities/two" })
 	stub.picked = nil
 	local ok, result = run_action({ body = "hello" })
 	truthy(ok, "no error")
@@ -1771,7 +1771,7 @@ test("status: the answer is read across wrapped rows", function()
 	local found = status.parse(table.concat({
 		"@@city|/cities/alp",
 		"ha",
-		"@@server|unix:///Users/me/Library/Application%20Sup",
+		"@@server|unix:///Users/me/Library/Application%2520Sup",
 		"port/rex/server.sock",
 		"@@config|0",
 		"@@import|rex|https://github.com/docbobo/rex-ga",
@@ -1819,6 +1819,7 @@ local function probe_tools()
 		"#!/bin/sh",
 		'case " $* " in *" --autostart=false "*) ;; *) exit 8 ;; esac',
 		'case " $* " in *" whoami --json "*) printf \'{\\n  "endpoint": "/tmp/discovered.sock",\\n  "pid": 1\\n}\\n\'; exit 0 ;; esac',
+		'case " $* " in *" session.list_blocks "*) ;; *) exit 3 ;; esac',
 		'case " $* " in *" -s s1 "*) exit 0 ;; esac',
 		"exit 3",
 	}, "\n") .. "\n")
@@ -1839,7 +1840,9 @@ local function fixture_path(name)
 end
 
 local function run_probe(script, dir, env)
-	write_file(dir .. "/probe.sh", script .. "\nprintf 'END\\n'\n")
+	-- codec.wrap puts the shell escape function before every probe. The hidden
+	-- block wraps too, so the direct run here does the same.
+	write_file(dir .. "/probe.sh", codec.SHELL_ESCAPE .. "\n" .. script .. "\nprintf 'END\\n'\n")
 	return sh(
 		"cd " .. text.quote(dir) .. " && env -i HOME=\"$HOME\" PATH=" .. text.quote(dir .. ":/usr/bin:/bin")
 			.. " FIXTURE=" .. text.quote(fixture_path("config-show.json"))

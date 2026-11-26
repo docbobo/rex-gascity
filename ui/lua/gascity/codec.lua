@@ -40,13 +40,11 @@ function M.read(screen)
 		return nil
 	end
 
-	local output = screen:sub(first + #BEGIN_MARK, last - 1):gsub("^[\r\n]+", ""):gsub("[\r\n]+$", "")
-	-- The `esc` function is plumbing, not a row: keep the text from the first
-	-- row on. A script that prints no row keeps the text as it is.
-	local row = output:find("\n" .. M.ROW_MARK, 1, true)
-	if row ~= nil then
-		output = output:sub(row + 1)
-	end
+	local output = screen:sub(first + #BEGIN_MARK, last - 1):gsub("^[\r\n]+", "")
+	-- `wrap` defines the `esc` function before the script. A shell prints that
+	-- line only when it echoes commands, so drop that one line and keep any
+	-- text the script printed after it, such as gc's own error.
+	output = output:gsub("^esc%([^\n]*\n?", "", 1):gsub("[\r\n]+$", "")
 	local status = screen:sub(last + #END_MARK):match("^%s*(%-?%d+)>>")
 	if status == nil then
 		return nil, "the machine's answer ended without a readable exit status"
@@ -155,31 +153,63 @@ function M.emit(name, shell_word)
 end
 
 -- Splits output into an ordered list of `{ kind, value }`. `value` is the raw
--- escaped rest. A row is a line that starts with the marker, so a row that a
--- terminal wrapped rejoins when the lines are joined. Returns nil and a reason
--- for a malformed row.
+-- escaped rest. A line that starts with the marker begins a row, and so does a
+-- line of the form `name|` for a known name, so an answer from a program that
+-- prints no marker still reads. Any other line continues the row above,
+-- because a terminal wrap adds a newline that is not part of the value.
+-- Values are escaped, so no value can start a row of its own. Text before the
+-- first row is dropped. Returns nil and a reason for a malformed row.
 function M.rows(output, names)
 	local known = {}
 	for _, name in ipairs(names) do
 		known[name] = true
 	end
-	local joined = (output or ""):gsub("\r", "")
 	local rows = {}
-	for line in joined:gmatch("[^\n]*") do
-		if line:sub(1, #M.ROW_MARK) == M.ROW_MARK then
-			local blob = line:sub(#M.ROW_MARK + 1)
-			local kind, rest = blob:match("^([%a_]+)|(.*)$")
-			if kind == nil then
-				return nil, "a row has no name and bar: " .. blob
+	local current = nil
+	local carry = ""
+	local function flush()
+		if current == nil then
+			return true
+		end
+		local blob = current
+		local kind, rest = blob:match("^([%a_]+)|(.*)$")
+		if kind == nil then
+			return nil, "a row has no name and bar: " .. blob
+		end
+		if known[kind] then
+			local _, reason = M.unescape(rest)
+			if reason ~= nil then
+				return nil, reason
 			end
-			if known[kind] then
-				local _, reason = M.unescape(rest)
-				if reason ~= nil then
+			rows[#rows + 1] = { kind = kind, value = rest }
+		end
+		current = nil
+		return true
+	end
+	for line in ((output or ""):gsub("\r", "") .. "\n"):gmatch("([^\n]*)\n") do
+		line = carry .. line
+		carry = ""
+		-- A wrap between the marker's two characters leaves a lone `@`.
+		if #line < #M.ROW_MARK and M.ROW_MARK:sub(1, #line) == line and line ~= "" then
+			carry = line
+		else
+			local marked = line:sub(1, #M.ROW_MARK) == M.ROW_MARK
+			local body = marked and line:sub(#M.ROW_MARK + 1) or line
+			local kind = body:match("^([%a_]+)%|")
+			if marked or (kind ~= nil and known[kind]) then
+				local ok, reason = flush()
+				if not ok then
 					return nil, reason
 				end
-				rows[#rows + 1] = { kind = kind, value = rest }
+				current = body
+			elseif current ~= nil then
+				current = current .. line
 			end
 		end
+	end
+	local ok, reason = flush()
+	if not ok then
+		return nil, reason
 	end
 	return rows
 end
