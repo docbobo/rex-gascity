@@ -271,13 +271,18 @@ class Model:
 # --- rendering --------------------------------------------------------------
 
 
+def strip_controls(text: str) -> str:
+    """Replace control characters so titles render as literal text."""
+    return "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in text)
+
+
 def truncate(text: str, width: int) -> str:
-    text = " ".join(text.split())
-    if width <= 0 or len(text) <= width:
+    text = " ".join(strip_controls(text).split())
+    if width <= 0 or dwidth(text) <= width:
         return text
     if width <= 1:
         return "\u2026"
-    return text[: width - 1] + "\u2026"
+    return clip_width(text, width - 1) + "\u2026"
 
 
 def dwidth(text: str) -> int:
@@ -293,9 +298,38 @@ def dwidth(text: str) -> int:
 Segment = "tuple[str, str | None]"
 
 
+def clip_width(text: str, width: int) -> str:
+    """Cut text to a display width."""
+    out = ""
+    used = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        cw = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if used + cw > width:
+            break
+        out += ch
+        used += cw
+    return out
+
+
+def clip_segs(segs: list[Segment], width: int) -> list[Segment]:
+    """Cut a segment list to a display width, keeping each style."""
+    out: list[Segment] = []
+    used = 0
+    for text, style in segs:
+        if used >= width:
+            break
+        cut = clip_width(text, width - used)
+        if cut:
+            out.append((cut, style))
+            used += dwidth(cut)
+    return out
+
+
 def wrap(text: str, width: int) -> list[str]:
     """Word-wrap text to a display width (hard-splits over-long tokens)."""
-    text = " ".join(text.split())
+    text = " ".join(strip_controls(text).split())
     if width <= 0:
         return [text]
     lines: list[str] = []
@@ -333,8 +367,13 @@ def wrap(text: str, width: int) -> list[str]:
 
 def wrap_segs(prefix: list[Segment], text: str, width: int) -> list[list[Segment]]:
     """Wrap text under a styled prefix, hanging-indenting continuations."""
+    # The box border never truncates, so the prefix must leave the title its
+    # minimum width: trim the prefix instead of overflowing the row.
+    floor = min(8, max(width, 1))
+    if sum(dwidth(t) for t, _ in prefix) > width - floor:
+        prefix = clip_segs(prefix, max(width - floor, 0))
     pw = sum(dwidth(t) for t, _ in prefix)
-    avail = max(width - pw, 8)
+    avail = max(width - pw, floor)
     out: list[list[Segment]] = []
     for i, w in enumerate(wrap(text, avail)):
         pre = prefix if i == 0 else [(" " * pw, None)]
@@ -580,7 +619,7 @@ class Renderer:
         focus = [
             m
             for m in members
-            if effective_status(m) in ("in_progress", "claimed", "blocked")
+            if effective_status(m) in ("in_progress", "claimed", "blocked", "hooked")
             and m["id"] not in top_ids
             and m["id"] not in wi_ids
             and m["id"] != origin["id"]
@@ -642,10 +681,14 @@ class Renderer:
                 tag += f" \u00b7 {info['duration']}"
             if info["total"]:
                 tag += f" \u00b7 {self.progress_str(info)}"
+            tagtxt = "[" + tag + "]"
+            # Budget the title from the real widths so a long ID and a long
+            # meta tag cannot push the row past the terminal width.
+            fixed = dwidth(origin["id"]) + 6 + dwidth(detail) + dwidth(tagtxt)
             self.lines.append(
                 f"{icon(origin, p)} {p(origin['id'], BOLD)} {p(DOT, DIM)} "
-                f"{truncate(origin.get('title', ''), self.width - 32)}{detail} "
-                f"{p('[' + tag + ']', DIM)}"
+                f"{truncate(origin.get('title', ''), max(self.width - fixed, 0))}"
+                f"{detail} {p(tagtxt, DIM)}"
             )
             return
 
@@ -813,8 +856,10 @@ class Renderer:
         p = self.paint
         origin = info["origin"]
         inner = max(width - 4, 24)
-        hid = truncate(origin["id"], inner - 2)
         ic = icon_seg(origin)[0]
+        # The decorated header must fill exactly `inner + 4` columns: reserve
+        # the icon, the spaces, the corners, and at least one dash.
+        hid = truncate(origin["id"], max(inner - 3 - dwidth(ic), 1))
         hw = dwidth(ic) + 1 + dwidth(hid)
         dashes = max(inner - 1 - hw, 1)
         lines = [
@@ -1004,7 +1049,7 @@ def run_bd(bd: str, bd_dir: str | None, args: list[str]) -> str:
 def load_records(bd: str, bd_dir: str | None) -> dict:
     raw = run_bd(bd, bd_dir, ["export"])
     recs: dict = {}
-    for line in raw.splitlines():
+    for line in raw.split("\n"):
         line = line.strip()
         if not line:
             continue

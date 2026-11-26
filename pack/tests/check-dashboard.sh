@@ -433,6 +433,107 @@ wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(li
 assert not wide, "lines wider than 80 columns: %r" % (wide,)
 PY
 
+# --- long bead prefixes and long origin IDs stay inside their boxes ---------
+
+# At --width 60 with two columns the box interior is 25 columns. A nested bead
+# prefix (indent, icon, a 20-column ID, a duration) leaves no room for a title,
+# and a 24-column origin ID overruns the header decorations. Both must be
+# trimmed instead of pushing the row past the terminal width.
+prefix=$work/fixture-prefix.jsonl
+cat > "$prefix" <<'JSONL'
+{"_type":"issue","id":"prf-0123456789abcdefghij","title":"Header stream","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+{"_type":"issue","id":"prf-wf","title":"Workflow","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:01:00Z","metadata":{"gc.kind":"workflow","gc.root_bead_id":"prf-0123456789abcdefghij","gc.formula_name":"build-basic"}}
+{"_type":"issue","id":"prf-cv","title":"Convoy","status":"open","issue_type":"convoy","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:02:00Z","dependencies":[{"type":"tracks","depends_on_id":"prf-wi-0123456789"}],"metadata":{"gc.root_bead_id":"prf-wf"}}
+{"_type":"issue","id":"prf-wi-0123456789","title":"wix","status":"in_progress","issue_type":"task","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:02:00Z","updated_at":"2026-01-01T00:02:00Z","metadata":{"gc.root_bead_id":"prf-wf"}}
+{"_type":"issue","id":"prf-leaf-0123456789","title":"leafx","status":"in_progress","issue_type":"task","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:02:00Z","updated_at":"2026-01-01T00:02:00Z","metadata":{"gc.root_bead_id":"prf-wi-0123456789"}}
+{"_type":"issue","id":"prf-two-0123456789ab","title":"Second stream","status":"in_progress","issue_type":"task","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:03:00Z","updated_at":"2026-01-01T00:03:00Z"}
+JSONL
+
+run_fx "$prefix" "$work/outside" --width 60 --columns 2 --no-color -C "$tools/rig"
+code_is 0 "long prefixes stay inside the boxes"
+has "$work/out" "leafx" "long prefix keeps the nested title"
+"$python" - "$script" "$work/out" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(line) > 60]
+assert not wide, "lines wider than 60 columns: %r" % (wide,)
+
+PY
+
+run_fx "$prefix" "$work/outside" --width 60 --layout tree --no-color -C "$tools/rig"
+code_is 0 "long prefixes stay inside the tree rows"
+"$python" - "$script" "$work/out" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(line) > 60]
+assert not wide, "tree lines wider than 60 columns: %r" % (wide,)
+PY
+
+# --- bd export records split on the JSON Lines separator only ----------------
+
+# The Go encoder writes U+0085 literally, and str.splitlines() would split
+# the record there, leaving two fragments that json.loads cannot parse.
+next=$work/fixture-nextline.jsonl
+"$python" - "$next" <<'PY'
+import json
+import sys
+
+row = {
+    "id": "nel-org",
+    "title": "Next\u0085line origin",
+    "status": "in_progress",
+    "issue_type": "task",
+    "created_at": "2026-01-01T00:00:00Z",
+    "started_at": "2026-01-01T00:05:00Z",
+    "updated_at": "2026-01-01T00:05:00Z",
+}
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write(json.dumps({"_type": "issue", **row}, ensure_ascii=False) + "\n")
+PY
+
+run_fx "$next" "$work/outside" --width 100 --no-color -C "$tools/rig"
+code_is 0 "U+0085 in a title"
+has "$work/out" "line origin" "U+0085 record still renders"
+
+# --- titles cannot inject terminal control sequences ------------------------
+
+ctl=$work/fixture-control.jsonl
+"$python" - "$ctl" <<'PY'
+import json
+import sys
+
+row = {
+    "id": "ctl-org",
+    "title": "Control \x1b[31mred\x1b[0m origin",
+    "status": "in_progress",
+    "issue_type": "task",
+    "created_at": "2026-01-01T00:00:00Z",
+    "started_at": "2026-01-01T00:05:00Z",
+    "updated_at": "2026-01-01T00:05:00Z",
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps({"_type": "issue", **row}) + "\n")
+PY
+
+run_fx "$ctl" "$work/outside" --width 100 --no-color -C "$tools/rig"
+code_is 0 "control characters in a title"
+has "$work/out" "Control" "control title text is kept"
+"$python" - "$work/out" <<'PY'
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+bad = sorted({ch for ch in text if ord(ch) < 32 and ch != "\n"})
+assert not bad, "control characters reached the terminal: %r" % (bad,)
+PY
+
 # --- attention scope includes hooked work ------------------------------------
 
 hook=$work/fixture-hooked.jsonl
@@ -444,6 +545,11 @@ JSONL
 run_fx "$hook" "$work/outside" --width 100 --no-color --scope attention -C "$tools/rig"
 code_is 0 "attention scope with a hooked bead"
 has "$work/out" "Hooked origin" "attention scope shows the hooked stream"
+has "$work/out" "Hooked bead" "attention scope shows the hooked bead"
+
+run_fx "$hook" "$work/outside" --width 100 --no-color --layout tree --scope attention -C "$tools/rig"
+code_is 0 "attention tree with a hooked bead"
+has "$work/out" "Hooked bead" "attention tree shows the hooked bead"
 
 run_fx "$hook" "$work/outside" --width 100 --no-color -C "$tools/rig"
 code_is 0 "working scope with a hooked bead"
