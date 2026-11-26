@@ -511,6 +511,56 @@ wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(li
 assert not wide, "huge row wider than 60 columns: %r" % (wide,)
 PY
 
+# --- a drained title budget omits the title, never disables truncation ------
+
+# A long origin ID and its meta tag can consume the whole row. The title must
+# be dropped instead of passed to truncate() as width 0, which that helper
+# reads as "unlimited" and renders in full.
+budget=$work/fixture-title-budget.jsonl
+"$python" - "$budget" <<'PY'
+import json
+import sys
+
+origin = "bud-" + "a" * 36
+rows = [
+    {
+        "id": origin,
+        "title": "Title " + "b" * 74,
+        "status": "open",
+        "issue_type": "task",
+        "created_at": "2026-01-01T00:00:00Z",
+        "started_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:05:00Z",
+    },
+    {
+        "id": "bud-done",
+        "title": "Finished sibling",
+        "status": "closed",
+        "issue_type": "task",
+        "created_at": "2026-01-01T00:00:00Z",
+        "closed_at": "2026-01-01T00:04:00Z",
+        "updated_at": "2026-01-01T00:04:00Z",
+        "metadata": {"gc.root_bead_id": origin},
+    },
+]
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps({"_type": "issue", **row}) + "\n")
+PY
+
+run_fx "$budget" "$work/outside" --width 60 --layout tree --scope all --no-color -C "$tools/rig"
+code_is 0 "drained title budget"
+"$python" - "$script" "$work/out" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(line) > 60]
+assert not wide, "drained-budget lines wider than 60 columns: %r" % (wide,)
+PY
+
 # --- bd export records split on the JSON Lines separator only ----------------
 
 # The Go encoder writes U+0085 literally, and str.splitlines() would split

@@ -682,15 +682,17 @@ class Renderer:
             if info["total"]:
                 tag += f" \u00b7 {self.progress_str(info)}"
             tagtxt = "[" + tag + "]"
-            # Fit the ID and meta before the title: the title only gets the
-            # space that is left, and is dropped when none remains, because
-            # truncate(0) means "no limit".
-            room = self.width - (6 + dwidth(detail) + dwidth(tagtxt))
-            idtxt = clip_width(origin["id"], max(room, 1))
-            fixed = 6 + dwidth(idtxt) + dwidth(detail) + dwidth(tagtxt)
-            title = ""
-            if self.width > fixed:
-                title = truncate(origin.get("title", ""), self.width - fixed)
+            # Fit the decorations, the meta tag, and the ID inside the width
+            # first, then spend what is left on the title. A budget of zero
+            # or less means "omit the title", not "render it in full":
+            # truncate() treats a non-positive width as unlimited.
+            fixed = 6 + dwidth(detail) + dwidth(tagtxt)
+            if fixed >= self.width:
+                tagtxt, fixed = "", 6 + dwidth(detail)
+            room = self.width - fixed
+            idtxt = truncate(origin["id"], room) if room > 0 else ""
+            title_w = room - dwidth(idtxt)
+            title = truncate(origin.get("title", ""), title_w) if title_w > 0 else ""
             self.lines.append(
                 f"{icon(origin, p)} {p(idtxt, BOLD)} {p(DOT, DIM)} "
                 f"{title}{detail} {p(tagtxt, DIM)}"
