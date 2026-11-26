@@ -7,6 +7,7 @@ local codec = require("gascity.codec")
 local fragments = require("gascity.fragments")
 local gc = require("gascity.gc")
 local probe = require("gascity.probe")
+local shell = require("gascity.shell")
 local text = require("gascity.text")
 
 local M = {}
@@ -25,12 +26,13 @@ local function script(settings, city)
 
 	if city ~= nil and city ~= "" then
 		add("city=" .. text.quote(city))
-		add('case "$city" in')
-		add('\t"~/"*) city="$HOME/${city#\\~/}" ;;')
-		add("esac")
+		for _, line in ipairs(shell.tilde("city")) do
+			add(line)
+		end
 	else
 		-- No city named: the pane's directory decides, as it does for gc.
-		for _, line in ipairs(fragments.walk_up_city("city")) do
+		add("city=")
+		for _, line in ipairs(shell.city_walk("city")) do
 			add(line)
 		end
 	end
@@ -39,11 +41,29 @@ local function script(settings, city)
 		add(line)
 	end
 
+	-- The guard returns instead of exiting, so the script still prints its end
+	-- marker and the warning reaches the screen.
+	add("has_gc() {")
+	for _, line in ipairs(gc.guard({ exiting = false })) do
+		add("\t" .. line)
+	end
+	add("}")
+	add("missing=")
+	add("if ! has_gc; then")
+	add("\tmissing=1")
+	add("fi")
+
 	add('if [ -n "$city" ]; then set -- --city "$city"; else set --; fi')
 	add(codec.emit("city", '"${city:--}"'))
-	add(codec.emit_pipe("rigs"))
-	add('"$gc" "$@" rig list --json 2>/dev/null | ' .. fragments.one_line_json())
-	add("printf '\\n'")
+	add('if [ -n "$missing" ]; then')
+	add("\tprintf 'gc|missing\\n'")
+	add("\tprintf 'rigs|\\n'")
+	add("else")
+	add("\t" .. codec.emit_pipe("rigs"))
+	-- gc's stderr is kept, so a real failure is reported in gc's own words.
+	add('\t"$gc" "$@" rig list --json 2>&1 | ' .. fragments.one_line_json())
+	add("\tprintf '\\n'")
+	add("fi")
 
 	return table.concat(lines, "\n")
 end
@@ -53,7 +73,7 @@ function M.parse(answer)
 	-- The codec joins the rows the terminal wrapped. Take the first value of
 	-- each field.
 	local values = {}
-	for _, row in ipairs(codec.rows(answer, { "city", "rigs" })) do
+	for _, row in ipairs(codec.rows(answer, { "city", "rigs", "gc" })) do
 		if values[row.kind] == nil then
 			values[row.kind] = row.value
 		end
@@ -62,6 +82,10 @@ function M.parse(answer)
 	local city = values.city
 	if city == "-" then
 		city = nil
+	end
+
+	if values.gc == "missing" then
+		return nil, gc.MISSING
 	end
 
 	local data, err = rex.json.decode(values.rigs or "")

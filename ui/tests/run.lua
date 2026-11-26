@@ -525,6 +525,30 @@ test("shell: another path is unchanged", function()
 	equal(out, "/abs/two\n__status=0\n", "the same path")
 end)
 
+test("rigs: a missing gc is reported as gc.MISSING", function()
+	-- A host gc on PATH would answer, so this machine has to lack one.
+	if sh("PATH=/usr/bin:/bin command -v gc 2>/dev/null") ~= "" then
+		print("rigs: a missing gc is reported as gc.MISSING -- skipped, a gc is on PATH")
+		return
+	end
+	local dir = scratch()
+	stub.format = probe_answer({})
+	rigs.find(config.resolve(nil), { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		env = "HOME=" .. dir .. "/home",
+		workdir = "work",
+	})
+	remove(dir)
+	local rows = assert(codec.read(out))
+	contains(rows.output, gc.MISSING, "the guard's message")
+	contains(rows.output, "gc|missing", "the marker row")
+	equal(rows.status, 0, "the script still ends")
+	local answer, err = rigs.parse(rows.output)
+	equal(answer, nil, "no answer")
+	equal(err, gc.MISSING, "gc.MISSING, not the list's error")
+end)
+
 -- Settings ---------------------------------------------------------------
 -- Settings ---------------------------------------------------------------
 
