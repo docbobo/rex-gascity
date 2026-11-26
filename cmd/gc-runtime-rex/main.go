@@ -39,7 +39,10 @@ const (
 )
 
 // handshake is the protocol op's reply. It declares only what is implemented:
-// no proc.exec, proc.provision, proc.stream or tty.attach, and no locality.
+// no proc.exec, proc.provision, proc.stream or tty.attach, and no fs.host.
+// locality=local states the deployment fact that Rex boxes run on the
+// controller host under the same user (local spool and unix socket). It is
+// false behind a tunnel to a remote server; see docs/rex-provider.md.
 // observe.v1 is declared unconditionally (GCREX-111): the profile is
 // implemented and proven by gc runtime conformance.
 // idle-boundary gates the `idle` snapshot op (GCREX-63); gc 1.5.1 has no such
@@ -54,7 +57,7 @@ const (
 // has no input-outcome vocabulary and ignores the token, so 80 stays a plain
 // error there — the same answer it gives an undeclared pack.
 func handshake() string {
-	return `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}`
+	return `{"version":0,"locality":"local","capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}`
 }
 
 // buildVersion is the version the `version` op reports. A pack build may set

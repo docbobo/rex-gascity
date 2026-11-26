@@ -202,11 +202,22 @@ compares that `version` against the `[pack] version` in
 `gc-runtime-rex protocol` returns the RPP v0 handshake:
 
 ```json
-{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}
+{"version":0,"locality":"local","capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}
 ```
 
+- **Locality**: `"locality":"local"` states that Rex boxes run on the
+  controller host under the same user. The server is a unix socket under the
+  controller's `Application Support`, and state is a local spool. gc reads the
+  field through `ProtocolInfo.DeclaresLocal` (`internal/runtime/protocol.go:213-233`).
+  An absent or other value means remote, and `sessionRuntimeIsRemote`
+  (`cmd/gc/storage_verb_exclusion.go:314`) then refuses a storage split without
+  `--force=remote-runtime`. The declaration is a statement of deployment fact.
+  A provider pointed at a remote Rex server through a tunnel would make it
+  false.
 - **Declared capabilities**: `report-attachment` (`is-attached`), `report-activity` (`get-last-activity`), `idle-boundary` (`idle`), `carrier.ops` (the five session ops gc drives instead of exec) and `input-outcome` (the typed exit-80 words on driving ops; gc 1.5.1 ignores it and reads a refusal as a plain error, a gc at `544beb8d6` (#9137, post-`v1.5.1`) reads the word and refunds a `busy` nudge), plus `observe.v1` (the reconciler-v2 profile: `observe`, `inventory`, `kill-object` and `fresh_only`) and `city-scoped` (real per-city state isolation).
-- **Capabilities not declared**: `proc.exec`, `proc.provision`, `proc.stream`, `tty.attach` (and no locality capability).
+- **Capabilities not declared**: `proc.exec`, `proc.provision`, `proc.stream`,
+  `tty.attach`, and `fs.host`. `fs.host` adds work-dir staging rules the
+  provider does not implement. Locality alone states the deployment fact.
 
 Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`, `observe`, `inventory`, `kill-object`.
 
