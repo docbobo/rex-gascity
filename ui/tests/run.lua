@@ -24,6 +24,8 @@ local send = require("gascity.send")
 local report = require("gascity.report")
 local status = require("gascity.status")
 local actions = require("gascity.actions")
+local codec = require("gascity.codec")
+local fragments = require("gascity.fragments")
 
 local fixture = root .. "/tests/fixtures"
 
@@ -318,6 +320,145 @@ local function test(name, fn)
 	fn()
 end
 
+-- Running shell ----------------------------------------------------------
+--
+-- A test that cares what a generated script does runs it, instead of reading
+-- the text back. /bin/sh is already a hard requirement of the extension, so
+-- the suite may use it too.
+
+local function sh(command)
+	local pipe = assert(io.popen(command))
+	local out = pipe:read("*a")
+	pipe:close()
+	return out
+end
+
+local function write_file(path, content)
+	local file = assert(io.open(path, "w"))
+	file:write(content)
+	file:close()
+end
+
+local function remove(path)
+	sh("rm -rf " .. text.quote(path))
+end
+
+-- A fresh directory, by its resolved path, so a printed $PWD matches it.
+local function scratch()
+	local dir = text.trim(sh('mktemp -d "${TMPDIR:-/tmp}/gascity-test.XXXXXX"'))
+	return text.trim(sh("cd " .. text.quote(dir) .. " && pwd -P"))
+end
+
+-- A stub gc that prints each argument it is given, one per line.
+local GC_ECHO = table.concat({
+	"#!/bin/sh",
+	'for w; do printf "[%s]\\n" "$w"; done',
+}, "\n") .. "\n"
+
+-- Writes an executable file at `dir/name`, making its directory.
+local function install(dir, name, content)
+	local path = dir .. "/" .. name
+	sh("mkdir -p " .. text.quote(path:match("^(.*)/[^/]+$")))
+	write_file(path, content)
+	sh("chmod +x " .. text.quote(path))
+	return path
+end
+
+-- Runs `text` with /bin/sh in `opts.dir` (a scratch directory by default).
+--
+-- `opts.workdir` is created under it and used as the working directory.
+-- `opts.path` is PATH, `/usr/bin:/bin` unless given. `opts.env` adds `K=V`
+-- prefixes. The output comes back with a last line `__status=N`. A CPU limit
+-- kills a loop that never ends, so a broken fragment fails instead of hanging.
+local function run_fragment(source, opts)
+	opts = opts or {}
+	local dir = opts.dir or scratch()
+	local work = dir
+	if opts.workdir then
+		work = dir .. "/" .. opts.workdir
+		sh("mkdir -p " .. text.quote(work))
+	end
+	write_file(dir .. "/fragment.sh", source .. "\n")
+	local out = sh(
+		"cd "
+			.. text.quote(work)
+			.. " && env -i HOME=\"$HOME\" PATH="
+			.. text.quote(opts.path or "/usr/bin:/bin")
+			.. " "
+			.. (opts.env or "")
+			.. " /bin/sh -c 'ulimit -t 5; exec /bin/sh \"$0\"' "
+			.. text.quote(dir .. "/fragment.sh")
+			.. " 2>&1; printf '__status=%s\\n' \"$?\""
+	)
+	return out, dir
+end
+
+-- Runs a probe's wrapped script. `sleep` returns at once, so the block's wait
+-- for a person does not hold the suite.
+local function run_wrapped(script, opts)
+	opts = opts or {}
+	opts.dir = opts.dir or scratch()
+	install(opts.dir .. "/bin", "sleep", "#!/bin/sh\nexit 0\n")
+	opts.path = opts.dir .. "/bin:" .. (opts.path or "/usr/bin:/bin")
+	return run_fragment(script, opts)
+end
+
+-- Runs a generated script with a stub gc on PATH that prints its arguments.
+local function run_script(source, opts)
+	opts = opts or {}
+	opts.dir = opts.dir or scratch()
+	install(opts.dir .. "/bin", "gc", GC_ECHO)
+	opts.path = opts.dir .. "/bin:" .. (opts.path or "/usr/bin:/bin")
+	return run_fragment(source, opts)
+end
+
+-- The shell fragments ----------------------------------------------------
+
+local function walk(var)
+	return table.concat(fragments.walk_up_city(var), "\n")
+end
+
+local WALK_PRINT = '\nif [ -n "$city" ]; then printf "%s\\n" "$city"; fi'
+
+test("fragments: the walk-up finds a city.toml above the pane", function()
+	local dir = scratch()
+	write_file(dir .. "/city.toml", "")
+	local out = run_fragment(walk("city") .. WALK_PRINT, { dir = dir, workdir = "rigs/alpha" })
+	remove(dir)
+	equal(out, dir .. "\n__status=0\n", "the directory with city.toml")
+end)
+
+test("fragments: the walk-up accepts a .gc directory", function()
+	local dir = scratch()
+	sh("mkdir " .. text.quote(dir .. "/.gc"))
+	local out = run_fragment(walk("city") .. WALK_PRINT, { dir = dir, workdir = "rigs/alpha" })
+	remove(dir)
+	equal(out, dir .. "\n__status=0\n", "the directory with .gc")
+end)
+
+test("fragments: the walk-up stops at the filesystem root", function()
+	local dir = scratch()
+	local out = run_fragment(walk("city") .. WALK_PRINT, { dir = dir, workdir = "rigs/alpha" })
+	remove(dir)
+	equal(out, "__status=0\n", "nothing, and no loop")
+end)
+
+test("fragments: the awk split keeps only absolute paths", function()
+	local dir = scratch()
+	write_file(dir .. "/rows", "  /cities/one\n/cities/two\nalpha /x\n")
+	local out = run_fragment("cat rows | " .. fragments.cities_awk(), { dir = dir })
+	remove(dir)
+	equal(out, "/cities/one\n/cities/two\n__status=0\n", "the two paths, trimmed")
+end)
+
+test("fragments: the tr strip leaves one JSON line", function()
+	local dir = scratch()
+	write_file(dir .. "/rows", '{"rigs":[\n{"name":"alpha"}\n]}\n')
+	local out = run_fragment("cat rows | " .. fragments.one_line_json() .. '\nprintf "\\n"', { dir = dir })
+	remove(dir)
+	equal(out, '{"rigs":[{"name":"alpha"}]}\n__status=0\n', "the same bytes, no newline")
+end)
+
 -- Settings ---------------------------------------------------------------
 
 test("config: defaults when no file is named", function()
@@ -489,72 +630,142 @@ end)
 -- The script a pane runs ------------------------------------------------
 
 test("run: quotes every word, so a message arrives as it was typed", function()
-	local script = run.script(config.resolve(nil), {
+	local out, dir = run_script(run.script(config.resolve(nil), {
 		mail.args(config.resolve(nil), "it's $HOME", "it's $HOME"),
-	})
-	contains(script, "'mail' 'send' 'mayor'", "quoted words")
-	contains(script, "'it'\\''s $HOME'", "the message as one quoted argument")
-	contains(script, "--notify", "the nudge")
+	}))
+	remove(dir)
+	equal(
+		out,
+		"[mail]\n[send]\n[mayor]\n[-s]\n[it's $HOME]\n[-m]\n[it's $HOME]\n[--notify]\n__status=0\n",
+		"every word arrives as one argument"
+	)
 end)
 
 test("run: several commands run in order, stopping at the first failure", function()
 	local script = run.script(config.resolve(nil), {
 		{ "rig", "suspend", "alpha" },
 		{ "rig", "suspend", "beta" },
+		{ "rig", "suspend", "gamma" },
 	})
-	contains(script, "'rig' 'suspend' 'alpha' && \"$gc\" 'rig' 'suspend' 'beta'", "one after the other")
+	local dir = scratch()
+	install(dir .. "/bin", "gc", table.concat({
+		"#!/bin/sh",
+		'for w; do printf "[%s]" "$w"; done',
+		'printf "\\n"',
+		'case " $* " in *" beta "*) exit 1 ;; esac',
+	}, "\n") .. "\n")
+	local out = run_fragment(script, { dir = dir, path = dir .. "/bin:/usr/bin:/bin" })
+	remove(dir)
+	equal(out, "[rig][suspend][alpha]\n[rig][suspend][beta]\n__status=1\n", "alpha then beta, and gamma never")
 end)
 
 test("run: a city adds --city to every command and expands a leading ~", function()
+	local dir = scratch()
+	local home = dir .. "/home"
+	sh("mkdir -p " .. text.quote(home .. "/cities/two"))
 	local script = run.script(
 		config.resolve(nil),
 		{ { "rig", "suspend", "alpha" }, { "rig", "suspend", "beta" } },
 		{ city = "~/cities/two" }
 	)
-	contains(script, "city='~/cities/two'", "the city as given")
-	contains(script, 'city="$HOME/${city#\\~/}"', "expanded on the machine that runs it")
-	contains(script, '--city "$city" \'rig\' \'suspend\' \'alpha\'', "before the first command")
-	contains(script, '&& "$gc" --city "$city" \'rig\' \'suspend\' \'beta\'', "and the second")
+	local out = run_script(script, { dir = dir, env = "HOME=" .. text.quote(home) })
+	remove(dir)
+	equal(
+		out,
+		"[--city]\n["
+			.. home
+			.. "/cities/two]\n[rig]\n[suspend]\n[alpha]\n[--city]\n["
+			.. home
+			.. "/cities/two]\n[rig]\n[suspend]\n[beta]\n__status=0\n",
+		"the city, expanded, before each command"
+	)
 end)
 
 test("run: without a city the pane decides", function()
-	local script = run.script(config.resolve(nil), { { "rig", "list" } })
-	falsy(script:find("--city", 1, true), "no --city")
-	falsy(script:find("city=", 1, true), "no city variable")
+	local out, dir = run_script(run.script(config.resolve(nil), { { "rig", "list" } }))
+	remove(dir)
+	equal(out, "[rig]\n[list]\n__status=0\n", "gc gets no --city")
 end)
 
 test("run: a set gc_bin is used as it is", function()
+	local dir = scratch()
 	local settings = config.resolve(nil)
-	settings.gc_bin = "/opt/gc/bin/gc"
-	local script = run.script(settings, { { "rig", "list" } })
-	contains(script, "gc='/opt/gc/bin/gc'", "the configured program")
-	falsy(script:find("command -v gc", 1, true), "no search for a program")
+	settings.gc_bin = install(dir .. "/configured", "gc", GC_ECHO)
+	install(dir .. "/bin", "gc", "#!/bin/sh\nprintf '[decoy]\\n'\n")
+	local out = run_fragment(run.script(settings, { { "rig", "list" } }), {
+		dir = dir,
+		path = dir .. "/bin:/usr/bin:/bin",
+	})
+	remove(dir)
+	equal(out, "[rig]\n[list]\n__status=0\n", "the configured program, not the one on PATH")
 end)
 
 test("run: a script that cannot find gc says so and stops", function()
-	local script = run.script(config.resolve(nil), { { "rig", "list" } })
-	contains(script, "gc is not on this machine", "the message")
-	contains(script, "return 127", "stops")
-	equal(script:sub(-5), "\nwork", "and the work is what the script runs")
+	local dir = scratch()
+	local home = dir .. "/home"
+	sh("mkdir -p " .. text.quote(dir .. "/empty") .. " " .. text.quote(home))
+	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
+		dir = dir,
+		path = dir .. "/empty",
+		env = "HOME=" .. text.quote(home),
+	})
+	remove(dir)
+	contains(out, "gc is not on this machine", "the message")
+	contains(out, "__status=127", "and stops")
 end)
 
-test("run: without gc_bin the script looks in the usual places", function()
-	local script = run.script(config.resolve(nil), { { "rig", "list" } })
-	contains(script, "gc=gc", "the PATH name")
-	contains(script, "/run/current-system/sw/bin/gc", "the Nix place")
-	contains(script, "$HOME/.nix-profile/bin/gc", "the profile place")
+test("run: without gc_bin a gc on PATH is used", function()
+	local dir = scratch()
+	local home = dir .. "/home"
+	sh("mkdir -p " .. text.quote(home))
+	local out = run_script(run.script(config.resolve(nil), { { "rig", "list" } }), {
+		dir = dir,
+		env = "HOME=" .. text.quote(home),
+	})
+	remove(dir)
+	equal(out, "[rig]\n[list]\n__status=0\n", "the gc on PATH")
+end)
+
+test("run: without gc_bin a gc in a usual place is found", function()
+	local dir = scratch()
+	local home = dir .. "/home"
+	install(home .. "/.local/bin", "gc", GC_ECHO)
+	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
+		dir = dir,
+		path = "/usr/bin:/bin",
+		env = "HOME=" .. text.quote(home),
+	})
+	remove(dir)
+	equal(out, "[rig]\n[list]\n__status=0\n", "the profile place")
 end)
 
 test("run: each fallback program path is quoted", function()
-	local script = run.script(config.resolve(nil), { { "rig", "list" } })
-	contains(script, '"$HOME/.local/bin/gc"', "a space in HOME cannot split the path")
-	contains(script, '"$HOME/go/bin/gc"', "and the next one")
+	local dir = scratch()
+	local home = dir .. "/home dir"
+	install(home .. "/.local/bin", "gc", GC_ECHO)
+	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
+		dir = dir,
+		path = "/usr/bin:/bin",
+		env = "HOME=" .. text.quote(home),
+	})
+	remove(dir)
+	equal(out, "[rig]\n[list]\n__status=0\n", "a space in HOME does not split the path")
 end)
 
 test("probe: never stops before its end marker", function()
 	stub.format = probe_answer({})
 	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = "/work" })
-	falsy(stub.blocks[1].options.command[3]:find("exit", 1, true), "no early exit")
+	local dir = scratch()
+	local home = dir .. "/home"
+	sh("mkdir -p " .. text.quote(dir .. "/empty") .. " " .. text.quote(home))
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		path = dir .. "/empty",
+		workdir = "work",
+		env = "HOME=" .. text.quote(home),
+	})
+	remove(dir)
+	contains(out, "gascity-end", "the end marker is printed")
 end)
 
 -- Sending ----------------------------------------------------------------
@@ -611,8 +822,13 @@ test("action: puts the command in a pane of the same session", function()
 	equal(block.options.cwd, "/work/city/rig", "runs in the pane's directory")
 	equal(block.options.shell, nil, "Rex runs the program and closes the pane on success")
 	equal(block.options.command[1], "/bin/sh", "the shell doing the work")
-	contains(block.options.command[3], "'Build is green'", "the message")
-	contains(block.options.command[3], "'mail' 'send' 'mayor'", "the command")
+	local out, dir = run_script(block.options.command[3])
+	remove(dir)
+	equal(
+		out,
+		"[mail]\n[send]\n[mayor]\n[-s]\n[Build is green]\n[-m]\n[Build is green]\n[--notify]\n__status=0\n",
+		"the message, sent to the mayor"
+	)
 end)
 
 test("action: a city argument overrides the pane", function()
@@ -620,8 +836,9 @@ test("action: a city argument overrides the pane", function()
 	local ok, result = run_action({ body = "hello", city = "/cities/two" })
 	truthy(ok, "no error: " .. tostring(result))
 	equal(result.city, "/cities/two", "the city")
-	contains(stub.block().options.command[3], "city='/cities/two'", "passed to the script")
-	contains(stub.block().options.command[3], "--city", "as --city")
+	local out, dir = run_script(stub.block().options.command[3])
+	remove(dir)
+	contains(out, "[--city]\n[/cities/two]\n", "passed to the script as --city")
 end)
 
 test("action: the city setting is the default for that argument", function()
@@ -632,7 +849,9 @@ test("action: the city setting is the default for that argument", function()
 	local ok, result = pcall(stub.actions.gascity_mail_mayor.run, { block_id = "block:1" }, { body = "hello" })
 	truthy(ok, "no error: " .. tostring(result))
 	equal(result.city, "/cities/set", "the setting")
-	contains(stub.block().options.command[3], "--city", "as --city")
+	local out, dir = run_script(stub.block().options.command[3])
+	remove(dir)
+	contains(out, "[--city]\n[/cities/set]\n", "the setting, as --city")
 end)
 
 test("action: a pane inside a city sends there without asking", function()
@@ -642,7 +861,9 @@ test("action: a pane inside a city sends there without asking", function()
 	truthy(ok, "no error: " .. tostring(result))
 	equal(stub.picks, nil, "did not ask")
 	equal(result.city, nil, "no city named")
-	falsy(stub.block().options.command[3]:find("--city", 1, true), "gc walks up itself")
+	local out, dir = run_script(stub.block().options.command[3])
+	remove(dir)
+	falsy(out:find("[--city]", 1, true), "gc walks up itself")
 end)
 
 test("action: one city on the machine is used without asking", function()
@@ -666,7 +887,9 @@ test("action: several cities are offered", function()
 	equal(stub.picks.items[1].id, "/cities/one", "the first")
 	equal(stub.picks.items[2].title, "two", "named after its directory")
 	equal(result.city, "/cities/two", "the chosen city")
-	contains(stub.block().options.command[3], "--city", "passed on")
+	local out, dir = run_script(stub.block().options.command[3])
+	remove(dir)
+	contains(out, "[/cities/two]", "passed on")
 end)
 
 test("action: cancelling the city question sends nothing", function()
@@ -693,7 +916,9 @@ test("action: a subject argument is kept", function()
 	local ok, result = run_action({ body = "a long message", subject = "Short" })
 	truthy(ok, "no error: " .. tostring(result))
 	equal(result.subject, "Short", "subject")
-	contains(stub.block().options.command[3], "'Short'", "the subject in the command")
+	local out, dir = run_script(stub.block().options.command[3])
+	remove(dir)
+	contains(out, "[Short]", "the subject in the command")
 end)
 
 test("action: without a body it asks, then sends the answer", function()
@@ -810,13 +1035,24 @@ test("machine: an empty answer has nothing", function()
 end)
 
 test("machine: asks for its name, the pane's city, and gc's list", function()
-	stub.format = probe_answer({ "host|Mac-Mini", "pane|/work/city" })
-	local answer = machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = "/work" })
-	equal(answer.host, "Mac-Mini", "the name")
-	local script = stub.blocks[1].options.command[3]
-	contains(script, "hostname", "asks for the name")
-	contains(script, "city.toml", "looks for the pane's city")
-	contains(script, "cities", "asks gc for its list")
+	local dir = scratch()
+	install(dir .. "/bin", "hostname", "#!/bin/sh\nprintf 'test-machine\\n'\n")
+	install(dir .. "/bin", "gc", table.concat({
+		"#!/bin/sh",
+		'case " $* " in *" cities "*) printf "  /cities/one\\n/cities/two\\n" ;; *) exit 9 ;; esac',
+	}, "\n") .. "\n")
+	write_file(dir .. "/city.toml", "")
+	stub.format = probe_answer({})
+	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		path = dir .. "/bin:/usr/bin:/bin",
+		workdir = "work",
+	})
+	remove(dir)
+	local rows = assert(codec.read(out))
+	equal(rows.output, "host|test-machine\npane|" .. dir .. "\ncity|/cities/one\ncity|/cities/two", "the rows")
+	equal(rows.status, 0, "the status")
 end)
 
 test("machine: a city path wrapped across rows is recovered", function()
@@ -830,11 +1066,22 @@ test("machine: reads a city path with a space in it", function()
 end)
 
 test("machine: the city list is parsed without splitting on spaces", function()
-	stub.format = probe_answer({ "host|Mac-Mini" })
-	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = "/work" })
-	local script = stub.blocks[1].options.command[3]
-	contains(script, "awk", "parses whole path fields")
-	falsy(script:find("tr -s", 1, true), "does not split fields on white space")
+	local dir = scratch()
+	install(dir .. "/bin", "hostname", "#!/bin/sh\nprintf 'm\\n'\n")
+	install(dir .. "/bin", "gc", table.concat({
+		"#!/bin/sh",
+		'case " $* " in *" cities "*) printf "  /srv/Gas City\\n/cities/two\\n" ;; *) exit 9 ;; esac',
+	}, "\n") .. "\n")
+	stub.format = probe_answer({})
+	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		path = dir .. "/bin:/usr/bin:/bin",
+		workdir = "work",
+	})
+	remove(dir)
+	local answer = machine.parse(assert(codec.read(out)).output)
+	same(answer.cities, { "/srv/Gas City", "/cities/two" }, "whole paths, spaces kept")
 end)
 
 -- Rigs -------------------------------------------------------------------
@@ -842,14 +1089,13 @@ end)
 local RIG_JSON = '{"city_name":"one","rigs":[{"name":"alpha","path":"/work/alpha","suspended":false},{"name":"beta","path":"/work/beta","suspended":true,"hq":true}]}'
 
 test("rigs: reads the city and the rigs out of the answer", function()
-	local answer = rigs.parse("city|/cities/one\nrigs|" .. RIG_JSON, function(source)
-		stub.json_text = source
-		return { rigs = {
-			{ name = "alpha", path = "/work/alpha", suspended = false },
-			{ name = "beta", path = "/work/beta", suspended = true, hq = true },
-		} }
-	end)
+	stub.json_value = { rigs = {
+		{ name = "alpha", path = "/work/alpha", suspended = false },
+		{ name = "beta", path = "/work/beta", suspended = true, hq = true },
+	} }
+	local answer = rigs.parse("city|/cities/one\nrigs|" .. RIG_JSON)
 
+	equal(stub.json_text, RIG_JSON, "the JSON is read back exactly")
 	equal(answer.city, "/cities/one", "the city")
 	equal(#answer.rigs, 2, "two rigs")
 	equal(answer.rigs[1].name, "alpha", "the first")
@@ -859,32 +1105,27 @@ test("rigs: reads the city and the rigs out of the answer", function()
 end)
 
 test("rigs: the JSON is joined back up across the rows of the screen", function()
-	rigs.parse("city|-\nrigs|{\"rigs\":[\n{\"name\":\"alpha\"}\n]}", function(source)
-		stub.json_text = source
-		return { rigs = {} }
-	end)
+	stub.json_value = { rigs = {} }
+	rigs.parse("city|-\nrigs|{\"rigs\":[\n{\"name\":\"alpha\"}\n]}")
 	equal(stub.json_text, '{"rigs":[{"name":"alpha"}]}', "no newlines left")
 end)
 
 test("rigs: a city path wrapped across rows is recovered", function()
-	local answer = rigs.parse("city|/srv/very-long/\nGas City\nrigs|{}", function()
-		return { rigs = {} }
-	end)
+	stub.json_value = { rigs = {} }
+	local answer = rigs.parse("city|/srv/very-long/\nGas City\nrigs|{}")
 	equal(answer.city, "/srv/very-long/Gas City", "the wrapped rows are joined")
 end)
 
 test("rigs: a city of - means the pane was in none", function()
-	local answer = rigs.parse("city|-\nrigs|{}", function()
-		return { rigs = {} }
-	end)
+	stub.json_value = { rigs = {} }
+	local answer = rigs.parse("city|-\nrigs|{}")
 	equal(answer.city, nil, "no city")
 	equal(#answer.rigs, 0, "no rigs")
 end)
 
 test("rigs: an unreadable list is reported", function()
-	local answer, err = rigs.parse("city|/c\nrigs|nonsense", function()
-		return nil, "text is not valid JSON"
-	end)
+	stub.json_error = "text is not valid JSON"
+	local answer, err = rigs.parse("city|/c\nrigs|nonsense")
 	equal(answer, nil, "no answer")
 	contains(err, "not valid JSON", "the reason")
 end)
@@ -896,13 +1137,26 @@ test("rigs: the commands name each rig", function()
 end)
 
 test("rigs: asks the pane's machine, from the pane's directory", function()
-	stub.format = probe_answer({ "city|/cities/one", "rigs|{}" })
-	stub.json_value = { rigs = {} }
-	rigs.find(config.resolve(nil), { session_id = "session:1" }, { cwd = "/work/alpha" })
-	-- a typo above would throw, so check what was asked for
-	equal(stub.blocks[1].options.cwd, "/work/alpha", "the pane's directory")
-	contains(stub.blocks[1].options.command[3], "rig list --json", "asks gc for the list")
-	contains(stub.blocks[1].options.command[3], 'printf \'city|%s\\n\' "${city:--}"', "reports the city")
+	local dir = scratch()
+	install(dir .. "/bin", "gc", table.concat({
+		"#!/bin/sh",
+		'case " $* " in *" rig list --json "*) printf \'{"rigs":[]}\\n\' ;; *) exit 9 ;; esac',
+	}, "\n") .. "\n")
+	write_file(dir .. "/city.toml", "")
+	local settings = config.resolve(nil)
+	settings.gc_bin = dir .. "/bin/gc"
+	stub.format = probe_answer({})
+	rigs.find(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		path = "/usr/bin:/bin",
+		workdir = "work",
+	})
+	remove(dir)
+	local rows = assert(codec.read(out))
+	equal(rows.status, 0, "gc's list was read")
+	contains(rows.output, "city|" .. dir .. "\n", "the pane's directory")
+	contains(rows.output, 'rigs|{"rigs":[]}', "gc's list on one line")
 end)
 
 -- Suspending and resuming rigs -------------------------------------------
@@ -1056,10 +1310,11 @@ test("rigs: a named city is used with named rigs", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = probe_answer({ "resumed" }, 0)
 	run_rig("resume", { rigs = "alpha", city = "/cities/two" })
-	local script = stub.blocks[1].options.command[3]
-	contains(script, "city='/cities/two'", "the city")
-	contains(script, '--city "$city"', "on the command")
-	contains(script, "'rig' 'resume' 'alpha'", "the rig")
+	local out, dir = run_script(stub.blocks[1].options.command[3])
+	remove(dir)
+	local rows = assert(codec.read(out))
+	equal(rows.output, "[--city]\n[/cities/two]\n[rig]\n[resume]\n[alpha]", "the city and the rig")
+	equal(rows.status, 0, "gc succeeded")
 end)
 
 test("rigs: gc failing is the action's error, in full", function()
@@ -1210,20 +1465,6 @@ end)
 
 -- The status update -------------------------------------------------------
 
--- Runs `command` in /bin/sh on this machine and returns what it printed.
-local function sh(command)
-	local pipe = assert(io.popen(command))
-	local out = pipe:read("*a")
-	pipe:close()
-	return out
-end
-
-local function write_file(path, content)
-	local file = assert(io.open(path, "w"))
-	file:write(content)
-	file:close()
-end
-
 test("status: both live spellings of the pack's source match", function()
 	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity//pack"), "//pack")
 	truthy(status.is_this_pack("https://github.com/docbobo/rex-gascity//pack/"), "trailing slash")
@@ -1355,10 +1596,6 @@ local function run_probe(script, dir, env)
 	)
 end
 
-local function remove(dir)
-	sh("rm -rf " .. text.quote(dir))
-end
-
 test("status: the probe lists only the top-level imports", function()
 	local dir = probe_tools()
 	local output = run_probe(status.script(config.resolve(nil), "/cities/named", "s1"), dir)
@@ -1378,7 +1615,6 @@ end)
 
 test("status: without a named city, gc finds it from the pane's directory", function()
 	local script = status.script(config.resolve(nil), nil, "s1")
-	falsy(script:find("--city", 1, true), "no --city")
 	local dir = probe_tools()
 	local output = run_probe(script, dir)
 	local args = sh("cat " .. text.quote(dir .. "/gc.args"))
@@ -1389,7 +1625,6 @@ end)
 
 test("status: the probe verifies the server without starting one", function()
 	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
-	contains(script, "--autostart=false api call session.list_blocks -s 's1' </dev/null", "read-only")
 
 	local dir = probe_tools()
 	local owned = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
@@ -1431,9 +1666,6 @@ test("status: pack_binding skips the import lookup, not the server check or the 
 	local settings = config.resolve(nil)
 	settings.pack_binding = "mine"
 	local script = status.script(settings, nil, "s1")
-	falsy(script:find("config show", 1, true), "no config show")
-	contains(script, "--autostart=false", "the server check")
-	contains(script, "has_gc", "the gc check")
 
 	local dir = probe_tools()
 	local found = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
@@ -1450,8 +1682,6 @@ end)
 
 test("status: the lookup keeps its files in a private directory and removes it", function()
 	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
-	contains(script, 'mktemp -d "${TMPDIR:-/tmp}/gascity-status.XXXXXX"', "a private directory")
-	falsy(script:find(".err", 1, true), "no predictable sibling file")
 
 	local dir = probe_tools()
 	sh("mkdir " .. text.quote(dir .. "/tmp"))
@@ -1907,11 +2137,13 @@ test("doctor: the report is a pane with icons and colour", function()
 	equal(block.label, "gascity-report", "its label")
 	equal(block.options.exit.on_completion, false, "it stays up")
 
-	local script = block.options.command[3]
-	contains(script, "\27[", "escape sequences")
-	contains(script, "Gas City", "the heading")
-	contains(script, "test-machine", "the report")
-	contains(script, "Close this pane", "and how to close it")
+	local out, dir = run_fragment(block.options.command[3])
+	remove(dir)
+	contains(out, "\27[", "escape sequences")
+	contains(out, "Gas City", "the heading")
+	contains(out, "test-machine", "the report")
+	contains(out, "Close this pane", "and how to close it")
+	equal(out:sub(-11), "__status=0\n", "the pane script ran to its end")
 end)
 
 test("doctor: run without a person, it opens nothing", function()
