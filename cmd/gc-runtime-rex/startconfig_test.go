@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/docbobo/rex-gascity/internal/provider"
 )
 
 // TestStartFreshOnlyExits73 pins GCREX-56 AC2 through the real dispatcher:
@@ -97,5 +102,77 @@ func TestStartStagesOverlayDirThroughDispatcher(t *testing.T) {
 	}
 	if string(data) != "override" {
 		t.Errorf("staged override = %q, want override", data)
+	}
+}
+
+// startConfigParityFixture sets every startConfig field to a non-zero value,
+// so a field dropped between the stdin JSON and the provider call shows up as
+// a zero provider.Config field.
+const startConfigParityFixture = `{
+	"work_dir": "/tmp/parity-wd",
+	"command": "sleep 300",
+	"env": {"K": "V"},
+	"process_names": ["pi"],
+	"pre_start": ["true"],
+	"nudge": "hello",
+	"lifecycle": "one_shot",
+	"pack_overlay_dirs": ["/tmp/parity-pack"],
+	"session_setup": ["true"],
+	"session_setup_script": "true",
+	"session_live": ["set -g status"],
+	"overlay_dir": "/tmp/parity-overlay",
+	"copy_files": [{"src": "/tmp/parity-a", "rel_dst": "b"}],
+	"fresh_only": true,
+	"ready_prompt_prefix": "READY",
+	"ready_delay_ms": 250
+}`
+
+// startConfigAllowlist are the startConfig fields that deliberately have no
+// provider.Config field of the same name: process_names feeds seedProcessNames
+// (it becomes env GT_PROCESS_NAMES), and command becomes Argv through
+// launch.CommandArgv.
+var startConfigAllowlist = map[string]bool{
+	"process_names": true,
+	"command":       true,
+}
+
+// TestStartConfigParity proves startConfig and provider.Config stay in sync
+// (REQ-004). It runs opStart with a fully populated start config and checks
+// both directions: every provider.Config field is non-zero, and every
+// startConfig field reaches a provider.Config field unless it is on the
+// allowlist. A new field on either side fails with its name.
+func TestStartConfigParity(t *testing.T) {
+	rec := &recordingProvider{}
+	if err := opStart(context.Background(), rec, []string{"s"}, strings.NewReader(startConfigParityFixture), io.Discard); err != nil {
+		t.Fatalf("opStart: %v", err)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].method != "StartNew" {
+		t.Fatalf("recorded calls = %q, want one StartNew call", rec.methods())
+	}
+	cfg, ok := rec.calls[0].args[1].(provider.Config)
+	if !ok {
+		t.Fatalf("StartNew config argument is %T, want provider.Config", rec.calls[0].args[1])
+	}
+
+	pv := reflect.ValueOf(cfg)
+	reached := make(map[string]bool, pv.NumField())
+	for i := 0; i < pv.NumField(); i++ {
+		name := pv.Type().Field(i).Name
+		reached[name] = true
+		if pv.Field(i).IsZero() {
+			t.Errorf("provider.Config.%s is zero: startConfig has no source for it", name)
+		}
+	}
+
+	st := reflect.TypeOf(startConfig{})
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if startConfigAllowlist[tag] {
+			continue
+		}
+		if !reached[f.Name] {
+			t.Errorf("startConfig.%s (json %q) reaches no provider.Config field", f.Name, tag)
+		}
 	}
 }
