@@ -1183,6 +1183,29 @@ test("machine: the city list is parsed without splitting on spaces", function()
 	same(answer.cities, { "/srv/Gas City", "/cities/two" }, "whole paths, spaces kept")
 end)
 
+test("machine: a missing gc still prints its facts", function()
+	local dir = scratch()
+	local places = gc.places
+	gc.places = { dir .. "/nothing/gc" }
+	install(dir .. "/bin", "hostname", "#!/bin/sh\nprintf 'm\\n'\n")
+	write_file(dir .. "/city.toml", "")
+	stub.format = probe_answer({})
+	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = dir .. "/work" })
+	local out = run_wrapped(stub.blocks[1].options.command[3], {
+		dir = dir,
+		workdir = "work",
+	})
+	gc.places = places
+	remove(dir)
+	contains(out, "gc is not on this machine", "the message reaches the people")
+	local rows = assert(codec.read(out))
+	local answer = machine.parse(rows.output)
+	equal(answer.host, "m", "the name")
+	equal(answer.city, dir, "the pane's city")
+	equal(#answer.cities, 0, "no cities while gc is missing")
+	equal(rows.status, 0, "and the script finished")
+end)
+
 -- Rigs -------------------------------------------------------------------
 
 local RIG_JSON = '{"city_name":"one","rigs":[{"name":"alpha","path":"/work/alpha","suspended":false},{"name":"beta","path":"/work/beta","suspended":true,"hq":true}]}'
