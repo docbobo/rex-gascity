@@ -620,10 +620,15 @@ class Renderer:
                 "   " + self.seg(self.progress_segs(info, self.width - 4))
             )
 
+        loose = leaves_by_wi.get(None, [])
         if top:
             for ti, root in enumerate(top):
                 rchildren = [w for w in wi if model.nearest(w["id"], top_ids) == root["id"]]
-                rfocus = leaves_by_wi.get(None, []) if len(top) == 1 else []
+                rfocus = [
+                    leaf
+                    for leaf in loose
+                    if model.nearest(leaf["id"], top_ids) == root["id"]
+                ]
                 formula = model.md(root, "gc.formula_name") or "workflow"
                 self.lines.append(
                     f"   {p('\u2699', DIM)} {icon(root, p)} {p(root['id'], BOLD)}  "
@@ -646,20 +651,33 @@ class Renderer:
                         self.lines.append(
                             f"      {cont}{cconn} {self.bead(child, self.width - 40)}"
                         )
+        # Work items and focus beads with no workflow ancestor stay visible at
+        # the origin: their nearest workflow root is None. Without a workflow
+        # root, every work item and loose focus bead belongs here.
+        if top:
+            entries = [
+                (w, leaves_by_wi.get(w["id"], []))
+                for w in wi
+                if model.nearest(w["id"], top_ids) is None
+            ]
+            entries += [
+                (leaf, [])
+                for leaf in loose
+                if model.nearest(leaf["id"], top_ids) is None
+            ]
         else:
             entries = [(w, leaves_by_wi.get(w["id"], [])) for w in wi]
-            for leaf in leaves_by_wi.get(None, []):
-                entries.append((leaf, []))
-            for ei, (rec, children) in enumerate(entries):
-                last = ei == len(entries) - 1
-                conn = "\u2514\u2500" if last else "\u251c\u2500"
-                self.lines.append(f"   {conn} {self.bead(rec, self.width - 30)}")
-                for ci, child in enumerate(children):
-                    cconn = "\u2514\u2500" if ci == len(children) - 1 else "\u251c\u2500"
-                    cont = "   " if last else "\u2502  "
-                    self.lines.append(
-                        f"   {cont}{cconn} {self.bead(child, self.width - 36)}"
-                    )
+            entries += [(leaf, []) for leaf in loose]
+        for ei, (rec, children) in enumerate(entries):
+            last = ei == len(entries) - 1
+            conn = "\u2514\u2500" if last else "\u251c\u2500"
+            self.lines.append(f"   {conn} {self.bead(rec, self.width - 30)}")
+            for ci, child in enumerate(children):
+                cconn = "\u2514\u2500" if ci == len(children) - 1 else "\u251c\u2500"
+                cont = "   " if last else "\u2502  "
+                self.lines.append(
+                    f"   {cont}{cconn} {self.bead(child, self.width - 36)}"
+                )
 
         rest = info["rest"]
         if rest:
@@ -823,8 +841,10 @@ class Renderer:
             ]
 
         top = info["top"]
+        top_ids = info["top_ids"]
         wi = info["wi"]
         leaves = info["leaves_by_wi"]
+        loose = leaves.get(None, [])
         if top:
             for root in top:
                 formula = model.md(root, "gc.formula_name") or "workflow"
@@ -842,21 +862,30 @@ class Renderer:
                 children = [
                     w
                     for w in wi
-                    if model.nearest(w["id"], info["top_ids"]) == root["id"]
+                    if model.nearest(w["id"], top_ids) == root["id"]
                 ]
                 for w in children:
                     add(bead_prefix(w, 0), w.get("title", ""))
                     for leaf in leaves.get(w["id"], []):
                         add(bead_prefix(leaf, 1), leaf.get("title", ""))
-                if len(top) == 1:
-                    for leaf in leaves.get(None, []):
+                for leaf in loose:
+                    if model.nearest(leaf["id"], top_ids) == root["id"]:
                         add(bead_prefix(leaf, 1), leaf.get("title", ""))
+            for w in wi:
+                if model.nearest(w["id"], top_ids) is not None:
+                    continue
+                add(bead_prefix(w, 0), w.get("title", ""))
+                for leaf in leaves.get(w["id"], []):
+                    add(bead_prefix(leaf, 1), leaf.get("title", ""))
+            for leaf in loose:
+                if model.nearest(leaf["id"], top_ids) is None:
+                    add(bead_prefix(leaf, 0), leaf.get("title", ""))
         else:
             for w in wi:
                 add(bead_prefix(w, 0), w.get("title", ""))
                 for leaf in leaves.get(w["id"], []):
                     add(bead_prefix(leaf, 1), leaf.get("title", ""))
-            for leaf in leaves.get(None, []):
+            for leaf in loose:
                 add(bead_prefix(leaf, 0), leaf.get("title", ""))
 
         if info["rest"]:
