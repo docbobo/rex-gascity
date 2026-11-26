@@ -526,14 +526,14 @@ test("shell: another path is unchanged", function()
 end)
 
 test("rigs: a missing gc is reported as gc.MISSING", function()
-	-- A host gc on PATH would answer, so this machine has to lack one.
-	if sh("PATH=/usr/bin:/bin command -v gc 2>/dev/null") ~= "" then
-		print("rigs: a missing gc is reported as gc.MISSING -- skipped, a gc is on PATH")
-		return
-	end
 	local dir = scratch()
+	-- gc_bin skips PATH and the fallback places, so the host's gc cannot answer.
+	local settings = config.resolve(nil)
+	settings.gc_bin = dir .. "/nothing/gc"
+	-- A decoy gc on PATH proves gc_bin bypasses the lookup.
+	install(dir .. "/bin", "gc", GC_ECHO)
 	stub.format = probe_answer({})
-	rigs.find(config.resolve(nil), { session_id = "session:1" }, { cwd = dir .. "/work" })
+	rigs.find(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
 	local out = run_wrapped(stub.blocks[1].options.command[3], {
 		dir = dir,
 		env = "HOME=" .. dir .. "/home",
@@ -1185,17 +1185,17 @@ end)
 
 test("machine: a missing gc still prints its facts", function()
 	local dir = scratch()
-	local places = gc.places
-	gc.places = { dir .. "/nothing/gc" }
+	-- gc_bin skips PATH and the fallback places, so the host's gc cannot answer.
+	local settings = config.resolve(nil)
+	settings.gc_bin = dir .. "/nothing/gc"
 	install(dir .. "/bin", "hostname", "#!/bin/sh\nprintf 'm\\n'\n")
 	write_file(dir .. "/city.toml", "")
 	stub.format = probe_answer({})
-	machine.ask(config.resolve(nil), { session_id = "session:1" }, { cwd = dir .. "/work" })
+	machine.ask(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
 	local out = run_wrapped(stub.blocks[1].options.command[3], {
 		dir = dir,
 		workdir = "work",
 	})
-	gc.places = places
 	remove(dir)
 	contains(out, "gc is not on this machine", "the message reaches the people")
 	local rows = assert(codec.read(out))
