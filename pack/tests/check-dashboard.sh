@@ -561,6 +561,46 @@ wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(li
 assert not wide, "drained-budget lines wider than 60 columns: %r" % (wide,)
 PY
 
+# --- a pinned compact row counts the icon's two columns --------------------
+
+# The pinned icon (📌) is two columns under dwidth, but the compact-row budget
+# reserved one. A pinned origin with a long ID therefore rendered one column
+# wider than --width. Reserve the icon's measured width instead.
+pinned=$work/fixture-pinned.jsonl
+"$python" - "$pinned" <<'PY'
+import json
+import sys
+
+row = {
+    "id": "pin-" + "c" * 33,
+    "title": "Pinned origin with a long title that needs the whole row",
+    "status": "pinned",
+    "issue_type": "task",
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+}
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write(json.dumps({"_type": "issue", **row}, ensure_ascii=False) + "\n")
+PY
+
+run_fx "$pinned" "$work/outside" --width 60 --status pinned --scope all \
+  --layout tree --no-color -C "$tools/rig"
+code_is 0 "pinned compact row at width 60"
+"$python" - "$script" "$work/out" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+wide = [
+    line
+    for line in open(sys.argv[2], encoding="utf-8").read().splitlines()
+    if dash.dwidth(line) > 60
+]
+assert not wide, "pinned row wider than 60 columns: %r" % (wide,)
+PY
+
 # --- bd export records split on the JSON Lines separator only ----------------
 
 # The Go encoder writes U+0085 literally, and str.splitlines() would split

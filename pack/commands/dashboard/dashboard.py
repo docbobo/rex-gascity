@@ -685,10 +685,13 @@ class Renderer:
             # Fit the decorations, the meta tag, and the ID inside the width
             # first, then spend what is left on the title. A budget of zero
             # or less means "omit the title", not "render it in full":
-            # truncate() treats a non-positive width as unlimited.
-            fixed = 6 + dwidth(detail) + dwidth(tagtxt)
+            # truncate() treats a non-positive width as unlimited. The status
+            # icon is not always one column (the pinned icon is wide), so
+            # charge its measured width: icon, four separators, detail, tag.
+            icon_w = dwidth(icon_seg(origin)[0])
+            fixed = icon_w + 5 + dwidth(detail) + dwidth(tagtxt)
             if fixed >= self.width:
-                tagtxt, fixed = "", 6 + dwidth(detail)
+                tagtxt, fixed = "", icon_w + 5 + dwidth(detail)
             room = self.width - fixed
             idtxt = truncate(origin["id"], room) if room > 0 else ""
             title_w = room - dwidth(idtxt)
