@@ -16,12 +16,11 @@ local ansi = require("gascity.ansi")
 local config = require("gascity.config")
 local gc = require("gascity.gc")
 local pane = require("gascity.pane")
-local mail = require("gascity.mail")
+local message = require("gascity.message")
 local rigs = require("gascity.rigs")
 local run = require("gascity.run")
 local machine = require("gascity.machine")
 local probe = require("gascity.probe")
-local send = require("gascity.send")
 local report = require("gascity.report")
 local status = require("gascity.status")
 local actions = require("gascity.actions")
@@ -697,32 +696,45 @@ end)
 
 -- Mail -------------------------------------------------------------------
 
-test("mail: the subject is the message on one line", function()
-	equal(mail.subject_for("Build is green", 72), "Build is green", "subject")
-	equal(mail.subject_for("build\nis\tgreen", 72), "build is green", "collapsed")
+test("message: the subject is the message on one line", function()
+	equal(message.subject_for("Build is green", 72), "Build is green", "subject")
+	equal(message.subject_for("build\nis\tgreen", 72), "build is green", "collapsed")
 end)
 
-test("mail: the argv for gc mail send", function()
+test("message: the argv for gc mail send", function()
 	local settings = config.resolve(nil)
 	same(
-		mail.args(settings, "Build is green", "Build is green"),
+		message.args(settings, "Build is green", "Build is green"),
 		{ "mail", "send", "mayor", "-s", "Build is green", "-m", "Build is green", "--notify" },
 		"argv"
 	)
 
 	settings.notify = false
 	same(
-		mail.args(settings, "hello", "hello"),
+		message.args(settings, "hello", "hello"),
 		{ "mail", "send", "mayor", "-s", "hello", "-m", "hello" },
 		"argv without --notify"
 	)
+end)
+
+test("message: a failing pane returns nil and the error", function()
+	local app = {
+		config = config.resolve(nil),
+		run = {
+			script = run.script,
+			pane = function() return nil, "no pane" end,
+		},
+	}
+	local id, err = message.message(app, { block_id = "block:1" }, { body = "hello" })
+	equal(id, nil, "no layer")
+	equal(err, "no pane", "the error")
 end)
 
 -- The script a pane runs ------------------------------------------------
 
 test("run: quotes every word, so a message arrives as it was typed", function()
 	local out, dir = run_script(run.script(config.resolve(nil), {
-		mail.args(config.resolve(nil), "it's $HOME", "it's $HOME"),
+		message.args(config.resolve(nil), "it's $HOME", "it's $HOME"),
 	}))
 	remove(dir)
 	equal(
@@ -877,7 +889,7 @@ local function app_with(overrides)
 		machine = machine,
 		rigs = rigs,
 		run = run,
-		send = send,
+		send = message,
 		report = report,
 		status = status,
 	}
