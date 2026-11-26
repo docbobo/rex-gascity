@@ -268,19 +268,6 @@ type ResolveRequest struct {
 	// A lost sidecar record therefore still rediscovers its pane.
 	// Read ops and record-driven rescans leave it nil.
 	StartEnv map[string]string
-	// Hint carries the env-derived tab and pane labels a lost sidecar record
-	// used, so the fresh scan can rediscover a live pane started under a short
-	// pool name with no rig.
-	Hint Binding
-	// LegacyTabs are the pre-GCREX-72 tab labels the caller's start env
-	// implies (a non-empty GC_RIG, or the name-derived rig). They are tried
-	// after the hint and name-derived labels so an upgrade finds the pane
-	// instead of opening a second tab.
-	LegacyTabs []string
-	// LegacyPanes are pane labels an earlier env rule produced for this name
-	// (the pre-GC_TEMPLATE agent prefix). They are tried after the hint so a
-	// pane started before the rule changed stays discoverable.
-	LegacyPanes []string
 	// Mode selects the resolution behavior. The zero value is ResolveCached.
 	Mode ResolveMode
 }
