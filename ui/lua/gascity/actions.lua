@@ -395,6 +395,71 @@ local function commands(app, settings)
 		}
 	end
 
+	-- Open the workstream dashboard of the city or rig this pane is in. The
+	-- pane's directory names the rig, so nothing is picked and no path is
+	-- rewritten. The binding is the city's import key, never a literal.
+	local function dashboard(ctx, args)
+		args = args or {}
+		local cwd = app.pane.cwd(ctx.block_id)
+		if cwd == nil then
+			error("could not read the directory of this pane", 0)
+		end
+
+		local found, err = app.status.ask(settings, ctx, { cwd = cwd })
+		if found == nil then
+			error(err, 0)
+		end
+
+		-- gc first, as in status_update: a missing gc is its own message.
+		if found.gc_missing then
+			error(gc.MISSING, 0)
+		end
+
+		-- No ancestor city.toml/.gc, or gc reported no city: do not open an
+		-- unrelated dashboard.
+		if found.city == nil then
+			local detail = (found.error ~= nil and found.error ~= "")
+					and (" (" .. found.error .. ")")
+				or ""
+			error("no Gas City city or rig contains " .. cwd .. detail, 0)
+		end
+
+		local binding = app.status.binding(found.imports, settings.pack_binding)
+		if binding == nil then
+			if found.config_status ~= nil and found.config_status ~= 0 then
+				error(
+					"gc config show failed for " .. found.city .. " (exit " .. found.config_status .. "): "
+						.. (found.error or ""),
+					0
+				)
+			end
+			error(
+				found.city .. " does not import the rex-gascity pack. Import it (docs/rex-runtime-pack.md), or set pack_binding in "
+					.. settings.file,
+				0
+			)
+		end
+
+		local script = app.run.script(settings, { { binding, "dashboard" } })
+		local block_id, open_err = app.run.shell(ctx, {
+			cwd = cwd,
+			label = "gascity:dashboard",
+			command = { "/bin/sh", "-c", script },
+			exit = { on_completion = false },
+		})
+		if block_id == nil then
+			error(open_err, 0)
+		end
+
+		rex.log("info", "gascity: opened the workstream dashboard in " .. cwd)
+		return {
+			output = "Opened the workstream dashboard in " .. cwd,
+			cwd = cwd,
+			binding = binding,
+			block_id = block_id,
+		}
+	end
+
 	local function doctor(ctx)
 		local facts = app.report.facts(app, ctx.block_id, ctx)
 		local printed = app.report.text(facts)
@@ -477,6 +542,17 @@ local function commands(app, settings)
 			args = { city = "string?", rig = "string?" },
 			run = function(ctx, args)
 				return rigs_open(ctx, args)
+			end,
+		},
+		{
+			id = "dashboard",
+			name = "gascity_dashboard",
+			title = "Open the Workstream Dashboard",
+			description = "Open the workstream dashboard of the city or rig this pane is in.",
+			keywords = "gascity dashboard workstream status board hq",
+			icon = "document",
+			run = function(ctx, args)
+				return dashboard(ctx, args)
 			end,
 		},
 		{

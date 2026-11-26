@@ -97,8 +97,17 @@ end
 
 -- Opens an interactive shell block in a split beside the block `ctx` names,
 -- so it lands in a visible window. `opts.cwd` is the directory it starts in.
+-- `opts.command` and `opts.exit`, when set, are the block's process and how it
+-- ends; without them the block is an interactive shell.
 -- Returns the block id, or nil and an error.
 function M.shell(ctx, opts)
+	local options = { cwd = opts.cwd }
+	if opts.command ~= nil then
+		options.command = opts.command
+	end
+	if opts.exit ~= nil then
+		options.exit = opts.exit
+	end
 	local split, err = rex.session.new_split({
 		session_id = ctx.session_id,
 		anchor_id = ctx.block_id,
@@ -108,7 +117,7 @@ function M.shell(ctx, opts)
 		layout = rex.layout.block({
 			flavor = TERMINAL,
 			label = opts.label or "gascity",
-			options = { cwd = opts.cwd },
+			options = options,
 		}),
 	})
 	if split == nil then
