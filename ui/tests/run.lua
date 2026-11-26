@@ -490,6 +490,22 @@ test("codec: a wrapped value gets no inserted newline", function()
 	equal(codec.value(rows[1]), "a%b", "the split inside %25")
 end)
 
+test("codec: marker-only mode keeps a bare-named continuation as data", function()
+	local key = string.rep("a", 71) .. "city"
+	local source = "https://github.com/docbobo/rex-gascity//pack"
+	-- A wrap at 81 columns leaves the key's tail and the bar on the next line.
+	local wrapped = "@@import|" .. string.rep("a", 71) .. "\ncity|" .. source
+	local rows = assert(codec.rows(wrapped, { "city", "import" }, { marker_only = true }))
+	equal(#rows, 1, "one row")
+	equal(rows[1].kind, "import", "the row kind")
+	local parts = assert(codec.parts(rows[1].value))
+	equal(parts[1], key, "the whole key")
+	equal(parts[2], source, "the source")
+	-- The default mode keeps bare rows for the callers that print no marker.
+	rows = assert(codec.rows("host|alpha\npane|/work", { "host", "pane" }))
+	equal(#rows, 2, "bare rows still read")
+end)
+
 test("codec: an empty answer and an answer with no known field are empty", function()
 	local rows, reason = codec.rows("", { "host" })
 	equal(reason, nil, "no error")
@@ -1785,6 +1801,23 @@ test("status: the answer is read across wrapped rows", function()
 	equal(found.imports[1].key, "rex", "the first key")
 	equal(found.imports[1].source, "https://github.com/docbobo/rex-gascity//pack", "its source")
 	falsy(found.gc_missing, "gc was there")
+end)
+
+test("status: an import key that wraps into a field name keeps its source", function()
+	local key = string.rep("a", 71) .. "city"
+	local source = "https://github.com/docbobo/rex-gascity//pack"
+	local found = status.parse(table.concat({
+		"@@city|/cities/alpha",
+		"@@server|unix:///tmp/rex.sock",
+		"@@config|0",
+		"@@import|" .. string.rep("a", 71),
+		"city|" .. source,
+	}, "\n"))
+	equal(#found.imports, 1, "one import, not a city row")
+	equal(found.imports[1].key, key, "the key keeps its wrapped tail")
+	equal(found.imports[1].source, source, "the source is its own value")
+	equal(status.binding(found.imports, nil), key, "the binding is found")
+	equal(found.city, "/cities/alpha", "the city is not the import source")
 end)
 
 test("status: an empty server line is no server", function()
