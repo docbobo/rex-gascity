@@ -14,6 +14,7 @@ package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.pa
 local text = require("gascity.text")
 local ansi = require("gascity.ansi")
 local config = require("gascity.config")
+local gc = require("gascity.gc")
 local pane = require("gascity.pane")
 local mail = require("gascity.mail")
 local rigs = require("gascity.rigs")
@@ -317,7 +318,9 @@ end
 local function test(name, fn)
 	print(name)
 	stub.reset()
+	local places = gc.places
 	fn()
+	gc.places = places
 end
 
 -- Running shell ----------------------------------------------------------
@@ -403,11 +406,13 @@ local function run_wrapped(script, opts)
 	return run_fragment(script, opts)
 end
 
--- Runs a generated script with a stub gc on PATH that prints its arguments.
+-- Runs a generated script with stub `gc` and `sleep` on PATH. `gc` prints
+-- its arguments; `sleep` returns at once, as in `run_wrapped`.
 local function run_script(source, opts)
 	opts = opts or {}
 	opts.dir = opts.dir or scratch()
 	install(opts.dir .. "/bin", "gc", GC_ECHO)
+	install(opts.dir .. "/bin", "sleep", "#!/bin/sh\nexit 0\n")
 	opts.path = opts.dir .. "/bin:" .. (opts.path or "/usr/bin:/bin")
 	return run_fragment(source, opts)
 end
@@ -704,6 +709,8 @@ test("run: a script that cannot find gc says so and stops", function()
 	local dir = scratch()
 	local home = dir .. "/home"
 	sh("mkdir -p " .. text.quote(dir .. "/empty") .. " " .. text.quote(home))
+	install(home .. "/.nix-profile/bin", "gc", GC_ECHO)
+	gc.places = { dir .. "/nothing/gc" }
 	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
 		dir = dir,
 		path = dir .. "/empty",
@@ -729,10 +736,13 @@ end)
 test("run: without gc_bin a gc in a usual place is found", function()
 	local dir = scratch()
 	local home = dir .. "/home"
+	sh("mkdir -p " .. text.quote(dir .. "/empty"))
 	install(home .. "/.local/bin", "gc", GC_ECHO)
+	install(home .. "/.nix-profile/bin", "gc", "#!/bin/sh\nprintf '[decoy]\\n'\n")
+	gc.places = { home .. "/.local/bin/gc" }
 	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
 		dir = dir,
-		path = "/usr/bin:/bin",
+		path = dir .. "/empty",
 		env = "HOME=" .. text.quote(home),
 	})
 	remove(dir)
@@ -742,10 +752,13 @@ end)
 test("run: each fallback program path is quoted", function()
 	local dir = scratch()
 	local home = dir .. "/home dir"
+	sh("mkdir -p " .. text.quote(dir .. "/empty"))
 	install(home .. "/.local/bin", "gc", GC_ECHO)
+	install(home .. "/.nix-profile/bin", "gc", "#!/bin/sh\nprintf '[decoy]\\n'\n")
+	gc.places = { home .. "/.local/bin/gc" }
 	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
 		dir = dir,
-		path = "/usr/bin:/bin",
+		path = dir .. "/empty",
 		env = "HOME=" .. text.quote(home),
 	})
 	remove(dir)
@@ -1149,7 +1162,6 @@ test("rigs: asks the pane's machine, from the pane's directory", function()
 	rigs.find(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
 	local out = run_wrapped(stub.blocks[1].options.command[3], {
 		dir = dir,
-		path = "/usr/bin:/bin",
 		workdir = "work",
 	})
 	remove(dir)
@@ -1310,8 +1322,10 @@ test("rigs: a named city is used with named rigs", function()
 	stub.pane_cwd = "/work/alpha"
 	stub.format = probe_answer({ "resumed" }, 0)
 	run_rig("resume", { rigs = "alpha", city = "/cities/two" })
+	local started = os.time()
 	local out, dir = run_script(stub.blocks[1].options.command[3])
 	remove(dir)
+	truthy(os.time() - started < 10, "the wrapped probe does not wait out its sleep")
 	local rows = assert(codec.read(out))
 	equal(rows.output, "[--city]\n[/cities/two]\n[rig]\n[resume]\n[alpha]", "the city and the rig")
 	equal(rows.status, 0, "gc succeeded")
