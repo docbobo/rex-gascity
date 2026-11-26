@@ -280,6 +280,12 @@ if [ "$conf_status" -ne 0 ]; then
   exit 1
 fi
 
+# The draft body is written by hand, so it can be empty, stale or truncated.
+# Check it here: the draft must exist before gh can read it, and every publish
+# path, including --yes, must pass through. --dry-run exits above instead.
+sh "$pack/check-release-notes.sh" "$tag" ||
+  die "release notes for $tag failed the gate; the draft is unchanged; resume with: $0 $tag --resume"
+
 if [ "$assume_yes" -ne 1 ]; then
   if [ -t 0 ]; then
     printf 'Publish %s? [y/N] ' "$tag"

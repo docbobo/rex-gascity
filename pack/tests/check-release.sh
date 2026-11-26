@@ -44,13 +44,20 @@ mkdir -p "$state"
 printf '%s\n' "$*" >> "$state/calls.log"
 
 assets_json() {
-  python3 - "$state/assets" "$1" <<'PY'
+  python3 - "$state" "$1" <<'PY'
 import json, os, sys
-names = sorted(os.listdir(sys.argv[1])) if os.path.isdir(sys.argv[1]) else []
+state, draft = sys.argv[1], sys.argv[2]
+assets = os.path.join(state, "assets")
+names = sorted(os.listdir(assets)) if os.path.isdir(assets) else []
+body = ""
+p = os.path.join(state, "body")
+if os.path.isfile(p):
+    body = open(p).read()
 print(json.dumps({
-    "isDraft": sys.argv[2] == "true",
+    "isDraft": draft == "true",
     "url": "https://example.test/releases/tag/v0.2.0",
     "assets": [{"name": n} for n in names],
+    "body": body,
 }))
 PY
 }
@@ -66,6 +73,9 @@ case "$1 $2" in
     tag=$3
     touch "$state/draft"
     echo "https://example.test/releases/tag/$tag"
+    ;;
+  "release list")
+    echo '[{"tagName":"v0.1.0","isDraft":false}]'
     ;;
   "workflow run")
     # The build produced everything; the wait loop sees it at the first poll.
@@ -131,6 +141,8 @@ git -C "$repo" config user.name "check-release"
 mkdir -p "$repo/pack/tests"
 cp "$release" "$repo/pack/release.sh"
 chmod 0755 "$repo/pack/release.sh"
+cp "$src/pack/check-release-notes.sh" "$repo/pack/check-release-notes.sh"
+chmod 0755 "$repo/pack/check-release-notes.sh"
 cat > "$repo/pack/pack.toml" <<'TOML'
 [pack]
 name = "rex"
@@ -160,12 +172,15 @@ git -C "$repo" remote add origin "$work/origin.git"
 git -C "$repo" push -q origin main
 
 run() {
-  ( cd "$repo" && PATH="$work/bin:$PATH" FAKE_GH=$state "$@" )
+  ( cd "$repo" && PATH="$work/bin:$PATH" FAKE_GH=$state GH_REPO=example/rex-gascity "$@" )
 }
 
 reset_state() {
   rm -rf "$state"
   mkdir -p "$state/assets"
+  # A draft whose notes a human already wrote. A new release and a resumed
+  # draft both start from this body unless a case overrides it.
+  printf '%s\n' "Rex runtime pack v0.2.0. Import it by tag." "" "- #121 — a tested bullet." > "$state/body"
   sha=$(shasum -a 256 "$work/asset" 2>/dev/null | awk '{print $1}')
   [ -n "$sha" ] || sha=$(sha256sum "$work/asset" | awk '{print $1}')
   for name in gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 \
@@ -297,6 +312,26 @@ grep -q 'Delete the draft' "$work/out" ||
   fail "resume downloaded assets without an origin tag"
 [ -z "$(mutations | grep -E '^release (upload|edit)')" ] ||
   fail "resume published a draft without an origin tag"
+
+# A body that is still release.sh's placeholder never publishes, even with
+# --yes and --resume. The gate fails after the conformance run, so the draft
+# and its assets stay in place for a later resume.
+reset_state
+touch "$state/draft"
+printf '%s\n' 'Rex runtime pack v0.2.0. See docs/rex-runtime-pack.md to import and install.' > "$state/body"
+git -C "$repo" tag v0.2.0
+git -C "$repo" push -q origin refs/tags/v0.2.0
+if run sh pack/release.sh v0.2.0 --resume --yes > "$work/out" 2>&1; then
+  fail "a placeholder release body was published"
+fi
+grep -q 'release notes' "$work/out" ||
+  fail "the placeholder body failure does not name the release notes gate"
+[ -f "$state/draft" ] || fail "a placeholder body removed the draft"
+[ ! -f "$state/published" ] || fail "a placeholder body published the release"
+[ -z "$(mutations | grep -E '^release (upload|edit)')" ] ||
+  fail "a placeholder body mutated the release"
+git -C "$repo" push -q origin :refs/tags/v0.2.0
+git -C "$repo" tag -d v0.2.0 >/dev/null
 
 # git ls-remote reports an annotated tag object next to its peeled commit. Read
 # the peeled ref, or an annotated tag at another commit would pass the check.
