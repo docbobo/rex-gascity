@@ -771,6 +771,33 @@ dash.sys.stdout = out
 assert dash.watch(args(), dash.Paint(False), "label") == 0
 assert calls == [["saved"]], calls
 assert "\x1b[?25h\x1b[?1049l" in "".join(out.written), out.written
+
+# Ctrl-C during SIGWINCH handler install must still restore the handler.
+# The real signal.signal installs the handler before it returns the old one,
+# so an interrupt on that line must not lose the old handler.
+calls.clear()
+install(ok_cbreak)
+sig = {"current": "previous", "installs": []}
+
+
+def get_signal(signum):
+    return sig["current"]
+
+
+def set_signal(signum, handler):
+    old = sig["current"]
+    sig["current"] = handler
+    sig["installs"].append(handler)
+    if len(sig["installs"]) == 1:
+        raise KeyboardInterrupt  # Ctrl-C after the install, before the return
+    return old
+
+
+dash.signal.getsignal = get_signal
+dash.signal.signal = set_signal
+dash.sys.stdout = Out()
+assert dash.watch(args(), dash.Paint(False), "label") == 0
+assert sig["current"] == "previous", sig["installs"]
 PY
 
 

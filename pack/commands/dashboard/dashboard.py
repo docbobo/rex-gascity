@@ -1175,8 +1175,12 @@ def watch(args, paint: Paint, label: str) -> int:
     # inside the first flush, must still restore what was already acquired.
     try:
         if on_tty and hasattr(signal, "SIGWINCH"):
+            # Record the old handler before installing it: signal.signal
+            # installs first and returns second, so a Ctrl-C on that line must
+            # not lose the handler that setup has to put back.
+            old_winch = signal.getsignal(signal.SIGWINCH)
             try:
-                old_winch = signal.signal(signal.SIGWINCH, on_winch)
+                signal.signal(signal.SIGWINCH, on_winch)
             except ValueError:
                 old_winch = None
         if key_mode:
