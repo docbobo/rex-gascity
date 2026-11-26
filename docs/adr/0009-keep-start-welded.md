@@ -42,11 +42,15 @@ exists for a non-tmux carrier:
    in a pane. It has a nudge and a readiness gate. A tmux layer under it adds
    nothing on a config change that `Stop`+`Start` or a relaunch cannot do.
 2. **Passing on the launch-op reference means declaring `proc.exec` anyway.**
-   A handshake that declares `proc.provision` withholds `proc.exec` from gc.
-   So gc tests `exec` as unsupported unless the token is declared. The gates
-   are in `REX-CONTRACT.md` section 9. Declaring it states intent to run it.
-3. **Each declared capability must be exercised.** gc runs no `exec` for a pack
-   that never declares it. `exec` returns the command exit code and its output.
+   The pin reads the two tokens independently. `provisionBox` runs `provision`
+   only when the handshake declares both `proc.provision` and `proc.exec`
+   (`exec/exec.go:277-296`). Declaring `proc.provision` alone withholds nothing
+   from `exec`. It only leaves the un-weld inert. So the un-weld declares
+   `proc.exec` too, and that token states intent to run it. The gates are in
+   `REX-CONTRACT.md` section 9.
+3. **Each declared capability must be exercised.** gc tries `exec` before the
+   driving op and falls back only on exit 2 (`REX-CONTRACT.md` section 9,
+   `exec/exec.go:894-904`). `exec` returns the command exit code and its output.
    The behavioral probe cannot check it. Agreeing to the wire behavior without
    a caller repeats the row 120 mistake.
 
