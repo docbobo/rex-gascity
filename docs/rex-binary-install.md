@@ -105,9 +105,10 @@ which bundles the CLI.
 6. Warns when another `gc-runtime-rex` comes earlier on PATH, and names that
    path.
 
-`--from-source` keeps `go install ./cmd/gc-runtime-rex` as an explicit
-opt-in for a checkout. Such a build reports the module pseudo-version, so the
-doctor check may warn that it cannot confirm the pack version.
+`--from-source` keeps `go install` as an explicit opt-in for a checkout. The
+build stamps the `[pack] version` that checkout declares with
+`-ldflags "-X main.buildVersion=<version>"`, so the doctor check matches. That
+identity holds only when the checkout is the commit that version names.
 
 ## Private repository rule
 
