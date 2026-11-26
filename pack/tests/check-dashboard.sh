@@ -666,12 +666,21 @@ has "$work/out" '"hook-bead"' "--all includes hooked beads in --json"
 
 # --- watch interval is validated ---------------------------------------------
 
-run "$work/outside" --watch --frames 1 --interval nan -C "$tools/rig"
+# CodeRabbit on PR #174: with --frames 2 and a NaN interval the run printed a
+# frame and then failed in time.sleep(). The guard must reject the value before
+# watch mode renders anything, so assert empty stdout as well as the exit code.
+run "$work/outside" --watch --frames 2 --interval nan -C "$tools/rig"
 code_is 2 "nan interval is rejected"
 has "$work/err" "--interval" "nan interval is a usage error"
+if [ -s "$work/out" ]; then
+  fail "nan interval rendered a frame before the usage error"
+fi
 
 run "$work/outside" --watch --frames 1 --interval 0 -C "$tools/rig"
 code_is 2 "zero interval is rejected"
+if [ -s "$work/out" ]; then
+  fail "zero interval rendered a frame before the usage error"
+fi
 
 run "$work/outside" --watch --frames 1 --interval inf -C "$tools/rig"
 code_is 2 "infinite interval is rejected"
