@@ -32,15 +32,15 @@ No pack registry is involved. The import clones the git repository and uses
 the `pack/` subdirectory as the pack root:
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.26
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
 gc import check
 ```
 
-The tag `v2026.11.05` must exist before the import, and it comes from
-`pack/release.sh v2026.11.05` (see [Cut a release](#cut-a-release)). `--version`
+The tag `v2026.11.26` must exist before the import, and it comes from
+`pack/release.sh v2026.11.26` (see [Cut a release](#cut-a-release)). `--version`
 takes the bare version. A public repository needs no git credentials. A private
 repository needs them for `git ls-remote` and the fetch.
 
@@ -194,7 +194,7 @@ To upgrade, re-pin the import and reinstall:
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.26
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
@@ -208,11 +208,11 @@ To roll back, import the previous tag and rerun the same commands.
 dispatch the build, wait for the assets, verify the downloaded asset, attach
 `conformance.txt`, then publish. CI only builds into the draft.
 
-Run `sh pack/release.sh v2026.11.05 --dry-run` to print the resolved commit and
-asset names without changing remote state. Run `sh pack/release.sh v2026.11.05`
+Run `sh pack/release.sh v2026.11.26 --dry-run` to print the resolved commit and
+asset names without changing remote state. Run `sh pack/release.sh v2026.11.26`
 to cut the release.
 
-The release branch is `main`, and `[pack].version` must be `2026.11.05` in a
+The release branch is `main`, and `[pack].version` must be `2026.11.26` in a
 committed tree. `--dry-run` prints the resolved commit and asset names and
 changes no remote state. `--resume` continues an existing draft.
 

@@ -33,7 +33,7 @@ Import the pack as in [`rex-runtime-pack.md`](rex-runtime-pack.md), then run the
 UI check with `--fix`:
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.26
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 gc doctor --check rex-gascity-runtime:rex-ui
@@ -55,7 +55,7 @@ against `checksums.txt` before it installs.
 
 ```sh
 mkdir -p ~/gascity-ui-install && cd ~/gascity-ui-install
-curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.05/gascity-ui.tar.gz
+curl -fsSL -o gascity-ui.tar.gz https://github.com/docbobo/rex-gascity/releases/download/v2026.11.26/gascity-ui.tar.gz
 tar -xzf gascity-ui.tar.gz
 sh ui/install.sh
 ```
@@ -115,7 +115,7 @@ steps are in [`rex-binary-install.md`](rex-binary-install.md#sha-imports-and-ver
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.05
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.26
 gc import install
 gc doctor --check rex-gascity-runtime:rex-ui --fix
 ```
