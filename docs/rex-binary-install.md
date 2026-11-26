@@ -231,6 +231,15 @@ Publishing needs human approval. A failed conformance leaves the draft in
 place, attaches the failure output, and prints
 `gh release delete <tag> --cleanup-tag`.
 
+The draft body is hand-written, so `pack/release.sh` checks it before any
+publish path, including `--yes`. `pack/check-release-notes.sh <tag>` reads the
+draft and applies four checks. The body must name `pack v<version>`. It must
+carry at least one `- #N — ` bullet. It must name no version other than the
+target or a published release. It must not still be the placeholder that
+`release.sh` creates. A failure leaves the draft in place: write the notes and
+run `sh pack/release.sh <tag> --resume`. `--dry-run` exits before the draft
+exists and skips the check.
+
 ## Trust model
 
 `checksums.txt` comes from the same release as the binary. It catches
