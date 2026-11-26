@@ -4,20 +4,16 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -468,22 +464,7 @@ type startResult struct {
 
 func (p *Provider) start(ctx context.Context, name string, cfg Config) (startResult, error) {
 	n := SessionName(name)
-	// One token per start call. The provisional record this start writes is
-	// writable only by this attempt, so a stale survivor write from another
-	// launch cannot take it, and launchPane's retry reuses the same token.
-	attempt := rand.Text()
-	// Build the one launch plan up front: it projects pool routing for every
-	// later step and owns the Rex block layout. The launch label must come
-	// from the same projected env as the start labels and the record, or pool
-	// routing makes them disagree and a restart launches a duplicate pane.
-	env := launch.Project(cfg.Env)
-	plan := launch.NewPlan(launch.Config{
-		Argv:    cfg.Argv,
-		Env:     env,
-		WorkDir: cfg.WorkDir,
-		Label:   paneLabelFor(n, env),
-	})
-	cfg.Env = plan.Env
+	plan, attempt := p.startPlan(name, &cfg)
 
 	// A binding kept by a stop or a failed launch whose descendant could not
 	// be reaped is the only name for that process once its pane is gone.
@@ -493,25 +474,12 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		return startResult{}, err
 	}
 
-	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
-		Name: n, StartEnv: cfg.Env, Mode: ResolveFresh,
-	})
+	relaunch, done, err := p.resolveStartTarget(ctx, n, cfg)
 	if err != nil {
 		return startResult{}, err
 	}
-	if found {
-		alive, err := p.paneAlive(ctx, old)
-		if err != nil {
-			return startResult{}, err
-		}
-		if alive {
-			return startResult{}, nil
-		}
-		// The liveness read above chose this branch; the retirement makes no
-		// BlockProcess call of its own.
-		if _, err := p.retire(ctx, n, old, startDeadPanePolicy()); err != nil {
-			return startResult{}, err
-		}
+	if done {
+		return startResult{}, nil
 	}
 
 	// Find or create the city session under the short state lock.
@@ -520,66 +488,16 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		return startResult{}, err
 	}
 
-	// Stage gc's overlay_dir and copy_files before pre_start, so a hook sees the
-	// staged work_dir (herdrcore/lifecycle.py:789). pack_overlay_dirs stays
-	// after pre_start: its per-provider subtree deliberately overwrites a
-	// managed hook the hook may have rewritten.
-	if err := stageOverlayDir(cfg.WorkDir, cfg.OverlayDir, cfg.Env["GC_PROVIDER"]); err != nil {
+	if err := p.stageStartFiles(cfg); err != nil {
 		return startResult{}, err
 	}
-	if err := stageCopyFiles(cfg.WorkDir, cfg.CopyFiles, func(msg string) { p.warnf("%s", msg) }); err != nil {
+	if err := p.runPreStartPhase(ctx, plan, cfg); err != nil {
 		return startResult{}, err
 	}
-
-	// Run pre_start hooks before seeding identity or a provisional binding.
-	// gc's exec-session-provider contract makes a failing pre_start non-fatal:
-	// warn on stderr and keep starting (docs/reference/exec-session-provider.md
-	// at v1.5.1, "pre_start"). Only cancellation of the whole start aborts; a
-	// hook's own failure or timeout does not. The state lock is not held here:
-	// a slow hook must not stall the rest of the city. Each hook is bounded by
-	// the per-hook timeout, capped by whatever remains of the start budget
-	// (the op context's deadline when it carries one, else startBudget).
-	if len(cfg.PreStart) > 0 {
-		merged := plan.MergedEnv(os.Environ())
-		budgetDeadline := time.Now().Add(p.startBudget)
-		if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
-			budgetDeadline = d
-		}
-		for i, cmd := range cfg.PreStart {
-			remaining := time.Until(budgetDeadline)
-			if remaining <= 0 {
-				if err := ctx.Err(); err != nil {
-					return startResult{}, fmt.Errorf("pre_start[%d]: start canceled: %w", i, err)
-				}
-				p.warnf("pre_start[%d] start budget %s exhausted before the hook ran", i, p.startBudget)
-				break
-			}
-			hookTimeout := p.preStartHookTimeout
-			if remaining < hookTimeout {
-				hookTimeout = remaining
-			}
-			if err := runPreStartWithTimeout(ctx, cmd, cfg.WorkDir, merged, hookTimeout); err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return startResult{}, fmt.Errorf("pre_start[%d]: start canceled: %w", i, ctxErr)
-				}
-				p.warnf("pre_start[%d] %v", i, err)
-			}
-		}
+	if err := p.requireWorkDir(cfg.WorkDir); err != nil {
+		return startResult{}, err
 	}
-	// A pre_start hook is the documented way to create the launch work dir
-	// (the gastown worktree recipe points work_dir at a worktree that
-	// pre_start creates). Mirror runtime-herdr-core: once the hooks have run,
-	// a configured work_dir must exist or the launch would run elsewhere.
-	if cfg.WorkDir != "" {
-		if info, statErr := os.Stat(cfg.WorkDir); statErr != nil || !info.IsDir() {
-			return startResult{}, fmt.Errorf("work_dir %q is not an existing directory after pre_start", cfg.WorkDir)
-		}
-	}
-	// gc's managed-file preserve predicate can keep an existing current file,
-	// so the controller may never write a city-configured pack overlay.
-	// Write the per-provider subtree here after pre_start so the override lands
-	// even when the workdir already holds that managed file.
-	if err := stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, cfg.Env["GC_PROVIDER"]); err != nil {
+	if err := p.stagePackOverlayPhase(cfg); err != nil {
 		return startResult{}, err
 	}
 
@@ -592,9 +510,110 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		session:  sid,
 		tab:      tabLabel(n, cfg.Env, p.townTab),
 		spec:     plan.Spec,
-		relaunch: found,
+		relaunch: relaunch,
 		cfg:      cfg,
 	})
+}
+
+// startPlan builds the one launch plan for this start and its attempt token.
+// It runs first because the plan projects pool routing for every later step and
+// owns the Rex block layout: the launch label must come from the same projected
+// env as the start labels and the record, or pool routing makes them disagree
+// and a restart launches a duplicate pane. cfg.Env is replaced with the
+// projected env for the steps that follow.
+//
+// One token is minted per start call. The provisional record this start writes
+// is writable only by this attempt, so a stale survivor write from another
+// launch cannot take it, and launchPane's retry reuses the same token.
+func (p *Provider) startPlan(name string, cfg *Config) (launch.Plan, string) {
+	n := SessionName(name)
+	attempt := rand.Text()
+	env := launch.Project(cfg.Env)
+	plan := launch.NewPlan(launch.Config{
+		Argv:    cfg.Argv,
+		Env:     env,
+		WorkDir: cfg.WorkDir,
+		Label:   paneLabelFor(n, env),
+	})
+	cfg.Env = plan.Env
+	return plan, attempt
+}
+
+// resolveStartTarget resolves the name's existing record and retires a dead
+// pane. It runs after the survivor reap, so ResolveFresh sees only cleaned
+// records. done reports a live pane that already serves the name: the start is
+// idempotent and must return before it stages or launches anything. relaunch
+// reports that a record existed, which launchPane turns into the relaunch
+// handoff.
+func (p *Provider) resolveStartTarget(ctx context.Context, n SessionName, cfg Config) (relaunch, done bool, err error) {
+	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
+		Name: n, StartEnv: cfg.Env, Mode: ResolveFresh,
+	})
+	if err != nil {
+		return false, false, err
+	}
+	if !found {
+		return false, false, nil
+	}
+	alive, err := p.paneAlive(ctx, old)
+	if err != nil {
+		return false, false, err
+	}
+	if alive {
+		return false, true, nil
+	}
+	// The liveness read above chose this branch; the retirement makes no
+	// BlockProcess call of its own.
+	if _, err := p.retire(ctx, n, old, startDeadPanePolicy()); err != nil {
+		return false, false, err
+	}
+	return true, false, nil
+}
+
+// stageStartFiles stages gc's overlay_dir and copy_files before pre_start, so a
+// hook sees the staged work_dir (herdrcore/lifecycle.py:789).
+// stagePackOverlayPhase stays after pre_start because its per-provider subtree
+// deliberately overwrites a managed hook the hook may have rewritten.
+func (p *Provider) stageStartFiles(cfg Config) error {
+	if err := stageOverlayDir(cfg.WorkDir, cfg.OverlayDir, cfg.Env["GC_PROVIDER"]); err != nil {
+		return err
+	}
+	return stageCopyFiles(cfg.WorkDir, cfg.CopyFiles, func(msg string) { p.warnf("%s", msg) })
+}
+
+// runPreStartPhase runs the pre_start hooks before identity or a provisional
+// binding is seeded. gc's exec-session-provider contract makes a failing
+// pre_start non-fatal: warn on stderr and keep starting
+// (docs/reference/exec-session-provider.md at v1.5.1, "pre_start"). Only
+// cancellation of the whole start aborts; a hook's own failure or timeout does
+// not. The state lock is not held here: a slow hook must not stall the rest of
+// the city.
+func (p *Provider) runPreStartPhase(ctx context.Context, plan launch.Plan, cfg Config) error {
+	return p.runPreStartHooks(ctx, plan, cfg)
+}
+
+// requireWorkDir checks the configured work dir after pre_start. A pre_start
+// hook is the documented way to create the launch work dir (the gastown
+// worktree recipe points work_dir at a worktree that pre_start creates). Mirror
+// runtime-herdr-core: once the hooks have run, a configured work_dir must exist
+// or the launch would run elsewhere.
+func (p *Provider) requireWorkDir(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+		return fmt.Errorf("work_dir %q is not an existing directory after pre_start", workDir)
+	}
+	return nil
+}
+
+// stagePackOverlayPhase writes each pack's per-provider overlay subtree after
+// pre_start. gc's managed-file preserve predicate can keep an existing current
+// file, so the controller may never write a city-configured pack overlay. The
+// write runs here so the override lands even when the workdir already holds
+// that managed file.
+func (p *Provider) stagePackOverlayPhase(cfg Config) error {
+	return stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, cfg.Env["GC_PROVIDER"])
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the
@@ -1091,101 +1110,6 @@ func (p *Provider) livePane(ctx context.Context, name string) (Binding, error) {
 	return binding, nil
 }
 
-// runPreStart runs one pre_start shell command. It honours ctx cancellation.
-// The command runs in workDir when that directory already exists and in "/"
-// otherwise, mirroring runtime-herdr-core's _setup_cwd, so a pre_start can
-// create the work dir before the launch.
-func runPreStart(ctx context.Context, command, workDir string, env []string) error {
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	cmd.Dir = preStartCwd(workDir)
-	cmd.Env = env
-	// Run the hook in its own process group so a cancel kills the whole
-	// group: killing only the shell leaves a child (e.g. sleep) holding the
-	// output pipe open.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-
-	var out lockedBuffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%s: %w", command, err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	var err error
-	select {
-	case err = <-done:
-	case <-ctx.Done():
-		// A live ctx keeps the wait open, so a hook that backgrounds its work
-		// and exits still runs until that work closes the pipe. Only a
-		// cancelled hook is bounded, so a child that escaped the process group
-		// cannot hold the start past the hook deadline.
-		select {
-		case err = <-done:
-		case <-time.After(preStartCancelGrace):
-			// cmd.Cancel stops running once cmd.Wait has seen the shell exit,
-			// so a child that escaped the process group would survive it and
-			// keep the output pipe open. Kill the group again; ESRCH only
-			// means it is already gone.
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			err = ctx.Err()
-		}
-	}
-	if err != nil {
-		// A cancelled or timed-out ctx means the command did not fail on its
-		// own; surface that so the caller can name the timeout or cancellation.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			err = ctxErr
-		}
-		if got := out.String(); got != "" {
-			return fmt.Errorf("%s: %w\n%s", command, err, got)
-		}
-		return fmt.Errorf("%s: %w", command, err)
-	}
-	return nil
-}
-
-// preStartCancelGrace bounds the pipe wait after a pre_start hook's context
-// ends. The group kill normally closes the pipes at once; the grace covers a
-// child that left the process group.
-const preStartCancelGrace = 200 * time.Millisecond
-
-// lockedBuffer collects a command's output while a copy goroutine may still
-// write into it after runPreStart stops waiting.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// runPreStartWithTimeout runs one pre_start hook under a per-hook timeout. A
-// hook that outlives timeout fails with a "timed out after" message; a hook
-// that fails on its own carries its combined output as before. The caller
-// derives timeout from the op budget, so the whole pre_start phase cannot
-// outlive the start op.
-func runPreStartWithTimeout(ctx context.Context, command, workDir string, env []string, timeout time.Duration) error {
-	hctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	err := runPreStart(hctx, command, workDir, env)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%s: timed out after %s", command, timeout)
-	}
-	return err
-}
-
 // sessionLiveSkipped is the one warning a non-empty session_live produces.
 // gc's session_live styles and binds a tmux server; the Rex provider runs no
 // tmux server, so applying it would reach an unrelated one
@@ -1214,25 +1138,21 @@ func (p *Provider) runSessionSetup(ctx context.Context, name string, res startRe
 	// by whatever remains of the start budget, so a slow setup hook cannot run
 	// until the outer deadline cuts the whole op (herdr-core reserves the
 	// first-turn margin; herdrcore/lifecycle.py:616-624).
-	budgetDeadline := time.Now().Add(p.startBudget)
-	if d, ok := ctx.Deadline(); ok && d.Before(budgetDeadline) {
-		budgetDeadline = d
-	}
-	runHook := func(command string) error {
-		hookTimeout := min(p.preStartHookTimeout, time.Until(budgetDeadline))
-		if hookTimeout <= 0 {
-			return fmt.Errorf("start budget %s exhausted before the hook ran", p.startBudget)
-		}
-		return runPreStartWithTimeout(ctx, command, cfg.WorkDir, env, hookTimeout)
-	}
-	for i, command := range cfg.SessionSetup {
-		if err := runHook(command); err != nil {
-			p.warnf("session_setup[%d] %v", i, err)
-		}
+	commands := append([]string(nil), cfg.SessionSetup...)
+	labels := make([]string, len(commands))
+	for i := range labels {
+		labels[i] = fmt.Sprintf("session_setup[%d]", i)
 	}
 	if cfg.SessionSetupScript != "" {
-		if err := runHook(cfg.SessionSetupScript); err != nil {
-			p.warnf("session_setup_script %v", err)
+		commands = append(commands, cfg.SessionSetupScript)
+		labels = append(labels, "session_setup_script")
+	}
+	for _, r := range runHooks(ctx, p.runner, p.hookBatch(ctx, commands, "session_setup", cfg.WorkDir, env)) {
+		switch {
+		case r.BudgetExhausted:
+			p.warnf("%s start budget %s exhausted before the hook ran", labels[r.Index], p.startBudget)
+		case r.Err != nil:
+			p.warnf("%s %v", labels[r.Index], r.Err)
 		}
 	}
 	if len(cfg.SessionLive) > 0 {
