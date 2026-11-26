@@ -89,7 +89,7 @@ for r in json.load(sys.stdin):
 
 bad=
 for token in $(printf '%s\n' "$body" |
-    grep -oE '[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}' | sort -u); do
+    grep -oE '[0-9]{4}\.[0-9]{1,2}\.[0-9]+' | sort -u); do
   [ "$token" = "$version" ] && continue
   if printf '%s\n' "$published" | grep -Fxq "$token"; then
     continue

@@ -123,6 +123,25 @@ grep -q -- '--repo example/rex-gascity' "$FAKE_GH_LOG" ||
 grep -q 'release list' "$FAKE_GH_LOG" ||
   fail "the gate did not list published releases"
 
+# --- the monthly counter is read in full -----------------------------------
+# The documented version is YEAR.MONTH.COUNTER, so the counter may pass nine.
+# A body that names the target must pass, and a body that names another
+# counter must fail naming that full counter, not a truncated prefix.
+counter_tag=v2026.11.100
+write_body "Rex runtime pack $counter_tag. Import it by tag.
+
+- #140 — cut from the current sources."
+run "$counter_tag" "$work/body.txt"
+[ "$rc" -eq 0 ] || fail "a three-digit counter target failed: $(cat "$work/out")"
+
+write_body "Rex runtime pack $counter_tag. Import it by tag.
+
+- #140 — cut from v2026.11.101."
+run "$counter_tag" "$work/body.txt"
+[ "$rc" -ne 0 ] || fail "an unknown three-digit counter passed"
+grep -q '2026\.11\.101' "$work/out" ||
+  fail "the unknown-counter failure does not name 2026.11.101"
+
 # --- bad bodies fail --------------------------------------------------------
 write_body "Rex runtime pack $tag. Import it by tag.
 
