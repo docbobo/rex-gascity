@@ -199,7 +199,7 @@ var ops = map[string]opSpec{
 	"attach":            {1, "attach <name>", "", opAttach},
 	"is-running":        {1, "is-running <name>", "IsRunning", opIsRunning},
 	"interrupt":         {1, "interrupt <name>", "Interrupt", opInterrupt},
-	"nudge":             {1, "nudge <name>", "Nudge", opNudge},
+	"nudge":             {1, "nudge <name>", "NudgeReport", opNudge},
 	"send-keys":         {1, "send-keys <name> [keys...]", "SendKeys", opSendKeys},
 	"clear-scrollback":  {1, "clear-scrollback <name>", "ClearScrollback", opClearScrollback},
 	"process-alive":     {1, "process-alive <name>", "ProcessAlive", opProcessAlive},
