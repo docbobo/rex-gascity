@@ -3,20 +3,14 @@
 -- Each fragment is POSIX sh, like the scripts that embed it. One home means a
 -- test can run the same text a pane runs, instead of comparing strings.
 
+local shell = require("gascity.shell")
+
 local M = {}
 
--- The lines that walk up from the working directory to the city, leaving its
--- directory in `variable`, or nothing when no marker is found.
+-- The lines that walk up from the working directory to the city. The rule
+-- lives in `gascity.shell`; this name is what the scripts already call.
 function M.walk_up_city(variable)
-	return {
-		variable .. "=",
-		'd="$(pwd)"',
-		'while [ -n "$d" ]; do',
-		'\tif [ -f "$d/city.toml" ] || [ -d "$d/.gc" ]; then ' .. variable .. '="$d"; break; fi',
-		'\t[ "$d" = "/" ] && break',
-		'\td="$(dirname "$d")"',
-		"done",
-	}
+	return shell.city_walk(variable)
 end
 
 -- gc's city list, one absolute path per line. Any absolute path counts, so

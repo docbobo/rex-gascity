@@ -27,6 +27,7 @@ local status = require("gascity.status")
 local actions = require("gascity.actions")
 local codec = require("gascity.codec")
 local fragments = require("gascity.fragments")
+local shell = require("gascity.shell")
 
 local fixture = root .. "/tests/fixtures"
 
@@ -464,6 +465,67 @@ test("fragments: the tr strip leaves one JSON line", function()
 	equal(out, '{"rigs":[{"name":"alpha"}]}\n__status=0\n', "the same bytes, no newline")
 end)
 
+local function shell_case(variable, value)
+	return variable .. "=" .. text.quote(value) .. "\n"
+		.. table.concat(shell.tilde(variable), "\n")
+		.. '\nprintf "%s\\n" "$' .. variable .. '"'
+end
+
+test("shell: the walk stops at the nearest ancestor with city.toml", function()
+	local dir = scratch()
+	sh("mkdir -p " .. text.quote(dir .. "/a/b/c"))
+	write_file(dir .. "/a/city.toml", "")
+	local out = run_fragment(table.concat(shell.city_walk("city"), "\n") .. WALK_PRINT, {
+		dir = dir,
+		workdir = "a/b/c",
+	})
+	remove(dir)
+	equal(out, dir .. "/a\n__status=0\n", "the nearest ancestor")
+end)
+
+test("shell: a .gc directory also marks the city", function()
+	local dir = scratch()
+	sh("mkdir -p " .. text.quote(dir .. "/a/.gc") .. " " .. text.quote(dir .. "/a/b"))
+	local out = run_fragment(table.concat(shell.city_walk("city"), "\n") .. WALK_PRINT, {
+		dir = dir,
+		workdir = "a/b",
+	})
+	remove(dir)
+	equal(out, dir .. "/a\n__status=0\n", "the directory with .gc")
+end)
+
+test("shell: the walk leaves the city empty when there is none", function()
+	local dir = scratch()
+	local out = run_fragment(table.concat(shell.city_walk("city"), "\n") .. WALK_PRINT, {
+		dir = dir,
+		workdir = "a/b",
+	})
+	remove(dir)
+	equal(out, "__status=0\n", "nothing, and no loop")
+end)
+
+test("shell: a leading ~ is expanded with the running machine's home", function()
+	local dir = scratch()
+	local out = run_fragment(shell_case("city", "~/cities/two"), { dir = dir, env = "HOME=/home/tester" })
+	remove(dir)
+	equal(out, "/home/tester/cities/two\n__status=0\n", "HOME plus the tail")
+end)
+
+test("shell: a bare ~ is the home", function()
+	local dir = scratch()
+	local out = run_fragment(shell_case("city", "~"), { dir = dir, env = "HOME=/home/tester" })
+	remove(dir)
+	equal(out, "/home/tester\n__status=0\n", "HOME alone")
+end)
+
+test("shell: another path is unchanged", function()
+	local dir = scratch()
+	local out = run_fragment(shell_case("city", "/abs/two"), { dir = dir })
+	remove(dir)
+	equal(out, "/abs/two\n__status=0\n", "the same path")
+end)
+
+-- Settings ---------------------------------------------------------------
 -- Settings ---------------------------------------------------------------
 
 test("config: defaults when no file is named", function()
