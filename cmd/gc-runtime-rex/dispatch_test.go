@@ -84,7 +84,7 @@ const dog = "Indigo--dog-1"
 func TestProtocolHandshake(t *testing.T) {
 	h, _ := newHarness(t)
 	r := h.must("", "protocol")
-	want := `{"version":0,"capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}` + "\n"
+	want := `{"version":0,"locality":"local","capabilities":["report-attachment","report-activity","idle-boundary","carrier.ops","input-outcome","observe.v1","city-scoped"]}` + "\n"
 	if r.stdout != want {
 		t.Fatalf("stdout = %q, want %q", r.stdout, want)
 	}
@@ -92,8 +92,12 @@ func TestProtocolHandshake(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.stdout), &hs); err != nil {
 		t.Fatalf("handshake is not JSON: %v", err)
 	}
-	if _, ok := hs["locality"]; ok {
-		t.Error("handshake has a locality field")
+	if hs["locality"] != "local" {
+		t.Errorf("locality = %v, want local", hs["locality"])
+	}
+	// fs.host would add work-dir staging rules we do not implement.
+	if _, ok := hs["fs.host"]; ok {
+		t.Error("handshake declares fs.host")
 	}
 	if v, _ := hs["version"].(float64); v != 0 {
 		t.Errorf("version = %v, want 0", hs["version"])

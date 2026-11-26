@@ -642,9 +642,9 @@ Pack vs gc v1.5.1; not resolved.
 2. `locality` is not a field of gc v1.5.1's `ProtocolInfo`
    (`internal/runtime/protocol.go:61-64`) and is not in the doc's handshake
    example (`docs/reference/exec-session-provider.md` "Protocol Handshake"). Go drops it
-   silently. Parity row 2 agrees. `fs.host`'s dependency on `locality`
-   therefore does nothing on v1.5.1; the pack says it needs a newer gc
-   (`handshake.py:20-22`).
+   silently. Parity row 2 records that our provider also declares `local`.
+   `fs.host` needs `locality`, so it does nothing on v1.5.1. The pack says it
+   needs a newer gc (`handshake.py:20-22`).
 3. The pack docstring says "gc's process-table cleanup ... `proc.exec` without
    `carrier.ops`" (`handshake.py:16-20`). gc v1.5.1 has no `carrier.ops` token,
    so under v1.5.1 the pack's `carrier.ops` gives no fencing. `unverified`

@@ -305,10 +305,17 @@ request/response `exec` connection cannot carry a stream.
 Handshake (`protocol` op):
 
 ```json
-{"version": 0, "capabilities": ["report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome", "observe.v1", "city-scoped"]}
+{"version": 0, "locality": "local", "capabilities": ["report-attachment", "report-activity", "idle-boundary", "carrier.ops", "input-outcome", "observe.v1", "city-scoped"]}
 ```
 
-There is **no `locality` field**. A script that does not implement `protocol`
+`locality` is not in the 1.5.1 baseline, and a baseline gc drops it. Our
+handshake declares `"locality":"local"` for the edge build. There,
+`ProtocolInfo.DeclaresLocal` (`internal/runtime/protocol.go:213-233`) reads the
+field, and `sessionRuntimeIsRemote` (`cmd/gc/storage_verb_exclusion.go:314`) uses
+it to allow a storage split. Absent or other means remote. The declaration is
+true because Rex boxes run on the controller host under the same user. A
+provider pointed at a remote server through a tunnel would make it false. A
+script that does not implement `protocol`
 (exit 2) is version 0 with no optional capabilities. Unknown capability strings
 are ignored (forward compatibility); malformed handshake JSON is an error. Our
 handshake additionally declares `idle-boundary` for the `idle` op (GCREX-63),
@@ -805,7 +812,9 @@ Phase 0 also confirms the plan's decisions against the live surface:
   `report-activity`, `idle-boundary`, `carrier.ops` and `input-outcome` — the
   last three outside the 1.5.1 baseline, declared only in the same change as
   the behavior they gate (`idle` in GCREX-63; the five carrier ops and typed
-  exit 80 in GCREX-70) — and no `locality` field; `proc.exec`/`proc.provision`
+  exit 80 in GCREX-70) — and `"locality":"local"`. The locality states that
+  the Rex server is local to the controller host and is false behind a remote
+  tunnel. `proc.exec`/`proc.provision`
   are not declared because `exec`/`provision` stay unimplemented (exit 2).
 - **No city in an RPP invocation (resolved, GCREX-17; pilot GCREX-6).** RPP
   carries only the op and session name, and the exec runtime provider passes the
