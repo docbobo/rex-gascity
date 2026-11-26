@@ -107,6 +107,17 @@ When a source is absent (CI, a sandbox, a machine with no gc checkout), do not
 block on the read. Mark the claim `unverified`. Say which source was missing.
 Then continue. The PR reviewer sees the gap.
 
+## Recording decisions
+
+A decision that has a rejected alternative someone would plausibly propose
+again gets an ADR in `docs/adr/`. Keep its `## Alternatives rejected`
+section: that is what stops the next review, human or agent, from re-opening
+it. Write the ADR in the same PR as the decision. `make adr TITLE="..."`
+writes the next one from the template.
+
+Say in the task notes why a decision does not need one. Do not write an ADR
+that only restates what the code does.
+
 ## Test-driven development
 
 Work test-first. For a bug, write the test that reproduces the bug before the
