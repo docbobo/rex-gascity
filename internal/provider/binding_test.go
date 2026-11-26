@@ -83,6 +83,31 @@ func TestResolveFreshStartEnvFindsEnvDerivedPane(t *testing.T) {
 	}
 }
 
+// TestResolveReadWritesNothing checks the read-only seam: a stored record
+// whose address went stale still finds the pane restored under its labels, and
+// the store keeps the record as it was. Proof for AC-3 and BR-9.
+func TestResolveReadWritesNothing(t *testing.T) {
+	b, store, _ := newTestBinder(t, indigoWindow())
+	stale := indigoBinding()
+	stale.SessionID = "session:old"
+	store.Save(stale)
+
+	got, ok, err := b.ResolveRead(context.Background(), stale.Name, stale)
+	if err != nil || !ok || got.BlockID != "block:dog-1" {
+		t.Fatalf("ResolveRead = %+v, %v, %v", got, ok, err)
+	}
+	if !got.CreatedAt.IsZero() {
+		t.Errorf("read-only binding claims a creation time: %+v", got)
+	}
+	saved, found := store.Load(stale.Name)
+	if !found {
+		t.Fatal("ResolveRead dropped the record")
+	}
+	if !reflect.DeepEqual(saved, stale) {
+		t.Errorf("ResolveRead wrote the store: %+v", saved)
+	}
+}
+
 func TestResolveNotFound(t *testing.T) {
 	b, _, _ := newTestBinder(t, indigoWindow())
 	_, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--cat", Mode: ResolveFresh})
