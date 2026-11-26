@@ -36,3 +36,4 @@ live in the `AGENTS.md` files.
 | [0003](0003-retirement-policy-presets.md) | Retirement is configured by named presets, not by policy fields | Accepted |
 | [0004](0004-binder-start-env.md) | `Binder` derives its labels from the projected start env | Accepted |
 | [0005](0005-route-provider-hooks-through-the-runner-seam.md) | Provider hooks run through the `Runner` seam | Accepted |
+| [0006](0006-the-readme-release-block-changes-only-after-a-published-release.md) | The README release block changes only after a published release | Accepted |

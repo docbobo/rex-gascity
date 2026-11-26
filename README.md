@@ -6,6 +6,8 @@ A Gas City runtime pack. Runtime `rex` runs agent sessions as native Rex panes i
 
 Version `2026.11.06` (tag `v2026.11.06`) is the target version. The tag is not published yet. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
 
+The install pin in this README names the latest published release. Only `pack/mark-released.sh` changes the release status and the pin, and a person runs it after a release is public (ADR 0006).
+
 The installer never replaces a working provider with an asset that cannot answer `inventory`. A test fixture or a broken release cannot break a city (PR #38).
 
 CI runs `gc runtime check` and `gc runtime conformance` with no failed requirement, in a scratch city and state root. The conformance report also records `v2_ready`. That value is evidence and not a gate. The pack is not in a pack registry. Import it from this repository by tag, once that tag is published.
@@ -310,6 +312,7 @@ sh pack/tests/check-docs.sh       # runs the sh fences of the operator docs
 | `check-ci.sh` | `scripts/docs-only.sh` accepts only documentation paths, and `scripts/ci-timings.sh` computes p50 and p90 from job durations. Neither needs the network. |
 | `check-conformance.sh` | Conformance exits 0 on a real provider and non-zero on a failing one. |
 | `check-release.sh`, `check-release-version.sh` | The release gate accepts only `v<[pack] version>` and the workflow runs it. |
+| `check-mark-released.sh` | `pack/mark-released.sh` refuses a missing, draft or prerelease tag, rewrites only the README release block, and is idempotent. It never tags or publishes. |
 
 CI runs `make test`, the fake-backed e2e suites, `make verify` and the conformance job. The conformance job installs the pinned real rex first, then runs `pack/tests/conformance.sh`. The pin and its checksum are in `.github/workflows/ci.yml`. A newer preview never changes what CI tests.
 

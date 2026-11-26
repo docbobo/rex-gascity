@@ -15,7 +15,11 @@
 ## Invariants
 
 - `ui/version` must equal `[pack] version` in `pack/pack.toml`.
-  `pack/tests/check-ui-version.sh` enforces it. Bump both in one change.
+  `pack/tests/check-ui-version.sh` enforces it. Bump `pack/pack.toml` and
+  `ui/version` only in release prep, never in a feature change.
+- The README release block (the `## Status:` heading, the current-release
+  paragraph and the install version pins) belongs to `pack/mark-released.sh`
+  alone. Do not edit it by hand or in a feature change.
 - The extension never edits `init.lua` or any other Rex config file. Lua code
   here only reads settings (`~/.config/rex/gascity.lua`).
 - `ui/install.sh` is the only host-side writer. It writes the stub
