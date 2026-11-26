@@ -9,7 +9,7 @@ GC_REX_CITY ?= rex-verify
 PACK_VERSION ?= $(shell awk -F'"' '/^\[pack\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $$2; exit}' pack/pack.toml)
 LDFLAGS ?= -X main.buildVersion=$(PACK_VERSION)
 
-.PHONY: help build install hooks vet test bench test-e2e verify check conformance timings clean
+.PHONY: help build install hooks adr vet test bench test-e2e verify check conformance timings clean
 
 help: ## List available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-14s %s\n", $$1, $$2}' Makefile
@@ -22,6 +22,9 @@ install: ## Install gc-runtime-rex with go install
 
 hooks: ## Enable the versioned git hooks in .githooks
 	git config core.hooksPath .githooks
+
+adr: ## Write the next docs/adr/NNNN-<slug>.md from the template (TITLE="...")
+	@sh scripts/new-adr.sh "$(TITLE)"
 
 vet: ## Run go vet across all packages
 	go vet ./...
