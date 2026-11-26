@@ -14,6 +14,7 @@ package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.pa
 local text = require("gascity.text")
 local ansi = require("gascity.ansi")
 local config = require("gascity.config")
+local gc = require("gascity.gc")
 local pane = require("gascity.pane")
 local mail = require("gascity.mail")
 local rigs = require("gascity.rigs")
@@ -317,7 +318,9 @@ end
 local function test(name, fn)
 	print(name)
 	stub.reset()
+	local places = gc.places
 	fn()
+	gc.places = places
 end
 
 -- Running shell ----------------------------------------------------------
@@ -706,6 +709,8 @@ test("run: a script that cannot find gc says so and stops", function()
 	local dir = scratch()
 	local home = dir .. "/home"
 	sh("mkdir -p " .. text.quote(dir .. "/empty") .. " " .. text.quote(home))
+	install(home .. "/.nix-profile/bin", "gc", GC_ECHO)
+	gc.places = { dir .. "/nothing/gc" }
 	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
 		dir = dir,
 		path = dir .. "/empty",
@@ -731,10 +736,13 @@ end)
 test("run: without gc_bin a gc in a usual place is found", function()
 	local dir = scratch()
 	local home = dir .. "/home"
+	sh("mkdir -p " .. text.quote(dir .. "/empty"))
 	install(home .. "/.local/bin", "gc", GC_ECHO)
+	install(home .. "/.nix-profile/bin", "gc", "#!/bin/sh\nprintf '[decoy]\\n'\n")
+	gc.places = { home .. "/.local/bin/gc" }
 	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
 		dir = dir,
-		path = "/usr/bin:/bin",
+		path = dir .. "/empty",
 		env = "HOME=" .. text.quote(home),
 	})
 	remove(dir)
@@ -744,10 +752,13 @@ end)
 test("run: each fallback program path is quoted", function()
 	local dir = scratch()
 	local home = dir .. "/home dir"
+	sh("mkdir -p " .. text.quote(dir .. "/empty"))
 	install(home .. "/.local/bin", "gc", GC_ECHO)
+	install(home .. "/.nix-profile/bin", "gc", "#!/bin/sh\nprintf '[decoy]\\n'\n")
+	gc.places = { home .. "/.local/bin/gc" }
 	local out = run_fragment(run.script(config.resolve(nil), { { "rig", "list" } }), {
 		dir = dir,
-		path = "/usr/bin:/bin",
+		path = dir .. "/empty",
 		env = "HOME=" .. text.quote(home),
 	})
 	remove(dir)
@@ -1151,7 +1162,6 @@ test("rigs: asks the pane's machine, from the pane's directory", function()
 	rigs.find(settings, { session_id = "session:1" }, { cwd = dir .. "/work" })
 	local out = run_wrapped(stub.blocks[1].options.command[3], {
 		dir = dir,
-		path = "/usr/bin:/bin",
 		workdir = "work",
 	})
 	remove(dir)
