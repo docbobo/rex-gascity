@@ -24,34 +24,37 @@ version=$(
 [ -n "$version" ] || { echo "rex-binary fix: $pack_toml declares no [pack] version" >&2; exit 1; }
 
 # --fix warms the provider cache only. The rex CLI ships inside the Rex app, so
-# a CLI below the pack pin cannot be repaired here. Refuse before any fetch or
-# provider install, and name the app that carries the update. An absent pin, a
-# missing rex, or an unparsable version keeps today's behavior.
-min_version=
-if [ -r "$pack_dir/rex-min-version" ]; then
-  min_version=$(tr -d '[:space:]' < "$pack_dir/rex-min-version") || min_version=
+# a CLI below the pack's API revision pin cannot be repaired here. That gate is
+# soft: name the app and the revisions on stderr, then warm anyway. An absent
+# pin or a missing/unreadable rex leaves the warm untouched.
+min_api_revision=
+if [ -r "$pack_dir/rex-min-api-revision" ]; then
+  min_api_revision=$(tr -dc '0-9' < "$pack_dir/rex-min-api-revision") || min_api_revision=
 fi
-if [ -n "$min_version" ]; then
+if [ -n "$min_api_revision" ]; then
   rex_name=${GC_REX_BIN:-rex}
   case "$rex_name" in
     */*) rex_path=$rex_name ;;
     *) rex_path=$(command -v "$rex_name" 2>/dev/null || true) ;;
   esac
-  installed_version=
+  installed_api=
   if [ -n "$rex_path" ]; then
     version_json=$("$rex_path" version --json 2>/dev/null) || version_json=
     if [ -n "$version_json" ]; then
-      installed_version=$(printf '%s\n' "$version_json" | sed -n 's/.*"rex_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+      installed_api=$(printf '%s\n' "$version_json" | sed -n 's/.*"api_revision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
     fi
-    if [ -z "$installed_version" ]; then
-      installed_version=$("$rex_path" version 2>/dev/null | head -n 1 | sed -n 's/^rex[[:space:]][[:space:]]*\([^[:space:]]*\).*/\1/p') || installed_version=
+    if [ -z "$installed_api" ]; then
+      installed_api=$("$rex_path" version 2>/dev/null | sed -n 's/.*api:[[:space:]]*revision[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1) || installed_api=
     fi
   fi
-  rex_rank=$(version_cmp "$installed_version" "$min_version")
-  if [ "$rex_rank" = -1 ]; then
-    echo "rex-binary fix: the Rex app's rex CLI is too old ($installed_version, needs at least $min_version). --fix warms the provider cache only and cannot update the Rex app. Update the Rex app, then re-run." >&2
-    exit 1
-  fi
+  case ${installed_api:-} in
+    ''|*[!0-9]*)
+      echo "rex-binary fix: could not determine the rex CLI API revision; warming the provider cache anyway." >&2 ;;
+    *)
+      if [ "$installed_api" -lt "$min_api_revision" ]; then
+        echo "rex-binary fix: the Rex app's rex CLI is at API revision $installed_api, below the pack's $min_api_revision. --fix warms the provider cache only and cannot update the Rex app; update the Rex app. Continuing." >&2
+      fi ;;
+  esac
 fi
 
 if ! bin_dir=$(gc_runtime_bin_dir "$version"); then

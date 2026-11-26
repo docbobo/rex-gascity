@@ -107,8 +107,9 @@ for t in date sleep dash; do
   ln -sf "$p" "$fake_tools/$t"
 done
 
-# A rex CLI newer than the pack pin. The fix refuses a too-old CLI before it
-# fetches, so the warm cases must not inherit the host's rex version.
+# The warm cases use a fake rex CLI at API revision 999, above the pack pin.
+# The check's soft gate never blocks the warm, but the warm must not inherit
+# the host's rex.
 
 # A release asset: answers the two ops the doctor check reads.
 make_asset() {
@@ -423,6 +424,7 @@ rm -rf "$shim_pack"
 mkdir -p "$shim_pack/bin" "$shim_pack/doctor/rex-binary"
 cp "$repo/pack/pack.toml" "$shim_pack/pack.toml"
 cp "$repo/pack/rex-min-version" "$shim_pack/rex-min-version" 2>/dev/null || true
+cp "$repo/pack/rex-min-api-revision" "$shim_pack/rex-min-api-revision" 2>/dev/null || true
 cp "$repo/pack/bin/_lib.sh" "$shim_pack/bin/_lib.sh"
 cp "$repo/pack/bin/gc-runtime-rex" "$shim_pack/bin/gc-runtime-rex.real"
 cat > "$shim_pack/bin/gc-runtime-rex" <<'WRAP'
@@ -436,7 +438,7 @@ chmod 755 "$shim_pack/doctor/rex-binary/run.sh"
 
 doctor=$shim_pack/doctor/rex-binary/run.sh
 [ -x "$doctor" ] || fail "pack/doctor/rex-binary/run.sh is not executable"
-printf '#!/bin/sh\ncase "${1:-}" in\n  version) case "${2:-}" in\n    --json) printf '\''{"rex_version":"999.0.0"}\\n'\'' ;;\n    *) printf '\''rex 999.0.0\\n'\'' ;;\n  esac ;;\nesac\n' > "$fake_tools/rex-ok"
+printf '#!/bin/sh\ncase "${1:-}" in\n  version) case "${2:-}" in\n    --json) printf '\''{"rex_version":"999.0.0","api_revision":999}\\n'\'' ;;\n    *) printf '\''rex 999.0.0\\napi: revision 999 (supports 0 to 999)\\n'\'' ;;\n  esac ;;\nesac\n' > "$fake_tools/rex-ok"
 chmod 755 "$fake_tools/rex-ok"
 run_check() {          # run_check <extra-env...>  -- captures combined output
   env PATH="$fake_tools:$PATH" HOME="$work/home" \

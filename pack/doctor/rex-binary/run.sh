@@ -18,10 +18,12 @@
 # declared release version. Build with `make build` (or `-ldflags
 # "-X main.buildVersion=<version>"`) to stamp the pack's version.
 #
-# The rex CLI is compared against the pack's rex-min-version pin, not equality:
-# a newer CLI passes. The version comes from `rex version --json`'s rex_version
-# field, or the first line of `rex version` ("rex 0.1.0-preview.21") when
-# --json is unsupported. An older CLI is an error. An undeterminable one warns.
+# The rex CLI is gated on its API revision, not its marketing version: the
+# installed CLI must be at least the api_revision the pack is built against
+# (pack/rex-min-api-revision). The reading comes from `rex version --json`'s
+# api_revision field, or the plain `rex version` line `api: revision N
+# (supports ...)` when --json is unsupported. The gate is soft: a lower or
+# undeterminable revision warns, it does not fail the check.
 #
 # Pack doctor protocol: exit 0 OK, 1 warning, 2 error; the first stdout line
 # is the message and later lines are details. Read-only: it never starts a
@@ -68,10 +70,12 @@ if [ -r "$pack_toml" ]; then
     ' "$pack_toml"
   )
 fi
-# The rex CLI minimum lives in its own file: gc decodes pack.toml strictly and
-# rejects an unknown key under [runtimes.rex], so the pin cannot sit there.
-if [ -r "$pack_dir/rex-min-version" ]; then
-  min_version=$(tr -d '[:space:]' < "$pack_dir/rex-min-version") || min_version=
+# The rex CLI API revision floor lives in its own file: gc decodes pack.toml
+# strictly and rejects an unknown key under [runtimes.rex], so the pin cannot
+# sit there. It is the api_revision of the Rex the pack is built against.
+min_api_revision=
+if [ -r "$pack_dir/rex-min-api-revision" ]; then
+  min_api_revision=$(tr -dc '0-9' < "$pack_dir/rex-min-api-revision") || min_api_revision=
 fi
 if [ -z "$command_name" ]; then
   command_name=gc-runtime-rex
@@ -252,29 +256,31 @@ elif [ ! -x "$rex_path" ]; then
   rex_remediation="Reinstall Rex (https://rex.dev) or set GC_REX_BIN to an executable."
 else
   rex_detail="rex: $rex_path"
-  if [ -n "$min_version" ] && command -v version_cmp >/dev/null 2>&1; then
-    installed_version=
+  if [ -n "$min_api_revision" ]; then
+    installed_api=
     version_json=$("$rex_path" version --json 2>/dev/null) || version_json=
     if [ -n "$version_json" ]; then
-      installed_version=$(printf '%s\n' "$version_json" | sed -n 's/.*"rex_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+      installed_api=$(printf '%s\n' "$version_json" | sed -n 's/.*"api_revision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
     fi
-    if [ -z "$installed_version" ]; then
-      installed_version=$("$rex_path" version 2>/dev/null | head -n 1 | sed -n 's/^rex[[:space:]][[:space:]]*\([^[:space:]]*\).*/\1/p') || installed_version=
+    if [ -z "$installed_api" ]; then
+      installed_api=$("$rex_path" version 2>/dev/null | sed -n 's/.*api:[[:space:]]*revision[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1) || installed_api=
     fi
-    installed_rank=$(version_cmp "$installed_version" "$min_version")
-    if [ -z "$installed_rank" ]; then
-      rex_status=warn
-      rex_message="the rex CLI version could not be determined"
-      rex_detail="rex: $rex_path (version could not be determined)"
-      rex_remediation="The CLI reported no version. Update Rex so \`rex version --json\` prints a rex_version field."
-    elif [ "$installed_rank" = -1 ]; then
-      rex_status=error
-      rex_message="the Rex app's rex CLI is too old"
-      rex_detail="rex: $rex_path reports version $installed_version, but the pack requires at least $min_version"
-      rex_remediation="Update the Rex app to $min_version or newer. The rex CLI is bundled with the app, so a CLI-only update cannot fix this."
-    else
-      rex_detail="rex: $rex_path (version $installed_version)"
-    fi
+    case ${installed_api:-} in
+      ''|*[!0-9]*)
+        rex_status=warn
+        rex_message="the rex CLI API revision could not be determined"
+        rex_detail="rex: $rex_path (API revision could not be determined)"
+        rex_remediation="The CLI reported no api_revision. Update Rex so \`rex version --json\` prints an api_revision field." ;;
+      *)
+        if [ "$installed_api" -lt "$min_api_revision" ]; then
+          rex_status=warn
+          rex_message="the Rex app's rex CLI is older than the pack's API revision"
+          rex_detail="rex: $rex_path reports API revision $installed_api, but the pack was built against $min_api_revision"
+          rex_remediation="Update the Rex app to a build at API revision $min_api_revision or newer. The rex CLI is bundled with the app, so a CLI-only update cannot fix this. This is a warning, not a failure."
+        else
+          rex_detail="rex: $rex_path (API revision $installed_api)"
+        fi ;;
+    esac
   fi
 fi
 

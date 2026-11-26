@@ -175,11 +175,12 @@ mkdir -p "$work/rex-state"
 go build -o "$work/tools/.fakerex" "$repo/internal/rex/fakerex/fakebinary" ||
   fail "fake rex build failed"
 rexmin=$(tr -d '[:space:]' < "$repo/pack/rex-min-version")
+rexapi=$(tr -dc '0-9' < "$repo/pack/rex-min-api-revision")
 cat > "$work/tools/rex" <<EOF
 #!/bin/sh
 if [ "\$1" = version ]; then
   if [ "\$2" = --json ] || [ "\$2" = -j ]; then
-    "$work/tools/.fakerex" version --json | sed 's/^{/{"rex_version":"$rexmin",/'
+    "$work/tools/.fakerex" version --json | sed 's/^{/{"rex_version":"$rexmin",/; s/"api_revision":[0-9][0-9]*/"api_revision":'"$rexapi"'/'
   else
     printf 'rex %s\n' "$rexmin"
     "$work/tools/.fakerex" version
@@ -353,8 +354,8 @@ FAKE_CURL_LOG=$work/curl.log \
   fail "coldcache: start did not warm the cache"
 
 # Warm: the rex-binary doctor check is GREEN with no --fix and no new fetch. The
-# green verdict depends on the `rex` wrapper answering the doctor's rex_version
-# probe at >= the pin; the bare fake would come back "version could not be
+# green verdict depends on the `rex` wrapper answering the doctor's api_revision
+# probe at >= the pin; the bare fake reports 14 and would come back "could not be
 # determined". A warning also exits 0 (only blocking failures change the exit
 # status), so assert the OK line, not the exit status alone.
 : > "$work/curl.log"
