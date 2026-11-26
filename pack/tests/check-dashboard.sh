@@ -23,6 +23,26 @@ fail() {
 python=$(command -v python3) || fail "python3 not on PATH"
 pybin=$(dirname "$python")
 
+# Python before 3.12 rejects a backslash inside an f-string replacement field.
+# That is a SyntaxError at load, before argument parsing, so --help and --json
+# would fail on a 3.9 runtime. Keep such escapes out of f-strings.
+if ! "$python" - "$script" <<'PY'
+import re, sys
+
+src = open(sys.argv[1]).read()
+bad = [
+    (n, line)
+    for n, line in enumerate(src.splitlines(), 1)
+    if re.search(r"f['\"]", line) and re.search(r"\{[^}]*\\", line)
+]
+for n, line in bad:
+    print(f"{sys.argv[1]}:{n}: {line.strip()}", file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+then
+  fail "f-string replacement field contains a backslash (needs Python 3.12+)"
+fi
+
 tools=$work/tools
 mkdir -p "$tools/rig" "$tools/rig/nested" "$work/outside"
 rig_real=$(CDPATH= cd -- "$tools/rig" && pwd -P)
@@ -291,6 +311,36 @@ run_fx "$deep" "$work/outside" --width 80 --no-color -C "$tools/rig"
 code_is 0 "deep convoy chain"
 has "$work/out" "deep-leaf" "deep convoy chain shows the leaf"
 
+# --- convoy targets resolve independently of traversal order -----------------
+
+order=$work/fixture-order.jsonl
+cat > "$order" <<'JSONL'
+{"_type":"issue","id":"ord-leaf","title":"Leaf under C","status":"in_progress","issue_type":"task","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:05:00Z","updated_at":"2026-01-01T00:05:00Z","metadata":{"gc.root_bead_id":"ord-c"}}
+{"_type":"issue","id":"ord-c","title":"Convoy C","status":"open","issue_type":"convoy","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","dependencies":[{"type":"tracks","depends_on_id":"ord-a"},{"type":"tracks","depends_on_id":"ord-b"}]}
+{"_type":"issue","id":"ord-b","title":"Convoy B","status":"open","issue_type":"convoy","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","dependencies":[{"type":"tracks","depends_on_id":"ord-a"},{"type":"tracks","depends_on_id":"ord-s"}]}
+{"_type":"issue","id":"ord-a","title":"Target A","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"gc.root_bead_id":"ord-root"}}
+{"_type":"issue","id":"ord-s","title":"Target S","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"gc.root_bead_id":"ord-root"}}
+{"_type":"issue","id":"ord-root","title":"Shared root","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+JSONL
+
+run_fx "$order" "$work/outside" --json -C "$tools/rig"
+code_is 0 "convoy targets resolve independently"
+cat > "$work/want-order.json" <<'JSON'
+{
+  "ord-root": [
+    "ord-a",
+    "ord-b",
+    "ord-c",
+    "ord-leaf",
+    "ord-root",
+    "ord-s"
+  ]
+}
+JSON
+if ! cmp -s "$work/out" "$work/want-order.json"; then
+  fail "convoy order changed the origin ($(cat "$work/out"))"
+fi
+
 # --- the span covers the stream's whole lifetime -----------------------------
 
 span=$work/fixture-span.jsonl
@@ -410,6 +460,19 @@ fi
 run_fx "$hook" "$work/outside" --json --scope working -C "$tools/rig"
 code_is 0 "--json with --scope"
 has "$work/out" '"hook-org"' "--json is the unfiltered model"
+
+cp "$work/out" "$work/json-scope-working.json"
+run_fx "$hook" "$work/outside" --json --scope attention -C "$tools/rig"
+code_is 0 "--json with --scope attention"
+if ! cmp -s "$work/out" "$work/json-scope-working.json"; then
+  fail "--scope attention changed JSON membership"
+fi
+run_fx "$hook" "$work/outside" --json --status hooked -C "$tools/rig"
+code_is 0 "--json with --status hooked"
+has "$work/out" '"hook-bead"' "--status hooked is honored by --json"
+run_fx "$hook" "$work/outside" --json --all -C "$tools/rig"
+code_is 0 "--json with --all"
+has "$work/out" '"hook-bead"' "--all includes hooked beads in --json"
 
 # --- watch interval is validated ---------------------------------------------
 

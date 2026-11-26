@@ -95,6 +95,10 @@ STYLE = {
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
+# Kept out of f-string replacement fields: Python 3.12+ allows a backslash
+# there, older versions do not.
+DOT = "\u00b7"
+GEAR = "\u2699"
 
 
 class Paint:
@@ -186,8 +190,8 @@ class Model:
 
         Resolved with an explicit stack: a convoy's parent rule needs the
         parents of its targets, and a deep convoy chain must not overflow
-        Python's recursion limit. A bead still on the stack (a cycle) reads as
-        None, which preserves the old cycle guard.
+        Python's recursion limit. A bead still on the stack (a cycle) reads
+        as None, which preserves the old cycle guard.
         """
         if bid in self._parent_cache:
             return self._parent_cache[bid]
@@ -195,14 +199,20 @@ class Model:
         visiting = {bid}
         while stack:
             cur = stack[-1]
-            pending = [
-                t
-                for t in self.parent_needs(cur)
-                if t not in self._parent_cache and t not in visiting
-            ]
-            if pending:
-                stack.extend(pending)
-                visiting.update(pending)
+            # Push one need at a time. Pushing a sibling set at once makes
+            # later siblings look like a cycle to each other, so their parent
+            # rule would read targets that are not resolved yet.
+            nxt = next(
+                (
+                    t
+                    for t in self.parent_needs(cur)
+                    if t not in self._parent_cache and t not in visiting
+                ),
+                None,
+            )
+            if nxt is not None:
+                stack.append(nxt)
+                visiting.add(nxt)
                 continue
             self._parent_cache[cur] = self.parent_rule(cur)
             stack.pop()
@@ -633,7 +643,7 @@ class Renderer:
             if info["total"]:
                 tag += f" \u00b7 {self.progress_str(info)}"
             self.lines.append(
-                f"{icon(origin, p)} {p(origin['id'], BOLD)} {p('\u00b7', DIM)} "
+                f"{icon(origin, p)} {p(origin['id'], BOLD)} {p(DOT, DIM)} "
                 f"{truncate(origin.get('title', ''), self.width - 32)}{detail} "
                 f"{p('[' + tag + ']', DIM)}"
             )
@@ -668,7 +678,7 @@ class Renderer:
                 ]
                 formula = model.md(root, "gc.formula_name") or "workflow"
                 self.lines.append(
-                    f"   {p('\u2699', DIM)} {icon(root, p)} {p(root['id'], BOLD)}  "
+                    f"   {p(GEAR, DIM)} {icon(root, p)} {p(root['id'], BOLD)}  "
                     f"{p(formula, DIM)}"
                 )
                 entries: list[tuple[dict, list[dict]]] = [
@@ -1022,7 +1032,7 @@ def rig_label(bd: str, bd_dir: str | None) -> str:
     return f"{name} ({database})" if database else name
 
 
-def active_statuses_for(args) -> tuple[str, ...]:
+def active_statuses_for(args, respect_scope: bool = True) -> tuple[str, ...]:
     if args.all:
         args.scope = "all"
         return (
@@ -1036,7 +1046,12 @@ def active_statuses_for(args) -> tuple[str, ...]:
         )
     chosen = args.status or "open,in_progress,blocked"
     statuses = tuple(s.strip() for s in chosen.split(",") if s.strip())
-    if args.scope == "attention" and args.status is None and "hooked" not in statuses:
+    if (
+        respect_scope
+        and args.scope == "attention"
+        and args.status is None
+        and "hooked" not in statuses
+    ):
         # --scope attention promises hooked work; the default set omits it.
         statuses += ("hooked",)
     return statuses
@@ -1238,7 +1253,12 @@ def main(argv: list[str]) -> int:
     paint = Paint(detect_color(args))
 
     if args.json:
-        model = Model(load_records(args.bd, args.rig), active_statuses_for(args))
+        # --scope only shapes the terminal view, so the JSON model keeps the
+        # same membership for every scope.
+        model = Model(
+            load_records(args.bd, args.rig),
+            active_statuses_for(args, respect_scope=False),
+        )
         payload = {
             origin: sorted(m["id"] for m in members)
             for origin, members in model.groups().items()
