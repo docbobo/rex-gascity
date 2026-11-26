@@ -237,11 +237,13 @@ Without `--rig` it shows the rig that contains the current directory: it asks
 cwd, nearest first. Run it from a rig checkout, a rig subdirectory, or the
 city root. `--rig DIR` targets a rig explicitly.
 
-- `--scope` picks the streams: `working` (an in-progress bead, the default),
-  `attention` (working plus blocked/hooked), or `all`.
+- `--scope` picks the streams the terminal view shows: `working` (an
+  in-progress bead, the default), `attention` (working plus blocked work,
+  and hooked work unless `--status` is given), or `all`.
 - `--all` shows closed beads too and implies `--scope all`.
 - `-w, --watch` re-renders on an interval; `q` quits and `r` refreshes.
-- `--json` prints the resolved model instead of the drawing.
+- `--json` prints the unfiltered origin to bead ids model instead of the
+  drawing; `--scope` affects the terminal view only.
 - `--no-color` and `--width` control the output for pipes and tests.
 
 It reads the graph with one `bd export` in the target rig and needs `python3`

@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import os
 import select
 import shutil
@@ -133,50 +134,80 @@ class Model:
         self._track_cache[cid] = out
         return out
 
-    def parent(self, bid: str) -> str | None:
-        """Nearest container of a bead, or None if it is itself an origin."""
-        if bid in self._parent_cache:
-            return self._parent_cache[bid]
-        self._parent_cache[bid] = None  # cycle guard
+    def parent_needs(self, bid: str) -> list[str]:
+        """Convoy targets whose parent this bead's rule needs resolved first."""
         rec = self.recs.get(bid)
+        if not rec or rec.get("issue_type") != "convoy":
+            return []
+        targets = [t for t in self.tracks_targets(bid) if t != bid]
+        return targets if len(targets) > 1 else []
+
+    def parent_rule(self, bid: str) -> str | None:
+        """The parent rule, reading already-resolved targets from the cache."""
+        rec = self.recs.get(bid)
+        if not rec:
+            return None
+        if rec.get("issue_type") == "convoy":
+            targets = [t for t in self.tracks_targets(bid) if t != bid]
+            if len(targets) == 1:
+                return targets[0]
+            if targets:
+                parents = [self._parent_cache.get(t) for t in targets]
+                if all(x == parents[0] for x in parents):
+                    return parents[0]
+            return None
+        root = self.md(rec, "gc.root_bead_id")
+        if root and root != bid:
+            return root
+        key = self.md(rec, "gc.graphv2_root_key")
         p: str | None = None
-        if rec:
-            if rec.get("issue_type") == "convoy":
-                targets = [t for t in self.tracks_targets(bid) if t != bid]
+        if key:
+            parts = key.split(":")
+            convoy = parts[1] if len(parts) > 1 else None
+            targets = (
+                [t for t in self.tracks_targets(convoy) if t != bid]
+                if convoy
+                else []
+            )
+            if len(targets) == 1:
+                p = targets[0]
+        if p is None:
+            convoy = self.md(rec, "gc.parent_convoy_id") or self.md(
+                rec, "gc.drain_parent_convoy_id"
+            )
+            if convoy:
+                targets = [t for t in self.tracks_targets(convoy) if t != bid]
                 if len(targets) == 1:
                     p = targets[0]
-                elif targets:
-                    parents = [self.parent(t) for t in targets]
-                    if all(x == parents[0] for x in parents):
-                        p = parents[0]
-            else:
-                root = self.md(rec, "gc.root_bead_id")
-                if root and root != bid:
-                    p = root
-                else:
-                    key = self.md(rec, "gc.graphv2_root_key")
-                    if key:
-                        parts = key.split(":")
-                        convoy = parts[1] if len(parts) > 1 else None
-                        targets = (
-                            [t for t in self.tracks_targets(convoy) if t != bid]
-                            if convoy
-                            else []
-                        )
-                        if len(targets) == 1:
-                            p = targets[0]
-                    if p is None:
-                        convoy = self.md(rec, "gc.parent_convoy_id") or self.md(
-                            rec, "gc.drain_parent_convoy_id"
-                        )
-                        if convoy:
-                            targets = [
-                                t for t in self.tracks_targets(convoy) if t != bid
-                            ]
-                            if len(targets) == 1:
-                                p = targets[0]
-        self._parent_cache[bid] = p
         return p
+
+    def parent(self, bid: str) -> str | None:
+        """Nearest container of a bead, or None if it is itself an origin.
+
+        Resolved with an explicit stack: a convoy's parent rule needs the
+        parents of its targets, and a deep convoy chain must not overflow
+        Python's recursion limit. A bead still on the stack (a cycle) reads as
+        None, which preserves the old cycle guard.
+        """
+        if bid in self._parent_cache:
+            return self._parent_cache[bid]
+        stack = [bid]
+        visiting = {bid}
+        while stack:
+            cur = stack[-1]
+            pending = [
+                t
+                for t in self.parent_needs(cur)
+                if t not in self._parent_cache and t not in visiting
+            ]
+            if pending:
+                stack.extend(pending)
+                visiting.update(pending)
+                continue
+            self._parent_cache[cur] = self.parent_rule(cur)
+            stack.pop()
+            visiting.discard(cur)
+        return self._parent_cache[bid]
 
     def origin(self, bid: str) -> str:
         seen: set[str] = set()
@@ -447,18 +478,24 @@ class Renderer:
         beads = [r for _o, m in shown for r in m]
         counts = collections.Counter(effective_status(r) for r in beads)
 
-        bar = "   ".join(
-            f"{p(ICON.get(s, '?'), STYLE.get(s, ''))} {counts.get(s, 0)} {s.replace('_', ' ')}"
+        stats = [
+            (s, ICON.get(s, "?"), counts.get(s, 0))
             for s in ("in_progress", "claimed", "blocked", "open")
+        ]
+        plain_bar = "   ".join(f"{ic} {n} {s.replace('_', ' ')}" for s, ic, n in stats)
+        bar = "   ".join(
+            f"{p(ic, STYLE.get(s, ''))} {n} {s.replace('_', ' ')}"
+            for s, ic, n in stats
         )
         noun = "workstream" if len(shown) == 1 else "workstreams"
-        self.lines.append(
-            p(
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M')}   "
-                f"{len(shown)} {noun}   {len(beads)} beads   {bar}",
-                DIM,
-            )
+        head = (
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}   "
+            f"{len(shown)} {noun}   {len(beads)} beads"
         )
+        # The bar is informative, not essential: drop it rather than
+        # overflow a narrow terminal with a header that cannot wrap.
+        if dwidth(head) + 3 + dwidth(plain_bar) <= self.width:
+            head = f"{head}   {bar}"
         self.lines.append("")
 
         if not shown:
@@ -567,7 +604,7 @@ class Renderer:
             "rest": len(ids - shown),
             "compact": not top and not wi and not focus,
             "activity": rel_time(max(stamps)) if stamps else "?",
-            "duration": workstream_span(members),
+            "duration": workstream_span(pool),
             "totals": totals,
             "total": sum(totals.values()),
         }
@@ -738,10 +775,14 @@ class Renderer:
         return segs
 
     def emit_boxes(self, infos: list[dict]) -> None:
+        min_cell = 28  # box_cell draws at least 24 inner columns plus borders
         cols = self.columns or (2 if self.width >= 118 else 1)
-        cols = max(1, min(cols, len(infos)))
         gap = 2
-        cell_w = (self.width - gap * (cols - 1)) // cols
+        # Cap the column count to the boxes that fit: boxes do not shrink
+        # below min_cell, so a wider request would overflow the row.
+        fits = max(1, (self.width + gap) // (min_cell + gap))
+        cols = max(1, min(cols, fits, len(infos)))
+        cell_w = max((self.width - gap * (cols - 1)) // cols, min_cell)
         cells = [self.box_cell(info, cell_w) for info in infos]
         # One uniform cell size: pad every box above its bottom border.
         height = max(len(c) for c in cells)
@@ -993,7 +1034,12 @@ def active_statuses_for(args) -> tuple[str, ...]:
             "pinned",
             "hooked",
         )
-    return tuple(s.strip() for s in args.status.split(",") if s.strip())
+    chosen = args.status or "open,in_progress,blocked"
+    statuses = tuple(s.strip() for s in chosen.split(",") if s.strip())
+    if args.scope == "attention" and args.status is None and "hooked" not in statuses:
+        # --scope attention promises hooked work; the default set omits it.
+        statuses += ("hooked",)
+    return statuses
 
 
 def detect_color(args) -> bool:
@@ -1050,26 +1096,29 @@ def watch(args, paint: Paint, label: str) -> int:
     key_mode = on_tty and stdin.isatty() and _termios is not None
     fd = stdin.fileno() if key_mode else None
     old_attrs = None
+    old_winch = None
+    screen = False
+    shown = 0
     resized = {"flag": False}
 
     def on_winch(_signum, _frame):
         resized["flag"] = True
 
-    old_winch = None
-    if on_tty and hasattr(signal, "SIGWINCH"):
-        try:
-            old_winch = signal.signal(signal.SIGWINCH, on_winch)
-        except ValueError:
-            old_winch = None
-
-    if key_mode:
-        old_attrs = _termios.tcgetattr(fd)
-        _tty.setcbreak(fd)  # keep ISIG, so Ctrl-C still works
-    if on_tty:
-        out.write("\x1b[?1049h\x1b[?25l")  # alternate screen, hide cursor
-        out.flush()
-    shown = 0
+    # The try starts before any setup: a Ctrl-C between two setup steps, or
+    # inside the first flush, must still restore what was already acquired.
     try:
+        if on_tty and hasattr(signal, "SIGWINCH"):
+            try:
+                old_winch = signal.signal(signal.SIGWINCH, on_winch)
+            except ValueError:
+                old_winch = None
+        if key_mode:
+            old_attrs = _termios.tcgetattr(fd)
+            _tty.setcbreak(fd)  # keep ISIG, so Ctrl-C still works
+        if on_tty:
+            screen = True
+            out.write("\x1b[?1049h\x1b[?25l")  # alternate screen, hide cursor
+            out.flush()
         while True:
             frame = render_frame(args, paint, label)
             if on_tty:
@@ -1086,7 +1135,7 @@ def watch(args, paint: Paint, label: str) -> int:
     finally:
         if key_mode and old_attrs is not None:
             _termios.tcsetattr(fd, _termios.TCSADRAIN, old_attrs)
-        if on_tty:
+        if screen:
             out.write("\x1b[?25h\x1b[?1049l")  # show cursor, leave alt screen
             out.flush()
         if old_winch is not None:
@@ -1111,17 +1160,21 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--bd", default="bd", help="bd binary (default: bd)")
     ap.add_argument(
         "--status",
-        default="open,in_progress,blocked",
-        help="statuses treated as active (default: open,in_progress,blocked)",
+        default=None,
+        help=(
+            "statuses treated as active (default: open,in_progress,blocked; "
+            "--scope attention also adds hooked)"
+        ),
     )
     ap.add_argument(
         "--scope",
         choices=("working", "attention", "all"),
         default="working",
         help=(
-            "which workstreams to show: working = has an in_progress bead "
-            "(default); attention = working + blocked/hooked; all = every "
-            "stream with active beads"
+            "which workstreams the terminal view shows: working = has an "
+            "in_progress bead (default); attention = working + blocked/hooked "
+            "(hooked is added unless --status is given); all = every stream "
+            "with active beads. --json ignores --scope."
         ),
     )
     ap.add_argument(
@@ -1165,10 +1218,19 @@ def main(argv: list[str]) -> int:
         default=0,
         help="with --watch, render N frames then exit (default: until Ctrl-C)",
     )
-    ap.add_argument("--json", action="store_true", help="emit the resolved model as JSON")
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "emit the unfiltered origin → bead ids model as JSON "
+            "(--scope affects the terminal view only)"
+        ),
+    )
     ap.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     ap.add_argument("--width", type=int, default=0, help="output width (default: terminal)")
     args = ap.parse_args(argv)
+    if not math.isfinite(args.interval) or args.interval <= 0:
+        ap.error("--interval must be a positive number of seconds")
 
     if args.rig is None:
         args.rig = find_rig(os.getcwd(), os.environ.get("GC_BIN") or "gc")

@@ -238,6 +238,280 @@ if ! cmp -s "$work/out" "$work/want.json"; then
   fail "--json payload is not the expected model ($(cat "$work/out"))"
 fi
 
+# --- deep convoy chains do not overflow the recursion limit ------------------
+
+deep=$work/fixture-deep.jsonl
+"$python" - "$deep" <<'PY'
+import json
+import sys
+
+rows = []
+n = 1200
+
+
+def add(**kw):
+    kw.setdefault("_type", "issue")
+    kw.setdefault("created_at", "2026-01-01T00:00:00Z")
+    kw.setdefault("updated_at", "2026-01-01T00:00:00Z")
+    rows.append(kw)
+
+
+add(
+    id="deep-shared",
+    title="Shared ordinary bead",
+    status="in_progress",
+    issue_type="task",
+    started_at="2026-01-01T00:05:00Z",
+)
+for i in range(n):
+    deps = [{"type": "tracks", "depends_on_id": "deep-shared"}]
+    if i + 1 < n:
+        deps.append({"type": "tracks", "depends_on_id": f"deep-cv{i + 1}"})
+    add(
+        id=f"deep-cv{i}",
+        title=f"Convoy {i}",
+        status="open",
+        issue_type="convoy",
+        dependencies=deps,
+    )
+add(
+    id="deep-leaf",
+    title="Leaf under the chain",
+    status="in_progress",
+    issue_type="task",
+    started_at="2026-01-01T00:05:00Z",
+    metadata={"gc.root_bead_id": "deep-cv0"},
+)
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps(row) + "\n")
+PY
+
+run_fx "$deep" "$work/outside" --width 80 --no-color -C "$tools/rig"
+code_is 0 "deep convoy chain"
+has "$work/out" "deep-leaf" "deep convoy chain shows the leaf"
+
+# --- the span covers the stream's whole lifetime -----------------------------
+
+span=$work/fixture-span.jsonl
+"$python" - "$span" <<'PY'
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+
+now = datetime.now(timezone.utc)
+
+
+def iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+rows = [
+    {
+        "id": "span-org",
+        "title": "Span origin",
+        "status": "open",
+        "issue_type": "task",
+        "created_at": iso(now - timedelta(days=1)),
+        "updated_at": iso(now - timedelta(days=1)),
+    },
+    {
+        "id": "span-old",
+        "title": "Old closed bead",
+        "status": "closed",
+        "issue_type": "task",
+        "created_at": iso(now - timedelta(days=10)),
+        "started_at": iso(now - timedelta(days=10)),
+        "closed_at": iso(now - timedelta(days=9)),
+        "updated_at": iso(now - timedelta(days=9)),
+        "metadata": {"gc.root_bead_id": "span-org"},
+    },
+    {
+        "id": "span-new",
+        "title": "Active sibling",
+        "status": "in_progress",
+        "issue_type": "task",
+        "created_at": iso(now - timedelta(days=1)),
+        "started_at": iso(now - timedelta(days=1)),
+        "updated_at": iso(now - timedelta(days=1)),
+        "metadata": {"gc.root_bead_id": "span-org"},
+    },
+]
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps({"_type": "issue", **row}) + "\n")
+PY
+
+run_fx "$span" "$work/outside" --width 120 --no-color -C "$tools/rig"
+code_is 0 "span from lifetime members"
+once "$work/out" "span 10d 0h" "span starts at the closed bead"
+
+# --- the column count is capped to boxes that fit ----------------------------
+
+cols=$work/fixture-columns.jsonl
+"$python" - "$cols" <<'PY'
+import json
+import sys
+
+rows = [
+    {
+        "id": f"col-{i}",
+        "title": f"Stream {i}",
+        "status": "in_progress",
+        "issue_type": "task",
+        "created_at": "2026-01-01T00:00:00Z",
+        "started_at": "2026-01-01T00:05:00Z",
+        "updated_at": "2026-01-01T00:05:00Z",
+    }
+    for i in range(4)
+]
+with open(sys.argv[1], "w") as fh:
+    for row in rows:
+        fh.write(json.dumps({"_type": "issue", **row}) + "\n")
+PY
+
+run_fx "$cols" "$work/outside" --width 80 --columns 4 --no-color -C "$tools/rig"
+code_is 0 "column count fits the width"
+"$python" - "$script" "$work/out" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+wide = [line for line in open(sys.argv[2]).read().splitlines() if dash.dwidth(line) > 80]
+assert not wide, "lines wider than 80 columns: %r" % (wide,)
+PY
+
+# --- attention scope includes hooked work ------------------------------------
+
+hook=$work/fixture-hooked.jsonl
+cat > "$hook" <<'JSONL'
+{"_type":"issue","id":"hook-org","title":"Hooked origin","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+{"_type":"issue","id":"hook-bead","title":"Hooked bead","status":"hooked","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:01:00Z","metadata":{"gc.root_bead_id":"hook-org"}}
+JSONL
+
+run_fx "$hook" "$work/outside" --width 100 --no-color --scope attention -C "$tools/rig"
+code_is 0 "attention scope with a hooked bead"
+has "$work/out" "Hooked origin" "attention scope shows the hooked stream"
+
+run_fx "$hook" "$work/outside" --width 100 --no-color -C "$tools/rig"
+code_is 0 "working scope with a hooked bead"
+if grep -qF "Hooked origin" "$work/out"; then
+  fail "working scope shows a hooked-only stream"
+fi
+
+run_fx "$hook" "$work/outside" --width 100 --no-color --scope attention --status open -C "$tools/rig"
+code_is 0 "attention scope with an explicit --status"
+if grep -qF "Hooked origin" "$work/out"; then
+  fail "explicit --status was widened with hooked"
+fi
+
+run_fx "$hook" "$work/outside" --json --scope working -C "$tools/rig"
+code_is 0 "--json with --scope"
+has "$work/out" '"hook-org"' "--json is the unfiltered model"
+
+# --- watch interval is validated ---------------------------------------------
+
+run "$work/outside" --watch --frames 1 --interval nan -C "$tools/rig"
+code_is 2 "nan interval is rejected"
+has "$work/err" "--interval" "nan interval is a usage error"
+
+run "$work/outside" --watch --frames 1 --interval 0 -C "$tools/rig"
+code_is 2 "zero interval is rejected"
+
+run "$work/outside" --watch --frames 1 --interval inf -C "$tools/rig"
+code_is 2 "infinite interval is rejected"
+
+# --- terminal setup errors still restore the terminal ------------------------
+
+"$python" - "$script" <<'PY'
+import importlib.util
+import io
+import sys
+import types
+
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+dash = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dash)
+
+
+class Out(io.StringIO):
+    def __init__(self, boom_at=None):
+        super().__init__()
+        self.boom_at = boom_at
+        self.written = []
+
+    def isatty(self):
+        return True
+
+    def write(self, text):
+        if self.boom_at is not None and self.boom_at in text:
+            raise KeyboardInterrupt
+        self.written.append(text)
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+class In(io.StringIO):
+    def isatty(self):
+        return True
+
+    def fileno(self):
+        return 0
+
+
+calls = []
+
+
+def install(setcbreak):
+    dash._termios = types.SimpleNamespace(
+        tcgetattr=lambda fd: ["saved"],
+        tcsetattr=lambda fd, how, attrs: calls.append(attrs),
+        TCSADRAIN=1,
+    )
+    dash._tty = types.SimpleNamespace(setcbreak=setcbreak)
+    dash.render_frame = lambda *a, **k: "frame"
+    dash.signal.signal = lambda *a, **k: None
+    dash.sys.stdin = In()
+
+
+def args():
+    return types.SimpleNamespace(frames=0, interval=0.01)
+
+
+# Ctrl-C while entering cbreak mode must not escape watch().
+calls.clear()
+
+
+def raise_interrupt(fd):
+    raise KeyboardInterrupt
+
+
+install(raise_interrupt)
+dash.sys.stdout = Out()
+assert dash.watch(args(), dash.Paint(False), "label") == 0
+assert calls == [["saved"]], calls
+
+# Ctrl-C while entering the alternate screen must still clear both.
+calls.clear()
+
+
+def ok_cbreak(fd):
+    return None
+
+
+install(ok_cbreak)
+out = Out(boom_at="\x1b[?1049h")
+dash.sys.stdout = out
+assert dash.watch(args(), dash.Paint(False), "label") == 0
+assert calls == [["saved"]], calls
+assert "\x1b[?25h\x1b[?1049l" in "".join(out.written), out.written
+PY
+
+
 # --- errors -------------------------------------------------------------------
 
 run "$work/outside" --width 80 --no-color -C "$tools/rig" --nope
