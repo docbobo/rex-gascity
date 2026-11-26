@@ -95,8 +95,10 @@ func TestProtocolHandshake(t *testing.T) {
 	if hs["locality"] != "local" {
 		t.Errorf("locality = %v, want local", hs["locality"])
 	}
-	// fs.host would add work-dir staging rules we do not implement.
-	if _, ok := hs["fs.host"]; ok {
+	// fs.host is a capability token, not a top-level key (ADR-0008): gc then
+	// stages the work dir and runs pre_start itself. Check the array, where
+	// the token would really live.
+	if caps, _ := hs["capabilities"].([]any); slices.Contains(caps, any("fs.host")) {
 		t.Error("handshake declares fs.host")
 	}
 	if v, _ := hs["version"].(float64); v != 0 {
@@ -838,6 +840,27 @@ type failingWindow struct{ *faketest.Fake }
 
 func (failingWindow) NewWindow(context.Context, rex.SessionID, string, rex.LaunchSpec) (rex.WindowID, rex.BlockID, error) {
 	return "", "", errors.New("rex: launch refused")
+}
+
+// TestStartRexUnavailableExitsTempFail pins EX_TEMPFAIL (75): a Rex server
+// that cannot be reached or is at capacity refuses an endpoint-wide, retryable
+// start. gc 1.5.1 does not read 75 back; the main branch records the refusal
+// outside the session's own lifecycle
+// (docs/reference/exec-session-provider.md "Exit Codes").
+func TestStartRexUnavailableExitsTempFail(t *testing.T) {
+	h, fake := newHarness(t)
+	fake.ListSessionsErr = rex.ErrUnavailable
+	r := h.run(`{"command":"sleep 300"}`, "start", dog)
+	assertFailure(t, r, 75)
+}
+
+// TestStartPermanentErrorStaysExitOne keeps 75 for the endpoint-wide refusal
+// only: a malformed config or a rejected command is a failure specific to this
+// start, so it stays exit 1 (EX_TEMPFAIL tells gc the start is retryable).
+func TestStartPermanentErrorStaysExitOne(t *testing.T) {
+	h, _ := newHarness(t)
+	h.client = failingWindow{faketest.New()}
+	assertFailure(t, h.run(`{"command":"sleep 300"}`, "start", dog), exitFail)
 }
 
 func TestStartClientErrorFails(t *testing.T) {

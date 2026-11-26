@@ -347,6 +347,13 @@ func (e *exitError) Unwrap() error { return e.err }
 // at pack 0f07496): `fresh_only` refused a name any record holds.
 const exitFreshCollision = 73
 
+// exitTempFail is sysexits.h EX_TEMPFAIL. From `start` it declares an
+// endpoint-wide, retryable refusal: the server the agent launches against is
+// at capacity or unavailable (docs/reference/exec-session-provider.md "Exit
+// Codes"). gc 1.5.1 does not read it back; the main branch records the
+// refusal outside the session's own lifecycle.
+const exitTempFail = 75
+
 // exitNoScreen is herdr-core's NO_SCREEN code: `peek` found no screen to read.
 const exitNoScreen = 66
 
@@ -432,6 +439,11 @@ func opStart(ctx context.Context, p rppProvider, args []string, stdin io.Reader,
 	})
 	if errors.Is(err, provider.ErrFreshCollision) {
 		return &exitError{code: exitFreshCollision, err: fmt.Errorf("session %q already exists (fresh_only)", name)}
+	}
+	if errors.Is(err, rex.ErrUnavailable) {
+		// Rex is down or at capacity: the refusal is endpoint-wide and
+		// retryable, not specific to this session.
+		return &exitError{code: exitTempFail, err: err}
 	}
 	if errors.Is(err, provider.ErrAlreadyRunning) {
 		// gc's exec proxy recognizes "already running" as a start collision.
