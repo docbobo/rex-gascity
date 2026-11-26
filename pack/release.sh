@@ -164,7 +164,10 @@ if [ "$release_exists" -eq 0 ]; then
   # tag, so the tag must exist before the dispatch. Push it at this commit.
   if [ "$remote_tag" -eq 0 ]; then
     # A signed annotated tag so `git tag -v` vouches for the release commit.
-    # -f makes a retry after a failed push idempotent; the commit is fixed.
+    # Refuse a local tag at another commit: -f would drop the only name for it.
+    local_tag=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)
+    [ -z "$local_tag" ] || [ "$local_tag" = "$commit" ] ||
+      die "local tag $tag points at $local_tag, not at $commit; delete it first"
     git -C "$root" tag -s -f "$tag" -m "rex runtime pack $tag" "$commit" ||
       die "cannot create signed tag $tag (is a signing key configured?)"
     git -C "$root" push --quiet origin "refs/tags/$tag" ||

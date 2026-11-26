@@ -241,6 +241,21 @@ if run sh pack/release.sh v0.2.0 --dry-run > "$work/out" 2>&1; then
 fi
 git -C "$repo" checkout -q -- pack/pack.toml
 
+# A local tag at another commit is not this release either. Overwriting it
+# would lose the only local name for that commit if the push then fails.
+reset_state
+stray=$(git -C "$repo" commit-tree -m stray "$(git -C "$repo" rev-parse 'HEAD^{tree}')")
+git -C "$repo" tag v0.2.0 "$stray"
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "a conflicting local tag must fail"
+fi
+grep -q 'local tag v0.2.0' "$work/out" || fail "the local tag refusal does not name the tag"
+[ "$(git -C "$repo" rev-parse 'refs/tags/v0.2.0^{commit}')" = "$stray" ] ||
+  fail "the conflicting local tag was replaced"
+[ -z "$(git -C "$work/origin.git" rev-parse -q --verify 'refs/tags/v0.2.0')" ] ||
+  fail "the conflicting local tag pushed a remote tag"
+git -C "$repo" tag -d v0.2.0 >/dev/null
+
 reset_state
 git -C "$repo" checkout -q -b feature
 if run sh pack/release.sh v0.2.0 --dry-run > "$work/out" 2>&1; then
