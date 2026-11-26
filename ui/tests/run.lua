@@ -1689,7 +1689,9 @@ end)
 --
 -- The fake gc prints the fixture for `config show --json`, or fails like a
 -- broken city.toml when FAKE_GC_FAIL is set. The fake rex succeeds only for
--- a read-only check (--autostart=false) of session s1.
+-- a read-only check (--autostart=false) of session s1. Its `whoami --json`
+-- names /tmp/discovered.sock, which owns s1, so it stands in for the endpoint
+-- that a server without REX_SERVER reports.
 local function probe_tools()
 	local dir = text.trim(sh('mktemp -d "${TMPDIR:-/tmp}/gascity-status-test.XXXXXX"'))
 	write_file(dir .. "/gc", table.concat({
@@ -1702,6 +1704,7 @@ local function probe_tools()
 	write_file(dir .. "/rex", table.concat({
 		"#!/bin/sh",
 		'case " $* " in *" --autostart=false "*) ;; *) exit 8 ;; esac',
+		'case " $* " in *" whoami --json "*) printf \'{\\n  "endpoint": "/tmp/discovered.sock",\\n  "pid": 1\\n}\\n\'; exit 0 ;; esac',
 		'case " $* " in *" -s s1 "*) exit 0 ;; esac',
 		"exit 3",
 	}, "\n") .. "\n")
@@ -1772,8 +1775,19 @@ test("status: the probe verifies the server without starting one", function()
 	contains(foreign, "@@server_error|", "a server that did not answer is a reason")
 	contains(foreign, "/tmp/other.sock", "the reason names the address")
 	contains(foreign, "exit 3", "and the CLI's exit status")
-	contains(unset, "@@server|\n", "no REX_SERVER")
-	contains(unset, "REX_SERVER is not set", "and says so")
+	contains(unset, "@@server|/tmp/discovered.sock\n", "without REX_SERVER, rex's own endpoint owns s1")
+	falsy(unset:find("@@server_error|", 1, true), "and needs no reason")
+end)
+
+test("status: a discovered endpoint that does not own the session is a reason", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s2"), dir)
+	remove(dir)
+	contains(output, "@@server|\n", "no server")
+	contains(output, "@@server_error|", "the reason row")
+	contains(output, "/tmp/discovered.sock", "the discovered address")
+	contains(output, "exit 3", "and the CLI's exit status")
+	contains(output, "END", "the script ran to its end")
 end)
 
 test("status: a failed config show reports its status and stderr", function()

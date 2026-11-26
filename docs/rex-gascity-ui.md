@@ -157,9 +157,12 @@ Before it sends anything, the action asks the pane's machine two things:
   the city's top-level imports. Rig-level imports do not count. Both source
   spellings match: `https://github.com/docbobo/rex-gascity//pack` and
   `https://github.com/docbobo/rex-gascity/tree/<ref>/pack`.
-- The server: `$REX_SERVER`, once a read-only check shows that it owns this
-  session. The check runs `rex … --autostart=false`, so it never starts a
-  server.
+- The server: `$REX_SERVER` when it is set, and otherwise the endpoint that
+  `rex whoami --json` reports on the pane's machine. A read-only check then
+  shows that the chosen endpoint owns this session. The check runs
+  `rex … --autostart=false`, so it never starts a server. A server process can
+  start without `REX_SERVER` in its environment, so the fallback is what makes
+  a pane on a remote server work.
 
 If any of these fail, the action raises an error and sends no mail: `gc` is
 missing, `gc config show` fails, the city does not import the pack, or the
