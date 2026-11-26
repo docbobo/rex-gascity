@@ -138,6 +138,11 @@ repo=$work/repo
 git init -q "$repo"
 git -C "$repo" config user.email test@example.test
 git -C "$repo" config user.name "check-release"
+# Signing key for the release tag. release.sh pushes a signed annotated tag;
+# ssh signing keeps the test hermetic (no gpg keyring, no passphrase).
+ssh-keygen -t ed25519 -N '' -f "$work/tagkey" -q
+git -C "$repo" config gpg.format ssh
+git -C "$repo" config user.signingkey "$work/tagkey.pub"
 mkdir -p "$repo/pack/tests"
 cp "$release" "$repo/pack/release.sh"
 chmod 0755 "$repo/pack/release.sh"
@@ -235,6 +240,21 @@ if run sh pack/release.sh v0.2.0 --dry-run > "$work/out" 2>&1; then
   fail "a dirty tree must fail"
 fi
 git -C "$repo" checkout -q -- pack/pack.toml
+
+# A local tag at another commit is not this release either. Overwriting it
+# would lose the only local name for that commit if the push then fails.
+reset_state
+stray=$(git -C "$repo" commit-tree -m stray "$(git -C "$repo" rev-parse 'HEAD^{tree}')")
+git -C "$repo" tag v0.2.0 "$stray"
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "a conflicting local tag must fail"
+fi
+grep -q 'local tag v0.2.0' "$work/out" || fail "the local tag refusal does not name the tag"
+[ "$(git -C "$repo" rev-parse 'refs/tags/v0.2.0^{commit}')" = "$stray" ] ||
+  fail "the conflicting local tag was replaced"
+[ -z "$(git -C "$work/origin.git" rev-parse -q --verify 'refs/tags/v0.2.0')" ] ||
+  fail "the conflicting local tag pushed a remote tag"
+git -C "$repo" tag -d v0.2.0 >/dev/null
 
 reset_state
 git -C "$repo" checkout -q -b feature
@@ -397,6 +417,10 @@ grep -q 'release edit v0.2.0 --draft=false' "$state/calls.log" ||
 [ -f "$state/published" ] || fail "release is not published"
 [ "$(git -C "$work/origin.git" rev-parse "refs/tags/v0.2.0^{commit}")" = "$(git -C "$repo" rev-parse HEAD)" ] ||
   fail "release did not push the tag at HEAD"
+[ "$(git -C "$work/origin.git" cat-file -t refs/tags/v0.2.0)" = tag ] ||
+  fail "release pushed a lightweight tag"
+git -C "$work/origin.git" cat-file tag refs/tags/v0.2.0 | grep -q 'BEGIN SSH SIGNATURE' ||
+  fail "release tag is not signed"
 grep -q 'https://example.test/releases/tag/v0.2.0' "$work/out" ||
   fail "success does not print the release URL"
 grep -q 'gc-runtime-rex_' "$work/out" || fail "success does not print the asset list"
