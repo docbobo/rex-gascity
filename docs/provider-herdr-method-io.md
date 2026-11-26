@@ -61,6 +61,13 @@ Exit codes: the pack's `rpp/exitcodes.py:1` says its table is the contract's
 gives it. gc v1.5.1's "Exit Codes" section lists only 0, 1 and 2
 (`docs/reference/exec-session-provider.md:71-77`); 66, 73, 75 and 80 are pack
 extensions that gc reads as a plain error (conflict A in the shared contract).
+Two exceptions on the main branch only. A v2-ready script's `peek` exit 66
+means "no screen", answered as an empty screen
+(`internal/runtime/exec/exec.go:988-999`). A `start` exit 75 is an endpoint
+capacity or unavailability refusal, read through `runtime.IsProviderCapacity`
+(`internal/runtime/exec/exec.go:342`, `internal/runtime/REQUIREMENTS.md`
+RUNTIME-RPP-015). `v1.5.1` has neither reading: `git grep ExitCodeTempFail
+v1.5.1 -- internal/` matches only `internal/convergence/gate_infra.go`.
 Sources disagree: the pack docstring presents the whole table as gc's; gc
 v1.5.1 defines only 0, 1 and 2.
 
@@ -173,6 +180,16 @@ all return no hits under `internal/`, `docs/reference/` or `cmd/` of v1.5.1
    deadline")`. The SIGTERM handler is installed at `rpp/perop.py:127-128`
    (`rpp/perop.py:50-57`) – note this is *after* the unknown-op return, so
    unknown ops install no handler.
+6. gc-side cancellation, re-verified against both sources 2026-11-26.
+   `v1.5.1` (`git show v1.5.1:internal/runtime/exec/exec.go:79-92`) arms
+   `context.WithTimeout` at 30 s for every op but `start`
+   (120 s, `startTimeout`, `:57`) and runs the script through
+   `execgrace.Apply(cmd, 2*time.Second)`. That is one `SIGTERM` to the
+   process group, then `SIGKILL` 2 s later, and the pack's 1.5 s `ROLLBACK_S`
+   fits inside it. The edge build adds
+   `GC_EXEC_DEADLINE_MS` (`internal/runtime/exec/exec.go:144-151`, from
+   `withDeadline`) and kills only `exec` and `watch-startup` outright
+   (`docs/reference/exec-session-provider.md:105-138`).
 6. Handler: `spec.handler(request)` (`rpp/perop.py:146`). In the herdr table
    each handler is wrapped by `_wrap` (`herdrcore/ops_table.py:41-53`): it
    builds `OpContext` (`herdrcore/context.py:78-89`), runs the
@@ -644,7 +661,15 @@ Pack vs gc v1.5.1; not resolved.
    example (`docs/reference/exec-session-provider.md` "Protocol Handshake"). Go drops it
    silently. Parity row 2 records that our provider also declares `local`.
    `fs.host` needs `locality`, so it does nothing on v1.5.1. The pack says it
-   needs a newer gc (`handshake.py:20-22`).
+   needs a newer gc (`handshake.py:20-22`). Verified on the edge build
+   (`890a58a3e`): `ProtocolInfo.SharesHostFS()` reads `locality: local`
+   narrowed by the token (`internal/runtime/protocol.go:236-242`,
+   `protocol_test.go:16-33`), and its consumers are host staging,
+   `LocalTranscripts`, the registry's host capabilities and the skill/MCP
+   admission gates (`internal/runtime/exec/hoststage.go:47-70`,
+   `cmd/gc/runtime_registry.go:163-168`, `cmd/gc/skill_integration.go:89`,
+   `:114`). The Rex provider keeps the token undeclared for that reason
+   (ADR-0008).
 3. The pack docstring says "gc's process-table cleanup ... `proc.exec` without
    `carrier.ops`" (`handshake.py:16-20`). gc v1.5.1 has no `carrier.ops` token,
    so under v1.5.1 the pack's `carrier.ops` gives no fencing. `unverified`
@@ -877,8 +902,12 @@ Pack vs gc v1.5.1; not resolved.
    parity §protocol), and `marshalStartConfig` always sends the fields
    (`internal/runtime/exec/json.go:50-66`). So at v1.5.1 the pack does the
    staging, `pre_start` and `session_setup` itself (the "older gc" path,
-   `herdrcore/staging.py:1-8`). Consistent, not a bug, but the pack's default
-   narrative does not match this gc.
+   `herdrcore/staging.py:1-8`). The edge build does consume `fs.host`
+   (`890a58a3e`: `internal/runtime/protocol.go:236-242`,
+   `internal/runtime/exec/hoststage.go:47-70`), so against it the pack's
+   narrative holds and gc does the host work. Against `v1.5.1` it does not.
+   Rex declares neither, so its path does not change (ADR-0008). Consistent,
+   not a bug, but the pack's default narrative does not match `v1.5.1`.
 4. **Readiness and startup dialogs** (pack-vs-gc compatibility / Rex comparisons):
    - **The pack types the nudge itself and waits up to 60 s for readiness.** gc:
      `nudge` is typed by the script once the agent is ready
@@ -929,9 +958,12 @@ Pack vs gc v1.5.1; not resolved.
    tested; gc's SIGTERM then triggers the rollback path (`rpp/perop.py:50-57`)
    with `ROLLBACK_S` 1.5 s (`herdrcore/lifecycle.py:181`) against gc's 2 s grace
    (`internal/runtime/exec/exec.go:92`).
-4. Whether gc `fs.host` support exists in the working tree (the pack cites
-   `gastownhall/gascity#9023`, `herdrcore/staging.py:5`); v1.5.1 has none (`rg
-   fs.host` in the v1.5.1 tree: no Go matches).
+4. Whether gc `fs.host` support exists in the v1.5.1 tree: no Go matches
+   (`rg fs.host`, the pack cites `gastownhall/gascity#9023`,
+   `herdrcore/staging.py:5`). Resolved on the edge build (`890a58a3e`), where
+   the token is read through `SharesHostFS()`
+   (`internal/runtime/protocol.go:236-242`). Whether any released tag before
+   the edge build reads it is `unverified`.
 5. Process cleanup of `pre_start` hook grandchildren on cancel: `run_bounded`
    starts a new session (`start_new_session=True`), kills the process group with
    `SIGKILL` in `finally`, and waits (`herdrcore/command.py:45-52,69-76`).
