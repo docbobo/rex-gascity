@@ -11,8 +11,8 @@ import (
 
 // Startup delivery: the policy Start applies to cfg.Nudge after the pane is
 // launched. It waits for readiness, then hands the text to the shared pane
-// delivery ladder in nudge.go (deliverPaneText), which it also uses for the
-// resend attempts; it shares the nudge tunables (nudgeConfig).
+// delivery ladder in pane_delivery.go (deliverPaneText), which it also uses
+// for the resend attempts; it shares the nudge tunables (nudgeConfig).
 
 // Defaults for the bounded startup readiness wait. The window mirrors gc's
 // own defaultReadyProbeTimeout (tmux adapter); the shorter settle delay covers
@@ -261,23 +261,6 @@ const startupClearKey = "ctrl+u"
 // that already succeeded.
 func (p *Provider) clearStartupDeliveryUnconfirmed(ctx context.Context, name string) {
 	_ = p.RemoveMeta(ctx, name, StartupDeliveryUnconfirmedMetaKey)
-}
-
-// sleepStartupBackoff waits out one resend delay. It reports false when the
-// start context is done first, so a canceled start does not sleep through the
-// ladder only to record the same unconfirmed delivery later.
-func (p *Provider) sleepStartupBackoff(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 // recordStartupNudgeWithheld marks a pane whose startup nudge was withheld, so
