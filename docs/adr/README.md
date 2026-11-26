@@ -49,3 +49,4 @@ live in the `AGENTS.md` files.
 | [0017](0017-rex-is-the-supported-opt-in-backend-and-tmux-stays-the-default.md) | Rex is the supported opt-in backend and tmux stays the default | Accepted |
 | [0018](0018-codeql-runs-advisory-for-go-and-actions.md) | CodeQL runs advisory for Go and Actions | Accepted |
 | [0019](0019-the-ui-ships-from-this-repo-through-one-installer-that-edits-only-init-lua.md) | The UI ships from this repo through one installer that edits only `init.lua` | Accepted |
+| [0020](0020-keep-fs-host-undeclared.md) | `fs.host` stays undeclared, `locality` stays `local` | Accepted |
