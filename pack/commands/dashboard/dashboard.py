@@ -682,13 +682,20 @@ class Renderer:
             if info["total"]:
                 tag += f" \u00b7 {self.progress_str(info)}"
             tagtxt = "[" + tag + "]"
-            # Budget the title from the real widths so a long ID and a long
-            # meta tag cannot push the row past the terminal width.
-            fixed = dwidth(origin["id"]) + 6 + dwidth(detail) + dwidth(tagtxt)
+            # Fit the decorations, the meta tag, and the ID inside the width
+            # first, then spend what is left on the title. A budget of zero
+            # or less means "omit the title", not "render it in full":
+            # truncate() treats a non-positive width as unlimited.
+            fixed = 6 + dwidth(detail) + dwidth(tagtxt)
+            if fixed >= self.width:
+                tagtxt, fixed = "", 6 + dwidth(detail)
+            room = self.width - fixed
+            idtxt = truncate(origin["id"], room) if room > 0 else ""
+            title_w = room - dwidth(idtxt)
+            title = truncate(origin.get("title", ""), title_w) if title_w > 0 else ""
             self.lines.append(
-                f"{icon(origin, p)} {p(origin['id'], BOLD)} {p(DOT, DIM)} "
-                f"{truncate(origin.get('title', ''), max(self.width - fixed, 0))}"
-                f"{detail} {p(tagtxt, DIM)}"
+                f"{icon(origin, p)} {p(idtxt, BOLD)} {p(DOT, DIM)} "
+                f"{title}{detail} {p(tagtxt, DIM)}"
             )
             return
 
@@ -1168,8 +1175,12 @@ def watch(args, paint: Paint, label: str) -> int:
     # inside the first flush, must still restore what was already acquired.
     try:
         if on_tty and hasattr(signal, "SIGWINCH"):
+            # Record the old handler before installing it: signal.signal
+            # installs first and returns second, so a Ctrl-C on that line must
+            # not lose the handler that setup has to put back.
+            old_winch = signal.getsignal(signal.SIGWINCH)
             try:
-                old_winch = signal.signal(signal.SIGWINCH, on_winch)
+                signal.signal(signal.SIGWINCH, on_winch)
             except ValueError:
                 old_winch = None
         if key_mode:
