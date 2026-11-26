@@ -221,6 +221,15 @@ function M.script(settings, city, session_id)
 	add("if ! has_gc 2>/dev/null; then")
 	add("\tprintf '@@gc|missing\\n'")
 	if type(settings.pack_binding) == "string" and text.trim(settings.pack_binding) ~= "" then
+		-- The override names the binding, not the city. Still resolve the
+		-- city, so a caller that needs one (the dashboard) gets it. The
+		-- status and stderr stay silent: status-update works without a city,
+		-- and this lookup must not turn some other failure into its own.
+		add("else")
+		add('\tout=$("$gc" "$@" config show --json 2>/dev/null) || out=')
+		add(
+			'\t[ -n "$out" ] && printf \'%s\\n\' "$out" | awk \'' .. M.FILTER .. '\' | grep \'^@@city|\''
+		)
 		add("fi")
 		return table.concat(lines, "\n")
 	end

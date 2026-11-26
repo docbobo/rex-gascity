@@ -1972,7 +1972,10 @@ test("status: pack_binding skips the import lookup, not the server check or the 
 	local missing = run_probe(status.script(settings, nil, "s1"), dir, "REX_SERVER=/tmp/other.sock")
 	remove(dir)
 	falsy(found:find("@@gc|", 1, true), "gc is there")
-	falsy(found:find("@@config|", 1, true), "no lookup with gc")
+	falsy(found:find("@@config|", 1, true), "no status row from the city lookup")
+	falsy(found:find("@@error|", 1, true), "no error row from the city lookup")
+	falsy(found:find("@@import|", 1, true), "no import lookup")
+	contains(found, "@@city|/cities/alpha\n", "the city is still resolved")
 	contains(missing, "@@server|/tmp/other.sock\n", "the server is still checked")
 	contains(missing, "@@gc|missing\n", "a missing gc is still reported")
 	falsy(missing:find("@@config|", 1, true), "no lookup without gc")
@@ -2275,7 +2278,9 @@ test("status action: pack_binding names the binding with no import", function()
 	local ok, result, sent = run_status({ city = "/c" }, { pack_binding = "mine" })
 	truthy(ok, "no error: " .. tostring(result))
 	contains(sent[1].body, "gc 'mine' status-update", "the override")
-	falsy(stub.blocks[1].options.command[3]:find("config show", 1, true), "no lookup")
+	local script = stub.blocks[1].options.command[3]
+	contains(script, "grep '^@@city|'", "the city-only lookup")
+	falsy(script:find("@@config|", 1, true), "no import lookup")
 end)
 
 test("status action: pack_binding does not skip the gc check, and no mail goes", function()
@@ -2428,7 +2433,9 @@ test("dashboard action: pack_binding wins over the imports and skips the lookup"
 	truthy(ok, "no error: " .. tostring(result))
 	equal(result.binding, "mine", "binding")
 	contains(stub.splits[1].layout.block.options.command[3], "'mine' 'dashboard'", "the command")
-	falsy(stub.blocks[1].options.command[3]:find("config show", 1, true), "no lookup")
+	local script = stub.blocks[1].options.command[3]
+	contains(script, "grep '^@@city|'", "the city-only lookup")
+	falsy(script:find("@@config|", 1, true), "no import lookup")
 end)
 
 test("dashboard action: a missing gc is the gc.MISSING error and no split", function()
