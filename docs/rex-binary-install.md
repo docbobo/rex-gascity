@@ -76,9 +76,9 @@ tool a provider on PATH.
 directory from its own path and runs `pack/install.sh` from there. The
 install needs no Go toolchain and no source checkout.
 
-`--fix` refuses with a non-zero exit before any download when the installed
-rex CLI is older than `pack/rex-min-version`. It cannot update the Rex app,
-which bundles the CLI.
+`--fix` warns on stderr and continues to warm the cache when the installed
+rex CLI's `api_revision` is below `pack/rex-min-api-revision`, or cannot be
+read. The gate is soft. It cannot update the Rex app, which bundles the CLI.
 
 `pack/install.sh`:
 

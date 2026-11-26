@@ -26,7 +26,8 @@ rex-gascity/
     install.sh                      release installer, and --from-source
     doctor/rex-binary/              gc doctor check: run.sh, fix.sh, doctor.toml
     doctor/rex-ui/                  gc doctor check for the Gas City UI
-    rex-min-version                 the oldest rex CLI the pack drives
+    rex-min-version                 the rex CLI archive CI installs for conformance
+    rex-min-api-revision            the oldest rex CLI API revision the pack drives
     release.sh                      the only publisher
     tests/                          check-*.sh (pack checks), conformance.sh
   ui/                               the Gas City UI, a Rex Lua extension, and its installer
@@ -185,13 +186,13 @@ The provider check is `rex-gascity-runtime:rex-binary`. The UI check, `rex-gasci
 |---|---|---|
 | Provider | The cache is cold. The binary is not executable. The handshake is not RPP v0. A determined version differs from `[pack] version`. | The version cannot be determined (a source build, or an older binary with no `version` op). |
 | Shim | `[pack] version`, `bin/_lib.sh` or the cache path is missing. No release asset exists for this platform. | |
-| rex CLI | It is not on `PATH` (or in `GC_REX_BIN`). It is not executable. It is older than `pack/rex-min-version`. | The version cannot be determined. |
+| rex CLI | It is not on `PATH` (or in `GC_REX_BIN`). It is not executable. | It is below `pack/rex-min-api-revision`. The API revision cannot be determined. |
 
 The provider version compares equal after a leading `v` and any `+build-metadata` suffix are stripped. A tagged `v2026.11.05` and a `-ldflags`-stamped `2026.11.05` match. `make build` stamps `[pack] version`.
 
 The check compares versions only. It cannot tell two builds of one version apart.
 
-The rex CLI pin is `pack/rex-min-version` (`0.1.0-preview.21`), the newest released Rex app. The CI conformance job reads the same file and installs the archive for that version, so the two cannot drift. The pin compares as a minimum, so a newer CLI passes. The version comes from `rex version --json`'s `rex_version` field. When `--json` is unsupported, it comes from the first line of `rex version`. An older CLI is an error.
+The rex CLI pin is `pack/rex-min-api-revision` (`19`), the `api_revision` of the Rex the pack is built against. The installed CLI must be at least that revision. The gate is soft: a lower or undeterminable revision is a warning, not an error. The revision comes from `rex version --json`'s `api_revision` field, or the `api: revision N (supports ...)` line of plain `rex version` when `--json` is unsupported. `pack/rex-min-version` (`0.1.0-preview.21`) is separate: the CI conformance job reads it to pick and install the Rex archive, and it no longer gates compatibility.
 
 ## How sessions run
 
