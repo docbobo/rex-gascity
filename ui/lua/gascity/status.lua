@@ -260,7 +260,13 @@ end
 -- The screen wraps a long line into rows, so the rows are joined and the
 -- answer is split again at each @@. The probe escapes a value that holds @@.
 function M.parse(output)
-	local rows = codec.rows(output, { "city", "server", "server_error", "gc", "config", "error", "import" }) or {}
+	-- Every row this probe prints starts with the marker. Without marker-only,
+	-- a wrapped import key whose tail is `city|...` would start a city row.
+	local rows = codec.rows(
+		output,
+		{ "city", "server", "server_error", "gc", "config", "error", "import" },
+		{ marker_only = true }
+	) or {}
 	local answer = { gc_missing = false, imports = {} }
 	for _, row in ipairs(rows) do
 		local kind = row.kind

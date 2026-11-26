@@ -159,7 +159,11 @@ end
 -- because a terminal wrap adds a newline that is not part of the value.
 -- Values are escaped, so no value can start a row of its own. Text before the
 -- first row is dropped. Returns nil and a reason for a malformed row.
-function M.rows(output, names)
+-- With `opts.marker_only`, only the marker begins a row. A wrapped value can
+-- then carry a tail such as `city|...` without posing as a bare row; a caller
+-- whose program always marks its rows uses this mode (status).
+function M.rows(output, names, opts)
+	local marker_only = opts ~= nil and opts.marker_only == true
 	local known = {}
 	for _, name in ipairs(names) do
 		known[name] = true
@@ -196,7 +200,7 @@ function M.rows(output, names)
 			local marked = line:sub(1, #M.ROW_MARK) == M.ROW_MARK
 			local body = marked and line:sub(#M.ROW_MARK + 1) or line
 			local kind = body:match("^([%a_]+)%|")
-			if marked or (kind ~= nil and known[kind]) then
+			if marked or (not marker_only and kind ~= nil and known[kind]) then
 				local ok, reason = flush()
 				if not ok then
 					return nil, reason
