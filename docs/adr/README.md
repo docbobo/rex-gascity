@@ -35,3 +35,4 @@ live in the `AGENTS.md` files.
 | [0002](0002-liveness-unknown-is-not-dead.md) | A liveness read that fails answers `unknown`, never `dead` | Accepted |
 | [0003](0003-retirement-policy-presets.md) | Retirement is configured by named presets, not by policy fields | Accepted |
 | [0004](0004-binder-start-env.md) | `Binder` derives its labels from the projected start env | Accepted |
+| [0005](0005-route-provider-hooks-through-the-runner-seam.md) | Provider hooks run through the `Runner` seam | Accepted |
