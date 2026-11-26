@@ -191,6 +191,16 @@ run "$tag"
 grep -q 'target version' "$work/out" ||
   fail "the missing-target failure does not name the target version"
 
+# A longer version that merely starts with the target is a different version,
+# so it must not satisfy the target check.
+write_body "Rex runtime pack ${tag}0. Import it by tag.
+
+- #140 — a longer tag that only prefixes the target."
+run "$tag"
+[ "$rc" -ne 0 ] || fail "a target prefix inside a longer version passed"
+grep -q 'target version' "$work/out" ||
+  fail "the target-prefix failure does not name the target version"
+
 # A gh read failure is a failure, not a pass.
 write_body "$good"
 FAKE_BODY_JSON=$work/missing.json
