@@ -597,6 +597,7 @@ after=$("$work/tools/sha256" "$pkg/bin/gc-runtime-rex")
 fakego=$work/fakego; mkdir -p "$fakego"
 cat > "$fakego/go" <<'GOEOF'
 #!/bin/sh
+[ -n "${GO_FAKE_LOG:-}" ] && printf '%s\n' "$*" > "$GO_FAKE_LOG"
 [ -n "${GOBIN:-}" ] && printf '#!/bin/sh\necho fake-built\n' > "$GOBIN/gc-runtime-rex" && chmod 755 "$GOBIN/gc-runtime-rex"
 exit 0
 GOEOF
@@ -605,9 +606,14 @@ rm -rf "$work/cache"; reset_logs
 out=$(env -i HOME="$work/home-src" PATH="$fakego:$nogh_path" \
   FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 \
   GC_RUNTIME_INSTALL_DIR="$work/cache/src" \
+  GO_FAKE_LOG="$work/go-args.log" \
   sh "$installer" --from-source 2>&1) ||
   fail "--from-source with GC_RUNTIME_INSTALL_DIR failed: $out"
 [ -x "$work/cache/src/gc-runtime-rex" ] || fail "--from-source did not write the install-dir target"
+# --from-source must stamp the declared version, or the build reports the
+# module pseudo-version, doctor warns, and doctor --fix replaces it.
+grep -qF -- "-X main.buildVersion=$version" "$work/go-args.log" ||
+  fail "--from-source did not stamp -X main.buildVersion=$version: $(cat "$work/go-args.log")"
 printf '%s' "$out" | grep -q 'not on PATH\|add it' &&
   fail "--from-source with GC_RUNTIME_INSTALL_DIR still printed a PATH warning"
 

@@ -223,9 +223,9 @@ From a git checkout of this repository, with a Go toolchain:
 sh pack/install.sh --from-source
 ```
 
-Such a build reports the module pseudo-version, so the doctor check warns
-that it cannot confirm the pack version. The release asset is the default
-path.
+The build stamps the `[pack] version` that checkout declares, so the doctor
+check matches. That identity holds only when the checkout is the commit that
+version names. The release asset is the default path.
 
 ## Build and release
 

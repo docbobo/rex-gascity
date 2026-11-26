@@ -173,9 +173,9 @@ provider = "rex"
   `$HOME/.local/bin`, or the directory of the `gc-runtime-rex` already on
   `PATH`. That copy does not warm the version-keyed cache. The doctor check
   still reports the cache as cold.
-- `--from-source` builds from a checkout with Go. Such a build reports the
-  module pseudo-version, and the doctor check warns that it cannot confirm the
-  pack version.
+- `--from-source` builds from a checkout with Go. The build stamps the `[pack]
+  version` that checkout declares, so the doctor check matches. That identity
+  holds only when the checkout is the commit that version names.
 
 ## Doctor
 

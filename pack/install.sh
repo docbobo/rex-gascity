@@ -113,19 +113,20 @@ warn_path() {
   fi
 }
 
-# Explicit source-checkout fallback. Opt-in only: a source build reports the
-# module pseudo-version, so the doctor check may warn that it cannot confirm
-# the version. The release asset is the default path.
+# Explicit source-checkout fallback. Opt-in only: the build stamps the version
+# this checkout's pack.toml declares, so the doctor check matches. That identity
+# holds only when the checkout IS the commit that version names; a checkout of
+# another commit claims the same version, and the doctor compares versions only.
 if [ -n "$from_source" ]; then
   module_dir=$(CDPATH= cd -- "$pack_dir/.." && pwd)
   [ -f "$module_dir/go.mod" ] ||
     die "--from-source needs a source checkout, but $module_dir/go.mod does not exist"
   command -v go >/dev/null 2>&1 ||
     die "--from-source needs a Go toolchain on PATH"
-  ( cd "$module_dir" && GOBIN="$target_dir" go install ./cmd/gc-runtime-rex ) ||
+  ( cd "$module_dir" &&
+    GOBIN="$target_dir" go install -ldflags "-X main.buildVersion=$version" ./cmd/gc-runtime-rex ) ||
     die "go install failed (see the toolchain error above)"
-  echo "installed $target from source"
-  echo "warning: a source build reports the module pseudo-version; gc doctor may warn" >&2
+  echo "installed $target from source (version $version)"
   [ -n "${GC_RUNTIME_INSTALL_DIR:-}" ] || warn_path
   exit 0
 fi
