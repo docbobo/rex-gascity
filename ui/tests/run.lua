@@ -2353,6 +2353,140 @@ test("status action: a machine that does not answer is an error, and no mail goe
 	equal(#sent, 0, "no mail")
 end)
 
+-- The dashboard action -----------------------------------------------------
+
+-- Runs the action against the stub. Returns ok and the result or error.
+local function run_dashboard(settings)
+	local app = app_with({})
+	for key, value in pairs(settings or {}) do
+		app.config[key] = value
+	end
+	actions.register(app)
+	return pcall(
+		stub.actions.gascity_dashboard.run,
+		{ block_id = "block:1", session_id = "s1" }
+	)
+end
+
+test("dashboard action: it is registered with a title, an icon, and no arguments", function()
+	actions.register(app_with({}))
+	local definition = stub.actions.gascity_dashboard
+	truthy(definition, "registered")
+	equal(definition.title, "Gas City: Open the Workstream Dashboard", "title")
+	truthy(definition.keywords and definition.keywords:find("dashboard", 1, true) ~= nil, "keywords")
+	falsy(definition.args, "no arguments")
+
+	stub.picked = nil
+	pcall(stub.actions.gascity_menu.run, { block_id = "block:1", session_id = "s1" })
+	truthy(stub.picks ~= nil, "the menu lists it")
+	local item
+	for _, entry in ipairs(stub.picks.items) do
+		if entry.title == "Open the Workstream Dashboard" then
+			item = entry
+		end
+	end
+	truthy(item, "the menu entry")
+	truthy(REX_ICONS[item.icon], "a known Rex icon: " .. tostring(item.icon))
+end)
+
+test("dashboard action: the split uses the pane directory, the terminal flavor, and a kept-open command", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "@@city|/cities/one", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, result = run_dashboard()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result.cwd, "/work/alpha", "cwd")
+	equal(result.binding, "rex", "binding")
+	equal(result.block_id, "block:probe", "block")
+	equal(#stub.splits, 1, "one split")
+	local split = stub.splits[1]
+	equal(split.session_id, "s1", "the action's session")
+	equal(split.anchor_id, "block:1", "anchored to the action's block")
+	equal(split.focus, true, "focused")
+	local block = split.layout.block
+	equal(block.flavor, "com.superlogical.terminal.shell", "flavor")
+	equal(block.options.cwd, "/work/alpha", "the pane's directory")
+	equal(block.options.command[1], "/bin/sh", "the shell doing the work")
+	equal(block.options.command[2], "-c", "the shell runs a script")
+	contains(block.options.command[3], "'rex' 'dashboard'", "the command")
+	equal(block.options.exit.on_completion, false, "the pane stays open")
+	truthy(stub.logged("info", "dashboard"), "one info line")
+end)
+
+test("dashboard action: a foreign import key is the binding", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "@@city|/cities/one", "@@config|0", "@@import|gascity|" .. REX_PACK })
+	local ok, result = run_dashboard()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result.binding, "gascity", "binding")
+	contains(stub.splits[1].layout.block.options.command[3], "'gascity' 'dashboard'", "the command")
+end)
+
+test("dashboard action: pack_binding wins over the imports and skips the lookup", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "@@city|/cities/one" })
+	local ok, result = run_dashboard({ pack_binding = "mine" })
+	truthy(ok, "no error: " .. tostring(result))
+	equal(result.binding, "mine", "binding")
+	contains(stub.splits[1].layout.block.options.command[3], "'mine' 'dashboard'", "the command")
+	falsy(stub.blocks[1].options.command[3]:find("config show", 1, true), "no lookup")
+end)
+
+test("dashboard action: a missing gc is the gc.MISSING error and no split", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "@@gc|missing" })
+	local ok, err = run_dashboard()
+	falsy(ok, "an error")
+	contains(err, "gc is not on this machine", "the gc.guard message")
+	equal(#stub.splits, 0, "no split")
+end)
+
+test("dashboard action: a city without the pack names the import and pack_binding", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({
+		"@@city|/cities/one",
+		"@@config|0",
+		"@@import|gc|https://github.com/gastownhall/gascity-packs/tree/main/gascity",
+	})
+	local ok, err = run_dashboard({ file = "/home/me/.config/rex/gascity.lua" })
+	falsy(ok, "an error")
+	equal(
+		err,
+		"/cities/one does not import the rex-gascity pack. Import it (docs/rex-runtime-pack.md), or set pack_binding in /home/me/.config/rex/gascity.lua",
+		"the error"
+	)
+	contains(err, "pack_binding", "the setting")
+	equal(#stub.splits, 0, "no split")
+end)
+
+test("dashboard action: a directory in no city is one error that names it and no split", function()
+	stub.pane_cwd = "/work/nowhere"
+	stub.format = probe_answer({ "@@config|1", "@@error|no city.toml found" })
+	local ok, err = run_dashboard()
+	falsy(ok, "an error")
+	contains(err, "/work/nowhere", "the pane's directory")
+	contains(err, "no Gas City city or rig contains", "the message")
+	equal(#stub.splits, 0, "no split")
+end)
+
+test("dashboard action: it never asks which rig", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "@@city|/cities/one", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok, result = run_dashboard()
+	truthy(ok, "no error: " .. tostring(result))
+	equal(stub.pick_count, 0, "no picker")
+	equal(stub.picks, nil, "no picker question")
+	equal(result.rig, nil, "no rig in the result")
+end)
+
+test("dashboard action: a nonzero dashboard exit stays in the kept-open pane", function()
+	stub.pane_cwd = "/work/alpha"
+	stub.format = probe_answer({ "@@city|/cities/one", "@@config|0", "@@import|rex|" .. REX_PACK })
+	local ok = run_dashboard()
+	truthy(ok, "no error")
+	equal(#stub.layers, 0, "no floating pane")
+	equal(stub.splits[1].layout.block.options.exit.on_completion, false, "the block stays open")
+end)
+
 -- The Gas City menu ------------------------------------------------------
 
 local function run_menu(choice, ctx)
@@ -2371,13 +2505,14 @@ test("menu: it lists the Gas City commands and nothing else", function()
 
 	truthy(stub.picks ~= nil, "asked")
 	equal(stub.picks.title, "Gas City", "the title")
-	equal(#stub.picks.items, 6, "six commands")
+	equal(#stub.picks.items, 7, "seven commands")
 	equal(stub.picks.items[1].title, "Message the Mayor…", "the first")
 	equal(stub.picks.items[2].title, "Ask the Mayor for a Status Update…", "the second")
 	equal(stub.picks.items[3].title, "Suspend a Rig…", "the third")
 	equal(stub.picks.items[4].title, "Resume a Rig…", "the fourth")
 	equal(stub.picks.items[5].title, "Open a Rig…", "the fifth")
-	equal(stub.picks.items[6].title, "Where This Runs…", "the sixth")
+	equal(stub.picks.items[6].title, "Open the Workstream Dashboard", "the sixth")
+	equal(stub.picks.items[7].title, "Where This Runs…", "the seventh")
 	truthy(stub.picks.items[1].subtitle ~= nil, "each says what it does")
 	equal(stub.picks.items[2].icon, "document", "the status update uses the document")
 	equal(stub.picks.items[3].icon, "clock", "suspend uses the clock")
