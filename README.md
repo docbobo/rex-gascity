@@ -2,15 +2,15 @@
 
 A Gas City runtime pack. Runtime `rex` runs agent sessions as native Rex panes instead of tmux panes. The pack ships one executable, `gc-runtime-rex`. It speaks the Runtime Provider Protocol (RPP v0) and drives the `rex` CLI. Gas City runs it once per operation.
 
-## Status: release target, v2026.11.06
+## Status: released, v2026.11.06
 
-Version `2026.11.06` (tag `v2026.11.06`) is the target version. The tag is not published yet. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
+Version `2026.11.06` (tag `v2026.11.06`) is the current release. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
 
 The install pin in this README names the latest published release. Only `pack/mark-released.sh` changes the release status and the pin, and a person runs it after a release is public (ADR 0006).
 
 The installer never replaces a working provider with an asset that cannot answer `inventory`. A test fixture or a broken release cannot break a city (PR #38).
 
-CI runs `gc runtime check` and `gc runtime conformance` with no failed requirement, in a scratch city and state root. The conformance report also records `v2_ready`. That value is evidence and not a gate. The pack is not in a pack registry. Import it from this repository by tag, once that tag is published.
+CI runs `gc runtime check` and `gc runtime conformance` with no failed requirement, in a scratch city and state root. The conformance report also records `v2_ready`. That value is evidence and not a gate. The pack is not in a pack registry. Import it from this repository by tag.
 
 ## Layout
 
@@ -45,8 +45,7 @@ rex-gascity/
 The pack's binding is `rex`. Import it under that name. The pack runs agent
 sessions as native Rex panes instead of tmux panes. It ships one executable,
 `bin/gc-runtime-rex`, which gc runs from the installed pack. It installs the
-matching release binary. The tag-based commands in this section are usable
-after `v2026.11.06` is published.
+matching release binary.
 
 ```sh
 gc import add https://github.com/docbobo/rex-gascity//pack --name rex --version 2026.11.06
