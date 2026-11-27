@@ -26,3 +26,12 @@ fi
 printf '[x](foo.md)\n' >"$tmp/docs/bar.md"
 git -C "$tmp" add -A
 sh "$script_dir/check-doc-links.sh" "$tmp"
+
+# Red case: docs/ holds no other directory, hidden ones included.
+mkdir -p "$tmp/docs/.plans"
+: >"$tmp/docs/.plans/spec.md"
+git -C "$tmp" add -A
+if sh "$script_dir/check-doc-links.sh" "$tmp" >/dev/null 2>&1; then
+  echo 'check-doc-links self-test: accepted docs/.plans, which is not docs/adr/' >&2
+  exit 1
+fi
