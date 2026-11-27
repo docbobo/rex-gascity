@@ -2,6 +2,8 @@
 
 A Gas City runtime pack. Runtime `rex` runs agent sessions as native Rex panes instead of tmux panes. The pack ships one executable, `gc-runtime-rex`. It speaks the Runtime Provider Protocol (RPP v0) and drives the `rex` CLI. Gas City runs it once per operation.
 
+To run a city on Rex, start with the [quickstart](docs/rex-runtime-pack.md). The [provider reference](docs/rex-provider.md) covers configuration and limits. The [UI guide](docs/rex-gascity-ui.md) covers the Gas City UI extension. All docs are indexed in [`docs/README.md`](docs/README.md).
+
 ## Status: released, v2026.11.06
 
 Version `2026.11.06` (tag `v2026.11.06`) is the current release. The provider is self-installing. The pack's `bin/gc-runtime-rex` entry point fetches the matching release binary into a version-keyed cache on first use. An import needs no `PATH` edit, no Go toolchain and no repository checkout (PR #39).
@@ -304,6 +306,7 @@ sh pack/tests/check-docs.sh       # runs the sh fences of the operator docs
 |---|---|
 | `check-import.sh` | Tag import and release install work end to end. The `sha:` case fails and names the tag. |
 | `check-docs.sh` | Every `sh` fence in `docs/rex-runtime-pack.md`, `docs/rex-binary-install.md` and `docs/rex-gascity-ui.md` runs against a scratch city. The version-keyed cache and the manual `PATH` install both reach the documented version. |
+| `check-doc-links.sh` | Every `docs/…md` path a tracked file names exists, every doc is listed in `docs/README.md` or `docs/adr/README.md`, and `docs/` has no subdirectory but `adr/`. |
 | `check-installer.sh` | `pack/install.sh` works over fake `curl`, `gh` and `uname`, including checksum, platform and destination failures. |
 | `check-runtime-shim.sh` | The self-installing shim handles a cache hit, a cache miss, the deadline, a platform rejection and clean stdout. |
 | `check-doctor-rex-version.sh` | The doctor check fails on an older rex CLI and passes on an equal or newer one. |
@@ -350,9 +353,19 @@ The linter set is pinned in `.golangci.yml` (`errcheck`, `govet`, `ineffassign`,
 
 ## Documentation
 
-- `docs/rex-runtime-pack.md` - operator quickstart: import, install, auth, upgrades, the release flow.
-- `docs/rex-binary-install.md` - installer and shim internals.
-- `docs/rex-provider.md` - provider reference: configuration, identity mapping, state and environment.
-- `docs/provider-trace.md` - the op trace schema and the stats reader.
-- `docs/fake-rex.md` - the test fake: coverage, limits and the live-server escape hatch.
-- `docs/REX-CONTRACT.md` - the pinned Rex CLI and API surface, and exit codes.
+The full index is [`docs/README.md`](docs/README.md).
+
+For users:
+
+- [`docs/rex-runtime-pack.md`](docs/rex-runtime-pack.md) - quickstart: import, install, auth, upgrades, the release flow.
+- [`docs/rex-binary-install.md`](docs/rex-binary-install.md) - installer and shim internals.
+- [`docs/rex-gascity-ui.md`](docs/rex-gascity-ui.md) - the Gas City UI extension: install, doctor check, configuration.
+- [`docs/rex-provider.md`](docs/rex-provider.md) - provider reference: configuration, identity mapping, state, environment, limits and risks.
+- [`docs/provider-trace.md`](docs/provider-trace.md) - the op trace schema and the stats reader.
+
+For us (maintainers and agents):
+
+- [`docs/REX-CONTRACT.md`](docs/REX-CONTRACT.md) - the pinned Rex CLI and API surface, and exit codes.
+- [`docs/fake-rex.md`](docs/fake-rex.md) - the test fake: coverage, limits and the live-server escape hatch.
+- [`docs/ci.md`](docs/ci.md) - the CI job map, measured cost and budgets.
+- [`docs/adr/`](docs/adr/README.md) - architecture decision records.
