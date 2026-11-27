@@ -18,8 +18,9 @@ shown to be inside the supported range.
 ## Decision
 
 `[session] provider = "rex"` is a supported, opt-in backend for a city. tmux
-stays gc's default and the fallback. A city may run its mayor on tmux and its
-workers on Rex.
+stays gc's default and the fallback. The provider is selected for the whole
+city, so the pilot ran two cities: its mayor city on tmux and its worker city on
+Rex.
 
 ## Consequences
 
