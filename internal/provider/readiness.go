@@ -71,25 +71,62 @@ var (
 	startupPromptEndings = []string{">", "$", "%", "#", "❯", "›"}
 )
 
+// startupDialogTailLines is how much of the pane's screen the startup path
+// reads: the last 120 lines, as gc's startup-dialog peek does (gc v1.5.1
+// internal/runtime/dialog.go:18, startupDialogPeekLines). A marker that
+// scrolled above it no longer counts (#205, REQ-007).
+const startupDialogTailLines = 120
+
+// startupScreenTail is the last startupDialogTailLines lines of screen. A
+// final newline ends the last line and is kept, not counted. A shorter screen
+// is returned whole.
+func startupScreenTail(screen string) string {
+	end := len(strings.TrimSuffix(screen, "\n"))
+	for range startupDialogTailLines {
+		cut := strings.LastIndexByte(screen[:end], '\n')
+		if cut < 0 {
+			return screen
+		}
+		end = cut
+	}
+	return screen[end+1:]
+}
+
+// Names matchedStartupDialog gives the two rate-limit checks.
+const (
+	dialogNameRateLimit     = "rate-limit"
+	dialogNameRateLimitMenu = "rate-limit-menu"
+)
+
 // withholdsFirstTurn reports whether the screen shows a dialog the first turn
 // must not land in: a named dialog gc knows, a high-confidence rate-limit
 // screen, or a bare "rate limit" mention beside a menu cursor row. It is
 // readiness.py's withholds_first_turn, which narrows readiness.py's
-// shows_dialog (gc's ContainsRateLimitDialog). The pane-state module
-// (panestate.go) is its only caller.
+// shows_dialog (gc's ContainsRateLimitDialog). It is matchedStartupDialog's ok,
+// so the withhold rule and the name it reports cannot drift apart.
 func withholdsFirstTurn(screen, prefix string) bool {
-	return namedDialog(screen) || rateLimited(screen, rateLimitDialogMarkers) || rateLimitMenu(screen, prefix)
+	_, ok := matchedStartupDialog(screen, prefix)
+	return ok
 }
 
-// namedDialog is readiness.py's _named_dialog: every group of one dialog has a
-// marker on the screen.
-func namedDialog(screen string) bool {
+// matchedStartupDialog names the startup dialog the screen shows. It checks in
+// withholdsFirstTurn's order and returns the first match: the named dialogs in
+// startupDialogGroups order, then the rate-limit screen, then the rate-limit
+// menu. A named dialog's name is the first marker of its first group, whichever
+// alternative matched, so one dialog always has one name (#205, REQ-005).
+func matchedStartupDialog(screen, prefix string) (string, bool) {
 	for _, groups := range startupDialogGroups {
 		if dialogGroupsMatch(screen, groups) {
-			return true
+			return groups[0][0], true
 		}
 	}
-	return false
+	if rateLimited(screen, rateLimitDialogMarkers) {
+		return dialogNameRateLimit, true
+	}
+	if rateLimitMenu(screen, prefix) {
+		return dialogNameRateLimitMenu, true
+	}
+	return "", false
 }
 
 // dialogGroupsMatch reports whether one marker from each group is on screen.

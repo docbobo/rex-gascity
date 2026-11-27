@@ -30,7 +30,7 @@ func TestStartupNudgeWithheldOnStartupDialog(t *testing.T) {
 		"block:dog-1": {Records: []rex.ProgramStatusRecord{{State: "idle", UpdatedAt: time.Now()}}},
 	}
 	fake.Formats = map[rex.BlockID]string{"block:dog-1": trustDialogScreen}
-	p := startupProvider(fake)
+	p := startupProvider(fake, provider.WithStartupDialogClear(50*time.Millisecond))
 
 	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Nudge: "hello agent"}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -65,7 +65,7 @@ func TestStartupNudgeWithheldOnStartupDialogWithPromptPrefix(t *testing.T) {
 		"block:dog-1": {Records: []rex.ProgramStatusRecord{{State: "working", UpdatedAt: time.Now()}}},
 	}
 	fake.Formats = map[rex.BlockID]string{"block:dog-1": trustDialogScreen}
-	p := startupProvider(fake)
+	p := startupProvider(fake, provider.WithStartupDialogClear(50*time.Millisecond))
 
 	if err := p.Start(ctx, name, provider.Config{
 		Argv:              []string{"pi"},

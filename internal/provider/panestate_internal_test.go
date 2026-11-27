@@ -347,3 +347,24 @@ func TestPaneStateVerdict(t *testing.T) {
 		})
 	}
 }
+
+// TestScreenReadRecordsReturnTime pins the REQ-002 clock: a memoized screen
+// read times when read returned, not when its result is classified or used.
+// Later gets keep the first read and its time even as the wall clock moves on.
+func TestScreenReadRecordsReturnTime(t *testing.T) {
+	s := newScreenRead(func() (string, error) { return "screen", nil })
+	before := time.Now()
+	if got, err := s.get(); err != nil || got != "screen" {
+		t.Fatalf("get = %q, %v; want screen, nil", got, err)
+	}
+	after := time.Now()
+	at := s.at
+	if at.Before(before) || at.After(after) {
+		t.Fatalf("screen read time %v outside [%v, %v]", at, before, after)
+	}
+	time.Sleep(time.Millisecond)
+	s.get()
+	if !s.at.Equal(at) {
+		t.Fatalf("screen read time changed on a second get: %v, want %v", s.at, at)
+	}
+}

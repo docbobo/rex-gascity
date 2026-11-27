@@ -92,3 +92,46 @@ func TestFakeMoveWindowRecordsFailedCalls(t *testing.T) {
 		t.Errorf("order = %v, want it unchanged %v", got, before)
 	}
 }
+
+// TestFakeFormatCtxFunc pins the context-aware format hook: it receives the
+// call's context, can fail one call, runs without the fake's lock held, and
+// the call is still recorded as a "format" block call.
+func TestFakeFormatCtxFunc(t *testing.T) {
+	f := faketest.New()
+	f.Formats = map[rex.BlockID]string{"block:a": "static"}
+	boom := errors.New("boom")
+	calls := 0
+	f.FormatCtxFunc = func(ctx context.Context, _ rex.BlockID) (string, error) {
+		calls++
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if calls == 2 {
+			return "", boom
+		}
+		// The fake's lock is not held here; with it held this call deadlocks.
+		_, _ = f.ListSessions(context.Background())
+		return "screen", nil
+	}
+	ctx := context.Background()
+	if got, err := f.BlockFormat(ctx, "s", "block:a"); err != nil || got != "screen" {
+		t.Fatalf("first read = %q, %v; want screen, nil", got, err)
+	}
+	if _, err := f.BlockFormat(ctx, "s", "block:a"); !errors.Is(err, boom) {
+		t.Fatalf("second read error = %v, want boom", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := f.BlockFormat(cancelled, "s", "block:a"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("read under a cancelled context = %v, want context.Canceled", err)
+	}
+	formats := 0
+	for _, c := range f.BlockCalls {
+		if c.Op == "format" {
+			formats++
+		}
+	}
+	if formats != 3 {
+		t.Fatalf("recorded %d format calls, want 3", formats)
+	}
+}
