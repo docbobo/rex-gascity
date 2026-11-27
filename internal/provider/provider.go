@@ -571,97 +571,6 @@ func (p *Provider) Stop(ctx context.Context, name string) error {
 	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
 }
 
-// destroyEmptyCitySession removes this city's canonical gc:<city> session once
-// its last pane is gone (GCREX-31). The caller holds the state lock. This
-// function takes the session's launch lock before it reads the view, so no
-// launch can add a pane between the empty check and the removal. It fails
-// closed: a session with any window, a label that is not the canonical one (a
-// legacy, foreign or other-city session), or any Rex error keeps the session
-// and returns the error.
-func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
-	if sid == "" {
-		return nil
-	}
-	// The launch lock comes first: a launch holds it shared across its
-	// SessionView and NewWindow/NewSplit, so an empty view below cannot go
-	// stale under us. Rex removes a tab with its last block
-	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
-	// is a true empty session.
-	release, busy, lockErr := p.tryLaunchLock(sid)
-	if lockErr != nil {
-		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
-	}
-	if busy {
-		return nil
-	}
-	defer release()
-	view, err := p.client.SessionView(ctx, sid)
-	if errors.Is(err, rex.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("check whether %s is empty: %w", sid, err)
-	}
-	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
-		return nil
-	}
-	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
-	}
-	return nil
-}
-
-// reapSurvivors reaps tree and, while any of it survives, records the pids on
-// the binding so the retry stop herdr-core allows still has them: the pane is
-// closed by then and reports nothing. It returns the failure to report, nil
-// when the tree is gone.
-func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []prochost.Ident) error {
-	// A survivor recorded by an earlier stop can spawn a child before the
-	// retry, and the closed pane no longer reports that child: read the host
-	// table so the retry reaps what the tree grew, not only what it was given.
-	tree = p.descendants(ctx, tree)
-	left, readErr, signalErr := p.reap(ctx, tree)
-	binding.Survivors = survivorRecords(left)
-	if len(left) == 0 {
-		// A signal error with nothing left is a success: everything died anyway
-		// (the caller's contract), so the failed signal is not reported.
-		return readErr
-	}
-	survived := &survivorError{name: string(binding.Name), survivors: left, reason: errors.Join(readErr, signalErr)}
-	// A start may have replaced the binding while this reap ran. Record only
-	// while the stored binding is still the one we reaped: a replacement owns
-	// the name and must not carry the old pane's survivors.
-	if _, err := p.binder.RecordIfCurrent(binding); err != nil {
-		// The stop fails either way: the record that would name these pids for
-		// the next retry was not saved.
-		return errors.Join(err, survived)
-	}
-	return survived
-}
-
-// clearIncarnations removes the whole metadata sidecar and the activity record
-// for each name (deduplicated). Stop calls it with the caller's name and the
-// resolved primary name, so every key and activity stamp of a retired
-// incarnation is gone before the next start of the same name reads them. This
-// matches herdr-core's per-incarnation forget (parity doc ### stop row 4).
-func (p *Provider) clearIncarnations(names ...SessionName) error {
-	seen := map[SessionName]bool{}
-	var errs []error
-	for _, n := range names {
-		if n == "" || seen[n] {
-			continue
-		}
-		seen[n] = true
-		if err := p.metaClear(n); err != nil {
-			errs = append(errs, err)
-		}
-		if err := p.activity.Drop(n); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
 // IsRunning reports whether the agent's program is still running. It is
 // alias-aware: a rig-qualified name is running while any instance bound to it
 // is alive. An agent with no pane is not running.
@@ -951,16 +860,4 @@ func (p *Provider) runSessionSetup(ctx context.Context, name string, res startRe
 	if len(cfg.SessionLive) > 0 {
 		p.warnf("%s", sessionLiveSkipped)
 	}
-}
-
-// preStartCwd returns workDir when it is an existing directory, else "/". A
-// work_dir that pre_start is meant to create does not exist yet, so it cannot
-// be the hook's cwd.
-func preStartCwd(workDir string) string {
-	if workDir != "" {
-		if info, err := os.Stat(workDir); err == nil && info.IsDir() {
-			return workDir
-		}
-	}
-	return "/"
 }

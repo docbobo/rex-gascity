@@ -322,3 +322,66 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 	res.alreadyClosed = closedNotFound
 	return res, nil
 }
+
+// destroyEmptyCitySession removes this city's canonical gc:<city> session once
+// its last pane is gone (GCREX-31). The caller holds the state lock. This
+// function takes the session's launch lock before it reads the view, so no
+// launch can add a pane between the empty check and the removal. It fails
+// closed: a session with any window, a label that is not the canonical one (a
+// legacy, foreign or other-city session), or any Rex error keeps the session
+// and returns the error.
+func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
+	if sid == "" {
+		return nil
+	}
+	// The launch lock comes first: a launch holds it shared across its
+	// SessionView and NewWindow/NewSplit, so an empty view below cannot go
+	// stale under us. Rex removes a tab with its last block
+	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
+	// is a true empty session.
+	release, busy, lockErr := p.tryLaunchLock(sid)
+	if lockErr != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
+	}
+	if busy {
+		return nil
+	}
+	defer release()
+	view, err := p.client.SessionView(ctx, sid)
+	if errors.Is(err, rex.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check whether %s is empty: %w", sid, err)
+	}
+	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
+		return nil
+	}
+	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
+		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
+	}
+	return nil
+}
+
+// clearIncarnations removes the whole metadata sidecar and the activity record
+// for each name (deduplicated). Stop calls it with the caller's name and the
+// resolved primary name, so every key and activity stamp of a retired
+// incarnation is gone before the next start of the same name reads them. This
+// matches herdr-core's per-incarnation forget (parity doc ### stop row 4).
+func (p *Provider) clearIncarnations(names ...SessionName) error {
+	seen := map[SessionName]bool{}
+	var errs []error
+	for _, n := range names {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		if err := p.metaClear(n); err != nil {
+			errs = append(errs, err)
+		}
+		if err := p.activity.Drop(n); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
