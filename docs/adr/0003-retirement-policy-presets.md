@@ -11,8 +11,10 @@ in which steps run and in their scope. Five call paths needed five shapes:
 a plain stop, a stop whose pane was already gone, a stale-record drop, a
 launch-record discard, and a start whose pane died.
 
-The order itself is a documented decision and stays in `docs/REX-RETIRE.md`. This
-record is about the shape of the knob, not the order of the steps.
+The order itself is stated and fixed in `retire()`
+(`internal/provider/retire.go:206-222`), and ADR-0016 records why `stop` closes
+the pane on the retire path. This record is about the shape of the knob, not the
+order of the steps.
 
 ## Decision
 

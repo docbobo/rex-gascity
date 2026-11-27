@@ -1,7 +1,7 @@
 name: codeql
 
 # Advisory first: no ruleset requires these checks. See
-# docs/research/codeql-evaluation.md for the evidence and the review date.
+# docs/adr/0018-codeql-runs-advisory-for-go-and-actions.md for the evidence and the review date.
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]

@@ -41,3 +41,11 @@ live in the `AGENTS.md` files.
 | [0009](0009-keep-start-welded.md) | `start` stays welded; no `provision` or `exec` until a non-tmux launch half exists | Accepted |
 | [0010](0010-provider-policy-modules-are-files-of-provider-methods-with-one-entry-point.md) | Provider policy modules are files of `Provider` methods with one entry point | Accepted |
 | [0011](0011-verify-the-provider-against-gc-and-conformance-not-herdr-core-parity.md) | Verify the provider against gc and conformance, not herdr-core parity | Accepted |
+| [0012](0012-ship-the-provider-as-an-out-of-tree-pack-runtime-that-drives-the-rex-cli.md) | Ship the provider as an out-of-tree pack runtime that drives the `rex` CLI | Accepted |
+| [0013](0013-map-city-to-rex-session-rig-to-tab-agent-to-pane.md) | Map city to Rex session, rig to tab, agent to pane | Accepted |
+| [0014](0014-the-provider-never-owns-or-stops-the-shared-rex-server.md) | The provider never owns or stops the shared Rex server | Accepted |
+| [0015](0015-seed-session-identity-before-the-blocking-launch.md) | Seed session identity before the blocking launch | Accepted |
+| [0016](0016-report-the-wrapped-gc-as-the-agent-process-instead-of-tracking-a-service.md) | Report the wrapped gc as the agent process instead of tracking a service | Accepted |
+| [0017](0017-rex-is-the-supported-opt-in-backend-and-tmux-stays-the-default.md) | Rex is the supported opt-in backend and tmux stays the default | Accepted |
+| [0018](0018-codeql-runs-advisory-for-go-and-actions.md) | CodeQL runs advisory for Go and Actions | Accepted |
+| [0019](0019-the-ui-ships-from-this-repo-through-one-installer-that-edits-only-init-lua.md) | The UI ships from this repo through one installer that edits only `init.lua` | Accepted |
