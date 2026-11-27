@@ -61,17 +61,20 @@ the capabilities, and record the decision here and in row 120.
 No behavior changes. Row 120's verdict `not-implemented` stands. It now points
 at this ADR as the decision, not only the omission.
 
-A Rex `provision` would be dead code on the pin. It would live only on an edge
-gc. That is a second reason to keep it welded.
-
-The pin has no consumer of `proc.provision` today. gc `v1.5.1` parses exactly
-six tokens and ignores the rest. On the pin the un-weld is inert. The pin gives
-no parity gain at all.
+A Rex `provision` would not be dead code on the pin. gc `v1.5.1` reads both
+tokens and gates the separable launch on them. `supportsSeparableLaunch`
+returns true only when the handshake declares `proc.provision` and `proc.exec`.
+`provisionBox` then runs the `provision` op instead of the welded `start`
+(`internal/runtime/exec/exec.go:277-296` at tag `v1.5.1`). The parity doc
+records the same gate at `docs/provider-herdr-parity.md:432`. The un-weld is
+inert on the pin whenever either capability is absent. Declaring both makes the
+pin call `provision`, so the pin is not a reason to keep it welded. The
+missing launch half is the reason to keep it welded.
 
 The sources are `docs/provider-herdr-method-io.md` and
 `docs/provider-herdr-parity.md`. Before any future landing, re-run the parity
 check against `v1.5.1` and edge. The `provisionBox` gate at the pin is recorded
-at `docs/provider-herdr-parity.md:430`.
+at `docs/provider-herdr-parity.md:432`.
 
 ## Consequences
 
@@ -94,14 +97,18 @@ at `docs/provider-herdr-parity.md:430`.
   half is a tmux session in the pane. Rex already owns the process, the nudge
   and the readiness gate. A tmux shim under an agent in its own pane buys a
   warm box at the cost of a second multiplexer and a new carrier rule.
-  `carrier.ops` disables the un-weld outright. The pin gc ignores the tokens
-  anyway.
+  `carrier.ops` disables the un-weld outright. The pin gc does not ignore the
+  tokens: with both declared it runs `provision`.
 - **Implement `provision` alone.** gc never calls it without `proc.exec` too
   (`exec/exec.go:570-580`). An undeclared `proc.provision` means `provision` is
   unknown by contract, so the conformance probe SKIPs it. Dead op.
-- **Declare `proc.provision` and let gc fall back.** A declared op may never
-  answer exit 2 (`REX-CONTRACT.md:222`, `exec/exec.go:425-429`). gc would then
-  fail every `provision` call. The un-weld becomes worse than welded `start`.
+- **Declare `proc.provision` and let gc fall back.** gc calls `provision` only
+  when the handshake declares both `proc.provision` and `proc.exec`
+  (`exec/exec.go:277-296` at `v1.5.1`). Declared alone, `proc.provision` leaves
+  the un-weld inert and gc falls back to welded `start`. Declared together with
+  `proc.exec`, the `provision` op may never answer exit 2
+  (`REX-CONTRACT.md:222`), so a not-implemented `provision` fails every call and
+  the un-weld becomes worse than welded `start`.
 - **Add `proc.launch`, the token the bead's title implies.** There is no such
   token at edge `890a58a3e` (`internal/runtime/protocol.go`). The launch half is
   `exec`. A token that no gc reads is an unimplemented capability with a new
@@ -116,7 +123,9 @@ at `docs/provider-herdr-parity.md:430`.
   `docs/reference/exec-session-provider.md:133-176`, `:228-231`.
 - Repo: `docs/provider-herdr-parity.md:120`, `:420-446`,
   `cmd/gc-runtime-rex/main.go:34-59`, `:161-165`.
-- `v1.5.1` pin: the parity doc records the `provisionBox` gate at the pin
-  (`docs/provider-herdr-parity.md:430`). We did not re-read the pin tree here.
-  That the pin has no `proc.launch` is `unverified` at the pin. The edge
-  checkout has none.
+- `v1.5.1` pin: re-read here. `internal/runtime/exec/exec.go:277-296` gates the
+  separable launch on both `proc.provision` and `proc.exec` and runs `provision`.
+  `internal/runtime/protocol.go:18-55` declares the six capability tokens,
+  including `proc.provision`. The parity doc records the same gate at
+  `docs/provider-herdr-parity.md:432`. That the pin has no `proc.launch` is
+  `unverified` at the pin. The edge checkout has none.
