@@ -63,8 +63,8 @@ returns true only when the handshake declares `proc.provision` and `proc.exec`.
 `provisionBox` then runs the `provision` op instead of the welded `start`
 (`internal/runtime/exec/exec.go:277-296` at tag `v1.5.1`). The parity doc
 records the same gate at `docs/provider-herdr-parity.md:432`. The un-weld is
-inert on the pin only while we declare neither capability. Declaring both makes
-the pin call `provision`, so the pin is not a reason to keep it welded. The
+inert on the pin whenever either capability is absent. Declaring both makes the
+pin call `provision`, so the pin is not a reason to keep it welded. The
 missing launch half is the reason to keep it welded.
 
 The sources are `docs/provider-herdr-method-io.md` and
@@ -98,9 +98,13 @@ at `docs/provider-herdr-parity.md:432`.
 - **Implement `provision` alone.** gc never calls it without `proc.exec` too
   (`exec/exec.go:570-580`). An undeclared `proc.provision` means `provision` is
   unknown by contract, so the conformance probe SKIPs it. Dead op.
-- **Declare `proc.provision` and let gc fall back.** A declared op may never
-  answer exit 2 (`REX-CONTRACT.md:222`, `exec/exec.go:425-429`). gc would then
-  fail every `provision` call. The un-weld becomes worse than welded `start`.
+- **Declare `proc.provision` and let gc fall back.** gc calls `provision` only
+  when the handshake declares both `proc.provision` and `proc.exec`
+  (`exec/exec.go:277-296` at `v1.5.1`). Declared alone, `proc.provision` leaves
+  the un-weld inert and gc falls back to welded `start`. Declared together with
+  `proc.exec`, the `provision` op may never answer exit 2
+  (`REX-CONTRACT.md:222`), so a not-implemented `provision` fails every call and
+  the un-weld becomes worse than welded `start`.
 - **Add `proc.launch`, the token the bead's title implies.** There is no such
   token at edge `890a58a3e` (`internal/runtime/protocol.go`). The launch half is
   `exec`. A token that no gc reads is an unimplemented capability with a new
