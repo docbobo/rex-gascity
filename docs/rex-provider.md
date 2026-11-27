@@ -502,22 +502,26 @@ milliseconds:
 |---|---|
 | `launch_ms` | the pane launch (`NewSplit`/`NewWindow`) |
 | `readiness_ms` | the `program_status` readiness wait |
-| `readiness_outcome` | how that wait ended: `idle`, `window-bound` (a status record was present but never idle before the 15 s window), `settle-bound` (no status record at all before the 3 s settle delay), `prompt`/`prompt-bound` (a configured `ready_prompt_prefix` appeared, or its window elapsed), `dialog` (the screen showed a startup dialog, so the nudge was withheld; GCREX-59), `ended` (the pane's program had already exited, failing a non-`one_shot` start before its first turn), `canceled`, or `disabled` |
+| `readiness_outcome` | how the wait ended: `idle`, `window-bound` (a status record was present but never idle before the 15 s window), `settle-bound` (no status record at all before the 3 s settle delay), `prompt`/`prompt-bound` (a configured `ready_prompt_prefix` appeared, or its window elapsed), `dialog` (the last read showed a startup dialog, so the seed was not typed, GCREX-59, #205), `dialog-cleared` (a dialog was seen, then a poll showed a clear screen and a ready verdict. That poll can be the deadline poll, the first one whose screen read returned at or after the deadline. Readiness is then resolved, and the seed goes to the delivery ladder. A gate there can still stop it before it types), `dialog-unresolved` (a dialog was seen, and the clear wait ended without a delivery: the deadline poll's read was clear but not ready or failed, or the `pre-write` gate at or after the deadline failed to read), `ended` (the pane's program had already exited, failing a non-`one_shot` start before its first turn), `canceled`, or `disabled` |
 | `write_ms` | the first nudge text write |
 | `confirm_ms` | the first post-Enter confirmation poll |
 | `confirmed` | whether the first attempt's turn start was observed |
 | `attempts[]` | one entry per resend: `attempt` (2-based), `backoff_ms`, `write_ms`, `confirm_ms`, `confirmed` |
+| `dialog` | the startup dialog of the most recent sighting, by its stable name (the first marker of its first group, or `rate-limit`/`rate-limit-menu`). Only when this start saw a dialog |
+| `dialog_screen` | the screen tail that sighting read, the last 4096 bytes. Raw pane text that can hold seed text after a write, so it stays in this private file |
+| `dialog_gate` | `pre-write`, `pre-submit` or `pre-resend` when the startup dialog gate saw it. Absent when the readiness wait did |
+| `dialog_suspect` | `seed` when the match may be the seed's own echo (the seed's text alone matches that dialog). Otherwise absent |
 | `total_ms` | `launch_ms` plus everything from readiness on |
-| `dialog` | the matched startup dialog's name, written only when this start saw one |
-| `dialog_screen` | the screen tail the gate read (capped), raw pane text, so it can hold seed text |
-| `dialog_gate` | the gate that saw the dialog: `pre-write`, `pre-submit`, `pre-resend`, or empty for the readiness wait |
-| `dialog_suspect` | `seed` when the match may be the seed's own echo |
 
 `readiness_outcome` is the load-bearing field: `idle` means the wait returned
 as soon as the program reported ready, while `window-bound`/`settle-bound` mean
 the wait was capped by the bound, so cutting the bound is (or is not) a lever.
-A `dialog` outcome means the wait ended on a startup dialog and the nudge was
-withheld, never delivered; `prompt`/`prompt-bound` are the `ready_prompt_prefix`
+A `dialog` or `dialog-unresolved` outcome means the seed was never typed.
+`dialog-cleared` means a dialog was seen, then a poll had a clear read and a
+ready verdict no later than the deadline poll. That poll can be the deadline
+poll. Readiness is resolved, and the seed goes to the gated ladder. A gate
+there can still stop it before it types (see "Startup seed and dialogs").
+`readiness_ms` covers the readiness wait and any clear wait. `prompt`/`prompt-bound` are the `ready_prompt_prefix`
 twin of `idle`/`window-bound`.
 An `ended` outcome is not a bound: the pane's program was already gone, and a
 non-`one_shot` start fails with `the agent exited during startup, before its
@@ -526,43 +530,99 @@ The file is best effort and never changes the start result; an unset state dir
 writes nothing, and a start that delivers no nudge (empty `nudge`, no launch,
 an already-alive pane) writes nothing.
 
-### Startup dialog gate stops (#205, #209)
-
-The startup dialog gate runs before each input call of a startup nudge, not
-only before the first write (`internal/provider/nudge_delivery.go:458`). A
-match stops the ladder. No input follows that gate's read.
-
-| Gate | Read point | What a match stops |
-|---|---|---|
-| `pre-write` | before the first seed write (`internal/provider/pane_delivery.go:243`) | the first write. The readiness wait may keep polling for a clear screen. |
-| `pre-submit` | after the seed write, before the Enter (`internal/provider/pane_delivery.go:289`) | the submit. The seed stays typed but unsubmitted. |
-| `pre-resend` | before a resend's `ctrl+u` clear and re-type (`internal/provider/pane_delivery.go:116`) | the resend. |
-
-After a write the seed's own text can match a dialog marker. The gate then
-marks the match suspect and still stops. It cannot tell a real dialog from the
-echo. A failed read stops the ladder only after this start saw a dialog.
-Before any sighting it fails open.
-
-A pre-submit or pre-resend stop never fails the start. It sets
-`GC_STARTUP_DELIVERY_UNCONFIRMED` with one of these markers
-(`internal/provider/nudge_delivery.go:554`):
-
-- `delivery failed: the seed was typed but not submitted, a startup dialog appeared (<name>)` for pre-submit.
-- `delivered but not confirmed: a startup dialog appeared (<name>) before a resend` for pre-resend.
-- `... a startup dialog may have appeared (<name>); the seed contains its marker text` is the suspect form.
-- `... the screen could not be read after a startup dialog was seen (<name>)` is the unreadable form.
-
-The readiness outcome is preserved. A stop after the write leaves
-`readiness_outcome` as the wait left it, for example `idle`. A start that typed
-the seed then reads as delivered, not `canceled` (#208). A parent cancel before
-the first write still gives `canceled`.
-
 gc also reads provider metadata over `get-meta` (not the start env):
 `GC_PROVIDER`, `GC_SESSION_ID`, `GC_DRAIN_ACK`, `GC_ALIAS`, `GC_AGENT`, and
 `suspended`. The provider serves these from its metadata sidecar. `set-meta`,
 `get-meta`, and `remove-meta` resolve a rig-qualified alias to the pane's
 primary name, because gc reads some keys (`suspended`, `GC_SESSION_ID`) under
 the canonical identity even when the pane was started under a short pool name.
+
+### Startup seed and dialogs (#205)
+
+Under RPP v0 the exec script owns the startup seed (`nudge`). gc's exec
+`Start` runs the script's `start`, then `dismissStartupDialogs`, then returns.
+It never sends the seed again (gc v1.5.1
+`internal/runtime/exec/exec.go:211-231`, edge 890a58a3e
+`internal/runtime/exec/exec.go:462-514`). gc stamps `primed_at` from its
+routing plan, not from delivery (edge
+`cmd/gc/session_lifecycle_parallel.go:3311-3315`,
+`cmd/gc/startup_prompt_delivery.go:63-70`). Neither v1.5.1 nor edge reads
+`GC_STARTUP_DELIVERY_UNCONFIRMED` (`git grep` finds no hit). gc's queued-nudge
+backstop covers pool slots only (edge `cmd/gc/idle_nudge.go:88-136`). So for a
+named session such as the mayor, the marker is the only signal that the seed
+did not land. The second source for this behavior is `make test` and
+`make conformance` (ADR-0011).
+
+- **Screen tail.** The startup dialog check, the dialog gate and the
+  prompt-mode ready check read only the last 120 lines of the block text.
+  gc's `startupDialogPeekLines` does the same (gc v1.5.1
+  `internal/runtime/dialog.go:18`). `IdleSnapshot` and the nudge ladder still
+  read the whole screen.
+- **Clear window.** When the startup wait first sees a dialog, Start keeps
+  polling for a clear window (15 s by default). It never types, and it
+  measures the window from that first sighting. It delivers the seed through
+  the normal ladder only after a poll with a successful screen read, no
+  dialog, and a ready verdict. A ready verdict is an `idle` record past the
+  `ready_delay_ms` floor, or the configured prompt (`dialog-cleared`). After a
+  sighting, the bound fallbacks (`window-bound`, `settle-bound`,
+  `prompt-bound`) no longer deliver.
+- **Deadline.** The deadline poll is the first poll at or after the deadline.
+  It can still deliver. Otherwise the seed is not typed and `start` exits 0.
+  It never fails, because gc would stop a healthy pane
+  (`cleanupAfterStartFailure`, gc v1.5.1 `exec.go:223-228,262-270`). A read
+  showing the dialog gives `dialog` and
+  `withheld: the pane shows a startup dialog (<name>)`. A clear-but-not-ready
+  or failed read gives `dialog-unresolved` and
+  `withheld: a startup dialog was seen (<name>); the pane was not clear and ready when the clear window ended`.
+- **Hard stop.** After a sighting, every Rex call of the wait runs under a
+  context that ends at the deadline plus one poll interval. This includes the
+  pre-write gate read. A call cut off there is a failed read. The hard stop
+  bounds those Rex calls only. Once the pre-write gate shows a clear screen,
+  the ladder runs under its own contexts. The marker and timing-file writes
+  run after the capped phase and are outside it.
+- **Outer limit.** Nothing bounds the time from the start of the wait to the
+  first sighting locally. The readiness wait plus the clear window take about
+  30 s with the defaults. That is an estimate, not a bound. gc's 120 s
+  `startTimeout` kills the whole script, launch and ladder included. It is a
+  separate outer limit (gc v1.5.1 `exec.go:204-206`).
+- **Dialog gate.** Startup delivery reads the screen tail before each input
+  call. It reads at `pre-write` before the first write and at `pre-submit`
+  before every submit key (under the submit key's own context). At
+  `pre-resend` it reads before each resend's `ctrl+u` and again before its
+  write. A dialog there, or a failed read after this start saw a dialog,
+  sends no input. Before any sighting, a failed read fails open. At
+  `pre-write` the wait resumes polling until the same
+  deadline only when the gate read returned before the deadline and the clear
+  wait is enabled. Otherwise the wait ends there with no input. A dialog gives
+  `dialog`, and a failed read gives `dialog-unresolved`. At
+  `pre-submit` the marker reads
+  `delivery failed: the seed was typed but not submitted, <reason>`. At
+  `pre-resend` it reads
+  `delivered but not confirmed: <reason> before a resend`. The unreadable
+  form is `the screen could not be read after a startup dialog was seen
+  (<name>)`. Ordinary `nudge`
+  calls run no gate. The gate is a snapshot check, not an atomic one. The read
+  and the input call are separate Rex calls, so a dialog that draws between
+  them is not caught. A stop leaves the readiness outcome the wait reached,
+  for example `idle` or `dialog-cleared`. A start that typed the seed reads
+  as delivered, not `canceled` (#208); a parent cancel before the first write
+  still gives `canceled`.
+- **Evidence.** The startup-timing file records `dialog`, `dialog_screen`
+  (last 4096 bytes), `dialog_gate` and `dialog_suspect` for the most recent
+  sighting. `dialog_screen` can hold seed text after a write. It stays in that
+  private file and never goes into a marker or a log line.
+- **Residual cases.** A dialog that only gc answers after `start` returns
+  leaves the seed undelivered while gc reports the session primed. Making
+  `primed_at` follow delivery is an upstream gc change. A seed that quotes a
+  dialog marker (for example `trust this folder`) can match its own echo
+  after the write. The gate then stops with
+  `a startup dialog may have appeared (<name>); the seed contains its marker text`
+  and `dialog_suspect=seed`. The seed stays typed but unsubmitted.
+- **Unverified.** Whether the #205 incident's match was a real dialog or a
+  scrollback false positive, and whether gc runs `dismissStartupDialogs` for
+  `builtin:pi`. The new evidence fields answer the first one next time.
+
+ADR-0021 records why the recovery runs inside `start`.
 
 ### Identity metadata before launch
 
@@ -595,7 +655,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **Launched command exit closes its pane**: The provider sets no keep_open, so an agent command that exits closes its Rex block, and closing the last block removes the tab. `is-running` reports such a vanished pane as not running, not as an error.
 - **Start config `env` map is applied via the `env` argv wrapper**: Rex terminal launch options have no per-pane environment map, so the provider prefixes the launch command with `env K=V ...` (sorted keys). A bare shell (no command) cannot be seeded and still inherits the Rex server's environment.
 - **Setup hooks run with warnings only (GCREX-56)**: `session_setup` entries and `session_setup_script` run after the pane launches, in order, with `/bin/sh -c` in the start config's `work_dir` (or `/`), with the launch environment plus `GC_SESSION=<name>`. A hook failure is written to stderr as a `start: session_setup[i] …` warning and never fails the start, mirroring runtime-herdr-core. A non-empty `session_live` is never applied (it styles a tmux server Rex does not run) and warns `SESSION_LIVE_SKIPPED` once. Warnings go to the provider's warning writer (stderr in production); gc 1.5.1 drops a successful start's stderr, so they are an operator diagnostic.
-- **Startup `nudge` is delivered after a bounded readiness wait (GCREX-14, GCREX-34):** The `nudge` field in the `start` JSON payload is typed into the freshly launched pane and submitted with Enter, so the agent receives its initial prompt. Before typing, the provider polls the pane's `program_status` and delivers as soon as the newest record reports `idle`; the full window is 15 s (matching gc's `defaultReadyProbeTimeout`), while a program that has reported no status at all is given a shorter 3 s settle delay so a non-status agent is not held for the whole window. The wait honours the start context. Before typing, the provider reads the pane's rendered screen once and withholds the nudge when it shows a startup dialog gc knows (a workspace-trust, theme, resume, update, MCP/hook-trust, bypass-permissions, custom-key or rate-limit screen): the dialog marks its selected option with the prompt glyph, so the turn's Enter would pick it, and gc answers the dialog only once `start` returns. The dialog list, the rate-limit markers and the Codex settled-status guard are ported from runtime-herdr-core's `herdrcore/readiness.py`; a withheld nudge leaves `GC_STARTUP_DELIVERY_UNCONFIRMED` set to `withheld: …` and records `readiness_outcome` `dialog`, never a failed start (GCREX-59). Otherwise, after the Enter, the provider observes the pane for a bounded confirmation window; a delivered but unconfirmed nudge leaves `GC_STARTUP_DELIVERY_UNCONFIRMED` in the pane's metadata (and a diagnostic file), and a confirmed delivery clears that key. A delivered but unconfirmed submit is resent down a bounded backoff ladder (2/4/6/8 s, mirroring gc's `startupNudgeRetryBackoffs`): each resend first clears the drafted line (`ctrl+u`) and re-types the nudge, and if the pane has since gone `working` or `blocked` the earlier submit is treated as landed and no resend happens. Readiness detection and the TUI accepting input are not the same moment, so this rescues the lost-Enter case the readiness wait alone does not. Each stage of the attempt is timed and written to the startup-timing diagnostic above (`readiness_outcome` distinguishes an idle return from a bound, a withheld dialog or an ended agent; GCREX-58, GCREX-59). The startup dialog gate also runs before the Enter and before each resend, not only before the first write. A stop there leaves the seed typed and the start successful (see *Startup dialog gate stops* below). `ready_delay_ms` floors the wait (capped at 60 s), and `ready_prompt_prefix`, when set, makes the pane's rendered prompt the readiness signal instead of `program_status` — read as gc's `paneShowsReadyPrompt` does (bottom-most prompt line wins, NBSP reads as a space, one box border is skipped, and a numbered menu's cursor row is not a prompt) — while `ready_delay_ms` then only bounds that wait; GCREX-56 added both. The nudge is not delivered on a failed launch, an already-running session (Start's idempotent path or StartNew's ErrAlreadyRunning), or when the nudge text is empty. Delivery never fails the start: on a timeout or a canceled context the nudge is still delivered best-effort when the context permits, and a transport failure is not reported as a start failure, so a healthy pane is never torn down over it; gc's queued-nudge backstop covers an undelivered first prompt. The readiness wait has one failure of its own: when the pane's program has already exited before its first turn, a non-`one_shot` start fails with `the agent exited during startup, before its first turn` (`readiness_outcome` `ended`), and `lifecycle=one_shot` skips it.
+- **Startup `nudge` is delivered after a bounded readiness wait (GCREX-14, GCREX-34):** The `nudge` field in the `start` JSON payload is typed into the freshly launched pane and submitted with Enter, so the agent receives its initial prompt. Before typing, the provider polls the pane's `program_status` and delivers as soon as the newest record reports `idle`; the full window is 15 s (matching gc's `defaultReadyProbeTimeout`), while a program that has reported no status at all is given a shorter 3 s settle delay so a non-status agent is not held for the whole window. The wait honours the start context. Before typing, the provider reads the last 120 lines of the pane's rendered screen. It holds the nudge back when that screen shows a startup dialog gc knows: a workspace-trust, theme, resume, update, MCP/hook-trust, bypass-permissions, custom-key or rate-limit screen. The dialog marks its selected option with the prompt glyph, so the turn's Enter would pick it. gc answers the dialog only once `start` returns. The dialog list, the rate-limit markers and the Codex settled-status guard are ported from runtime-herdr-core's `herdrcore/readiness.py`; after a sighting it waits a bounded clear window and delivers only after a clear, ready poll. A seed left undelivered sets `GC_STARTUP_DELIVERY_UNCONFIRMED` to `withheld: …` naming the dialog. It records `readiness_outcome` `dialog` or `dialog-unresolved`, never a failed start (GCREX-59, #205, see "Startup seed and dialogs"). Otherwise, after the Enter, the provider observes the pane for a bounded confirmation window; a delivered but unconfirmed nudge leaves `GC_STARTUP_DELIVERY_UNCONFIRMED` in the pane's metadata (and a diagnostic file), and a confirmed delivery clears that key. A delivered but unconfirmed submit is resent down a bounded backoff ladder (2/4/6/8 s, mirroring gc's `startupNudgeRetryBackoffs`): each resend first clears the drafted line (`ctrl+u`) and re-types the nudge, and if the pane has since gone `working` or `blocked` the earlier submit is treated as landed and no resend happens. Readiness detection and the TUI accepting input are not the same moment, so this rescues the lost-Enter case the readiness wait alone does not. Each stage of the attempt is timed and written to the startup-timing diagnostic above (`readiness_outcome` distinguishes an idle return from a bound, a withheld dialog or an ended agent; GCREX-58, GCREX-59). `ready_delay_ms` floors the wait (capped at 60 s), and `ready_prompt_prefix`, when set, makes the pane's rendered prompt the readiness signal instead of `program_status` — read as gc's `paneShowsReadyPrompt` does (bottom-most prompt line wins, NBSP reads as a space, one box border is skipped, and a numbered menu's cursor row is not a prompt) — while `ready_delay_ms` then only bounds that wait; GCREX-56 added both. The nudge is not delivered on a failed launch, an already-running session (Start's idempotent path or StartNew's ErrAlreadyRunning), or when the nudge text is empty. Delivery never fails the start. Before any dialog sighting, a timeout or a canceled context still delivers the nudge best-effort when the context lets it. After a sighting, the bound fallbacks no longer deliver. A timeout only runs the clear wait to its deadline poll, and then `dialog` or `dialog-unresolved` returns without typing. A transport failure is not a start failure, so a healthy pane is never torn down over it. No gc backstop covers an undelivered first prompt of a named session. gc's queued-nudge backstop covers pool slots only (gc edge `cmd/gc/idle_nudge.go:88-136`), so `GC_STARTUP_DELIVERY_UNCONFIRMED` is the only signal. The readiness wait has one failure of its own: when the pane's program has already exited before its first turn, a non-`one_shot` start fails with `the agent exited during startup, before its first turn` (`readiness_outcome` `ended`), and `lifecycle=one_shot` skips it.
 - **File staging (GCREX-56)**: before `pre_start`, the provider stages each `copy_files` entry into the work dir (a destination that leaves the work dir is refused with a warning; a missing source is skipped) and stages an `overlay_dir`'s universal subtree (minus the top-level `per-provider` and `.gc`) plus its `per-provider/<GC_PROVIDER>` subtree. Staging writes through an `os.Root` of the work dir, so a symlinked destination inside the work dir cannot escape it, and a `copy_files` source that already is its destination is skipped. After `pre_start` it stages each `pack_overlay_dirs` entry's `per-provider/<GC_PROVIDER>` subtree, so a pack's per-provider hook override replaces an existing managed file. Unlike gc, managed hook/settings files are overwritten rather than JSON-merged.
 - **`fresh_only` refuses a held name (GCREX-56)**: a start with `fresh_only` fails with exit 73 `session "<name>" already exists (fresh_only)` when any binding record holds the name, live or dead, instead of recycling it. gc 1.5.1 never sends `fresh_only`.
 - **`pre_start` runs before the pane launches** (GCREX-15, GCREX-25.2): each entry is executed in order with `/bin/sh -c`, cwd set to the start config's `work_dir` when that directory already exists and to `/` otherwise (mirroring runtime-herdr-core's `_setup_cwd`, so a hook can create the work dir), and the process environment merged with the start-config `env` map. Each hook runs under a per-hook timeout (30 s by default, `WithPreStartHookTimeout`) capped by whatever remains of the start budget (the op context's deadline when it carries one, else 120 s, `WithStartBudget`); a hook that outlives it fails the start with `pre_start[i]: … timed out after D`. A non-zero exit aborts the launch and leaves no seeded identity or binding behind. After the hooks, a configured `work_dir` must be an existing directory or the start fails. An empty or absent `pre_start` is a no-op.
