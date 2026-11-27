@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -466,15 +465,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 	n := SessionName(name)
 	plan, attempt := p.startPlan(name, &cfg)
 
-	// A binding kept by a stop or a failed launch whose descendant could not
-	// be reaped is the only name for that process once its pane is gone.
-	// ResolveFresh drops such a stale record and Start then writes a new one,
-	// so finish the cleanup first or the pid runs on with no record.
-	if err := p.reapStartSurvivors(ctx, n); err != nil {
-		return startResult{}, err
-	}
-
-	relaunch, done, err := p.resolveStartTarget(ctx, n, cfg)
+	relaunch, done, err := p.recycleName(ctx, n, cfg)
 	if err != nil {
 		return startResult{}, err
 	}
@@ -488,16 +479,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		return startResult{}, err
 	}
 
-	if err := p.stageStartFiles(cfg); err != nil {
-		return startResult{}, err
-	}
-	if err := p.runPreStartPhase(ctx, plan, cfg); err != nil {
-		return startResult{}, err
-	}
-	if err := p.requireWorkDir(cfg.WorkDir); err != nil {
-		return startResult{}, err
-	}
-	if err := p.stagePackOverlayPhase(cfg); err != nil {
+	if err := p.prepareWorkDir(ctx, plan, cfg); err != nil {
 		return startResult{}, err
 	}
 
@@ -513,107 +495,6 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		relaunch: relaunch,
 		cfg:      cfg,
 	})
-}
-
-// startPlan builds the one launch plan for this start and its attempt token.
-// It runs first because the plan projects pool routing for every later step and
-// owns the Rex block layout: the launch label must come from the same projected
-// env as the start labels and the record, or pool routing makes them disagree
-// and a restart launches a duplicate pane. cfg.Env is replaced with the
-// projected env for the steps that follow.
-//
-// One token is minted per start call. The provisional record this start writes
-// is writable only by this attempt, so a stale survivor write from another
-// launch cannot take it, and launchPane's retry reuses the same token.
-func (p *Provider) startPlan(name string, cfg *Config) (launch.Plan, string) {
-	n := SessionName(name)
-	attempt := rand.Text()
-	env := launch.Project(cfg.Env)
-	plan := launch.NewPlan(launch.Config{
-		Argv:    cfg.Argv,
-		Env:     env,
-		WorkDir: cfg.WorkDir,
-		Label:   paneLabelFor(n, env),
-	})
-	cfg.Env = plan.Env
-	return plan, attempt
-}
-
-// resolveStartTarget resolves the name's existing record and retires a dead
-// pane. It runs after the survivor reap, so ResolveFresh sees only cleaned
-// records. done reports a live pane that already serves the name: the start is
-// idempotent and must return before it stages or launches anything. relaunch
-// reports that a record existed, which launchPane turns into the relaunch
-// handoff.
-func (p *Provider) resolveStartTarget(ctx context.Context, n SessionName, cfg Config) (relaunch, done bool, err error) {
-	old, found, err := p.binder.Resolve(ctx, ResolveRequest{
-		Name: n, StartEnv: cfg.Env, Mode: ResolveFresh,
-	})
-	if err != nil {
-		return false, false, err
-	}
-	if !found {
-		return false, false, nil
-	}
-	alive, err := p.paneAlive(ctx, old)
-	if err != nil {
-		return false, false, err
-	}
-	if alive {
-		return false, true, nil
-	}
-	// The liveness read above chose this branch; the retirement makes no
-	// BlockProcess call of its own.
-	if _, err := p.retire(ctx, n, old, startDeadPanePolicy()); err != nil {
-		return false, false, err
-	}
-	return true, false, nil
-}
-
-// stageStartFiles stages gc's overlay_dir and copy_files before pre_start, so a
-// hook sees the staged work_dir (herdrcore/lifecycle.py:789).
-// stagePackOverlayPhase stays after pre_start because its per-provider subtree
-// deliberately overwrites a managed hook the hook may have rewritten.
-func (p *Provider) stageStartFiles(cfg Config) error {
-	if err := stageOverlayDir(cfg.WorkDir, cfg.OverlayDir, cfg.Env["GC_PROVIDER"]); err != nil {
-		return err
-	}
-	return stageCopyFiles(cfg.WorkDir, cfg.CopyFiles, func(msg string) { p.warnf("%s", msg) })
-}
-
-// runPreStartPhase runs the pre_start hooks before identity or a provisional
-// binding is seeded. gc's exec-session-provider contract makes a failing
-// pre_start non-fatal: warn on stderr and keep starting
-// (docs/reference/exec-session-provider.md at v1.5.1, "pre_start"). Only
-// cancellation of the whole start aborts; a hook's own failure or timeout does
-// not. The state lock is not held here: a slow hook must not stall the rest of
-// the city.
-func (p *Provider) runPreStartPhase(ctx context.Context, plan launch.Plan, cfg Config) error {
-	return p.runPreStartHooks(ctx, plan, cfg)
-}
-
-// requireWorkDir checks the configured work dir after pre_start. A pre_start
-// hook is the documented way to create the launch work dir (the gastown
-// worktree recipe points work_dir at a worktree that pre_start creates). Mirror
-// runtime-herdr-core: once the hooks have run, a configured work_dir must exist
-// or the launch would run elsewhere.
-func (p *Provider) requireWorkDir(workDir string) error {
-	if workDir == "" {
-		return nil
-	}
-	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
-		return fmt.Errorf("work_dir %q is not an existing directory after pre_start", workDir)
-	}
-	return nil
-}
-
-// stagePackOverlayPhase writes each pack's per-provider overlay subtree after
-// pre_start. gc's managed-file preserve predicate can keep an existing current
-// file, so the controller may never write a city-configured pack overlay. The
-// write runs here so the override lands even when the workdir already holds
-// that managed file.
-func (p *Provider) stagePackOverlayPhase(cfg Config) error {
-	return stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, cfg.Env["GC_PROVIDER"])
 }
 
 // nextSplit picks where to add a pane to a rig's tab: the block with the
@@ -678,23 +559,6 @@ func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID
 	}
 }
 
-// reapStartSurvivors finishes the cleanup a prior stop or failed launch left
-// pending on a binding that answers to n. A survivor the closed pane can no
-// longer report must be reaped before ResolveFresh drops or replaces that
-// record, or the next Start forgets the pid while it still runs. A survivor
-// that will not die keeps the binding and fails the start for a retry.
-func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error {
-	for _, bd := range p.binder.lookup(n) {
-		if len(bd.Survivors) == 0 {
-			continue
-		}
-		if err := p.reapSurvivors(ctx, bd, survivorProcs(bd.Survivors)); err != nil {
-			return fmt.Errorf("start %s: reap the pending survivors and retry: %w", n, err)
-		}
-	}
-	return nil
-}
-
 // Stop closes the agent's pane and leaves the city session and other rigs
 // intact. It is a no-op when the agent has no pane, and a pane that vanished
 // already counts as stopped. Closing a rig's last pane removes its tab.
@@ -705,168 +569,6 @@ func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error 
 // of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
 	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
-}
-
-// stopUnderPrimaryLock runs stop with the lock of every record's own name that
-// answers to the caller's as well as the caller's lock. An alias and its
-// primary names map to different lock files, so a start of one of them would
-// otherwise run beside this stop and write a replacement record that the stop's
-// retirement then clears. Every such name is locked, not just the first stored
-// candidate: ResolveFresh skips a stale candidate and can retire a later live
-// one. The locks are taken in caller-then-primary order, sorted to a fixed order
-// among themselves, and a primary stop takes no second lock, so no two paths
-// take them in opposite order.
-func (p *Provider) stopUnderPrimaryLock(ctx context.Context, name string) error {
-	n := SessionName(name)
-	var primaries []SessionName
-	for _, bd := range p.binder.lookup(n) {
-		if bd.Name != n && !slices.Contains(primaries, bd.Name) {
-			primaries = append(primaries, bd.Name)
-		}
-	}
-	slices.Sort(primaries)
-	var lock func(i int) error
-	lock = func(i int) error {
-		if i == len(primaries) {
-			return p.stop(ctx, name)
-		}
-		return p.withNameLock(ctx, primaries[i], func() error { return lock(i + 1) })
-	}
-	return lock(0)
-}
-
-func (p *Provider) stop(ctx context.Context, name string) error {
-	n := SessionName(name)
-	// Load the stored binding before Resolve: Resolve drops a stale record when
-	// its pane is gone, and a drained worker's process has often exited already.
-	// Resolve answers to a primary record or an alias, so the retry's drain
-	// diagnostic and survivors must come from the same record: a plain read of
-	// an alias name has no entry and would lose them.
-	cands := p.binder.lookup(n) // before Resolve: Resolve may drop records
-	known := len(cands) > 0
-	var stored Binding
-	hadStored := known
-	if known {
-		stored = cands[0]
-	}
-	binding, ok, err := p.binder.Resolve(ctx, ResolveRequest{Name: n, Mode: ResolveFresh})
-	if errors.Is(err, rex.ErrUnavailable) && !known {
-		// Rex is down and no stored binding answers to the name: herdr-core
-		// answers an absent name with exit 0, so stop does too and clears the
-		// name's state. This is a stored-binding policy, not proof that no
-		// process is alive: a lost binding with a live pane reports success
-		// (parity stop deviation 8).
-		// stored.Name is empty when !known, and clearIncarnations skips "",
-		// so this is the same cleanup as clearIncarnations(n, stored.Name).
-		return p.clearIncarnations(n)
-	}
-	if err != nil {
-		return err
-	}
-	if !ok {
-		// No pane: the worker already exited, which is the usual drain case.
-		// Sample its work tree from the stored binding.
-		if hadStored {
-			p.writeDrainDiagnostic(ctx, stored)
-		}
-		_, err = p.retire(ctx, n, stored, stopNoPanePolicy(hadStored))
-		return err
-	}
-	// Stop stays idempotent: a pane another client already closed
-	// (retireResult.alreadyClosed) is a finished retirement, not an error.
-	_, err = p.retire(ctx, n, binding, stopPolicy())
-	return err
-}
-
-// destroyEmptyCitySession removes this city's canonical gc:<city> session once
-// its last pane is gone (GCREX-31). The caller holds the state lock. This
-// function takes the session's launch lock before it reads the view, so no
-// launch can add a pane between the empty check and the removal. It fails
-// closed: a session with any window, a label that is not the canonical one (a
-// legacy, foreign or other-city session), or any Rex error keeps the session
-// and returns the error.
-func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
-	if sid == "" {
-		return nil
-	}
-	// The launch lock comes first: a launch holds it shared across its
-	// SessionView and NewWindow/NewSplit, so an empty view below cannot go
-	// stale under us. Rex removes a tab with its last block
-	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
-	// is a true empty session.
-	release, busy, lockErr := p.tryLaunchLock(sid)
-	if lockErr != nil {
-		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
-	}
-	if busy {
-		return nil
-	}
-	defer release()
-	view, err := p.client.SessionView(ctx, sid)
-	if errors.Is(err, rex.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("check whether %s is empty: %w", sid, err)
-	}
-	if view.Label != p.binder.canonicalLabel() || len(view.Windows) != 0 {
-		return nil
-	}
-	if err := p.client.DestroySession(ctx, sid); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return fmt.Errorf("remove the empty city session %s: %w", sid, err)
-	}
-	return nil
-}
-
-// reapSurvivors reaps tree and, while any of it survives, records the pids on
-// the binding so the retry stop herdr-core allows still has them: the pane is
-// closed by then and reports nothing. It returns the failure to report, nil
-// when the tree is gone.
-func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []prochost.Ident) error {
-	// A survivor recorded by an earlier stop can spawn a child before the
-	// retry, and the closed pane no longer reports that child: read the host
-	// table so the retry reaps what the tree grew, not only what it was given.
-	tree = p.descendants(ctx, tree)
-	left, readErr, signalErr := p.reap(ctx, tree)
-	binding.Survivors = survivorRecords(left)
-	if len(left) == 0 {
-		// A signal error with nothing left is a success: everything died anyway
-		// (the caller's contract), so the failed signal is not reported.
-		return readErr
-	}
-	survived := &survivorError{name: string(binding.Name), survivors: left, reason: errors.Join(readErr, signalErr)}
-	// A start may have replaced the binding while this reap ran. Record only
-	// while the stored binding is still the one we reaped: a replacement owns
-	// the name and must not carry the old pane's survivors.
-	if _, err := p.binder.RecordIfCurrent(binding); err != nil {
-		// The stop fails either way: the record that would name these pids for
-		// the next retry was not saved.
-		return errors.Join(err, survived)
-	}
-	return survived
-}
-
-// clearIncarnations removes the whole metadata sidecar and the activity record
-// for each name (deduplicated). Stop calls it with the caller's name and the
-// resolved primary name, so every key and activity stamp of a retired
-// incarnation is gone before the next start of the same name reads them. This
-// matches herdr-core's per-incarnation forget (parity doc ### stop row 4).
-func (p *Provider) clearIncarnations(names ...SessionName) error {
-	seen := map[SessionName]bool{}
-	var errs []error
-	for _, n := range names {
-		if n == "" || seen[n] {
-			continue
-		}
-		seen[n] = true
-		if err := p.metaClear(n); err != nil {
-			errs = append(errs, err)
-		}
-		if err := p.activity.Drop(n); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // IsRunning reports whether the agent's program is still running. It is
@@ -1158,16 +860,4 @@ func (p *Provider) runSessionSetup(ctx context.Context, name string, res startRe
 	if len(cfg.SessionLive) > 0 {
 		p.warnf("%s", sessionLiveSkipped)
 	}
-}
-
-// preStartCwd returns workDir when it is an existing directory, else "/". A
-// work_dir that pre_start is meant to create does not exist yet, so it cannot
-// be the hook's cwd.
-func preStartCwd(workDir string) string {
-	if workDir != "" {
-		if info, err := os.Stat(workDir); err == nil && info.IsDir() {
-			return workDir
-		}
-	}
-	return "/"
 }

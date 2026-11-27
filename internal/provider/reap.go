@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -288,4 +289,32 @@ func (p *Provider) reap(ctx context.Context, tree []prochost.Ident) (left []proc
 	}
 	left, readErr = p.waitGone(ctx, alive, reapKillWait)
 	return left, readErr, signalErr
+}
+
+// reapSurvivors reaps tree and, while any of it survives, records the pids on
+// the binding so the retry stop herdr-core allows still has them: the pane is
+// closed by then and reports nothing. It returns the failure to report, nil
+// when the tree is gone.
+func (p *Provider) reapSurvivors(ctx context.Context, binding Binding, tree []prochost.Ident) error {
+	// A survivor recorded by an earlier stop can spawn a child before the
+	// retry, and the closed pane no longer reports that child: read the host
+	// table so the retry reaps what the tree grew, not only what it was given.
+	tree = p.descendants(ctx, tree)
+	left, readErr, signalErr := p.reap(ctx, tree)
+	binding.Survivors = survivorRecords(left)
+	if len(left) == 0 {
+		// A signal error with nothing left is a success: everything died anyway
+		// (the caller's contract), so the failed signal is not reported.
+		return readErr
+	}
+	survived := &survivorError{name: string(binding.Name), survivors: left, reason: errors.Join(readErr, signalErr)}
+	// A start may have replaced the binding while this reap ran. Record only
+	// while the stored binding is still the one we reaped: a replacement owns
+	// the name and must not carry the old pane's survivors.
+	if _, err := p.binder.RecordIfCurrent(binding); err != nil {
+		// The stop fails either way: the record that would name these pids for
+		// the next retry was not saved.
+		return errors.Join(err, survived)
+	}
+	return survived
 }

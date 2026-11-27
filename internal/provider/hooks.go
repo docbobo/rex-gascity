@@ -102,3 +102,15 @@ func (p *Provider) runPreStartHooks(ctx context.Context, plan launch.Plan, cfg C
 	}
 	return nil
 }
+
+// preStartCwd returns workDir when it is an existing directory, else "/". A
+// work_dir that pre_start is meant to create does not exist yet, so it cannot
+// be the hook's cwd.
+func preStartCwd(workDir string) string {
+	if workDir != "" {
+		if info, err := os.Stat(workDir); err == nil && info.IsDir() {
+			return workDir
+		}
+	}
+	return "/"
+}
