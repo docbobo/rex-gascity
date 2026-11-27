@@ -32,11 +32,15 @@ and `cmd/gc/runtime_registry.go:163-168`). The pack's GASCITY_SRC checkout is
 the edge build, `890a58a3e`. The parity doc's pin is `v1.5.1`, which parses six
 tokens and ignores the rest (`parity doc:312`).
 
-Rex boxes do run on gc's host, as gc's user. The spool is local, and the
-server is a unix socket under the controller's `Application Support`
-(`cmd/gc-runtime-rex/main.go:41-45`, `docs/rex-provider.md:207-215`). So
-`locality: local` is true. The question is only whether we take on the
-`fs.host` promise.
+In a local deployment Rex boxes run on gc's host, as gc's user. The spool is
+local, and the server is a unix socket under the controller's `Application
+Support` (`cmd/gc-runtime-rex/main.go:41-45`, `docs/rex-provider.md:207-215`).
+So `locality: local` is true there. It is false for a provider pointed at a
+remote server through a tunnel (`docs/rex-provider.md:215`), and the handshake
+declares `local` unconditionally today (`cmd/gc-runtime-rex/main.go:60`). This
+ADR therefore scopes its decision to a local deployment. Making the field
+follow the deployment target needs a detection mechanism this ADR does not
+choose. The question here is only whether we take on the `fs.host` promise.
 
 Today the provider reads a start config that carries `overlay_dir`,
 `pre_start`, `session_setup` and `session_setup_script`, and runs them itself
@@ -46,8 +50,8 @@ describes. A script does exactly what its start config carries
 
 ## Decision
 
-We keep `fs.host` undeclared. `locality` stays `"local"`, and the handshake
-declares the seven tokens it declares today
+We keep `fs.host` undeclared. For a local deployment `locality` stays
+`"local"`, and the handshake declares the seven tokens it declares today
 (`cmd/gc-runtime-rex/main.go:50-59`).
 
 The Rex model makes every behaviour the token would add ours to re-prove. Each
@@ -110,7 +114,7 @@ says "`fs.host` is not a declaration. Agents simply run on gc's host".
 - **Drop `locality` too, since we refuse the token.** `locality` is a statement
   of deployment fact with its own consumer. `sessionRuntimeIsRemote` uses it for
   the storage-split check (`cmd/gc/storage_verb_exclusion.go:314`). The fact is
-  true. Only the `fs.host` narrowing is untaken.
+  true for a local deployment. Only the `fs.host` narrowing is untaken.
 
 ## Sources and status
 
