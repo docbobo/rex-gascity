@@ -3,6 +3,11 @@
 # relative to the containing document, not the repo root.
 set -eu
 
+# The fixture repositories below must not inherit the caller's Git context: a
+# GIT_INDEX_FILE from a hook would send `git add` into the caller's index.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
