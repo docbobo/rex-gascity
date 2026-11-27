@@ -57,9 +57,10 @@ for adr in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do
   grep -q -F "($name)" docs/adr/README.md || fail "docs/adr/README.md does not list $name"
 done
 
-# 3. Only adr/ below docs/.
-for d in docs/*/; do
-  [ "$d" = docs/adr/ ] || fail "${d%/} is not allowed: docs/ holds reference docs and adr/ only"
+# 3. Only adr/ below docs/, hidden directories included.
+dirs=$(find docs -mindepth 1 -maxdepth 1 -type d ! -path docs/adr) || true
+for d in $dirs; do
+  fail "$d is not allowed: docs/ holds reference docs and adr/ only"
 done
 
 [ "$errors" -eq 0 ] || exit 1
