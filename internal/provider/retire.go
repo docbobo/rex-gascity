@@ -326,8 +326,10 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 // destroyEmptyCitySession removes this city's canonical gc:<city> session once
 // its last pane is gone (GCREX-31). It attempts the session's launch lock and
 // returns without destroying while a launch holds it, so no launch can add a
-// pane between the empty check and the removal. Stop reaches this helper
-// through retire under the per-name locks, not the state lock; failed-launch
+// pane between the empty check and the removal. That exclusion holds only when
+// the provider has a state dir: without one, tryLaunchLock takes no lock and
+// does not block a concurrent launch. Stop reaches this helper through retire
+// under the per-name locks, not the state lock; failed-launch
 // cleanup is the caller that also holds the state lock. It fails closed: a
 // session with any window, a label that is not the canonical one (a legacy,
 // foreign or other-city session), or any Rex error keeps the session and
