@@ -192,6 +192,18 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			Gate:     gate,
 		})
 		p.recordStartupAttempts(&timing, res)
+		// A pre-submit or pre-resend stop: no submit key follows, and a
+		// pre-resend stop also skips the clear key and the next seed, so the
+		// last seed written stays typed but unsubmitted.
+		// Record it as a delivery stop, never a failed start (REQ-001). The
+		// stop is handled first because the gate reads under the submit key's
+		// own context: a parent cancel after the write can arrive with it,
+		// and the stop keeps the readiness outcome the wait ended on
+		// (REQ-001 (b)).
+		if res.GateStop != nil && res.GateStop.Point != gatePreWrite {
+			p.finishStartupDelivery(ctx, name, binding, res)
+			return nil
+		}
 		// A cancel before any input is readiness that never finished. A cancel
 		// after the write is not: the ladder already delivered, so the
 		// diagnostic keeps the readiness outcome it reached (REQ-002).
@@ -199,15 +211,8 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			timing.ReadinessOutcome = readinessCanceled
 		}
 		if res.GateStop != nil {
-			if res.GateStop.Point == gatePreWrite {
-				outcome, ended = p.afterPreWriteStop(ctx, binding, cfg, w, start, res.GateStop)
-				continue
-			}
-			// A dialog appeared during a backoff: no clear key and no second
-			// seed followed, so the pane keeps only the first, unconfirmed
-			// seed. Record the withhold, never a failed delivery.
-			p.recordStartupNudgeWithheld(ctx, binding, res.GateStop.reason())
-			return nil
+			outcome, ended = p.afterPreWriteStop(ctx, binding, cfg, w, start, res.GateStop)
+			continue
 		}
 		p.finishStartupDelivery(ctx, name, binding, res)
 		return nil
@@ -332,6 +337,7 @@ type startupDialogWatch struct {
 	screen  string
 	gate    string
 	suspect string
+	seed    string // the startup nudge, for the seed-ambiguous check
 }
 
 // newStartupDialogWatch starts a start's watch with the configured window.
@@ -340,6 +346,7 @@ func (p *Provider) newStartupDialogWatch(cfg Config) *startupDialogWatch {
 		window: p.nudge.startupDialogClear,
 		poll:   p.startupPollInterval(),
 		prefix: cfg.ReadyPromptPrefix,
+		seed:   cfg.Nudge,
 	}
 }
 
@@ -446,12 +453,15 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 	_ = p.SetMeta(ctx, string(binding.Name), StartupDeliveryUnconfirmedMetaKey, detail)
 }
 
-// gatePreWrite names the startup dialog gate before the first write.
-const gatePreWrite = "pre-write"
+// Startup dialog gate points (REQ-001).
+const (
+	gatePreWrite  = "pre-write"
+	gatePreSubmit = "pre-submit"
+	gatePreResend = "pre-resend"
+)
 
-// gateResend names the startup dialog gate before a resend clears the draft
-// line and types the seed again.
-const gateResend = "resend"
+// startupDialogSuspectSeed marks a gate match the seed's own echo may explain.
+const startupDialogSuspectSeed = "seed"
 
 // startupGateStop is a startup dialog gate's stop: no input followed. Dialog
 // reports that the read showed a dialog; false means the read failed after
@@ -461,7 +471,10 @@ type startupGateStop struct {
 	Point  string
 	Dialog bool
 	Name   string
-	At     time.Time
+	// Suspect marks a match after a write that the seed's own text would
+	// produce (REQ-005).
+	Suspect bool
+	At      time.Time
 }
 
 func (s *startupGateStop) Error() string {
@@ -470,10 +483,14 @@ func (s *startupGateStop) Error() string {
 
 // reason is the marker's <reason> (REQ-001).
 func (s *startupGateStop) reason() string {
-	if !s.Dialog {
+	switch {
+	case !s.Dialog:
 		return "the screen could not be read after a startup dialog was seen (" + s.Name + ")"
+	case s.Suspect:
+		return "a startup dialog may have appeared (" + s.Name + "); the seed contains its marker text"
+	default:
+		return "a startup dialog appeared (" + s.Name + ")"
 	}
-	return "a startup dialog appeared (" + s.Name + ")"
 }
 
 // startupDialogGate is the startup-only dialog gate (REQ-001). Before an input
@@ -492,7 +509,12 @@ func (g startupDialogGate) capped(parent context.Context) (context.Context, cont
 	return g.w.capped(parent)
 }
 
-func (g startupDialogGate) check(ctx context.Context, point string) *startupGateStop {
+// check reads the screen tail before the input call at point. typed reports
+// that seed text may already be on screen (after the first write): a match the
+// seed alone would produce is then seed-ambiguous. It still stops the ladder,
+// because the gate cannot tell a real dialog from the seed's echo and must not
+// bypass a real one (REQ-005).
+func (g startupDialogGate) check(ctx context.Context, point string, typed bool) *startupGateStop {
 	screen, err := g.p.paneScreen(ctx, g.b.SessionID, g.b.BlockID)
 	at := time.Now()
 	if err != nil {
@@ -503,8 +525,13 @@ func (g startupDialogGate) check(ctx context.Context, point string) *startupGate
 	}
 	tail := startupScreenTail(screen)
 	if name, ok := matchedStartupDialog(tail, g.w.prefix); ok {
-		g.w.sight(at, name, tail, point, "")
-		return &startupGateStop{Point: point, Dialog: true, Name: name, At: at}
+		suspect := typed && seedEchoes(g.w.seed, g.w.prefix, name)
+		tag := ""
+		if suspect {
+			tag = startupDialogSuspectSeed
+		}
+		g.w.sight(at, name, tail, point, tag)
+		return &startupGateStop{Point: point, Dialog: true, Name: name, Suspect: suspect, At: at}
 	}
 	// A clear reply that returned at or after the hard stop is stale: the read
 	// was cut off there, and the CLI can decode a reply after its command
@@ -515,6 +542,24 @@ func (g startupDialogGate) check(ctx context.Context, point string) *startupGate
 		return &startupGateStop{Point: point, Name: g.w.name, At: at}
 	}
 	return nil
+}
+
+// seedEchoes reports whether the seed's own text matches the named dialog, so
+// a gate match after a write may be the seed's echo (REQ-005).
+func seedEchoes(seed, prefix, name string) bool {
+	got, ok := matchedStartupDialog(seed, prefix)
+	return ok && got == name
+}
+
+// recordStartupGateStop marks a startup delivery that a dialog gate stopped
+// after the write. Best effort; it never fails the start, and the readiness
+// outcome stays as the wait left it (REQ-001).
+func (p *Provider) recordStartupGateStop(ctx context.Context, binding Binding, stop *startupGateStop) {
+	detail := "delivery failed: the seed was typed but not submitted, " + stop.reason()
+	if stop.Point == gatePreResend {
+		detail = "delivered but not confirmed: " + stop.reason() + " before a resend"
+	}
+	_ = p.SetMeta(ctx, string(binding.Name), StartupDeliveryUnconfirmedMetaKey, detail)
 }
 
 // afterPreWriteStop is the wait's next step after the pre-write gate blocked:
@@ -537,6 +582,9 @@ func (p *Provider) afterPreWriteStop(ctx context.Context, b Binding, cfg Config,
 // to the startup marker. It never fails the start.
 func (p *Provider) finishStartupDelivery(ctx context.Context, name string, binding Binding, res paneTextResult) {
 	switch {
+	case res.GateStop != nil:
+		// A pre-submit or pre-resend stop (the caller handles pre-write).
+		p.recordStartupGateStop(ctx, binding, res.GateStop)
 	case res.LateTurn:
 		// The turn started after the confirmation window: the earlier submit
 		// landed, so a resend would enqueue a second copy.

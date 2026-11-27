@@ -68,8 +68,9 @@ type inputGate interface {
 	// including its pre-write check (the hard stop after a sighting).
 	capped(parent context.Context) (context.Context, context.CancelFunc)
 	// check reads the pane before the input call at point and returns a stop,
-	// or nil to go ahead.
-	check(ctx context.Context, point string) *startupGateStop
+	// or nil to go ahead. typed reports that seed text may already be on
+	// screen, so a match may be the seed's echo.
+	check(ctx context.Context, point string, typed bool) *startupGateStop
 }
 
 // deliverPaneText runs the shared pane-delivery ladder: one gated write,
@@ -107,12 +108,12 @@ func (p *Provider) deliverPaneText(ctx context.Context, req paneTextRequest) pan
 			}
 			// A startup dialog that appears during the backoff must not get the
 			// clear key or a second seed: Enter would press its selected option
-			// (REQ-001). The gate reads the screen tail right before the clear,
-			// under ctx: the hard stop bounds the pre-write gate only, so a
-			// dialog seen and cleared before the first seed still allows the
-			// lost-Enter rescue.
+			// (REQ-001). The first pre-resend check reads the screen tail right
+			// before the clear, under ctx: the hard stop bounds the pre-write
+			// gate only, so a dialog seen and cleared before the first seed
+			// still allows the lost-Enter rescue.
 			if req.Gate != nil {
-				if stop := req.Gate.check(ctx, gateResend); stop != nil {
+				if stop := req.Gate.check(ctx, gatePreResend, true); stop != nil {
 					res.GateStop = stop
 					return res
 				}
@@ -232,12 +233,18 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	// available confirmation signal. turnBaseline reads it now, before typing.
 	base := turnBaseline(p.observePane(readCtx, binding, baseline))
 
-	// The startup dialog gate reads the screen tail right before the first
-	// write (REQ-001 (a)). Ordinary nudges pass no gate. The gate read runs
-	// under readCtx, so after a sighting it is bounded by the hard stop.
+	// The startup dialog gate reads the screen tail right before the write:
+	// pre-write on the first attempt, the second pre-resend check on a resend,
+	// where seed text may already be on screen (REQ-001). Ordinary nudges pass
+	// no gate. The read runs under readCtx, so the hard stop bounds it only on
+	// the first attempt; a resend's read keeps ctx.
 	var stop *startupGateStop
-	if gate != nil && attempt == 1 {
-		stop = gate.check(readCtx, gatePreWrite)
+	if gate != nil {
+		point, typed := gatePreWrite, false
+		if attempt > 1 {
+			point, typed = gatePreResend, true
+		}
+		stop = gate.check(readCtx, point, typed)
 		releaseCap()
 	}
 	// A cancel here is not a send failure: it stays a plain error (exit 1),
@@ -274,6 +281,15 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	submitDeadline, _ := submitCtx.Deadline()
 	enterCtx, cancelEnter := context.WithDeadline(context.WithoutCancel(ctx), submitDeadline)
 	defer cancelEnter()
+	// The pre-submit gate runs under the submit key's own context: a parent
+	// cancel after the write neither fails the read nor blocks the key, and
+	// the submit deadline bounds both. A read cut off by that deadline is a
+	// failed read (REQ-001).
+	if gate != nil {
+		if stop := gate.check(enterCtx, gatePreSubmit, true); stop != nil {
+			return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: writeDur}, stop
+		}
+	}
 	if err := p.client.SendKeys(enterCtx, binding.SessionID, binding.BlockID, submitKey); err != nil {
 		p.recordNudgeSubmitFailure(binding, err)
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: writeDur},

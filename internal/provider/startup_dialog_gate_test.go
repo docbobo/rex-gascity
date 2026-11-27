@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -438,9 +439,15 @@ func TestStartupDialogDuringBackoffStopsResend(t *testing.T) {
 	fake := faketest.New()
 	fake.ProgramStatuses = idleProgramStatuses()
 	written := watchWrites(fake)
+	afterWrite := 0
 	fake.FormatCtxFunc = func(_ context.Context, _ rex.BlockID) (string, error) {
 		if written.Load() {
-			return trustDialogScreen, nil
+			// The pre-submit read stays clear; the dialog appears on the
+			// pre-resend read after the backoff.
+			afterWrite++
+			if afterWrite > 1 {
+				return trustDialogScreen, nil
+			}
 		}
 		return plainEditor, nil
 	}
@@ -457,7 +464,7 @@ func TestStartupDialogDuringBackoffStopsResend(t *testing.T) {
 	if n := keyCount(fake, "ctrl+u"); n != 0 {
 		t.Errorf("draft cleared %d times after a dialog showed, want 0", n)
 	}
-	want := "withheld: a startup dialog appeared (" + trustName + ")"
+	want := "delivered but not confirmed: a startup dialog appeared (" + trustName + ") before a resend"
 	if got := startupMarker(t, p, dogName); got != want {
 		t.Errorf("marker = %q, want %q", got, want)
 	}
@@ -589,4 +596,236 @@ func TestStartupDialogPoolClaimProbeUnderHardStop(t *testing.T) {
 			t.Error("dialog recorded, want none: this start saw no dialog")
 		}
 	})
+}
+
+// TestStartupDialogBetweenWriteAndSubmit pins REQ-001 (b): the pre-submit gate.
+func TestStartupDialogBetweenWriteAndSubmit(t *testing.T) {
+	t.Run("a dialog appears after the write", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		written := watchWrites(fake)
+		fake.FormatFunc = func(rex.BlockID) string {
+			if written.Load() {
+				return trustDialogScreen
+			}
+			return plainEditor
+		}
+		p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 1 || k != 0 || u != 0 {
+			t.Errorf("writes %d, enters %d, ctrl+u %d; want 1, 0, 0 (no submit, no resend)", n, k, u)
+		}
+		want := "delivery failed: the seed was typed but not submitted, a startup dialog appeared (" + trustName + ")"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["dialog_gate"] != "pre-submit" || timing["readiness_outcome"] != "idle" {
+			t.Errorf("dialog_gate %v, readiness_outcome %v; want pre-submit, idle", timing["dialog_gate"], timing["readiness_outcome"])
+		}
+		if _, ok := timing["dialog_suspect"]; ok {
+			t.Errorf("dialog_suspect = %v, want absent: the seed holds no marker text", timing["dialog_suspect"])
+		}
+	})
+	t.Run("a dialog appears after a resend's write", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		var writes atomic.Int32
+		fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) { writes.Add(1) }
+		fake.FormatFunc = func(rex.BlockID) string {
+			if writes.Load() >= 2 {
+				return trustDialogScreen
+			}
+			return plainEditor
+		}
+		p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 2 || k != 1 || u != 1 {
+			t.Errorf("writes %d, enters %d, ctrl+u %d; want 2, 1, 1 (the resend is written, one submit, one clear)", n, k, u)
+		}
+		want := "delivery failed: the seed was typed but not submitted, a startup dialog appeared (" + trustName + ")"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["dialog_gate"] != "pre-submit" || timing["readiness_outcome"] != "idle" {
+			t.Errorf("dialog_gate %v, readiness_outcome %v; want pre-submit, idle", timing["dialog_gate"], timing["readiness_outcome"])
+		}
+	})
+	t.Run("a parent cancel after the write keeps the readiness outcome", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		written := watchWrites(fake)
+		fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) {
+			written.Store(true)
+			cancel()
+		}
+		fake.FormatFunc = func(rex.BlockID) string {
+			if written.Load() {
+				return trustDialogScreen
+			}
+			return plainEditor
+		}
+		p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+		if err := p.Start(ctx, dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 1 || k != 0 || u != 0 {
+			t.Errorf("writes %d, enters %d, ctrl+u %d; want 1, 0, 0 (no submit, no clear, no resend)", n, k, u)
+		}
+		want := "delivery failed: the seed was typed but not submitted, a startup dialog appeared (" + trustName + ")"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["dialog_gate"] != "pre-submit" || timing["readiness_outcome"] != "idle" {
+			t.Errorf("dialog_gate %v, readiness_outcome %v; want pre-submit, idle", timing["dialog_gate"], timing["readiness_outcome"])
+		}
+	})
+	t.Run("the read fails after a sighting", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		written := watchWrites(fake)
+		var reads atomic.Int32
+		fake.FormatCtxFunc = func(context.Context, rex.BlockID) (string, error) {
+			if written.Load() {
+				return "", errors.New("rex: format failed")
+			}
+			if reads.Add(1) == 1 {
+				return trustDialogScreen, nil
+			}
+			return plainEditor, nil
+		}
+		p := clearProvider(fake, stateDir)
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k := writeCount(fake), keyCount(fake, "enter"); n != 1 || k != 0 {
+			t.Errorf("writes %d, enters %d; want 1, 0", n, k)
+		}
+		want := "delivery failed: the seed was typed but not submitted, the screen could not be read after a startup dialog was seen (" + trustName + ")"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["dialog"] != trustName || timing["readiness_outcome"] != "dialog-cleared" {
+			t.Errorf("dialog %v, readiness_outcome %v; want the last sighting and dialog-cleared", timing["dialog"], timing["readiness_outcome"])
+		}
+		if _, ok := timing["dialog_gate"]; ok {
+			t.Errorf("dialog_gate = %v, want absent: a failed read keeps the readiness sighting", timing["dialog_gate"])
+		}
+	})
+	t.Run("a parent cancel during the write does not block the submit", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) { cancel() }
+		var reads atomic.Int32
+		fake.FormatCtxFunc = func(ctx context.Context, _ rex.BlockID) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if reads.Add(1) == 1 {
+				return trustDialogScreen, nil // a sighting, so a failed gate read would stop
+			}
+			return plainEditor, nil
+		}
+		p := clearProvider(fake, t.TempDir())
+		_ = p.Start(ctx, dogName, seedConfig) // what follows the submit is not under test
+		if k := keyCount(fake, "enter"); k != 1 {
+			t.Errorf("enters %d, want 1: the pre-submit gate reads under the submit key's context", k)
+		}
+	})
+}
+
+// TestStartupDialogBeforeResend pins REQ-001 (c): the pre-resend gate, before
+// the clear key and again before the resend's write.
+func TestStartupDialogBeforeResend(t *testing.T) {
+	// After the write the screen reads are: 1 pre-submit, 2 pre-resend before
+	// ctrl+u, 3 pre-resend before the resend's write. The static idle record
+	// never confirms the submit, and the confirmation poll reads no screen.
+	run := func(t *testing.T, dialogAt, wantClears int) {
+		t.Helper()
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		written := watchWrites(fake)
+		after := 0
+		fake.FormatFunc = func(rex.BlockID) string {
+			if !written.Load() {
+				return plainEditor
+			}
+			after++
+			if after == dialogAt {
+				return trustDialogScreen
+			}
+			return plainEditor
+		}
+		p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 1 || k != 1 || u != wantClears {
+			t.Errorf("writes %d, enters %d, ctrl+u %d; want 1, 1, %d", n, k, u, wantClears)
+		}
+		want := "delivered but not confirmed: a startup dialog appeared (" + trustName + ") before a resend"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		if got := readStartupTiming(t, stateDir, dogName)["dialog_gate"]; got != "pre-resend" {
+			t.Errorf("dialog_gate = %v, want pre-resend", got)
+		}
+	}
+	t.Run("before the clear key", func(t *testing.T) { run(t, 2, 0) })
+	t.Run("before the resend's write", func(t *testing.T) { run(t, 3, 1) })
+}
+
+// TestStartupSeedQuotingDialogMarker pins REQ-005's seed-ambiguous match: a
+// seed that quotes a dialog marker stops at pre-submit with a suspected-dialog
+// reason, and a real dialog at that gate is never bypassed.
+func TestStartupSeedQuotingDialogMarker(t *testing.T) {
+	const seed = "please trust this folder, then run gc prime"
+	want := "delivery failed: the seed was typed but not submitted, a startup dialog may have appeared (" + trustName + "); the seed contains its marker text"
+	for name, afterWrite := range map[string]string{
+		"only the typed seed shows": plainEditor + seed,
+		"a real dialog shows too":   trustDialogScreen + "❯ " + seed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			fake := faketest.New()
+			fake.ProgramStatuses = idleProgramStatuses()
+			written := watchWrites(fake)
+			fake.FormatFunc = func(rex.BlockID) string {
+				if written.Load() {
+					return afterWrite
+				}
+				return plainEditor
+			}
+			p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+			if err := p.Start(context.Background(), dogName, provider.Config{Argv: []string{"pi"}, Nudge: seed}); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 1 || k != 0 || u != 0 {
+				t.Errorf("writes %d, enters %d, ctrl+u %d; want 1, 0, 0 (no resend, no clear)", n, k, u)
+			}
+			if got := startupMarker(t, p, dogName); got != want {
+				t.Errorf("marker = %q, want %q", got, want)
+			}
+			timing := readStartupTiming(t, stateDir, dogName)
+			if timing["dialog_suspect"] != "seed" || timing["dialog_gate"] != "pre-submit" {
+				t.Errorf("dialog_suspect %v, dialog_gate %v; want seed, pre-submit", timing["dialog_suspect"], timing["dialog_gate"])
+			}
+		})
+	}
 }
