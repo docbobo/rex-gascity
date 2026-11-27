@@ -423,7 +423,7 @@ left is the file layout. The behavior does not change.
 - **AC-6 (REQ-011, REQ-013):** every REQ-011 test passes on `d97988f` and on
   the branch, and the task notes record both runs. No existing test file loses
   or changes a code line. The only changed lines are the citation-only comment
-  edits that REQ-013 allows.
+  edits and the new tests that REQ-012 and REQ-013 allow.
 - **AC-7 (REQ-012):** constraints (a), (b) and (c) are each pinned by a named
   test. For each of the three, whether an existing test or an added one gives
   the proof, the task notes record a green run on unchanged code, a red run
