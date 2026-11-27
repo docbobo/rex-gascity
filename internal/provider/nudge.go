@@ -63,6 +63,12 @@ type nudgeConfig struct {
 	startupReadyWindow time.Duration
 	startupSettleDelay time.Duration
 
+	// startupDialogClear is the clear window: how long after the first
+	// startup-dialog sighting Start keeps polling for the dialog to clear
+	// before it leaves the seed undelivered (#205). <= 0 disables the clear
+	// wait.
+	startupDialogClear time.Duration
+
 	// startupNudgeBackoffs is the ladder of delays between startup-nudge
 	// resends after a delivered-but-unconfirmed submit. An empty ladder
 	// disables resending.
@@ -77,6 +83,7 @@ func defaultNudgeConfig() nudgeConfig {
 		nudgeSubmitBudget:    defaultNudgeSubmitBudget,
 		startupReadyWindow:   defaultStartupReadyWindow,
 		startupSettleDelay:   defaultStartupSettleDelay,
+		startupDialogClear:   defaultStartupDialogClearWindow,
 		startupNudgeBackoffs: defaultStartupNudgeBackoffs,
 	}
 }

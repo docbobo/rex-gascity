@@ -23,6 +23,10 @@ const (
 	defaultStartupSettleDelay = 3 * time.Second
 )
 
+// defaultStartupDialogClearWindow is the clear window's default, the same 15 s
+// as the readiness window (#205, REQ-002).
+const defaultStartupDialogClearWindow = defaultStartupReadyWindow
+
 // defaultStartupNudgeBackoffs mirrors gc's startupNudgeRetryBackoffs: a submit
 // injected right after readiness is observed can still miss the TUI's input
 // line, and the whole write+submit cycle is re-run after each delay (gc
@@ -64,6 +68,15 @@ const (
 	// dialog only once start returns, and the turn's Enter would pick the
 	// dialog's selected option (herdrcore/lifecycle.py:1078-1096).
 	readinessDialog = "dialog"
+	// readinessDialogCleared is a wait that saw a startup dialog, then had a
+	// poll with a clear screen tail and a ready verdict (idle past the floor,
+	// or the configured prompt) before the clear window ended. The seed is
+	// then delivered through the ladder (#205, REQ-003).
+	readinessDialogCleared = "dialog-cleared"
+	// readinessDialogUnresolved is a wait that saw a startup dialog and ended
+	// at the clear window's deadline on a read that was clear but not ready,
+	// or that failed. The seed is not typed (REQ-004 (b)).
+	readinessDialogUnresolved = "dialog-unresolved"
 )
 
 // maxReadyDelay caps ready_delay_ms, mirroring herdr-core READY_WAIT_S
@@ -94,6 +107,17 @@ func WithStartupNudgeRetries(backoffs []time.Duration) Option {
 	}
 }
 
+// WithStartupDialogClear sets the clear window. Once the startup wait has seen
+// a dialog, Start keeps polling, never typing, until a poll shows a clear
+// screen and a ready verdict, or until the window, measured from the first
+// sighting, ends. d <= 0 disables the clear wait: the first sighting leaves the
+// seed undelivered at once, as before #205.
+func WithStartupDialogClear(d time.Duration) Option {
+	return func(p *Provider) {
+		p.nudge.startupDialogClear = d
+	}
+}
+
 // deliverStartupNudge waits for the launched pane to become ready, then types
 // and submits the startup nudge. Delivery itself is best effort: no error from
 // the wait or the delivery is returned. The one exception is agent liveness: an
@@ -121,16 +145,17 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 	// The timing is written for every delivery, confirmed or not: the slow case
 	// this exists to attribute is usually a successful start whose readiness
 	// wait consumed most of the time, so recording only failures would miss it.
-	w := &startupDialogWatch{prefix: cfg.ReadyPromptPrefix}
+	w := p.newStartupDialogWatch(cfg)
 	start := time.Now()
 	defer func() {
 		w.record(&timing)
 		timing.TotalMS = millis(time.Since(start)) + timing.LaunchMS
 		p.writeStartupTimingDiagnostic(binding, timing)
 	}()
-	outcome, readiness, ended := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID, cfg, w)
+	outcome, ended := p.startupReadiness(ctx, binding, cfg, w, start)
 	timing.ReadinessOutcome = outcome
-	timing.ReadinessMS = millis(readiness)
+	// readiness_ms covers the readiness wait and any clear wait.
+	timing.ReadinessMS = millis(time.Since(start))
 	// An agent that ended before its first turn: fail unless the lifecycle is
 	// one_shot, and never type a nudge into a dead pane. The timing diagnostic
 	// is still written by the defer above.
@@ -140,11 +165,16 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		}
 		return fmt.Errorf("%s: the agent exited during startup, before its first turn", name)
 	}
-	// A startup dialog is gc's to answer once start returns; typing the turn
-	// now would press whichever option the dialog has selected. The withhold is
-	// recorded, never a failed start, so a healthy pane is not torn down.
-	if outcome == readinessDialog {
+	// A startup dialog that did not clear in time: typing now would press
+	// whichever option it has selected. The seed stays undelivered and the
+	// marker names the dialog. Never a failed start: gc would tear down a
+	// healthy pane (cleanupAfterStartFailure, gc v1.5.1 exec.go:223-228).
+	switch outcome {
+	case readinessDialog:
 		p.recordStartupNudgeWithheld(ctx, binding, startupDialogShownWhy(w.name))
+		return nil
+	case readinessDialogUnresolved:
+		p.recordStartupNudgeWithheld(ctx, binding, startupDialogUnresolvedWhy(w.name))
 		return nil
 	}
 
@@ -273,25 +303,71 @@ const startupClearKey = "ctrl+u"
 // last bytes, where the live screen is (REQ-006).
 const startupDialogScreenCap = 4096
 
-// startupDialogWatch is one start's record of the startup dialogs it saw: the
-// most recent sighting's evidence for the timing diagnostic (REQ-006). The
-// screen is raw pane text and may hold seed text after a write, so it goes to
-// the private diagnostic only, never to a marker, a NudgeReport or a log line.
+// startupDialogWatch is one start's record of the startup dialogs it saw. One
+// watch spans the readiness wait, any clear wait and the startup dialog gate,
+// so they share one clock and one record. The clock starts at the first
+// sighting, that is, when the read that first showed a dialog returned
+// (REQ-002). The evidence is the most recent sighting's (REQ-006); its screen
+// is raw pane text and may hold seed text after a write, so it goes to the
+// private diagnostic only, never to a marker, a NudgeReport or a log line.
 type startupDialogWatch struct {
-	prefix string // ready_prompt_prefix; "" selects status mode
+	window time.Duration // the clear window; <= 0 disables the clear wait
+	poll   time.Duration // the nudge poll interval: the hard stop's margin
+	prefix string        // ready_prompt_prefix; "" selects status mode
 
-	seen    bool
+	seen     bool
+	deadline time.Time // first sighting + window
+	hardStop time.Time // deadline + poll: the local bound on Rex calls
+
 	name    string
 	screen  string
 	gate    string
 	suspect string
 }
 
-// sight records a dialog the readiness wait (gate "") or a startup dialog
-// gate (gate names the point) saw. A failed read is never a sighting.
-func (w *startupDialogWatch) sight(name, screen, gate, suspect string) {
-	w.seen = true
+// newStartupDialogWatch starts a start's watch with the configured window.
+func (p *Provider) newStartupDialogWatch(cfg Config) *startupDialogWatch {
+	return &startupDialogWatch{
+		window: p.nudge.startupDialogClear,
+		poll:   p.startupPollInterval(),
+		prefix: cfg.ReadyPromptPrefix,
+	}
+}
+
+// sight records a dialog that a read returning at at showed. The first
+// sighting starts the clear window; later ones only refresh the evidence. A
+// failed read is never a sighting.
+func (w *startupDialogWatch) sight(at time.Time, name, screen, gate, suspect string) {
+	if !w.seen {
+		w.seen = true
+		w.deadline = at.Add(max(w.window, 0))
+		w.hardStop = w.deadline.Add(w.poll)
+	}
 	w.name, w.screen, w.gate, w.suspect = name, capTail(screen, startupDialogScreenCap), gate, suspect
+}
+
+// pastDeadline reports whether a read that returned at at is at or after the
+// clear window's deadline.
+func (w *startupDialogWatch) pastDeadline(at time.Time) bool {
+	return w.seen && !at.Before(w.deadline)
+}
+
+// capped is the context the Rex calls run under until a startup delivery's
+// pre-write gate has a clear result: the parent before any sighting, else the
+// parent cut at the hard stop (REQ-002). A call cut off there is a failed read.
+func (w *startupDialogWatch) capped(parent context.Context) (context.Context, context.CancelFunc) {
+	if !w.seen {
+		return parent, func() {}
+	}
+	return context.WithDeadline(parent, w.hardStop)
+}
+
+// startupPollInterval is the poll interval of the startup waits.
+func (p *Provider) startupPollInterval() time.Duration {
+	if p.nudge.nudgePollInterval > 0 {
+		return p.nudge.nudgePollInterval
+	}
+	return defaultNudgePollInterval
 }
 
 // record copies the most recent sighting into the timing diagnostic. A start
@@ -320,6 +396,12 @@ func capTail(s string, n int) string {
 // dialog: "withheld: the pane shows a startup dialog (<name>)".
 func startupDialogShownWhy(name string) string {
 	return "the pane shows a startup dialog (" + name + ")"
+}
+
+// startupDialogUnresolvedWhy is the withhold reason for dialog-unresolved. It
+// names the last sighting and does not claim the dialog is still visible.
+func startupDialogUnresolvedWhy(name string) string {
+	return "a startup dialog was seen (" + name + "); the pane was not clear and ready when the clear window ended"
 }
 
 // clearStartupDeliveryUnconfirmed removes the stranded-startup marker after a
@@ -366,7 +448,8 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 // ended, disabled, or a startup dialog), how long it took, and whether the
 // agent ended. The caller records the bound and, on an end, fails the start
 // unless the lifecycle is one_shot (GCREX-53, GCREX-58); a dialog withholds the
-// nudge (GCREX-59).
+// nudge (GCREX-59) and ends this wait at its first sighting, so the caller then
+// runs the clear wait (#205).
 // readinessBounds are the three times the wait can end on: the ready_delay_ms
 // floor, the full window, and the shorter settle delay used before the program
 // has reported any status. promptWatch records whether a ready_prompt_prefix
@@ -431,7 +514,7 @@ func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block r
 	switch startupVerdict(o, cfg.ReadyPromptPrefix, elapsed >= r.delay, elapsed >= r.bound(sawRecord)) {
 	case verdictDialog:
 		if name, screen, ok, err := startupDialog(o, cfg.ReadyPromptPrefix); err == nil && ok {
-			w.sight(name, screen, "", "")
+			w.sight(time.Now(), name, screen, "", "")
 		}
 		return readinessDialog, true
 	case verdictPromptReady:
@@ -462,10 +545,7 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 	if p.nudge.startupReadyWindow <= 0 {
 		return readinessDisabled, 0, false
 	}
-	poll := p.nudge.nudgePollInterval
-	if poll <= 0 {
-		poll = defaultNudgePollInterval
-	}
+	poll := p.startupPollInterval()
 	r := readinessBounds{
 		delay:       readyDelay(cfg),
 		window:      p.nudge.startupReadyWindow,
@@ -500,6 +580,82 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 		case <-timer.C:
 		}
 	}
+}
+
+// startupReadiness runs the readiness wait and, after a first dialog sighting
+// with the clear wait enabled, the clear wait. It returns the wait's outcome
+// and whether the pane's program ended.
+func (p *Provider) startupReadiness(ctx context.Context, b Binding, cfg Config, w *startupDialogWatch, readyStart time.Time) (string, bool) {
+	outcome, _, ended := p.waitForStartupReady(ctx, b.SessionID, b.BlockID, cfg, w)
+	if outcome == readinessDialog && w.window > 0 {
+		return p.waitForDialogClear(ctx, b, cfg, w, readyStart)
+	}
+	return outcome, ended
+}
+
+// waitForDialogClear runs once this start has seen a startup dialog. It polls
+// at the nudge poll interval until a poll has a clear read and a positive ready
+// verdict (dialog-cleared), or until the deadline poll, the first poll whose
+// screen read returns at or after the deadline, ends the wait undelivered
+// (REQ-002, REQ-003, REQ-004). The bound fallbacks never deliver here. A
+// cancelled ctx gives canceled and an ended pane ended, as in the readiness
+// wait.
+func (p *Provider) waitForDialogClear(ctx context.Context, b Binding, cfg Config, w *startupDialogWatch, readyStart time.Time) (string, bool) {
+	floor := readyDelay(cfg)
+	for {
+		if ctx.Err() != nil {
+			return readinessCanceled, false
+		}
+		if outcome, done, ended := p.dialogClearPoll(ctx, b, cfg, w, time.Since(readyStart) >= floor); done {
+			return outcome, ended
+		}
+		timer := time.NewTimer(min(w.poll, max(time.Until(w.deadline), 0)))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return readinessCanceled, false
+		case <-timer.C:
+		}
+	}
+}
+
+// dialogClearPoll is one poll of the clear wait. Its Rex calls run under the
+// hard stop, and it reads the screen tail in both modes, whatever the program
+// status, so the deadline poll always has a read (REQ-003). The clear-and-ready
+// check runs before the deadline check, so the deadline poll can still deliver
+// (REQ-004).
+func (p *Provider) dialogClearPoll(ctx context.Context, b Binding, cfg Config, w *startupDialogWatch, pastFloor bool) (outcome string, done, ended bool) {
+	pctx, cancel := w.capped(ctx)
+	defer cancel()
+	if alive, err := p.paneAlive(pctx, b); err == nil && !alive {
+		return readinessEnded, true, true
+	}
+	snap, err := p.programStatusSnapshot(pctx, b)
+	if err != nil {
+		snap = programStatusSnapshot{}
+	}
+	o := p.observePane(pctx, b, snap)
+	verdict := startupVerdict(o, cfg.ReadyPromptPrefix, pastFloor, false)
+	name, screen, dialog, readErr := startupDialog(o, cfg.ReadyPromptPrefix)
+	at := time.Now()
+	if ctx.Err() != nil {
+		return readinessCanceled, true, false
+	}
+	if dialog {
+		w.sight(at, name, screen, "", "")
+	}
+	// A failed read is never a clear read, even when status mode's verdict
+	// failed open to idle.
+	if readErr == nil && !dialog && (verdict == verdictIdle || verdict == verdictPromptReady) {
+		return readinessDialogCleared, true, false
+	}
+	if w.pastDeadline(at) {
+		if dialog {
+			return readinessDialog, true, false
+		}
+		return readinessDialogUnresolved, true, false
+	}
+	return "", false, false
 }
 
 // paneScreen reads the pane's rendered output, the bounded screen read the
