@@ -21,8 +21,7 @@ and prints its path. Fill it in, then add its row below.
 - Statuses: `Proposed`, `Accepted`, `Superseded by ADR-NNNN`, `Rejected`.
 - Date the decision, not the backfill. Mark `(backfilled)` when the two differ.
 - Keep it to about a page. Link the longer standing documents
-  (`docs/REX-RETIRE.md`, `docs/provider-herdr-parity.md`) rather than copying
-  them.
+  (`docs/rex-provider.md`, `docs/REX-CONTRACT.md`) rather than copying them.
 
 An ADR records a decision, not an instruction. The rules an agent must follow
 live in the `AGENTS.md` files.
@@ -41,3 +40,4 @@ live in the `AGENTS.md` files.
 | [0008](0008-dashboard-json-output-ignores-scope.md) | The dashboard `--json` model ignores `--scope` | Accepted |
 | [0009](0009-keep-start-welded.md) | `start` stays welded; no `provision` or `exec` until a non-tmux launch half exists | Accepted |
 | [0010](0010-provider-policy-modules-are-files-of-provider-methods-with-one-entry-point.md) | Provider policy modules are files of `Provider` methods with one entry point | Accepted |
+| [0011](0011-verify-the-provider-against-gc-and-conformance-not-herdr-core-parity.md) | Verify the provider against gc and conformance, not herdr-core parity | Accepted |

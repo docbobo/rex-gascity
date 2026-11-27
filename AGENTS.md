@@ -96,12 +96,12 @@ Every claim about the Rex provider, RPP v0, or gc behavior needs two sources.
 Check it before it lands in code, docs, task notes, or a review. The provider
 sources are listed in `internal/provider/AGENTS.md`.
 
-- Cite file and line (gc) or section and verdict (parity doc) for each claim.
+- Cite file and line (gc source) or test name and run (conformance, provider
+  tests) for each claim.
 - When the two disagree, report the conflict instead of picking one. In an
   autonomous run, repeat both readings in the task notes and in the PR body.
 - Label a claim `unverified` when neither source settles it. Do not round it up
   to fact.
-- Change a parity verdict only after re-running the check against both sources.
 
 When a source is absent (CI, a sandbox, a machine with no gc checkout), do not
 block on the read. Mark the claim `unverified`. Say which source was missing.

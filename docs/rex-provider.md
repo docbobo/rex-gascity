@@ -219,7 +219,12 @@ compares that `version` against the `[pack] version` in
   `tty.attach`, and `fs.host`. `fs.host` adds work-dir staging rules the
   provider does not implement. Locality alone states the deployment fact.
 
-Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`, `observe`, `inventory`, `kill-object`.
+Implemented RPP operations: `protocol`, `start`, `stop`, `attach`, `is-running`, `interrupt`, `nudge`, `send-keys`, `clear-scrollback`, `process-alive`, `peek`, `list-running`, `get-last-activity`, `idle`, `program-status`, `is-attached`, `set-meta`, `get-meta`, `remove-meta`, `observe`, `inventory`, `kill-object`.
+
+Two of these are Rex-only, and `docs/REX-CONTRACT.md` §9 has their contract:
+
+- `idle <name>` (GCREX-63) answers one word, `idle`, `busy` or `indeterminate`, from the pane's `program_status` and screen. It is gated by `idle-boundary`. A failed read exits 1 and is never `idle`.
+- `program-status <name>` (GCREX-64) answers one JSON line with the judged OSC 7501 reading: `validity` (`valid`, `not_armed`, `exited`) and, when valid, `state` and `kind`. No token gates it. It stays inert until gc's exec backend reads a `ProgramStatusProvider`.
 
 ## Identity Mapping
 
@@ -561,10 +566,32 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **`fresh_only` refuses a held name (GCREX-56)**: a start with `fresh_only` fails with exit 73 `session "<name>" already exists (fresh_only)` when any binding record holds the name, live or dead, instead of recycling it. gc 1.5.1 never sends `fresh_only`.
 - **`pre_start` runs before the pane launches** (GCREX-15, GCREX-25.2): each entry is executed in order with `/bin/sh -c`, cwd set to the start config's `work_dir` when that directory already exists and to `/` otherwise (mirroring runtime-herdr-core's `_setup_cwd`, so a hook can create the work dir), and the process environment merged with the start-config `env` map. Each hook runs under a per-hook timeout (30 s by default, `WithPreStartHookTimeout`) capped by whatever remains of the start budget (the op context's deadline when it carries one, else 120 s, `WithStartBudget`); a hook that outlives it fails the start with `pre_start[i]: … timed out after D`. A non-zero exit aborts the launch and leaves no seeded identity or binding behind. After the hooks, a configured `work_dir` must be an existing directory or the start fails. An empty or absent `pre_start` is a no-op.
 - **`list-running` only sees known panes**: It is derived from the sidecar bindings plus a liveness check, not from a scan of Rex. A live pane with no cached binding (for example after the state dir was removed) is not listed. It emits each live primary binding whose name matches the prefix, plus each matching rig-qualified alias when the prefix is non-empty; the empty prefix lists primary names only.
-- **Unimplemented operations exit 2**: `exec`, `provision`, and `watch-startup` are not implemented and exit with code `2` per RPP v0.
+- **Unimplemented operations exit 2**: `exec`, `provision`, and `watch-startup` are not implemented and exit with code `2` per RPP v0. `server-stop` and `copy-to` are not registered, so they also exit 2. At `v1.5.1`, gc's exec `CopyTo` runs `copy-to` best-effort (`internal/runtime/exec/exec.go:793-797`). The retired parity doc said gc never sends it. Whether a 1.5.1 city reaches that call for an exec provider is `unverified`. When `watch-startup` is unsupported, gc falls back to `runtime.AcceptStartupDialogs` over `peek` and `send-keys` (`internal/runtime/exec/exec.go:376-380` at `v1.5.1`). ADR-0009 records why `start` stays welded.
 - **`attach` is a hint, not a pty passthrough (GCREX-20)**: gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` through `runWithTTY`, which does not apply the exit-2-is-success rule, so a Rex-backed session cannot answer exit 2 without failing the command. The provider registers `attach` and always exits 0, printing a one-line hint to open the Rex app and select the session. It reads no Rex state, so an unknown session and an unreachable server succeed too. No `tty.attach` capability is declared: this is a hint path, not an interactive connection.
-- **No busy-gated nudge (OSC 7501 is emitted by the agent)**: OSC 7501 agent status frames are emitted by the pane program, not the provider — Pi implements the protocol and gc-managed Pi panes report `idle`/`working`/… under Rex, so `program_status` is normally populated. The provider does not yet consume it: nudge busy-gating and submit confirmation are deferred, so `nudge` writes the message text and sends `enter` without waiting for an idle prompt.
+- **`nudge` is busy-gated on the agent's OSC 7501 status (GCREX-16, GCREX-21)**: the pane program emits OSC 7501 status frames (Pi does; gc-managed Pi panes report `idle`/`working`/…), and Rex stores them as `program_status`. `nudge` reads the newest record before it types. A `working` pane answers the `busy` input outcome. A `blocked` pane answers `pending_interaction` and names the blocked kind. Both exit 80 and type nothing (`internal/provider/pane_delivery.go`, `input.go`; `TestNudgeBusyIsBusyOutcome`, `TestNudgeBlockedIsPendingInteraction`). A program that reports no status is not gated.
 - **Teardown leaves the server and the session intact**: Stopping agents closes only city-owned blocks (`rex block close`) and never stops the shared Rex server. After the last pane closes, the empty canonical `gc:<city>` session is left in place — the live probe lists the server-wide Rex app client on every session, which is the approved skip branch — and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
+
+## Operational risks
+
+These are risks in how gc reads the provider, not provider defects.
+
+- **A Rex outage reads as "everything is dead".** At `v1.5.1`, gc's exec
+  `IsRunning` reads an op error the same as `false`
+  (`internal/runtime/exec/exec.go:652-674`, `boxOccupancy`). While the Rex
+  server is unreachable, every session therefore looks dead, and the reconciler
+  starts replacements. The provider's own liveness reads answer `unknown`, never
+  `dead` (ADR-0002), but `is-running` has no third answer on the wire.
+- **`rex` exit 3 is broad.** `internal/rex/cli/cli.go:59-60` maps every exit 3
+  to `rex.ErrNotFound`, and the driving ops treat not-found as success. Exit 3
+  is a 404 `not_found` answer and never a transport failure (`REX-CONTRACT.md`
+  §10.1, GCREX-31). A down server exits 4, which the client reads as
+  unavailable. The one other exit-3 cause is an expired `blob_read` result, and
+  its five-minute hold outlives the 30 s op deadline.
+- **Probe fan-out.** One gc `IsAttached`, `GetLastActivity` or `ProcessAlive`
+  observation can cost up to four provider invocations, because two
+  `is-running` probes come first. Each one is a Rex round trip. This is
+  `unverified` against `v1.5.1`: the retired parity doc recorded it, and the gc
+  seam-layer source was not re-read for this move.
 
 See `docs/rex-pilot-phase5.md` for the pilot and promotion record (GCREX-6), including the observed `gc:default` namespace under a launchd supervisor.
 See `docs/REX-RETIRE.md` for the retire/drain comparison against

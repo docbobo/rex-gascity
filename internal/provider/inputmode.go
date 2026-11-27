@@ -13,8 +13,8 @@ import (
 // input while the program is reading a secret (a sudo, ssh, read -s or getpass
 // password prompt). Typed text there would be submitted as a password attempt.
 //
-// The predicate canonical && !echo is UNVERIFIED: neither
-// docs/provider-herdr-parity.md nor gc v1.5.1 covers input_mode. Its basis is
+// The predicate canonical && !echo is UNVERIFIED: gc v1.5.1 does not cover
+// input_mode. Its basis is
 // docs/REX-CONTRACT.md §4 (input_mode, "detect a password/raw prompt") and the
 // issue #48 live probe (rex 0.1.0-preview.21, api 18). A bare echo:false is
 // readline (bash, python REPLs) and must not withhold. Raw-mode secret prompts

@@ -5,7 +5,7 @@
 
 ## Context
 
-Parity row 120 (`docs/provider-herdr-parity.md:120`) reads: `provision` is not
+Parity row 120 ([parity doc:120](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L120)) reads: `provision` is not
 implemented. So is `exec`. gc's `provisionBox` runs the `provision` op only when
 the handshake declares both `proc.provision` and `proc.exec`
 (`/Volumes/Sources/gascity/internal/runtime/exec/exec.go:570-580`). Without
@@ -66,15 +66,14 @@ tokens and gates the separable launch on them. `supportsSeparableLaunch`
 returns true only when the handshake declares `proc.provision` and `proc.exec`.
 `provisionBox` then runs the `provision` op instead of the welded `start`
 (`internal/runtime/exec/exec.go:277-296` at tag `v1.5.1`). The parity doc
-records the same gate at `docs/provider-herdr-parity.md:432`. The un-weld is
+records the same gate at [parity doc:432](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L432). The un-weld is
 inert on the pin whenever either capability is absent. Declaring both makes the
 pin call `provision`, so the pin is not a reason to keep it welded. The
 missing launch half is the reason to keep it welded.
 
-The sources are `docs/provider-herdr-method-io.md` and
-`docs/provider-herdr-parity.md`. Before any future landing, re-run the parity
-check against `v1.5.1` and edge. The `provisionBox` gate at the pin is recorded
-at `docs/provider-herdr-parity.md:432`.
+Before any future landing, re-read the `provisionBox` gate against `v1.5.1` and
+edge and run `make conformance`. ADR-0011 retired the parity docs this ADR first
+cited; its links below are pinned to the last commit that held them.
 
 ## Consequences
 
@@ -121,11 +120,11 @@ at `docs/provider-herdr-parity.md:432`.
   `Relaunch`), `internal/runtime/seam_adapter.go:60-85`,
   `internal/runtime/worker.go:83-93`,
   `docs/reference/exec-session-provider.md:133-176`, `:228-231`.
-- Repo: `docs/provider-herdr-parity.md:120`, `:420-446`,
+- Repo: [parity doc:120](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L120), [`:420-446`](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L420-L446),
   `cmd/gc-runtime-rex/main.go:34-59`, `:161-165`.
 - `v1.5.1` pin: re-read here. `internal/runtime/exec/exec.go:277-296` gates the
   separable launch on both `proc.provision` and `proc.exec` and runs `provision`.
   `internal/runtime/protocol.go:18-55` declares the six capability tokens,
   including `proc.provision`. The parity doc records the same gate at
-  `docs/provider-herdr-parity.md:432`. That the pin has no `proc.launch` is
+  [parity doc:432](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L432). That the pin has no `proc.launch` is
   `unverified` at the pin. The edge checkout has none.

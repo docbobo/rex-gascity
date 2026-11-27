@@ -356,4 +356,3 @@ The linter set is pinned in `.golangci.yml` (`errcheck`, `govet`, `ineffassign`,
 - `docs/provider-trace.md` - the op trace schema and the stats reader.
 - `docs/fake-rex.md` - the test fake: coverage, limits and the live-server escape hatch.
 - `docs/REX-CONTRACT.md` - the pinned Rex CLI and API surface, and exit codes.
-- `docs/provider-herdr-parity.md` - the method-by-method parity record against the herdr-core provider.

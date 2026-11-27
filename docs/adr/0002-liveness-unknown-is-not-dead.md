@@ -49,9 +49,9 @@ returns `(false, err)` for `paneUnknown` rather than `(false, nil)`
 
 The second source is the parity doc, which records the same policy for its
 sibling ops: a missing pane answers `false, nil` from `ErrNotFound` for
-`process-alive` (`docs/provider-herdr-parity.md:129`), and an unclassifiable
+`process-alive` ([parity doc:129](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L129)), and an unclassifiable
 client kind answers `true` for `is-attached` because "we cannot tell"
-(`docs/provider-herdr-parity.md:142`).
+([parity doc:142](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L142)).
 
 ## Alternatives rejected
 
