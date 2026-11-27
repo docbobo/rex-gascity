@@ -191,8 +191,14 @@ func TestStartupDialogGateBlocksAtDeadline(t *testing.T) {
 		if n := writeCount(r.fake); n != 0 {
 			t.Errorf("writes %d, want 0", n)
 		}
+		if k := keyCount(r.fake, "enter"); k != 0 {
+			t.Errorf("enters %d, want 0", k)
+		}
 		if got := readStartupTiming(t, r.stateDir, dogName)["readiness_outcome"]; got != "dialog-unresolved" {
 			t.Errorf("readiness_outcome = %v, want dialog-unresolved", got)
+		}
+		if got := startupMarker(t, r.p, dogName); got != unresolvedMarker {
+			t.Errorf("marker = %q, want %q", got, unresolvedMarker)
 		}
 	}
 	t.Run("the deadline poll's screen read stalls", func(t *testing.T) {
@@ -225,7 +231,66 @@ func TestStartupDialogGateBlocksAtDeadline(t *testing.T) {
 		if timing["readiness_outcome"] != "dialog-cleared" || timing["confirmed"] != true {
 			t.Errorf("readiness_outcome %v, confirmed %v; want dialog-cleared, true", timing["readiness_outcome"], timing["confirmed"])
 		}
+		if got := startupMarker(t, r.p, dogName); got != "" {
+			t.Errorf("marker = %q, want none: the clear gate read delivered", got)
+		}
 	})
+}
+
+// TestStartupDialogGateSubmitBudget pins REQ-002: the gate read does not
+// consume the submit budget. The gate returns a clear screen well after a
+// short budget, before the hard stop; the write and the Enter still land.
+func TestStartupDialogGateSubmitBudget(t *testing.T) {
+	reads := 0
+	fake, stateDir := faketest.New(), t.TempDir()
+	fake.FormatCtxFunc = func(ctx context.Context, _ rex.BlockID) (string, error) {
+		// With no program_status: read 1 is the settle-bound poll, read 2 the
+		// ladder's baseline read, read 3 the pre-write gate.
+		reads++
+		if reads == 3 {
+			pause(ctx, 50*time.Millisecond)
+		}
+		return plainEditor, nil
+	}
+	p := clearProvider(fake, stateDir, provider.WithNudgeSubmitBudget(10*time.Millisecond))
+	if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n, k := writeCount(fake), keyCount(fake, "enter"); n != 1 || k != 1 {
+		t.Errorf("writes %d, enters %d; want 1, 1: the gate read must not use the submit budget", n, k)
+	}
+}
+
+// TestStartupDialogGateParentCancel pins REQ-002: a parent cancel during the
+// gate's read is canceled, not the hard stop's dialog-unresolved.
+func TestStartupDialogGateParentCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake, stateDir := faketest.New(), t.TempDir()
+	turnStarts(fake)
+	script := &gateScript{}
+	fake.FormatCtxFunc = script.hook(func(readCtx context.Context, n int) (string, error) {
+		if n == 1 {
+			return plainEditor, nil // the deadline poll: clear, and idle
+		}
+		pause(readCtx, clearPoll/2) // after the deadline, before the hard stop
+		cancel()
+		return trustDialogScreen, nil
+	})
+	p := clearProvider(fake, stateDir)
+	if err := p.Start(ctx, dogName, seedConfig); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n, k := writeCount(fake), keyCount(fake, "enter"); n != 0 || k != 0 {
+		t.Errorf("writes %d, enters %d; want none", n, k)
+	}
+	timing := readStartupTiming(t, stateDir, dogName)
+	if timing["readiness_outcome"] != "canceled" {
+		t.Errorf("readiness_outcome = %v, want canceled", timing["readiness_outcome"])
+	}
+	if got := startupMarker(t, p, dogName); got != "" && got[:len("withheld:")] == "withheld:" {
+		t.Errorf("marker = %q, want no withheld marker", got)
+	}
 }
 
 // TestStartupDialogFirstSeenAtPreWriteGate pins REQ-001 (a): readiness ends
@@ -233,40 +298,90 @@ func TestStartupDialogGateBlocksAtDeadline(t *testing.T) {
 // Expected call order with no program_status: read 1 is the settle-bound
 // poll, read 2 the ladder's baseline read, read 3 the pre-write gate.
 func TestStartupDialogFirstSeenAtPreWriteGate(t *testing.T) {
-	reads := 0
-	fake, stateDir := faketest.New(), t.TempDir()
-	fake.FormatCtxFunc = func(_ context.Context, _ rex.BlockID) (string, error) {
-		// With no program_status: read 1 is the settle-bound poll, read 2 the
-		// ladder's baseline read, read 3 the pre-write gate.
-		reads++
-		if reads < 3 {
-			return plainEditor, nil
+	type script struct {
+		reads   int
+		sighted bool
+		written bool
+	}
+	setup := func(fake *faketest.Fake, log *screenLog, dialogFrom, dialogTo int, statusAfterSighting bool) {
+		s := &script{}
+		fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) { s.written = true }
+		fake.FormatFunc = func(rex.BlockID) string {
+			s.reads++
+			if s.reads >= dialogFrom && (dialogTo == 0 || s.reads <= dialogTo) {
+				s.sighted = true
+				log.served(true)
+				return trustDialogScreen
+			}
+			log.served(false)
+			return plainEditor
 		}
-		return trustDialogScreen, nil
+		at := time.Now()
+		fake.ProgramStatusFunc = func(rex.BlockID) rex.ProgramStatus {
+			switch {
+			case !statusAfterSighting || !s.sighted:
+				return rex.ProgramStatus{}
+			case s.written:
+				return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{State: "working", UpdatedAt: at.Add(time.Second)}}}
+			default:
+				return rex.ProgramStatus{Records: []rex.ProgramStatusRecord{{State: "idle", UpdatedAt: at}}}
+			}
+		}
 	}
-	r := gateRun{fake: fake, p: clearProvider(fake, stateDir), stateDir: stateDir}
-	r.err = r.p.Start(context.Background(), dogName, seedConfig)
-	if r.err != nil {
-		t.Fatalf("Start: %v", r.err)
-	}
-	if n, k := writeCount(r.fake), keyCount(r.fake, "enter"); n != 0 || k != 0 {
-		t.Errorf("writes %d, enters %d; want none into a dialog first seen by the gate", n, k)
-	}
-	timing := readStartupTiming(t, r.stateDir, dogName)
-	if timing["readiness_outcome"] != "dialog" {
-		t.Errorf("readiness_outcome = %v, want dialog", timing["readiness_outcome"])
-	}
-	// dialog_gate names the gate of the most recent sighting. The resumed
-	// clear wait polls the same dialog here, so it refreshes to the wait ("");
-	// TestStartupDialogGateBlocksAtDeadline pins the gate label where no poll
-	// follows it.
-	if timing["dialog"] != trustName {
-		t.Errorf("dialog = %v, want %q", timing["dialog"], trustName)
-	}
-	want := "withheld: the pane shows a startup dialog (" + trustName + ")"
-	if got := startupMarker(t, r.p, dogName); got != want {
-		t.Errorf("marker = %q, want %q", got, want)
-	}
+
+	t.Run("the bound no longer delivers after the gate's sighting", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fake, log := faketest.New(), &screenLog{}
+		setup(fake, log, 3, 3, false)
+		p := clearProvider(fake, stateDir)
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := writeCount(fake); n != 0 {
+			t.Errorf("writes %d, want 0: no clear read plus idle ever came", n)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["readiness_outcome"] != "dialog-unresolved" || timing["dialog_gate"] != "pre-write" {
+			t.Errorf("readiness_outcome %v, dialog_gate %v; want dialog-unresolved, pre-write", timing["readiness_outcome"], timing["dialog_gate"])
+		}
+	})
+	t.Run("a clear read plus idle delivers after the gate's sighting", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fake, log := faketest.New(), &screenLog{}
+		setup(fake, log, 3, 3, true)
+		p := clearProvider(fake, stateDir)
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		assertNoInputIntoDialog(t, fake, log)
+		if n := writesOf(fake, "hello agent"); n != 1 {
+			t.Errorf("seed written %d times, want 1", n)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["readiness_outcome"] != "dialog-cleared" || timing["dialog_gate"] != "pre-write" {
+			t.Errorf("readiness_outcome %v, dialog_gate %v; want dialog-cleared, pre-write", timing["readiness_outcome"], timing["dialog_gate"])
+		}
+	})
+	t.Run("clear wait disabled", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fake, log := faketest.New(), &screenLog{}
+		setup(fake, log, 3, 0, false)
+		p := clearProvider(fake, stateDir, provider.WithStartupDialogClear(0))
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := writeCount(fake); n != 0 {
+			t.Errorf("writes %d, want 0", n)
+		}
+		timing := readStartupTiming(t, stateDir, dogName)
+		if timing["readiness_outcome"] != "dialog" || timing["dialog_gate"] != "pre-write" {
+			t.Errorf("readiness_outcome %v, dialog_gate %v; want dialog (not settle-bound), pre-write", timing["readiness_outcome"], timing["dialog_gate"])
+		}
+		want := "withheld: the pane shows a startup dialog (" + trustName + ")"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestStartupDialogPoolClaimProbeUnderHardStop pins REQ-002 for the pool-claim

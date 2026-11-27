@@ -191,6 +191,13 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			Gate:     gate,
 		})
 		p.recordStartupAttempts(&timing, res)
+		if ctx.Err() != nil {
+			// A parent cancel during the gate's read is not the hard stop, so
+			// it must not map to dialog-unresolved (REQ-002).
+			timing.ReadinessOutcome = readinessCanceled
+			p.finishStartupDelivery(ctx, name, binding, res)
+			return nil
+		}
 		if res.GateStop != nil && res.GateStop.Point == gatePreWrite {
 			outcome, ended = p.afterPreWriteStop(ctx, binding, cfg, w, start, res.GateStop)
 			continue
@@ -526,7 +533,7 @@ func (p *Provider) finishStartupDelivery(ctx context.Context, name string, bindi
 	}
 }
 
-
+// waitForStartupReady blocks until the pane program reports an idle
 // program_status record, the pane's program ends, the bounded window elapses,
 // or the start context is done. It never returns an error: the startup nudge is
 // best effort, so a missing readiness signal falls through to delivery. When the

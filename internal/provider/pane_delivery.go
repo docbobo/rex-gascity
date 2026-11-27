@@ -215,25 +215,31 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	// available confirmation signal. turnBaseline reads it now, before typing.
 	base := turnBaseline(p.observePane(readCtx, binding, baseline))
 
-	// One deadline covers the write and the Enter. Without it a stalled Rex
-	// call or a gc cancel between the two could leave the text typed but
-	// unsubmitted, and gc's retry would then duplicate the prompt.
-	submitCtx, cancelSubmit := p.nudgeSubmitContext(ctx)
-	defer cancelSubmit()
+	// The startup dialog gate reads the screen tail right before the first
+	// write (REQ-001 (a)). Ordinary nudges pass no gate. The gate read runs
+	// under readCtx, so after a sighting it is bounded by the hard stop.
+	var stop *startupGateStop
+	if gate != nil && attempt == 1 {
+		stop = gate.check(readCtx, gatePreWrite)
+		releaseCap()
+	}
 	// A cancel here is not a send failure: it stays a plain error (exit 1),
-	// never classified (#43 REQ-010).
+	// never classified (#43 REQ-010). It is checked after the gate read, so a
+	// parent cancel during that read outranks the gate's stop and never maps to
+	// dialog-unresolved (REQ-002).
 	if err := ctx.Err(); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: before typing: %w", name, err)
 	}
-	// The startup dialog gate reads the screen tail right before the first
-	// write (REQ-001 (a)). Ordinary nudges pass no gate. The submit budget
-	// above already runs, so the gate read counts against it.
-	if gate != nil && attempt == 1 {
-		if stop := gate.check(readCtx, gatePreWrite); stop != nil {
-			return NudgeReport{State: baseline.State, Kind: baseline.Kind}, stop
-		}
-		releaseCap()
+	if stop != nil {
+		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, stop
 	}
+	// One deadline covers the write and the Enter. It starts once the gate is
+	// clear, so the gate read cannot consume the submit budget, and the parent
+	// deadline still bounds it (REQ-002). Without it a stalled Rex call or a gc
+	// cancel between the two could leave the text typed but unsubmitted, and
+	// gc's retry would then duplicate the prompt.
+	submitCtx, cancelSubmit := p.nudgeSubmitContext(ctx)
+	defer cancelSubmit()
 	writeStart := time.Now()
 	if err := p.client.BlockWrite(submitCtx, binding.SessionID, binding.BlockID, text); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind, Write: time.Since(writeStart)},
