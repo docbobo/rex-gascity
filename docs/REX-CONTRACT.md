@@ -242,8 +242,9 @@ an interrupt send failure that may have written the request stays exit `1`
 at gc `544beb8d6` (#9137, post-`v1.5.1`) the stalled-claim backstop refunds
 the reservation as a busy deferral rather than spending one of
 `idleClaimNudgeMaxAttempts`. The key
-grammar and the exit-80 words follow `docs/provider-herdr-method-io.md`
-§send-keys, §interrupt and §nudge.
+grammar follows herdr-core's `translate_key` (`internal/provider/keymap.go`,
+pinned by `keymap_test.go`). `TestInputOutcomeMatrix`
+(`internal/provider/input_matrix_test.go`) pins the exit-80 words.
 
 gc reads the typed word only when the handshake declares `input-outcome` AND
 `carrier.ops`, and the driving ops carry the input (gc

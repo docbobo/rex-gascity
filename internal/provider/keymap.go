@@ -26,8 +26,8 @@ func (e *KeyRejectedError) Error() string {
 func (e *KeyRejectedError) Unwrap() error { return ErrKeyRejected }
 
 // tmuxKeys is the exact-case tmux key table herdr-core matches first
-// (TMUX_KEYS), mapped onto Rex's key names. Matched case-sensitively:
-// docs/provider-herdr-method-io.md §send-keys Key grammar step 1.
+// (TMUX_KEYS, herdrcore/inputs.py:82-107), mapped onto Rex's key names.
+// Matched case-sensitively. keymap_test.go pins the table.
 var tmuxKeys = map[string]string{
 	"Enter":    "enter",
 	"Escape":   "esc",
@@ -59,8 +59,14 @@ var tmuxKeys = map[string]string{
 const hcPunctuation = "`\\[],=-.';/"
 
 // translateKeys maps gc/tmux key arguments to Rex key names, mirroring
-// herdr-core's grammar (docs/provider-herdr-method-io.md §send-keys Key
-// grammar). Every key is translated before any Rex call; the first key with no
+// herdr-core's grammar (translate_key, herdrcore/inputs.py:126-148):
+//  1. an exact-case table name or F1–F12 is one key;
+//  2. C-/M-/S- prefixes, while more than two characters remain, modify a table
+//     name or one literal character;
+//  3. anything else is literal text, character by character.
+//
+// keymap_test.go and keymap_equiv_test.go pin the grammar. Every key is
+// translated before any Rex call; the first key with no
 // Rex spelling rejects the whole call, so a bad key never reaches Rex.
 func translateKeys(keys []string) ([]string, error) {
 	out := make([]string, 0, len(keys))

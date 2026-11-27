@@ -10,15 +10,17 @@ this file adds only local invariants.
 The root rule ("Verifying claims") is strictest in this package. Before a change
 to provider behavior lands, check it against both:
 
-- `docs/provider-herdr-parity.md` — the method-by-method verdicts.
 - The pinned gc checkout (`$GASCITY_SRC`, default `/Volumes/Sources/gascity`,
   tag `v1.5.1`): `internal/runtime/exec/`, `internal/runtime/protocol.go`,
   `docs/reference/exec-session-provider.md`.
+- The executable checks: `make conformance` (`gc runtime conformance`) and the
+  provider tests, unit and fake-backed e2e (`make test`).
 
-Adding or changing a provider method means re-running the parity comparison and
-updating `docs/provider-herdr-parity.md` plus `docs/provider-herdr-method-io.md`
-and `docs/provider-herdr-method-deviations.md` in the same change. Do not change
-a parity verdict without re-running the check against both sources.
+Adding or changing a provider method means updating `docs/rex-provider.md`
+(behavior, limits) and, when the op table or a handshake token changes,
+`docs/REX-CONTRACT.md` §9, in the same change. The behavior lands with the test
+that pins it; conformance must stay green. ADR-0011 records why the herdr-core
+parity docs were retired.
 
 ## Invariants
 
