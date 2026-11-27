@@ -31,6 +31,10 @@ type paneTextRequest struct {
 	// A failed clear stops the ladder, because pasting onto a draft that may
 	// still hold the first copy duplicates the text.
 	ClearKey string
+	// Gate, when non-nil, is checked right before input reaches the pane.
+	// Startup delivery passes its dialog gate; ordinary nudges pass none, so
+	// their behavior does not change (#205, REQ-001).
+	Gate inputGate
 }
 
 // paneTextAttempt is one attempt in the shared ladder: the backoff that
@@ -52,6 +56,20 @@ type paneTextResult struct {
 	Attempts []paneTextAttempt
 	LateTurn bool
 	Withheld bool
+	// GateStop is set when a startup dialog gate stopped the ladder before an
+	// input call.
+	GateStop *startupGateStop
+}
+
+// inputGate is checked right before input reaches the pane. The startup dialog
+// gate (nudge_delivery.go) is the one implementation.
+type inputGate interface {
+	// capped returns the context for the first attempt's reads up to and
+	// including its pre-write check (the hard stop after a sighting).
+	capped(parent context.Context) (context.Context, context.CancelFunc)
+	// check reads the pane before the input call at point and returns a stop,
+	// or nil to go ahead.
+	check(ctx context.Context, point string) *startupGateStop
 }
 
 // deliverPaneText runs the shared pane-delivery ladder: one gated write,
@@ -94,9 +112,16 @@ func (p *Provider) deliverPaneText(ctx context.Context, req paneTextRequest) pan
 				}
 			}
 		}
-		report, err := p.deliverPaneTextOnce(ctx, req.Binding, req.Text, req.Mode)
+		report, err := p.deliverPaneTextOnce(ctx, req.Binding, req.Text, req.Mode, req.Gate, attempt)
 		res.Report, res.Err = report, err
 		res.Attempts = append(res.Attempts, paneTextAttempt{Attempt: attempt, Backoff: backoff, Report: report, Err: err})
+		// A startup dialog gate stopped the attempt before an input call: no
+		// further input follows, and the caller maps the stop (REQ-001).
+		var stop *startupGateStop
+		if errors.As(err, &stop) {
+			res.GateStop = stop
+			return res
+		}
 		if err == nil && report.Confirmed {
 			return res
 		}
@@ -122,25 +147,41 @@ func (p *Provider) deliverPaneText(ctx context.Context, req paneTextRequest) pan
 // deadline, and the confirmation poll. It takes a binding, not a name, so
 // startup delivery types into the pane it launched, not whatever a name
 // lookup resolves to after a concurrent stop and start of the same name.
-func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, text string, mode NudgeMode) (NudgeReport, error) {
+func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, text string, mode NudgeMode, gate inputGate, attempt int) (NudgeReport, error) {
 	name := string(binding.Name)
 	// Startup delivery enters here without NudgeReport, so the UTF-8 check
 	// runs again: no caller can type corrupted text.
 	if err := checkNudgeText(text); err != nil {
 		return NudgeReport{}, err
 	}
+	// After a startup dialog sighting the first attempt's pool-claim probe and
+	// its reads up to and including the pre-write gate run under the hard stop
+	// (REQ-002). Every other call keeps ctx.
+	readCtx, releaseCap := ctx, context.CancelFunc(func() {})
+	if gate != nil && attempt == 1 {
+		readCtx, releaseCap = gate.capped(ctx)
+	}
+	defer releaseCap()
 	// gc's stalled-claim backstop re-arms the fallback pool-claim nudge for a
 	// pool slot whose routed trigger bead changes while the seat is still on
 	// its first claim. Refuse to type that prompt while a claim is live: the
 	// seat is not idle, and the prompt would send it back through
 	// `gc hook --claim` to abandon its in-flight work (GCREX-33).
 	if isPoolClaimNudge(text) {
-		if claim, err := p.nudge.claimProbe(ctx, binding); err == nil && claim != "" {
+		claim, err := p.nudge.claimProbe(readCtx, binding)
+		// A probe that the startup hard stop cut off is a failed probe: it
+		// reports no claim, as a failed probe always has (claimProbeTimeout).
+		// probeLiveClaim reports a claim whose bead read failed as held, so
+		// the cut must be checked here. Nothing is typed either way: the gate
+		// read below runs under the expired readCtx and fails (REQ-002). The
+		// cut cannot happen without a gate, because readCtx is ctx there.
+		hardStopCut := readCtx.Err() != nil && ctx.Err() == nil
+		if err == nil && claim != "" && !hardStopCut {
 			err := fmt.Errorf("%w: %s holds %s", ErrNudgeClaimHeld, name, claim)
 			return NudgeReport{}, classifyInput(inputNudge, stageGate, err)
 		}
 	}
-	baseline, _ := p.programStatusSnapshot(ctx, binding)
+	baseline, _ := p.programStatusSnapshot(readCtx, binding)
 	if mode == NudgeModeWait {
 		switch baseline.State {
 		case "working":
@@ -164,7 +205,7 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	// both modes, after the Wait gate and right before the baseline read and
 	// the write, to keep the check-then-write window short. A failed read
 	// fails open (readingSecret).
-	if p.readingSecret(ctx, binding) {
+	if p.readingSecret(readCtx, binding) {
 		err := fmt.Errorf("%w: %s (input_mode canonical, echo off)", ErrSecretRead, name)
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind},
 			classifyInput(inputNudge, stageGate, err)
@@ -172,7 +213,7 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 
 	// Without a program_status record, the pane's rendered output is the only
 	// available confirmation signal. turnBaseline reads it now, before typing.
-	base := turnBaseline(p.observePane(ctx, binding, baseline))
+	base := turnBaseline(p.observePane(readCtx, binding, baseline))
 
 	// One deadline covers the write and the Enter. Without it a stalled Rex
 	// call or a gc cancel between the two could leave the text typed but
@@ -183,6 +224,15 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	// never classified (#43 REQ-010).
 	if err := ctx.Err(); err != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: before typing: %w", name, err)
+	}
+	// The startup dialog gate reads the screen tail right before the first
+	// write (REQ-001 (a)). Ordinary nudges pass no gate. The submit budget
+	// above already runs, so the gate read counts against it.
+	if gate != nil && attempt == 1 {
+		if stop := gate.check(readCtx, gatePreWrite); stop != nil {
+			return NudgeReport{State: baseline.State, Kind: baseline.Kind}, stop
+		}
+		releaseCap()
 	}
 	writeStart := time.Now()
 	if err := p.client.BlockWrite(submitCtx, binding.SessionID, binding.BlockID, text); err != nil {

@@ -136,7 +136,17 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 	if cfg.Nudge == "" || launch.blockID == "" {
 		return nil
 	}
-	binding := Binding{Name: SessionName(name), SessionID: launch.sessionID, BlockID: launch.blockID}
+	// The launch identity the ladder's gates read: the pool-claim probe needs
+	// the seat's gc session, binary and work dir, as a stored binding has them
+	// (newBinding, provider.go).
+	binding := Binding{
+		Name:           SessionName(name),
+		SessionID:      launch.sessionID,
+		BlockID:        launch.blockID,
+		GCBin:          gcBinBasename(launch.env),
+		WorkDir:        cfg.WorkDir,
+		ClaimSessionID: launch.env["GC_SESSION_ID"],
+	}
 	timing := startupTiming{
 		Session:  string(binding.Name),
 		At:       time.Now().UTC(),
@@ -152,57 +162,42 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 		timing.TotalMS = millis(time.Since(start)) + timing.LaunchMS
 		p.writeStartupTimingDiagnostic(binding, timing)
 	}()
+	gate := startupDialogGate{p: p, b: binding, w: w}
 	outcome, ended := p.startupReadiness(ctx, binding, cfg, w, start)
-	timing.ReadinessOutcome = outcome
-	// readiness_ms covers the readiness wait and any clear wait.
-	timing.ReadinessMS = millis(time.Since(start))
-	// An agent that ended before its first turn: fail unless the lifecycle is
-	// one_shot, and never type a nudge into a dead pane. The timing diagnostic
-	// is still written by the defer above.
-	if ended {
-		if cfg.Lifecycle == lifecycleOneShot {
+	for {
+		timing.ReadinessOutcome = outcome
+		// readiness_ms covers the readiness wait and any clear wait.
+		timing.ReadinessMS = millis(time.Since(start))
+		if ended {
+			if cfg.Lifecycle == lifecycleOneShot {
+				return nil
+			}
+			return fmt.Errorf("%s: the agent exited during startup, before its first turn", name)
+		}
+		switch outcome {
+		case readinessDialog:
+			p.recordStartupNudgeWithheld(ctx, binding, startupDialogShownWhy(w.name))
+			return nil
+		case readinessDialogUnresolved:
+			p.recordStartupNudgeWithheld(ctx, binding, startupDialogUnresolvedWhy(w.name))
 			return nil
 		}
-		return fmt.Errorf("%s: the agent exited during startup, before its first turn", name)
-	}
-	// A startup dialog that did not clear in time: typing now would press
-	// whichever option it has selected. The seed stays undelivered and the
-	// marker names the dialog. Never a failed start: gc would tear down a
-	// healthy pane (cleanupAfterStartFailure, gc v1.5.1 exec.go:223-228).
-	switch outcome {
-	case readinessDialog:
-		p.recordStartupNudgeWithheld(ctx, binding, startupDialogShownWhy(w.name))
-		return nil
-	case readinessDialogUnresolved:
-		p.recordStartupNudgeWithheld(ctx, binding, startupDialogUnresolvedWhy(w.name))
-		return nil
-	}
-
-	res := p.deliverPaneText(ctx, paneTextRequest{
-		Binding:  binding,
-		Text:     cfg.Nudge,
-		Mode:     NudgeModeImmediate,
-		Backoffs: p.nudge.startupNudgeBackoffs,
-		ClearKey: startupClearKey,
-	})
-	p.recordStartupAttempts(&timing, res)
-	switch {
-	case res.LateTurn:
-		// The turn started after the confirmation window: the earlier submit
-		// landed, so a resend would enqueue a second copy.
-		p.clearStartupDeliveryUnconfirmed(ctx, name)
-		return nil
-	case res.Withheld:
-		// A pane reading a secret got nothing typed (#48). That is a withhold,
-		// not a failed delivery, and never a failed start.
-		p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
-		return nil
-	case res.Err == nil && res.Report.Confirmed:
-		p.clearStartupDeliveryUnconfirmed(ctx, name)
+		res := p.deliverPaneText(ctx, paneTextRequest{
+			Binding:  binding,
+			Text:     cfg.Nudge,
+			Mode:     NudgeModeImmediate,
+			Backoffs: p.nudge.startupNudgeBackoffs,
+			ClearKey: startupClearKey,
+			Gate:     gate,
+		})
+		p.recordStartupAttempts(&timing, res)
+		if res.GateStop != nil && res.GateStop.Point == gatePreWrite {
+			outcome, ended = p.afterPreWriteStop(ctx, binding, cfg, w, start, res.GateStop)
+			continue
+		}
+		p.finishStartupDelivery(ctx, name, binding, res)
 		return nil
 	}
-	p.recordStartupDeliveryUnconfirmed(ctx, binding, res.Report, res.Err)
-	return nil
 }
 
 // recordStartupAttempts copies the shared ladder's per-attempt timing into the
@@ -437,7 +432,101 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 	_ = p.SetMeta(ctx, string(binding.Name), StartupDeliveryUnconfirmedMetaKey, detail)
 }
 
-// waitForStartupReady blocks until the pane program reports an idle
+// gatePreWrite names the startup dialog gate before the first write.
+const gatePreWrite = "pre-write"
+
+// startupGateStop is a startup dialog gate's stop: no input followed. Dialog
+// reports that the read showed a dialog; false means the read failed after
+// this start had seen one. Name is the dialog reported: this read's, or the
+// last sighting's on a failed read. At is when the read returned.
+type startupGateStop struct {
+	Point  string
+	Dialog bool
+	Name   string
+	At     time.Time
+}
+
+func (s *startupGateStop) Error() string {
+	return "startup dialog gate " + s.Point + ": " + s.reason()
+}
+
+// reason is the marker's <reason> (REQ-001).
+func (s *startupGateStop) reason() string {
+	if !s.Dialog {
+		return "the screen could not be read after a startup dialog was seen (" + s.Name + ")"
+	}
+	return "a startup dialog appeared (" + s.Name + ")"
+}
+
+// startupDialogGate is the startup-only dialog gate (REQ-001). Before an input
+// call of a startup delivery it reads the screen tail and stops the ladder on
+// a startup dialog, or on a failed read once this start has seen one. Before
+// any sighting a failed read fails open, as status mode does. It is a snapshot
+// check: the read and the input call after it are separate Rex calls, so a
+// dialog that draws between them is not caught.
+type startupDialogGate struct {
+	p *Provider
+	b Binding
+	w *startupDialogWatch
+}
+
+func (g startupDialogGate) capped(parent context.Context) (context.Context, context.CancelFunc) {
+	return g.w.capped(parent)
+}
+
+func (g startupDialogGate) check(ctx context.Context, point string) *startupGateStop {
+	screen, err := g.p.paneScreen(ctx, g.b.SessionID, g.b.BlockID)
+	at := time.Now()
+	if err != nil {
+		if !g.w.seen {
+			return nil
+		}
+		return &startupGateStop{Point: point, Name: g.w.name, At: at}
+	}
+	tail := startupScreenTail(screen)
+	name, ok := matchedStartupDialog(tail, g.w.prefix)
+	if !ok {
+		return nil
+	}
+	g.w.sight(at, name, tail, point, "")
+	return &startupGateStop{Point: point, Dialog: true, Name: name, At: at}
+}
+
+// afterPreWriteStop is the wait's next step after the pre-write gate blocked:
+// the gate is part of the wait (REQ-001 (a), REQ-004 (c)). With the clear wait
+// disabled, or at or after the deadline (a read cut off by the hard stop is
+// past it), the gate's read ends the wait: a dialog gives dialog, a failed
+// read dialog-unresolved. Before the deadline the wait polls again until the
+// same deadline.
+func (p *Provider) afterPreWriteStop(ctx context.Context, b Binding, cfg Config, w *startupDialogWatch, readyStart time.Time, stop *startupGateStop) (string, bool) {
+	if w.window <= 0 || w.pastDeadline(stop.At) {
+		if stop.Dialog {
+			return readinessDialog, false
+		}
+		return readinessDialogUnresolved, false
+	}
+	return p.waitForDialogClear(ctx, b, cfg, w, readyStart)
+}
+
+// finishStartupDelivery maps a ladder result that got past the pre-write gate
+// to the startup marker. It never fails the start.
+func (p *Provider) finishStartupDelivery(ctx context.Context, name string, binding Binding, res paneTextResult) {
+	switch {
+	case res.LateTurn:
+		// The turn started after the confirmation window: the earlier submit
+		// landed, so a resend would enqueue a second copy.
+		p.clearStartupDeliveryUnconfirmed(ctx, name)
+	case res.Withheld:
+		// A pane reading a secret got nothing typed (#48).
+		p.recordStartupNudgeWithheld(ctx, binding, startupSecretReadWhy)
+	case res.Err == nil && res.Report.Confirmed:
+		p.clearStartupDeliveryUnconfirmed(ctx, name)
+	default:
+		p.recordStartupDeliveryUnconfirmed(ctx, binding, res.Report, res.Err)
+	}
+}
+
+
 // program_status record, the pane's program ends, the bounded window elapses,
 // or the start context is done. It never returns an error: the startup nudge is
 // best effort, so a missing readiness signal falls through to delivery. When the
