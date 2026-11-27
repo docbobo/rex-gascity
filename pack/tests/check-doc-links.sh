@@ -4,8 +4,9 @@
 #
 # 1. A `docs/<path>.md` reference in any tracked file, or a relative `.md`
 #    link inside docs/, must name a file that exists. URLs are skipped. So are
-#    the ADRs (they are records and may name a deleted doc) and `docs/reference/`
-#    (that path is gc's own tree, cited from the pinned gc checkout).
+#    the ADRs (they are records and may name a deleted doc), `docs/reference/`
+#    (that path is gc's own tree, cited from the pinned gc checkout) and the
+#    self-test, which writes deliberate fixture paths.
 # 2. Each docs/*.md must be listed in docs/README.md, and each docs/adr/NNNN-*.md
 #    in docs/adr/README.md.
 # 3. docs/ has no subdirectory but adr/. Plans, specs and research notes do
@@ -24,7 +25,7 @@ fail() {
 }
 
 # 1a. docs/<path>.md references anywhere, minus URLs, ADRs and gc's tree.
-refs=$(git ls-files -z -- . ':!docs/adr/' |
+refs=$(git ls-files -z -- . ':!docs/adr/' ':!pack/tests/check-doc-links-selftest.sh' |
   xargs -0 grep -I -o -E '(https?://[^ )>"]*)?docs/[A-Za-z0-9_./-]+\.md' 2>/dev/null |
   grep -v -E ':https?://' | grep -v ':docs/reference/' | sort -u) || true
 for line in $refs; do
@@ -37,7 +38,6 @@ for doc in $(git ls-files -- 'docs/*.md' ':!docs/adr/'); do
   dir=$(dirname -- "$doc")
   links=$(grep -o -E '\]\([^)#: ]+\.md' "$doc" | sed 's/^](//') || true
   for link in $links; do
-    case $link in docs/*) continue ;; esac
     [ -e "$dir/$link" ] || fail "$doc: links $link, which does not exist"
   done
 done

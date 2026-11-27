@@ -307,6 +307,7 @@ sh pack/tests/check-docs.sh       # runs the sh fences of the operator docs
 | `check-import.sh` | Tag import and release install work end to end. The `sha:` case fails and names the tag. |
 | `check-docs.sh` | Every `sh` fence in `docs/rex-runtime-pack.md`, `docs/rex-binary-install.md` and `docs/rex-gascity-ui.md` runs against a scratch city. The version-keyed cache and the manual `PATH` install both reach the documented version. |
 | `check-doc-links.sh` | Every `docs/…md` path a tracked file names exists, every doc is listed in `docs/README.md` or `docs/adr/README.md`, and `docs/` has no subdirectory but `adr/`. |
+| `check-doc-links-selftest.sh` | `check-doc-links.sh` rejects a `docs/` link that does not resolve from its containing document. A bare-filename link still passes. |
 | `check-installer.sh` | `pack/install.sh` works over fake `curl`, `gh` and `uname`, including checksum, platform and destination failures. |
 | `check-runtime-shim.sh` | The self-installing shim handles a cache hit, a cache miss, the deadline, a platform rejection and clean stdout. |
 | `check-doctor-rex-version.sh` | The doctor check fails on an older rex CLI and passes on an equal or newer one. |
