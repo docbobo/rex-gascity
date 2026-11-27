@@ -32,15 +32,15 @@ No pack registry is involved. The import clones the git repository and uses
 the `pack/` subdirectory as the pack root:
 
 ```sh
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.07
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
 gc import check
 ```
 
-The tag `v2026.11.06` must exist before the import, and it comes from
-`pack/release.sh v2026.11.06` (see [Cut a release](#cut-a-release)). `--version`
+The tag `v2026.11.07` must exist before the import, and it comes from
+`pack/release.sh v2026.11.07` (see [Cut a release](#cut-a-release)). `--version`
 takes the bare version. A public repository needs no git credentials. A private
 repository needs them for `git ls-remote` and the fetch.
 
@@ -194,7 +194,7 @@ To upgrade, re-pin the import and reinstall:
 
 ```sh
 gc import remove rex
-gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.06
+gc import add https://github.com/docbobo/rex-gascity/tree/main/pack --name rex --version 2026.11.07
 gc import install
 gc doctor --check rex-gascity-runtime:rex-binary --fix
 gc doctor --check rex-gascity-runtime:rex-binary
@@ -210,14 +210,14 @@ dispatch the build, wait for the assets, verify the downloaded asset, attach
 
 Version numbers are `YEAR.MONTH.COUNTER`. The last part is a counter that
 starts at `01` each month and goes up by one per release. It is not a day of
-the month. `v2026.11.06` is the sixth release of November 2026, whatever the
+the month. `v2026.11.07` is the seventh release of November 2026, whatever the
 date is when you cut it. The next version is the latest published tag plus one.
 
-Run `sh pack/release.sh v2026.11.06 --dry-run` to print the resolved commit and
-asset names without changing remote state. Run `sh pack/release.sh v2026.11.06`
+Run `sh pack/release.sh v2026.11.07 --dry-run` to print the resolved commit and
+asset names without changing remote state. Run `sh pack/release.sh v2026.11.07`
 to cut the release.
 
-The release branch is `main`, and `[pack].version` must be `2026.11.06` in a
+The release branch is `main`, and `[pack].version` must be `2026.11.07` in a
 committed tree. `--dry-run` prints the resolved commit and asset names and
 changes no remote state. `--resume` continues an existing draft.
 
