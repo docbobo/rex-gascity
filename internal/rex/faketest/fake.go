@@ -374,7 +374,10 @@ func (f *Fake) BlockFormat(ctx context.Context, sid rex.SessionID, block rex.Blo
 	return f.Formats[block], nil
 }
 
-func (f *Fake) BlockWrite(_ context.Context, sid rex.SessionID, block rex.BlockID, text string) error {
+func (f *Fake) BlockWrite(ctx context.Context, sid rex.SessionID, block rex.BlockID, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.BlockCalls = append(f.BlockCalls, BlockCall{SessionID: sid, BlockID: block, Op: "write", Text: text})
