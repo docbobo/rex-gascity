@@ -105,6 +105,18 @@ func (p *Provider) deliverPaneText(ctx context.Context, req paneTextRequest) pan
 				res.Withheld = true
 				return res
 			}
+			// A startup dialog that appears during the backoff must not get the
+			// clear key or a second seed: Enter would press its selected option
+			// (REQ-001). The gate reads the screen tail right before the clear,
+			// under ctx: the hard stop bounds the pre-write gate only, so a
+			// dialog seen and cleared before the first seed still allows the
+			// lost-Enter rescue.
+			if req.Gate != nil {
+				if stop := req.Gate.check(ctx, gateResend); stop != nil {
+					res.GateStop = stop
+					return res
+				}
+			}
 			if req.ClearKey != "" {
 				if err := p.client.SendKeys(ctx, req.Binding.SessionID, req.Binding.BlockID, req.ClearKey); err != nil {
 					res.Err = fmt.Errorf("clear the draft line before a resend: %w", err)

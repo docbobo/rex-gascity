@@ -384,6 +384,68 @@ func TestStartupDialogFirstSeenAtPreWriteGate(t *testing.T) {
 	})
 }
 
+// TestStartupDialogDuringBackoffStopsResend pins REQ-001 before a resend: a
+// dialog that appears after the first seed stops the ladder before the clear
+// key, so no ctrl+u and no second seed reach it. The first submit never
+// confirms, because the program stays idle, so the ladder does back off and
+// resend if nothing stops it.
+func TestStartupDialogDuringBackoffStopsResend(t *testing.T) {
+	fake := faketest.New()
+	fake.ProgramStatuses = idleProgramStatuses()
+	written := watchWrites(fake)
+	fake.FormatCtxFunc = func(_ context.Context, _ rex.BlockID) (string, error) {
+		if written.Load() {
+			return trustDialogScreen, nil
+		}
+		return plainEditor, nil
+	}
+	p := clearProvider(fake, t.TempDir(), provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+	if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := writesOf(fake, "hello agent"); n != 1 {
+		t.Errorf("seed written %d times, want 1", n)
+	}
+	if n := keyCount(fake, "enter"); n != 1 {
+		t.Errorf("enter pressed %d times, want 1", n)
+	}
+	if n := keyCount(fake, "ctrl+u"); n != 0 {
+		t.Errorf("draft cleared %d times after a dialog showed, want 0", n)
+	}
+	want := "withheld: a startup dialog appeared (" + trustName + ")"
+	if got := startupMarker(t, p, dogName); got != want {
+		t.Errorf("marker = %q, want %q", got, want)
+	}
+}
+
+// TestStartupDialogClearBeforeSeedKeepsResend pins the lost-Enter rescue when a
+// dialog is seen and cleared before the first seed. The resend gate runs under
+// ctx, not the pre-write hard stop: a backoff that outlasts the clear window
+// and its poll must still clear and retype the seed, not withhold it on a read
+// the expired hard stop cut off.
+func TestStartupDialogClearBeforeSeedKeepsResend(t *testing.T) {
+	fake := faketest.New()
+	fake.ProgramStatuses = idleProgramStatuses()
+	script := &gateScript{}
+	fake.FormatCtxFunc = script.hook(func(ctx context.Context, _ int) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return plainEditor, nil
+	})
+	p := clearProvider(fake, t.TempDir(),
+		provider.WithStartupNudgeRetries([]time.Duration{clearWindow + clearPoll + 100*time.Millisecond}))
+	if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := writesOf(fake, "hello agent"); n != 2 {
+		t.Errorf("seed written %d times, want 2", n)
+	}
+	if n := keyCount(fake, "ctrl+u"); n != 1 {
+		t.Errorf("draft cleared %d times, want 1", n)
+	}
+}
+
 // TestStartupDialogPoolClaimProbeUnderHardStop pins REQ-002 for the pool-claim
 // probe: after a sighting the first attempt's probe runs under the hard stop,
 // so a stalled probe is cut off there and reports no claim. The gate read after

@@ -198,9 +198,16 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			p.finishStartupDelivery(ctx, name, binding, res)
 			return nil
 		}
-		if res.GateStop != nil && res.GateStop.Point == gatePreWrite {
-			outcome, ended = p.afterPreWriteStop(ctx, binding, cfg, w, start, res.GateStop)
-			continue
+		if res.GateStop != nil {
+			if res.GateStop.Point == gatePreWrite {
+				outcome, ended = p.afterPreWriteStop(ctx, binding, cfg, w, start, res.GateStop)
+				continue
+			}
+			// A dialog appeared during a backoff: no clear key and no second
+			// seed followed, so the pane keeps only the first, unconfirmed
+			// seed. Record the withhold, never a failed delivery.
+			p.recordStartupNudgeWithheld(ctx, binding, res.GateStop.reason())
+			return nil
 		}
 		p.finishStartupDelivery(ctx, name, binding, res)
 		return nil
@@ -441,6 +448,10 @@ func (p *Provider) recordStartupDeliveryUnconfirmed(ctx context.Context, binding
 
 // gatePreWrite names the startup dialog gate before the first write.
 const gatePreWrite = "pre-write"
+
+// gateResend names the startup dialog gate before a resend clears the draft
+// line and types the seed again.
+const gateResend = "resend"
 
 // startupGateStop is a startup dialog gate's stop: no input followed. Dialog
 // reports that the read showed a dialog; false means the read failed after
