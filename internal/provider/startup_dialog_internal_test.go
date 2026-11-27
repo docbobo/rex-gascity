@@ -1,6 +1,10 @@
 package provider
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // TestMatchedStartupDialogNames pins REQ-005: one stable name per dialog (the
 // first marker of its first group), checked in withholdsFirstTurn's order,
@@ -29,5 +33,29 @@ func TestMatchedStartupDialogNames(t *testing.T) {
 				t.Fatalf("withholdsFirstTurn disagrees with matchedStartupDialog's ok %v", c.ok)
 			}
 		})
+	}
+}
+
+// TestStartupScreenTail pins REQ-007's cut: the last startupDialogTailLines
+// lines, a final newline kept and not counted, a shorter screen whole.
+func TestStartupScreenTail(t *testing.T) {
+	numbered := func(n int) string {
+		var b strings.Builder
+		for i := 1; i <= n; i++ {
+			fmt.Fprintf(&b, "line %d\n", i)
+		}
+		return b.String()
+	}
+	short := numbered(startupDialogTailLines)
+	if got := startupScreenTail(short); got != short {
+		t.Fatalf("a %d-line screen was cut", startupDialogTailLines)
+	}
+	long := numbered(startupDialogTailLines + 5)
+	got := startupScreenTail(long)
+	if !strings.HasPrefix(got, "line 6\n") || strings.Count(got, "\n") != startupDialogTailLines {
+		t.Fatalf("tail starts %q with %d lines, want line 6 and %d lines", got[:12], strings.Count(got, "\n"), startupDialogTailLines)
+	}
+	if got := startupScreenTail(strings.TrimSuffix(long, "\n")); !strings.HasPrefix(got, "line 6\n") {
+		t.Fatalf("without a final newline the tail starts %q, want line 6", got[:12])
 	}
 }

@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -304,6 +305,51 @@ func TestStartupDialogClearWaitCanceledOrEnded(t *testing.T) {
 		}
 		if got := readStartupTiming(t, stateDir, dogName)["readiness_outcome"]; got != "ended" {
 			t.Errorf("readiness_outcome = %v, want ended", got)
+		}
+	})
+}
+
+// TestStartupDialogIgnoredAboveScreenTail pins AC6 / REQ-007: a dialog marker
+// that scrolled above the last 120 lines no longer withholds the seed; one
+// inside them still does.
+func TestStartupDialogIgnoredAboveScreenTail(t *testing.T) {
+	screen := func(linesBelow int) string {
+		var b strings.Builder
+		b.WriteString("Do you trust the files in this folder?\n")
+		for i := range linesBelow {
+			fmt.Fprintf(&b, "log line %d\n", i)
+		}
+		b.WriteString(plainEditor)
+		return b.String()
+	}
+	t.Run("marker 200 lines up", func(t *testing.T) {
+		fake := faketest.New()
+		turnStarts(fake)
+		fake.Formats = map[rex.BlockID]string{dogBlock: screen(199)}
+		p := clearProvider(fake, t.TempDir())
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := writesOf(fake, "hello agent"); n != 1 {
+			t.Errorf("seed written %d times, want 1", n)
+		}
+		if got := startupMarker(t, p, dogName); strings.HasPrefix(got, "withheld:") {
+			t.Errorf("marker = %q, want no withhold for scrollback", got)
+		}
+	})
+	t.Run("marker inside the last 120 lines", func(t *testing.T) {
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		fake.Formats = map[rex.BlockID]string{dogBlock: screen(100)}
+		p := clearProvider(fake, t.TempDir())
+		if err := p.Start(context.Background(), dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n := writeCount(fake); n != 0 {
+			t.Errorf("writes %d, want 0", n)
+		}
+		if got := startupMarker(t, p, dogName); !strings.HasPrefix(got, "withheld:") {
+			t.Errorf("marker = %q, want a withhold", got)
 		}
 	})
 }

@@ -71,6 +71,27 @@ var (
 	startupPromptEndings = []string{">", "$", "%", "#", "❯", "›"}
 )
 
+// startupDialogTailLines is how much of the pane's screen the startup path
+// reads: the last 120 lines, as gc's startup-dialog peek does (gc v1.5.1
+// internal/runtime/dialog.go:18, startupDialogPeekLines). A marker that
+// scrolled above it no longer counts (#205, REQ-007).
+const startupDialogTailLines = 120
+
+// startupScreenTail is the last startupDialogTailLines lines of screen. A
+// final newline ends the last line and is kept, not counted. A shorter screen
+// is returned whole.
+func startupScreenTail(screen string) string {
+	end := len(strings.TrimSuffix(screen, "\n"))
+	for range startupDialogTailLines {
+		cut := strings.LastIndexByte(screen[:end], '\n')
+		if cut < 0 {
+			return screen
+		}
+		end = cut
+	}
+	return screen[end+1:]
+}
+
 // Names matchedStartupDialog gives the two rate-limit checks.
 const (
 	dialogNameRateLimit     = "rate-limit"

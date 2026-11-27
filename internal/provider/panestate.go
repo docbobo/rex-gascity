@@ -129,10 +129,11 @@ func idleVerdict(o paneObservation) (paneVerdict, error) {
 // Status mode reads the screen only when it can decide (D6): an untrimmed
 // "idle" record past the floor (D5) is idle unless a dialog shows (GCREX-59),
 // and at the bound a dialog withholds. Busy markers are not consulted (D3). A
-// failed read there means "no dialog".
+// failed read there means "no dialog". It reads the screen tail
+// (startupScreen), not the whole block (REQ-007).
 func startupVerdict(o paneObservation, prefix string, pastFloor, atBound bool) paneVerdict {
 	if prefix != "" {
-		screen, err := o.screen.get()
+		screen, err := startupScreen(o)
 		switch {
 		case err != nil:
 			return verdictWaiting
@@ -159,8 +160,19 @@ func startupVerdict(o paneObservation, prefix string, pastFloor, atBound bool) p
 // screenWithholdsFirstTurn is status mode's dialog check: the screen reads and
 // shows a dialog with no configured prefix. A failed read is no dialog.
 func screenWithholdsFirstTurn(o paneObservation) bool {
-	screen, err := o.screen.get()
+	screen, err := startupScreen(o)
 	return err == nil && withholdsFirstTurn(screen, "")
+}
+
+// startupScreen is the startup path's view of the pane: the last
+// startupDialogTailLines lines of the observation's one screen read (REQ-007).
+// idleVerdict and the delivery ladder read the whole screen and never call it.
+func startupScreen(o paneObservation) (string, error) {
+	screen, err := o.screen.get()
+	if err != nil {
+		return "", err
+	}
+	return startupScreenTail(screen), nil
 }
 
 // startupDialog reads the startup screen and names the dialog it shows, from
@@ -168,7 +180,7 @@ func screenWithholdsFirstTurn(o paneObservation) bool {
 // failed one; err tells them apart. The startup path calls it to record
 // evidence (#205, REQ-006); it decides nothing startupVerdict does not.
 func startupDialog(o paneObservation, prefix string) (name, screen string, ok bool, err error) {
-	screen, err = o.screen.get()
+	screen, err = startupScreen(o)
 	if err != nil {
 		return "", "", false, err
 	}
