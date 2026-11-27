@@ -40,3 +40,4 @@ live in the `AGENTS.md` files.
 | [0007](0007-guard-opspec-method.md) | The `opSpec.method` and `startConfig` copies are guarded by table tests | Accepted |
 | [0008](0008-dashboard-json-output-ignores-scope.md) | The dashboard `--json` model ignores `--scope` | Accepted |
 | [0009](0009-keep-start-welded.md) | `start` stays welded; no `provision` or `exec` until a non-tmux launch half exists | Accepted |
+| [0010](0010-provider-policy-modules-are-files-of-provider-methods-with-one-entry-point.md) | Provider policy modules are files of `Provider` methods with one entry point | Accepted |
