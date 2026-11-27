@@ -1,6 +1,6 @@
 # Rex contract (pinned)
 
-Phase 0 artifact for `docs/plans/native-rex-provider.md`. The Rex surface the
+Phase 0 artifact of the native provider (ADR-0012). The Rex surface the
 `rex` runtime provider relies on, captured against pinned versions. **Re-run the
 probes in §10 after any Rex upgrade** — the CLI/API is pre-1.0.
 
@@ -342,7 +342,7 @@ The pinned baseline has exactly **six** capability strings
 | `tty.attach` | reserved: the interactive PTY `attach` connection op |
 
 **Not in the pinned baseline — declare only alongside the behavior it gates.**
-The plan (`docs/plans/native-rex-provider.md`) and the research notes use
+Earlier drafts of the provider plan used
 capability names that do not exist in the gc 1.5.1 baseline: `fs.host`, `carrier.ops`,
 `observe.v1`, `input-outcome`, `city-scoped`, `server-lifecycle`. `idle-boundary` is not a 1.5.1 token; gc's working
 tree defines it (`internal/runtime/protocol.go`, ahead of the pin) as the
@@ -597,14 +597,16 @@ so `argv0` may carry a leading dash.
 
 ## 11. Decisions confirmed (plan D0–D6)
 
-Phase 0 also confirms the plan's decisions against the live surface:
+Phase 0 also confirms the plan's decisions against the live surface. The
+decisions and their rejected alternatives are ADR-0012 (D0, D2), ADR-0013 (D1)
+and ADR-0014 (D3, D4).
 
 | Decision | Confirmation |
 |---|---|
 | D0 delivery form | Out-of-tree RPP v0 executable via pack `[runtimes.rex]`. §9 records the op set and handshake; `gc runtime check` is the verifier. |
 | D1 mapping | session = city, tab = rig, pane = agent. §1; supported by `session.create` + `session.new_window` + `session.new_split`. |
 | D2 transport | Shell out to the CLI behind `rex.Client`; the socket protocol is undocumented and revision-numbered (§7). |
-| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes. The canonical `gc:<city>` session (created in the `FindSession`-miss branch of `internal/provider/provider.go`) is ours and **is** destroyed once its last pane is gone, behind the fail-closed empty check (§12, GCREX-31). A server-wide Rex app client is listed on every session, so the client list cannot gate that removal. Never touch the server itself. The version skew in §0 is another reason: it only moves on restart. An opt-in city-owned server is addressable with `GC_REX_SERVER` (`-S`, `gcrex-d3m0i`). The default stays the shared server. See `docs/plans/city-owned-rex-server.md`. |
+| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes. The canonical `gc:<city>` session (created in the `FindSession`-miss branch of `internal/provider/provider.go`) is ours and **is** destroyed once its last pane is gone, behind the fail-closed empty check (§12, GCREX-31). A server-wide Rex app client is listed on every session, so the client list cannot gate that removal. Never touch the server itself. The version skew in §0 is another reason: it only moves on restart. An opt-in city-owned server is addressable with `GC_REX_SERVER` (`-S`, `gcrex-d3m0i`). The default stays the shared server. Stage 3 (`server-stop` behind an ownership record) is #197. |
 | D4 scope | Local server via the default socket or `-S <host>`; agents run on gc's host. RPP has no declaration for this. |
 | D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — emitted by the pane program; Pi does, and gc-managed Pi panes report under Rex). Fall back to `timed_only` if classification proves unreliable. |
 | D6 v1 breadth | Core `Provider` + idle/wait + relaunch + metadata sidecar + activity + attachment; skip `ExecProvider` and `DialogProvider`. |
@@ -774,7 +776,7 @@ Phase 0 also confirms the plan's decisions against the live surface:
 - **Version skew policy.** The CLI is `.20`/rev 16 while the running server is
   `.19`/rev 14. **Resolved (GCREX-6):** server rev 14 is inside the CLI's
   supported range 0..16, so the pilot and promotion need no restarted server;
-  none was restarted (D3). See `docs/rex-pilot-phase5.md`.
+  none was restarted (D3, ADR-0014). ADR-0017 records the promotion.
 - **RPP capability naming.** The plan's `carrier.ops`/`idle-boundary`/`observe.v1`
   vocabulary has no basis in gc 1.5.1 (§9). Rewrite the plan's capability
   language, or confirm a newer gc adds those tokens, before Phase 4.

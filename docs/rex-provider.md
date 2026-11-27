@@ -541,8 +541,7 @@ session". The provisional binding carries no block ID yet, but lets `get-meta`
 resolve the runtime name and its rig-qualified aliases. The final binding
 replaces it when the launch returns. A failed start clears the seeded identity
 and provisional binding; `stop` clears the same keys before forgetting the pane,
-so a prior life's token cannot outlive it. See `docs/REX-IDENTITY.md` for the
-`runtime-herdr-core` comparison.
+so a prior life's token cannot outlive it. ADR-0015 records the decision.
 
 ### Wrapped-gc process names
 
@@ -553,7 +552,7 @@ control dispatcher launched as `$GC_BIN` (`/nix/store/.../bin/.gc-wrapped`, not
 `gc`) is still observed as a live agent. Without the expansion gc reads the
 live pane as a dead/zombie seat and closes the session bead without issuing
 `stop`, leaving the pane and its process behind. This mirrors
-`runtime-herdr-core`'s `expand_names`; see `docs/REX-RETIRE.md`.
+`runtime-herdr-core`'s `expand_names`; ADR-0016 records the decision.
 
 ## Known v1 Limits
 
@@ -593,6 +592,4 @@ These are risks in how gc reads the provider, not provider defects.
   `unverified` against `v1.5.1`: the retired parity doc recorded it, and the gc
   seam-layer source was not re-read for this move.
 
-See `docs/rex-pilot-phase5.md` for the pilot and promotion record (GCREX-6), including the observed `gc:default` namespace under a launchd supervisor.
-See `docs/REX-RETIRE.md` for the retire/drain comparison against
-`runtime-herdr-core` and the wrapped-gc decision (GCREX-12).
+ADR-0017 records the GCREX-6 pilot and the promotion to a supported opt-in backend.

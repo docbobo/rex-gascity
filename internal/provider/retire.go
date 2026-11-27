@@ -339,7 +339,7 @@ func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionI
 	// The launch lock comes first: a launch holds it shared across its
 	// SessionView and NewWindow/NewSplit, so an empty view below cannot go
 	// stale under us. Rex removes a tab with its last block
-	// (docs/plans/native-rex-provider.md:387, live-verified), so zero windows
+	// (docs/REX-CONTRACT.md:803, live-verified), so zero windows
 	// is a true empty session.
 	release, busy, lockErr := p.tryLaunchLock(sid)
 	if lockErr != nil {
