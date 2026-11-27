@@ -118,6 +118,13 @@ writes the next one from the template.
 Say in the task notes why a decision does not need one. Do not write an ADR
 that only restates what the code does.
 
+`docs/` holds reference docs and `docs/adr/` only, each listed in
+`docs/README.md`. Plans, designs, specs and research notes live in the task
+notes, the workflow artifact root, or an issue. When a formula offers to mirror
+a spec into `docs/superpowers/specs/`, keep it under the artifact root. When the
+work lands, its decisions go to ADRs and the reference docs absorb the
+behavior. `pack/tests/check-doc-links.sh` enforces the layout and the index.
+
 ## Test-driven development
 
 Work test-first. For a bug, write the test that reproduces the bug before the
