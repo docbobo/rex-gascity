@@ -204,7 +204,7 @@ func (p *Provider) launchOnce(ctx context.Context, req launchRequest, sid rex.Se
 			}
 			// The town tab goes first once, when it is created (#47). Still
 			// under the tab lock, after the binding is recorded.
-			if isTownStart(req.name, req.cfg.Env) {
+			if newLaunchIdentity(req.name, req.cfg.Env, p.townTab).IsTownTab() {
 				p.placeTownTabFirst(ctx, req.name, sid, wid)
 			}
 		}

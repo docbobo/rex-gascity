@@ -70,18 +70,19 @@ func (p *Provider) seedStartIdentity(n SessionName, env map[string]string) error
 // final record replaces it after the launch returns. attempt names the one
 // start call that may replace it.
 func (p *Provider) recordProvisionalBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, attempt string, cfg Config) error {
+	id := newLaunchIdentity(n, cfg.Env, p.townTab)
 	return p.binder.Record(Binding{
 		Name:           n,
 		SessionID:      sid,
 		SessionLabel:   rexSessionLabel(p.city),
 		WindowID:       wid,
-		TabLabel:       tabLabel(n, cfg.Env, p.townTab),
-		PaneLabel:      paneLabelFor(n, cfg.Env),
-		Aliases:        aliasesFor(n, cfg.Env),
+		TabLabel:       id.TabLabel(),
+		PaneLabel:      id.PaneLabel(),
+		Aliases:        id.Aliases(),
 		CreatedAt:      time.Now(),
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
-		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
+		ClaimSessionID: id.ClaimSessionID(),
 		Attempt:        attempt,
 	})
 }

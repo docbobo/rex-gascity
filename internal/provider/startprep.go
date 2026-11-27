@@ -27,7 +27,7 @@ func (p *Provider) startPlan(name string, cfg *Config) (launch.Plan, string) {
 		Argv:    cfg.Argv,
 		Env:     env,
 		WorkDir: cfg.WorkDir,
-		Label:   paneLabelFor(n, env),
+		Label:   newLaunchIdentity(n, env, "").PaneLabel(),
 	})
 	cfg.Env = plan.Env
 	return plan, attempt
@@ -66,7 +66,7 @@ func (p *Provider) prepareWorkDir(ctx context.Context, plan launch.Plan, cfg Con
 // stagePackOverlayPhase stays after pre_start because its per-provider subtree
 // deliberately overwrites a managed hook the hook may have rewritten.
 func (p *Provider) stageStartFiles(cfg Config) error {
-	if err := stageOverlayDir(cfg.WorkDir, cfg.OverlayDir, cfg.Env["GC_PROVIDER"]); err != nil {
+	if err := stageOverlayDir(cfg.WorkDir, cfg.OverlayDir, providerName(cfg.Env)); err != nil {
 		return err
 	}
 	return stageCopyFiles(cfg.WorkDir, cfg.CopyFiles, func(msg string) { p.warnf("%s", msg) })
@@ -104,5 +104,5 @@ func (p *Provider) requireWorkDir(workDir string) error {
 // write runs here so the override lands even when the workdir already holds
 // that managed file.
 func (p *Provider) stagePackOverlayPhase(cfg Config) error {
-	return stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, cfg.Env["GC_PROVIDER"])
+	return stagePackOverlays(cfg.WorkDir, cfg.PackOverlayDirs, providerName(cfg.Env))
 }

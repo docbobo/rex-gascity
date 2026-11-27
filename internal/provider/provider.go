@@ -490,7 +490,7 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 		name:     n,
 		attempt:  attempt,
 		session:  sid,
-		tab:      tabLabel(n, cfg.Env, p.townTab),
+		tab:      newLaunchIdentity(n, cfg.Env, p.townTab).TabLabel(),
 		spec:     plan.Spec,
 		relaunch: relaunch,
 		cfg:      cfg,
@@ -541,20 +541,21 @@ func rectArea(r [4]float64) (float64, bool) {
 // newBinding builds the record for a new pane, started in the given mode
 // ("window" or "split").
 func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID, block rex.BlockID, mode, attempt string, cfg Config) Binding {
+	id := newLaunchIdentity(n, cfg.Env, p.townTab)
 	return Binding{
 		Name:           n,
 		SessionID:      sid,
 		SessionLabel:   rexSessionLabel(p.city),
 		WindowID:       wid,
 		BlockID:        block,
-		TabLabel:       tabLabel(n, cfg.Env, p.townTab),
-		PaneLabel:      paneLabelFor(n, cfg.Env),
-		Aliases:        aliasesFor(n, cfg.Env),
+		TabLabel:       id.TabLabel(),
+		PaneLabel:      id.PaneLabel(),
+		Aliases:        id.Aliases(),
 		LaunchMode:     mode,
 		CreatedAt:      time.Now(),
 		GCBin:          gcBinBasename(cfg.Env),
 		WorkDir:        cfg.WorkDir,
-		ClaimSessionID: cfg.Env["GC_SESSION_ID"],
+		ClaimSessionID: id.ClaimSessionID(),
 		Attempt:        attempt,
 	}
 }
