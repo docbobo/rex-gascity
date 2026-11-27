@@ -112,38 +112,6 @@ func sanitizeQualified(name string) string {
 	return strings.ReplaceAll(name, ".", "__")
 }
 
-// aliasesFor lists the extra gc session names a started pane answers to,
-// derived from the start-config env. Names are sanitized, deduped, and any
-// equal to the start name (the primary) are dropped.
-func aliasesFor(name SessionName, env map[string]string) []SessionName {
-	seen := map[SessionName]bool{name: true}
-	var out []SessionName
-	add := func(v string) {
-		if v == "" {
-			return
-		}
-		sn := SessionName(v)
-		if seen[sn] {
-			return
-		}
-		seen[sn] = true
-		out = append(out, sn)
-	}
-	if t := env["GC_TEMPLATE"]; t != "" {
-		add(sanitizeQualified(t))
-	}
-	if a := env["GC_ALIAS"]; a != "" {
-		add(sanitizeQualified(a))
-	}
-	if g := env["GC_AGENT"]; g != "" && strings.ContainsAny(g, "/.") {
-		add(sanitizeQualified(g))
-	}
-	if rig := env["GC_RIG"]; rig != "" && name.IsTown() {
-		add(sanitizeQualified(rig + "/" + string(name)))
-	}
-	return out
-}
-
 // Binder resolves gc session names to Rex addresses, using a store as a
 // cache and the Rex session view as the source of truth.
 type Binder struct {
@@ -540,15 +508,17 @@ type resolvedLabels struct {
 func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels {
 	var lbl resolvedLabels
 	if pol.startEnv != nil {
-		lbl.pane = paneLabelFor(name, pol.startEnv)
-		lbl.aliases = aliasesFor(name, pol.startEnv)
-		lbl.tabs = appendLabel(nil, tabLabel(name, pol.startEnv, b.townTab))
+		id := newLaunchIdentity(name, pol.startEnv, b.townTab)
+		lbl.pane = id.PaneLabel()
+		lbl.aliases = id.Aliases()
+		lbl.tabs = appendLabel(nil, id.TabLabel())
 		// A pane started before GCREX-72 can sit in the name-derived rig tab,
 		// which the pre-GC_RIG start env did not record. Keep that candidate
 		// before the env-derived legacy tab.
-		lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, nil))
-		lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, pol.startEnv))
-		if legacy := legacyPaneLabelFor(name, pol.startEnv); legacy != lbl.pane {
+		for _, tab := range id.LegacyTabLabels() {
+			lbl.tabs = appendLabel(lbl.tabs, tab)
+		}
+		if legacy := id.LegacyPaneLabel(); legacy != lbl.pane {
 			lbl.legacyPanes = []string{legacy}
 		}
 		return lbl

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"path"
 	"strings"
 	"unicode/utf8"
 )
@@ -57,51 +56,6 @@ func townTabLabel(pin string) string {
 	return pin
 }
 
-// isTownStart reports whether a start takes tabLabel's town branch: a
-// town-style name and no GC_RIG in the projected start env. A town-style
-// name with GC_RIG set (a wisp instance) belongs to its rig tab. Compare the
-// classification, never the labels: a pin can equal a rig label, and the tab
-// label is clamped while the pin is not (#47).
-func isTownStart(name SessionName, env map[string]string) bool {
-	return env["GC_RIG"] == "" && name.IsTown()
-}
-
-// tabLabel derives the Rex tab label for a started session: "Rig: <GC_RIG>"
-// whenever GC_RIG is non-empty, even for a town-style name with no "--" (a wisp
-// instance name). Only with no GC_RIG does the name shape decide: the town label
-// for a town-level name, otherwise "Rig: " plus the name split. Every result is
-// clamped to maxRexLabel.
-func tabLabel(name SessionName, env map[string]string, town string) string {
-	if isTownStart(name, env) {
-		return clampRexLabel(town)
-	}
-	if rig := env["GC_RIG"]; rig != "" {
-		return clampRexLabel("Rig: " + rig)
-	}
-	return clampRexLabel("Rig: " + name.Rig())
-}
-
-// legacyTabLabel is the tab label gc wrote before GCREX-72: "__town" for a
-// town-level name, otherwise the bare rig. A record with no stored TabLabel or
-// a window that predates the upgrade still carries it, so resolution accepts it
-// as well as the derived label.
-func legacyTabLabel(n SessionName) string { return legacyTabLabelFor(n, nil) }
-
-// legacyTabLabelFor is the label the pre-GCREX-72 provider wrote for n: a
-// non-empty GC_RIG from the start env, otherwise __town for a town-level name
-// or the name-derived rig.
-func legacyTabLabelFor(n SessionName, env map[string]string) string {
-	// The old tabLabelFor read GC_RIG first, so a short pool name such as
-	// dog-1 sat in its rig tab, not __town.
-	if rig := env["GC_RIG"]; rig != "" {
-		return rig
-	}
-	if n.IsTown() {
-		return legacyTownTab
-	}
-	return n.Rig()
-}
-
 // clampRexLabel truncates s to maxRexLabel runes, replacing the tail with "…"
 // so truncation is visible and never splits a UTF-8 sequence.
 func clampRexLabel(s string) string {
@@ -141,74 +95,6 @@ func (n SessionName) PaneLabel() string { return n.Agent() }
 // maxPaneLabelRunes is Rex's label limit for session.set_block_label.
 const maxPaneLabelRunes = 128
 
-// paneLabelFor returns the Rex pane label for a started session. An unaliased
-// pool seat whose name the env proves (Sanitize(agent)+"-"+bead id equals
-// GC_SESSION_NAME, gc's PoolSessionName shape) gets the short
-// "<agent> (#<bead id>)" form; every other rig-scoped session keeps
-// "<agent> (<GC_SESSION_NAME>)", and a town-level session keeps the
-// name-derived label. Both forms shorten only the agent. A verified short form
-// is the identity even when it is over the limit, so it is clamped keeping the
-// bead id rather than falling through to the always-longer long form. The "#"
-// marks the short form so identityMatch never reads its bead id as a session
-// name.
-func paneLabelFor(n SessionName, env map[string]string) string {
-	return paneLabelForAgent(n, env, paneLabelAgent(env))
-}
-
-// legacyPaneLabelFor is the label the pre-GC_TEMPLATE rule produced: the agent
-// came from GC_ALIAS/GC_AGENT, not GC_TEMPLATE, and the suffix was always the
-// full GC_SESSION_NAME — the pool short form did not exist yet, so it must not
-// be applied here even when the current name shape would verify it. It is the
-// label a pane started before the change still carries, so an upgrade can
-// recognise it.
-func legacyPaneLabelFor(n SessionName, env map[string]string) string {
-	if env["GC_RIG"] == "" && n.IsTown() {
-		return n.PaneLabel()
-	}
-	session := strings.TrimSpace(env["GC_SESSION_NAME"])
-	agent := paneAgent(env)
-	if session == "" || agent == "" {
-		return n.PaneLabel()
-	}
-	// Pre-change truncation: cut the agent without the shortened marker. A
-	// pane started before the change carries that unmarked cut, so the legacy
-	// label must reproduce it exactly or the upgrade misses the live pane.
-	tail := " (" + session + ")"
-	budget := maxPaneLabelRunes - utf8.RuneCountInString(tail)
-	if budget < 1 {
-		return clampRexLabel(session)
-	}
-	if r := []rune(agent); len(r) > budget {
-		agent = string(r[:budget])
-	}
-	return agent + tail
-}
-
-func paneLabelForAgent(n SessionName, env map[string]string, agent string) string {
-	if env["GC_RIG"] == "" && n.IsTown() {
-		return n.PaneLabel()
-	}
-	session := strings.TrimSpace(env["GC_SESSION_NAME"])
-	if session == "" || agent == "" {
-		return n.PaneLabel()
-	}
-	// The safety guard: only claim the short form when the name verifies it.
-	// gc has changed the name shape before, so a failed check degrades to the
-	// long form rather than to a guess.
-	if env["GC_ALIAS"] == "" {
-		if suffix := panePoolSuffix(env); suffix != "" && sanitizeQualified(agent)+"-"+suffix == session {
-			if label, ok := fitPaneLabel(agent, paneLabelShortForm+suffix); ok {
-				return label
-			}
-			return clampRexLabel(session)
-		}
-	}
-	if label, ok := fitPaneLabel(agent, session); ok {
-		return label
-	}
-	return clampRexLabel(session)
-}
-
 // paneLabelShortened ends an agent that fitPaneLabel had to cut. The label has
 // to carry the cut: without a marker a shortened agent reads like a short one,
 // so identityMatch cannot tell "this agent was cut" from "this is the whole
@@ -244,31 +130,6 @@ func fitPaneLabel(agent, suffix string) (string, bool) {
 	return string(r[:budget-1]) + paneLabelShortened + tail, true
 }
 
-// paneLabelAgent is the display agent: the agent part of GC_TEMPLATE (the
-// readable identity <rig>/<agent>) when the start config carries it, else
-// paneAgent. GC_TEMPLATE is not rewritten by pool routing.
-func paneLabelAgent(env map[string]string) string {
-	if t := strings.TrimSpace(env["GC_TEMPLATE"]); t != "" {
-		return path.Base(t)
-	}
-	return paneAgent(env)
-}
-
-// panePoolSuffix is the unaliased pool session's bead id: GC_AGENT (the session
-// bead id AssigneeIdentifier stamps), else GC_SESSION_ID, else the BEADS_ACTOR
-// segment after the first "/". GC_AGENT comes first because pool routing
-// rewrites BEADS_ACTOR to GC_TEMPLATE. A qualified GC_AGENT (containing "/" or
-// ".") is an alias/configured identity, never a bead id, so it is skipped.
-func panePoolSuffix(env map[string]string) string {
-	if v := strings.TrimSpace(env["GC_AGENT"]); v != "" && !strings.ContainsAny(v, "/.") {
-		return v
-	}
-	if v := strings.TrimSpace(env["GC_SESSION_ID"]); v != "" {
-		return v
-	}
-	return paneAgent(map[string]string{"BEADS_ACTOR": env["BEADS_ACTOR"]})
-}
-
 // identityMatch reports whether label names session n. A short form is
 // "<agent> (#<bead id>)": its suffix carries paneLabelShortForm, so n is
 // exactly Sanitize(agent)+"-"+bead id. A long form is "<agent> (<suffix>)":
@@ -294,22 +155,6 @@ func identityMatch(name SessionName, label string) bool {
 		return sanitizeQualified(agent)+"-"+bead == string(name)
 	}
 	return suffix == string(name)
-}
-
-// paneAgent resolves the display agent: GC_ALIAS, then GC_AGENT, then the
-// BEADS_ACTOR segment after the first "/"; empty when none resolves.
-func paneAgent(env map[string]string) string {
-	if v := strings.TrimSpace(env["GC_ALIAS"]); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(env["GC_AGENT"]); v != "" {
-		return v
-	}
-	actor := strings.TrimSpace(env["BEADS_ACTOR"])
-	if i := strings.Index(actor, "/"); i >= 0 {
-		actor = strings.TrimSpace(actor[i+1:])
-	}
-	return actor
 }
 
 // String returns the original gc session name.
