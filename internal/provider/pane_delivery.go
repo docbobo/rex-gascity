@@ -153,6 +153,11 @@ func (p *Provider) deliverPaneText(ctx context.Context, req paneTextRequest) pan
 	}
 }
 
+// errBeforeTyping marks a parent cancel after the pre-write gate read and
+// before any input. Startup delivery calls that canceled readiness; a cancel
+// after the write is not (REQ-002).
+var errBeforeTyping = errors.New("before typing")
+
 // deliverPaneTextOnce is one try of the ladder against an already-resolved
 // pane: the UTF-8 check, the pool-claim gate, the busy/blocked gate, the
 // secret guard, the baseline read, the write and Enter under one submit
@@ -240,7 +245,7 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 	// parent cancel during that read outranks the gate's stop and never maps to
 	// dialog-unresolved (REQ-002).
 	if err := ctx.Err(); err != nil {
-		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: before typing: %w", name, err)
+		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: %w: %w", name, errBeforeTyping, err)
 	}
 	if stop != nil {
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, stop

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -191,12 +192,11 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			Gate:     gate,
 		})
 		p.recordStartupAttempts(&timing, res)
-		if ctx.Err() != nil {
-			// A parent cancel during the gate's read is not the hard stop, so
-			// it must not map to dialog-unresolved (REQ-002).
+		// A cancel before any input is readiness that never finished. A cancel
+		// after the write is not: the ladder already delivered, so the
+		// diagnostic keeps the readiness outcome it reached (REQ-002).
+		if errors.Is(res.Err, errBeforeTyping) {
 			timing.ReadinessOutcome = readinessCanceled
-			p.finishStartupDelivery(ctx, name, binding, res)
-			return nil
 		}
 		if res.GateStop != nil {
 			if res.GateStop.Point == gatePreWrite {
@@ -502,12 +502,19 @@ func (g startupDialogGate) check(ctx context.Context, point string) *startupGate
 		return &startupGateStop{Point: point, Name: g.w.name, At: at}
 	}
 	tail := startupScreenTail(screen)
-	name, ok := matchedStartupDialog(tail, g.w.prefix)
-	if !ok {
-		return nil
+	if name, ok := matchedStartupDialog(tail, g.w.prefix); ok {
+		g.w.sight(at, name, tail, point, "")
+		return &startupGateStop{Point: point, Dialog: true, Name: name, At: at}
 	}
-	g.w.sight(at, name, tail, point, "")
-	return &startupGateStop{Point: point, Dialog: true, Name: name, At: at}
+	// A clear reply that returned at or after the hard stop is stale: the read
+	// was cut off there, and the CLI can decode a reply after its command
+	// ends. Treat it as a failed read, so the ladder types nothing (REQ-002).
+	// The hard stop bounds only the pre-write gate's reads ("resend" runs under
+	// ctx), so the check applies there alone.
+	if point == gatePreWrite && g.w.seen && !at.Before(g.w.hardStop) {
+		return &startupGateStop{Point: point, Name: g.w.name, At: at}
+	}
+	return nil
 }
 
 // afterPreWriteStop is the wait's next step after the pre-write gate blocked:
