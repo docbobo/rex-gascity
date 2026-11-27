@@ -78,6 +78,14 @@ type Fake struct {
 	// FormatErr, when set, is returned by BlockFormat instead of output.
 	FormatErr error
 
+	// FormatCtxFunc, when non-nil, supersedes FormatFunc, Formats and
+	// FormatErr. Unlike FormatFunc it receives the call's context and runs
+	// without the fake's lock held, so a test can fail one call, stall until
+	// the context ends, or delay a read, the way a real Rex read under
+	// exec.CommandContext behaves (internal/rex/cli/cli.go:48). The call is
+	// recorded in BlockCalls before the hook runs.
+	FormatCtxFunc func(ctx context.Context, block rex.BlockID) (string, error)
+
 	// BlockCalls records each block-method call with the session that held the
 	// block, so tests can assert the provider scopes the call correctly.
 	BlockCalls []BlockCall
@@ -349,10 +357,14 @@ func (f *Fake) BlockProcess(_ context.Context, sid rex.SessionID, block rex.Bloc
 	return f.Processes[block], nil
 }
 
-func (f *Fake) BlockFormat(_ context.Context, sid rex.SessionID, block rex.BlockID) (string, error) {
+func (f *Fake) BlockFormat(ctx context.Context, sid rex.SessionID, block rex.BlockID) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.record(sid, block, "format")
+	if hook := f.FormatCtxFunc; hook != nil {
+		f.mu.Unlock()
+		return hook(ctx, block)
+	}
+	defer f.mu.Unlock()
 	if f.FormatErr != nil {
 		return "", f.FormatErr
 	}
