@@ -185,20 +185,22 @@ func TestStartupSeedWithheldWhenDialogPersists(t *testing.T) {
 	}
 }
 
-// TestStartupSeedUndeliveredWhenClearButNotReady pins AC4 / REQ-004 (b) in
-// prompt mode: after a sighting, a clear screen that never shows the prompt,
-// or a read that fails, ends dialog-unresolved at the deadline with no write,
-// even though the prompt bound passed long before.
+// TestStartupSeedUndeliveredWhenClearButNotReady pins AC4 / REQ-004 (b): after
+// a sighting, a clear screen that never shows the prompt, or a read that
+// fails, ends dialog-unresolved at the deadline with no write, even though the
+// prompt bound passed long before. The status-mode case pins the guard that
+// keeps a failed read from failing open to idle (panestate.go startupVerdict)
+// and entering delivery.
 func TestStartupSeedUndeliveredWhenClearButNotReady(t *testing.T) {
 	want := "withheld: a startup dialog was seen (" + trustName + "); the pane was not clear and ready when the clear window ended"
-	run := func(t *testing.T, setup func(*faketest.Fake)) {
+	promptCfg := seedConfig
+	promptCfg.ReadyPromptPrefix = "❯ "
+	run := func(t *testing.T, setup func(*faketest.Fake), cfg provider.Config) {
 		t.Helper()
 		stateDir := t.TempDir()
 		fake := faketest.New()
 		setup(fake)
 		p := clearProvider(fake, stateDir, provider.WithStartupReadiness(50*time.Millisecond, 10*time.Millisecond))
-		cfg := seedConfig
-		cfg.ReadyPromptPrefix = "❯ "
 		if err := p.Start(context.Background(), dogName, cfg); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
@@ -226,7 +228,7 @@ func TestStartupSeedUndeliveredWhenClearButNotReady(t *testing.T) {
 				}
 				return "loading workspace…\n"
 			}
-		})
+		}, promptCfg)
 	})
 	t.Run("every read after the sighting fails", func(t *testing.T) {
 		run(t, func(fake *faketest.Fake) {
@@ -237,7 +239,19 @@ func TestStartupSeedUndeliveredWhenClearButNotReady(t *testing.T) {
 				}
 				return "", errors.New("rex: format failed")
 			}
-		})
+		}, promptCfg)
+	})
+	t.Run("status mode, every read after the sighting fails", func(t *testing.T) {
+		run(t, func(fake *faketest.Fake) {
+			fake.ProgramStatusFunc = idleStatus
+			var reads atomic.Int32
+			fake.FormatCtxFunc = func(context.Context, rex.BlockID) (string, error) {
+				if reads.Add(1) == 1 {
+					return trustDialogScreen, nil
+				}
+				return "", errors.New("rex: format failed")
+			}
+		}, seedConfig)
 	})
 }
 
