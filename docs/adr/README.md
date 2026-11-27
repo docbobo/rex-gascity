@@ -50,3 +50,4 @@ live in the `AGENTS.md` files.
 | [0018](0018-codeql-runs-advisory-for-go-and-actions.md) | CodeQL runs advisory for Go and Actions | Accepted |
 | [0019](0019-the-ui-ships-from-this-repo-through-one-installer-that-edits-only-init-lua.md) | The UI ships from this repo through one installer that edits only `init.lua` | Accepted |
 | [0020](0020-keep-fs-host-undeclared.md) | `fs.host` stays undeclared, `locality` stays `local` | Accepted |
+| [0021](0021-recover-a-dialog-withheld-seed-inside-start.md) | Recover a dialog-withheld seed inside `start` | Accepted |

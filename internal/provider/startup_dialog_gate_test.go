@@ -789,6 +789,89 @@ func TestStartupDialogBeforeResend(t *testing.T) {
 	}
 	t.Run("before the clear key", func(t *testing.T) { run(t, 2, 0) })
 	t.Run("before the resend's write", func(t *testing.T) { run(t, 3, 1) })
+	t.Run("a parent cancel during the resend's gate read", func(t *testing.T) {
+		// A dialog was seen during readiness and cleared. The resend's second
+		// gate read then fails because the parent is canceled. The first seed
+		// was typed and submitted, so the gate's stop must win: the marker
+		// names the dialog and the readiness outcome stays dialog-cleared
+		// (REQ-001 (c)).
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		written := watchWrites(fake)
+		var first time.Time
+		after := 0
+		fake.FormatCtxFunc = func(readCtx context.Context, _ rex.BlockID) (string, error) {
+			if first.IsZero() {
+				first = time.Now()
+			}
+			if !written.Load() {
+				if time.Since(first) < clearWindow {
+					return trustDialogScreen, nil
+				}
+				return plainEditor, nil
+			}
+			after++
+			if after == 3 {
+				cancel()
+				return "", readCtx.Err()
+			}
+			return plainEditor, nil
+		}
+		p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+		if err := p.Start(ctx, dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 1 || k != 1 || u != 1 {
+			t.Errorf("writes %d, enters %d, ctrl+u %d; want 1, 1, 1 (no resend's write)", n, k, u)
+		}
+		want := "delivered but not confirmed: the screen could not be read after a startup dialog was seen (" + trustName + ") before a resend"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		if got := readStartupTiming(t, stateDir, dogName)["readiness_outcome"]; got != "dialog-cleared" {
+			t.Errorf("readiness_outcome = %v, want dialog-cleared", got)
+		}
+	})
+	t.Run("a parent cancel with no sighting on the resend's gate read", func(t *testing.T) {
+		// No dialog was seen, so the failed resend read is a plain cancel. The
+		// first seed was typed and submitted: the marker must not say "before
+		// typing", and the readiness outcome stays idle (REQ-001 (c)).
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stateDir := t.TempDir()
+		fake := faketest.New()
+		fake.ProgramStatuses = idleProgramStatuses()
+		written := watchWrites(fake)
+		after := 0
+		fake.FormatCtxFunc = func(readCtx context.Context, _ rex.BlockID) (string, error) {
+			if !written.Load() {
+				return plainEditor, nil
+			}
+			after++
+			if after == 3 {
+				cancel()
+				return "", readCtx.Err()
+			}
+			return plainEditor, nil
+		}
+		p := clearProvider(fake, stateDir, provider.WithStartupNudgeRetries([]time.Duration{time.Millisecond}))
+		if err := p.Start(ctx, dogName, seedConfig); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if n, k, u := writeCount(fake), keyCount(fake, "enter"), keyCount(fake, "ctrl+u"); n != 1 || k != 1 || u != 1 {
+			t.Errorf("writes %d, enters %d, ctrl+u %d; want 1, 1, 1 (no resend's write)", n, k, u)
+		}
+		want := "delivery failed: nudge " + string(dogName) + ": context canceled"
+		if got := startupMarker(t, p, dogName); got != want {
+			t.Errorf("marker = %q, want %q", got, want)
+		}
+		if got := readStartupTiming(t, stateDir, dogName)["readiness_outcome"]; got != "idle" {
+			t.Errorf("readiness_outcome = %v, want idle", got)
+		}
+	})
 }
 
 // TestStartupSeedQuotingDialogMarker pins REQ-005's seed-ambiguous match: a

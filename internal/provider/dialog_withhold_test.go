@@ -18,8 +18,9 @@ const trustDialogScreen = "Do you trust the files in this folder?\n❯ 1. Yes, p
 
 // TestStartupNudgeWithheldOnStartupDialog pins GCREX-59 AC1/AC3: a pane whose
 // screen shows a startup dialog at readiness time gets no write and no submit,
-// and the withhold is recorded on the existing marker so gc's queued-nudge
-// backstop can cover the first prompt.
+// and the withhold is recorded on the existing marker so an operator can find
+// the undelivered seed; no gc backstop covers a named session's first prompt
+// (gc edge cmd/gc/idle_nudge.go:88-136, pool slots only).
 func TestStartupNudgeWithheldOnStartupDialog(t *testing.T) {
 	const name = "Indigo--dog-1"
 	ctx := context.Background()

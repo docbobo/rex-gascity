@@ -65,9 +65,9 @@ const (
 	// ready_prompt_prefix never appeared on screen.
 	readinessPromptBound = "prompt-bound"
 	// readinessDialog is a wait that ended because the pane's screen showed a
-	// startup dialog. The nudge is withheld, not delivered: gc answers the
-	// dialog only once start returns, and the turn's Enter would pick the
-	// dialog's selected option (herdrcore/lifecycle.py:1078-1096).
+	// startup dialog. After the clear wait (#205) it means the last read still
+	// showed the dialog, and the seed was not typed, and the turn's Enter would
+	// pick the dialog's selected option (herdrcore/lifecycle.py:1078-1096).
 	readinessDialog = "dialog"
 	// readinessDialogCleared is a wait that saw a startup dialog, then had a
 	// poll with a clear screen tail and a ready verdict (idle past the floor,
@@ -192,14 +192,15 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 			Gate:     gate,
 		})
 		p.recordStartupAttempts(&timing, res)
-		// A pre-submit or pre-resend stop: no submit key follows, and a
-		// pre-resend stop also skips the clear key and the next seed, so the
-		// last seed written stays typed but unsubmitted.
+		// A pre-submit or pre-resend stop: no submit key follows and no
+		// further seed is typed, so the last seed written stays typed but
+		// unsubmitted. A pre-resend stop can come before or after the clear
+		// key; the first seed was already written and submitted either way.
 		// Record it as a delivery stop, never a failed start (REQ-001). The
 		// stop is handled first because the gate reads under the submit key's
-		// own context: a parent cancel after the write can arrive with it,
-		// and the stop keeps the readiness outcome the wait ended on
-		// (REQ-001 (b)).
+		// own context, and a resend's read runs under the parent context: a
+		// parent cancel can arrive with the stop, and the stop keeps the
+		// readiness outcome the wait ended on (REQ-001 (b), (c)).
 		if res.GateStop != nil && res.GateStop.Point != gatePreWrite {
 			p.finishStartupDelivery(ctx, name, binding, res)
 			return nil
@@ -427,10 +428,12 @@ func (p *Provider) clearStartupDeliveryUnconfirmed(ctx context.Context, name str
 	_ = p.RemoveMeta(ctx, name, StartupDeliveryUnconfirmedMetaKey)
 }
 
-// recordStartupNudgeWithheld marks a pane whose startup nudge was withheld, so
-// the withhold is observable and gc's queued-nudge backstop can cover the first
-// prompt. It reuses the unconfirmed marker: the first turn never reached the
-// agent, which is exactly what an operator greps for. Best effort; a metadata
+// recordStartupNudgeWithheld marks a pane whose startup seed was not typed, so
+// the withhold is observable. It reuses the unconfirmed marker: the first turn
+// never reached the agent, which is what an operator greps for. For a named
+// session this marker is the only signal: gc stamps primed_at from its routing
+// plan and does not read the marker, and gc's queued-nudge backstop covers pool
+// slots only (gc edge cmd/gc/idle_nudge.go:88-136). Best effort; a metadata
 // failure must not turn a live start into a failure.
 func (p *Provider) recordStartupNudgeWithheld(ctx context.Context, binding Binding, why string) {
 	_ = p.SetMeta(ctx, string(binding.Name), StartupDeliveryUnconfirmedMetaKey, "withheld: "+why)
