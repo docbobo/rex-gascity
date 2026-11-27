@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
 )
@@ -120,12 +121,14 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 	// The timing is written for every delivery, confirmed or not: the slow case
 	// this exists to attribute is usually a successful start whose readiness
 	// wait consumed most of the time, so recording only failures would miss it.
+	w := &startupDialogWatch{prefix: cfg.ReadyPromptPrefix}
 	start := time.Now()
 	defer func() {
+		w.record(&timing)
 		timing.TotalMS = millis(time.Since(start)) + timing.LaunchMS
 		p.writeStartupTimingDiagnostic(binding, timing)
 	}()
-	outcome, readiness, ended := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID, cfg)
+	outcome, readiness, ended := p.waitForStartupReady(ctx, launch.sessionID, launch.blockID, cfg, w)
 	timing.ReadinessOutcome = outcome
 	timing.ReadinessMS = millis(readiness)
 	// An agent that ended before its first turn: fail unless the lifecycle is
@@ -141,7 +144,7 @@ func (p *Provider) deliverStartupNudge(ctx context.Context, name string, launch 
 	// now would press whichever option the dialog has selected. The withhold is
 	// recorded, never a failed start, so a healthy pane is not torn down.
 	if outcome == readinessDialog {
-		p.recordStartupNudgeWithheld(ctx, binding, "the pane shows a startup dialog")
+		p.recordStartupNudgeWithheld(ctx, binding, startupDialogShownWhy(w.name))
 		return nil
 	}
 
@@ -211,7 +214,17 @@ type startupTiming struct {
 	ConfirmMS        int64         `json:"confirm_ms"`
 	Confirmed        bool          `json:"confirmed"`
 	Attempts         []retryTiming `json:"attempts,omitempty"`
-	TotalMS          int64         `json:"total_ms"`
+	// Dialog evidence, written only when this start saw a startup dialog
+	// (#205, REQ-006): the matched dialog's name, the screen tail the decision
+	// read (capped at startupDialogScreenCap), the gate that saw it (empty for
+	// the readiness wait) and "seed" when the match may be the seed's echo.
+	// DialogScreen is raw pane text and can hold seed text after a write; it
+	// stays in this private diagnostic.
+	Dialog        string `json:"dialog,omitempty"`
+	DialogScreen  string `json:"dialog_screen,omitempty"`
+	DialogGate    string `json:"dialog_gate,omitempty"`
+	DialogSuspect string `json:"dialog_suspect,omitempty"`
+	TotalMS       int64  `json:"total_ms"`
 }
 
 // retryTiming is one resend of a delivered-but-unconfirmed startup nudge. The
@@ -255,6 +268,59 @@ const startupSecretReadWhy = "the pane is reading a secret"
 // resend. gc's send cycle starts with C-u for the same reason (its tmux
 // adapter's sendKeys); Rex key syntax spells it ctrl+u.
 const startupClearKey = "ctrl+u"
+
+// startupDialogScreenCap caps the dialog_screen evidence. The cut keeps the
+// last bytes, where the live screen is (REQ-006).
+const startupDialogScreenCap = 4096
+
+// startupDialogWatch is one start's record of the startup dialogs it saw: the
+// most recent sighting's evidence for the timing diagnostic (REQ-006). The
+// screen is raw pane text and may hold seed text after a write, so it goes to
+// the private diagnostic only, never to a marker, a NudgeReport or a log line.
+type startupDialogWatch struct {
+	prefix string // ready_prompt_prefix; "" selects status mode
+
+	seen    bool
+	name    string
+	screen  string
+	gate    string
+	suspect string
+}
+
+// sight records a dialog the readiness wait (gate "") or a startup dialog
+// gate (gate names the point) saw. A failed read is never a sighting.
+func (w *startupDialogWatch) sight(name, screen, gate, suspect string) {
+	w.seen = true
+	w.name, w.screen, w.gate, w.suspect = name, capTail(screen, startupDialogScreenCap), gate, suspect
+}
+
+// record copies the most recent sighting into the timing diagnostic. A start
+// that saw no dialog writes none of the fields.
+func (w *startupDialogWatch) record(t *startupTiming) {
+	if !w.seen {
+		return
+	}
+	t.Dialog, t.DialogScreen, t.DialogGate, t.DialogSuspect = w.name, w.screen, w.gate, w.suspect
+}
+
+// capTail keeps the last n bytes of s, moved forward to a rune start so the
+// cut never splits a UTF-8 sequence.
+func capTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := len(s) - n
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return s[cut:]
+}
+
+// startupDialogShownWhy is the withhold reason when the last read showed a
+// dialog: "withheld: the pane shows a startup dialog (<name>)".
+func startupDialogShownWhy(name string) string {
+	return "the pane shows a startup dialog (" + name + ")"
+}
 
 // clearStartupDeliveryUnconfirmed removes the stranded-startup marker after a
 // confirmed delivery. Best effort: a metadata failure must not fail a start
@@ -357,13 +423,16 @@ func readyDelay(cfg Config) time.Duration {
 // (panestate.go) makes the decision; this maps it to an outcome and names the
 // bound. A failed status read counts as no record. It returns ready=false to
 // keep waiting.
-func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config, r readinessBounds, snap programStatusSnapshot, snapErr error, sawRecord bool, elapsed time.Duration) (string, bool) {
+func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config, r readinessBounds, w *startupDialogWatch, snap programStatusSnapshot, snapErr error, sawRecord bool, elapsed time.Duration) (string, bool) {
 	if snapErr != nil {
 		snap = programStatusSnapshot{}
 	}
 	o := p.observePane(ctx, Binding{SessionID: sid, BlockID: block}, snap)
 	switch startupVerdict(o, cfg.ReadyPromptPrefix, elapsed >= r.delay, elapsed >= r.bound(sawRecord)) {
 	case verdictDialog:
+		if name, screen, ok, err := startupDialog(o, cfg.ReadyPromptPrefix); err == nil && ok {
+			w.sight(name, screen, "", "")
+		}
 		return readinessDialog, true
 	case verdictPromptReady:
 		return readinessPrompt, true
@@ -389,7 +458,7 @@ func (p *Provider) readinessBound(r readinessBounds, sawRecord bool, elapsed tim
 	}
 }
 
-func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config) (string, time.Duration, bool) {
+func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, block rex.BlockID, cfg Config, w *startupDialogWatch) (string, time.Duration, bool) {
 	if p.nudge.startupReadyWindow <= 0 {
 		return readinessDisabled, 0, false
 	}
@@ -416,7 +485,7 @@ func (p *Provider) waitForStartupReady(ctx context.Context, sid rex.SessionID, b
 			sawRecord = true
 		}
 		elapsed := time.Since(start)
-		if note, ready := p.readinessNote(ctx, sid, block, cfg, r, snap, err, sawRecord, elapsed); ready {
+		if note, ready := p.readinessNote(ctx, sid, block, cfg, r, w, snap, err, sawRecord, elapsed); ready {
 			return note, elapsed, false
 		}
 		wait := poll

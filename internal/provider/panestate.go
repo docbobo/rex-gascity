@@ -158,6 +158,19 @@ func screenWithholdsFirstTurn(o paneObservation) bool {
 	return err == nil && withholdsFirstTurn(screen, "")
 }
 
+// startupDialog reads the startup screen and names the dialog it shows, from
+// the observation's one memoized read. ok is false for a clear read and for a
+// failed one; err tells them apart. The startup path calls it to record
+// evidence (#205, REQ-006); it decides nothing startupVerdict does not.
+func startupDialog(o paneObservation, prefix string) (name, screen string, ok bool, err error) {
+	screen, err = o.screen.get()
+	if err != nil {
+		return "", "", false, err
+	}
+	name, ok = matchedStartupDialog(screen, prefix)
+	return name, screen, ok, nil
+}
+
 // turnBaseline readies a nudge's baseline observation before the text is
 // typed. Without a status record the screen is the only confirmation signal,
 // so it is read now, while it still predates the typed text. With a record the
