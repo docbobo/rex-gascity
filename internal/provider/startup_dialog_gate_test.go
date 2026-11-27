@@ -235,6 +235,29 @@ func TestStartupDialogGateBlocksAtDeadline(t *testing.T) {
 			t.Errorf("marker = %q, want none: the clear gate read delivered", got)
 		}
 	})
+
+	// A clear reply that returns at the hard stop is stale: the read was cut
+	// off there, so it must not let the seed through (REQ-002, REQ-004 (c)).
+	t.Run("a clear pre-write gate read returns at the hard stop", func(t *testing.T) {
+		r := runGate(t, false, func(ctx context.Context, n int) (string, error) {
+			if n == 2 { // the pre-write gate: the deadline poll came first, the status read skipped the baseline
+				<-ctx.Done()
+			}
+			return plainEditor, nil
+		})
+		if r.err != nil {
+			t.Fatalf("Start: %v", r.err)
+		}
+		if n, k := writeCount(r.fake), keyCount(r.fake, "enter"); n != 0 || k != 0 {
+			t.Errorf("writes %d, enters %d; want none", n, k)
+		}
+		if got := readStartupTiming(t, r.stateDir, dogName)["readiness_outcome"]; got != "dialog-unresolved" {
+			t.Errorf("readiness_outcome = %v, want dialog-unresolved", got)
+		}
+		if got := startupMarker(t, r.p, dogName); got != unresolvedMarker {
+			t.Errorf("marker = %q, want %q", got, unresolvedMarker)
+		}
+	})
 }
 
 // TestStartupDialogGateSubmitBudget pins REQ-002: the gate read does not
@@ -290,6 +313,28 @@ func TestStartupDialogGateParentCancel(t *testing.T) {
 	}
 	if got := startupMarker(t, p, dogName); got != "" && got[:len("withheld:")] == "withheld:" {
 		t.Errorf("marker = %q, want no withheld marker", got)
+	}
+}
+
+// TestStartupDialogCancelAfterWritePreservesReadiness pins REQ-002: a parent
+// cancel after the write is not canceled readiness. The ladder delivered, so
+// the diagnostic keeps the readiness outcome it reached.
+func TestStartupDialogCancelAfterWritePreservesReadiness(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake, stateDir := faketest.New(), t.TempDir()
+	fake.ProgramStatuses = idleProgramStatuses()
+	fake.FormatFunc = func(rex.BlockID) string { return plainEditor }
+	fake.WriteFunc = func(rex.SessionID, rex.BlockID, string) { cancel() }
+	p := clearProvider(fake, stateDir)
+	if err := p.Start(ctx, dogName, seedConfig); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n, k := writeCount(fake), keyCount(fake, "enter"); n != 1 || k != 1 {
+		t.Errorf("writes %d, enters %d; want 1, 1: the write had already landed", n, k)
+	}
+	if got := readStartupTiming(t, stateDir, dogName)["readiness_outcome"]; got != "idle" {
+		t.Errorf("readiness_outcome = %v, want idle: the cancel came after the write", got)
 	}
 }
 
