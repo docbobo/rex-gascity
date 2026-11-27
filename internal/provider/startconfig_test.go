@@ -172,6 +172,46 @@ func TestStartStagesBeforePreStart(t *testing.T) {
 	}
 }
 
+// TestStartStagesPackOverlaysAfterPreStart pins the last step of the phase
+// order: pack overlays are staged after pre_start, because their per-provider
+// subtree deliberately overwrites a managed file the hook may have rewritten.
+// The pre_start hook writes its own version of that file. The pack overlay's
+// version must win, so staging the overlays before pre_start fails this test.
+// The hook writes a marker after its rewrite, so a silently skipped hook fails
+// the test instead of leaving the overlay's content alone.
+func TestStartStagesPackOverlaysAfterPreStart(t *testing.T) {
+	workDir := t.TempDir()
+	hookPath := filepath.Join(workDir, ".pi", "extensions", "gc-hooks.js")
+	markerPath := filepath.Join(workDir, ".pi", "extensions", "hook-ran")
+	packOverlay := t.TempDir()
+	writeTestFile(t, filepath.Join(packOverlay, "per-provider", "pi"), ".pi/extensions/gc-hooks.js", "pack override\n")
+
+	fake := faketest.New()
+	var warnings bytes.Buffer
+	p := provider.New("acme", fake, provider.WithWarnings(&warnings))
+	cfg := provider.Config{
+		Argv:            []string{"pi"},
+		Env:             map[string]string{"GC_PROVIDER": "pi"},
+		WorkDir:         workDir,
+		PackOverlayDirs: []string{packOverlay},
+		// Relative paths: pre_start runs with cwd set to WorkDir, so a temp
+		// path with a space cannot break the command.
+		PreStart: []string{"mkdir -p .pi/extensions && echo hook rewrite > .pi/extensions/gc-hooks.js && echo hook ran > .pi/extensions/hook-ran"},
+	}
+	if err := p.Start(context.Background(), "pi-mc-wisp-abc", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if strings.Contains(warnings.String(), "pre_start") {
+		t.Fatalf("pre_start hook failed, so the order is not exercised: %s", warnings.String())
+	}
+	if got := readTestFile(t, markerPath); got != "hook ran\n" {
+		t.Fatalf("pre_start marker = %q, want the hook to have run: %v", got, warnings.String())
+	}
+	if got := readTestFile(t, hookPath); got != "pack override\n" {
+		t.Fatalf("managed file = %q, want the pack overlay's version: pack overlays must stage after pre_start", got)
+	}
+}
+
 // TestStartSessionSetupOnlyAfterALaunch pins that the setup hooks depend on a
 // successful launch: when the launch fails, no setup hook runs, so a pane is
 // always up before session_setup (herdr-core runs them after _create;
