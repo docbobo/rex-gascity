@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // The pane-state module is meant to answer every question the provider asks
@@ -47,12 +48,15 @@ type paneObservation struct {
 }
 
 // screenRead memoizes one screen read. The first get runs read; later gets
-// return the same text and error without reading again.
+// return the same text and error without reading again. at is when that read
+// returned, the clock the startup clear window uses (REQ-002): time read after
+// the read, not after the classification that follows it.
 type screenRead struct {
 	read func() (string, error)
 	done bool
 	text string
 	err  error
+	at   time.Time
 }
 
 // newScreenRead wraps read so that it runs at most once.
@@ -65,6 +69,7 @@ func (s *screenRead) get() (string, error) {
 	if !s.done {
 		s.done = true
 		s.text, s.err = s.read()
+		s.at = time.Now()
 	}
 	return s.text, s.err
 }

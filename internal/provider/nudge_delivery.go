@@ -513,8 +513,11 @@ func (p *Provider) readinessNote(ctx context.Context, sid rex.SessionID, block r
 	o := p.observePane(ctx, Binding{SessionID: sid, BlockID: block}, snap)
 	switch startupVerdict(o, cfg.ReadyPromptPrefix, elapsed >= r.delay, elapsed >= r.bound(sawRecord)) {
 	case verdictDialog:
+		// The window starts when the read returned, not when the verdict is
+		// classified (REQ-002). startupDialog has read the memo, so its time is
+		// set.
 		if name, screen, ok, err := startupDialog(o, cfg.ReadyPromptPrefix); err == nil && ok {
-			w.sight(time.Now(), name, screen, "", "")
+			w.sight(o.screen.at, name, screen, "", "")
 		}
 		return readinessDialog, true
 	case verdictPromptReady:
@@ -637,7 +640,9 @@ func (p *Provider) dialogClearPoll(ctx context.Context, b Binding, cfg Config, w
 	o := p.observePane(pctx, b, snap)
 	verdict := startupVerdict(o, cfg.ReadyPromptPrefix, pastFloor, false)
 	name, screen, dialog, readErr := startupDialog(o, cfg.ReadyPromptPrefix)
-	at := time.Now()
+	// The deadline is decided by when the screen read returned (REQ-002), so a
+	// delay after the read cannot end the wait early or extend it.
+	at := o.screen.at
 	if ctx.Err() != nil {
 		return readinessCanceled, true, false
 	}

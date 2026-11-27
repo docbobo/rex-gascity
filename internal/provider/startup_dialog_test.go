@@ -202,8 +202,8 @@ func TestStartupSeedUndeliveredWhenClearButNotReady(t *testing.T) {
 		if err := p.Start(context.Background(), dogName, cfg); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
-		if n := writeCount(fake); n != 0 {
-			t.Errorf("writes %d, want 0", n)
+		if n, k := writeCount(fake), keyCount(fake, "enter"); n != 0 || k != 0 {
+			t.Errorf("writes %d, enters %d; want none into a dialog", n, k)
 		}
 		if got := startupMarker(t, p, dogName); got != want {
 			t.Errorf("marker = %q, want %q", got, want)
