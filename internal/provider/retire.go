@@ -79,7 +79,7 @@ type retirePolicy struct {
 	clear clearScope
 	// destroy removes the canonical city session once it is empty
 	// (destroyEmptyCitySession). The caller must not hold that session's
-	// launch lock: destroyEmptyCitySession takes it itself.
+	// launch lock: destroyEmptyCitySession attempts it itself.
 	destroy bool
 	// reRecordOnDestroyFail writes bd back when the destroy fails: the
 	// no-pane stop's ResolveFresh can drop a stale record before retirement
@@ -106,10 +106,10 @@ type retireResult struct {
 // Lock state: Stop's caller holds the per-name locks (Stop →
 // stopUnderPrimaryLock, lock.go:40); kill-object's caller holds the name lock
 // and, inside withSameBinding, the state lock. Neither holds the session's
-// launch lock, which destroy takes. Whether the stop path should also hold the
-// state lock is unverified: destroyEmptyCitySession's doc and the parity doc
-// `### stop` row 5 say it does, the code takes none, and gc v1.5.1 names no
-// lock for stop (internal/runtime/runtime.go:163-165) (REQ-017 follow-up).
+// launch lock, which destroy attempts. Whether the stop path should also hold
+// the state lock is unverified: the parity doc `### stop` row 5 says gc's stop
+// does, the code takes none, and gc v1.5.1 names no lock for stop
+// (internal/runtime/runtime.go:163-165) (REQ-017 follow-up).
 func stopPolicy() retirePolicy {
 	return retirePolicy{
 		diagnostic:      true,
@@ -134,9 +134,9 @@ func stopPolicy() retirePolicy {
 //
 // Lock state: the caller holds the per-name locks (Stop →
 // stopUnderPrimaryLock). The code takes no state lock on this path; the
-// parity doc `### stop` row 5 and destroyEmptyCitySession's doc say the
-// state lock is held. gc v1.5.1 names no lock for stop
-// (internal/runtime/runtime.go:163-165). Unverified, REQ-017 follow-up.
+// parity doc `### stop` row 5 says gc's stop holds the state lock. gc v1.5.1
+// names no lock for stop (internal/runtime/runtime.go:163-165). Unverified,
+// REQ-017 follow-up.
 func stopNoPanePolicy(hadStored bool) retirePolicy {
 	return retirePolicy{
 		reap:                  reapRecorded,
@@ -208,7 +208,7 @@ func startDeadPanePolicy() retirePolicy {
 // forget. pol switches steps off or picks their scope; it cannot reorder them.
 // Any step's error returns at once, so a later step never runs after a
 // failure and the record is never forgotten after one. retire takes no lock
-// itself; destroyEmptyCitySession takes the launch lock.
+// itself; destroyEmptyCitySession attempts the launch lock.
 //
 // Caller contract: retire takes no per-name lock, so the caller MUST hold the
 // per-name lock of every name it retires (caller and bd.Name) for the whole
@@ -324,12 +324,14 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 }
 
 // destroyEmptyCitySession removes this city's canonical gc:<city> session once
-// its last pane is gone (GCREX-31). The caller holds the state lock. This
-// function takes the session's launch lock before it reads the view, so no
-// launch can add a pane between the empty check and the removal. It fails
-// closed: a session with any window, a label that is not the canonical one (a
-// legacy, foreign or other-city session), or any Rex error keeps the session
-// and returns the error.
+// its last pane is gone (GCREX-31). It attempts the session's launch lock and
+// returns without destroying while a launch holds it, so no launch can add a
+// pane between the empty check and the removal. Stop reaches this helper
+// through retire under the per-name locks, not the state lock; failed-launch
+// cleanup is the caller that also holds the state lock. It fails closed: a
+// session with any window, a label that is not the canonical one (a legacy,
+// foreign or other-city session), or any Rex error keeps the session and
+// returns the error.
 func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionID) error {
 	if sid == "" {
 		return nil
