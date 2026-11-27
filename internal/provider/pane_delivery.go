@@ -247,11 +247,22 @@ func (p *Provider) deliverPaneTextOnce(ctx context.Context, binding Binding, tex
 		stop = gate.check(readCtx, point, typed)
 		releaseCap()
 	}
+	// A stop on a resend outranks a parent cancel: the first seed was already
+	// typed and submitted, so the wire reports the gate's stop and the startup
+	// caller keeps the readiness outcome it reached (REQ-001 (c)).
+	if attempt > 1 && stop != nil {
+		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, stop
+	}
 	// A cancel here is not a send failure: it stays a plain error (exit 1),
-	// never classified (#43 REQ-010). It is checked after the gate read, so a
-	// parent cancel during that read outranks the gate's stop and never maps to
-	// dialog-unresolved (REQ-002).
+	// never classified (#43 REQ-010). On the first write it is checked after
+	// the gate read, so a parent cancel during that read outranks the gate's
+	// stop and never maps to dialog-unresolved (REQ-002).
 	if err := ctx.Err(); err != nil {
+		if attempt > 1 {
+			// The ladder already wrote and submitted the first seed, so this
+			// is not "before typing": no errBeforeTyping (REQ-001 (c)).
+			return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: %w", name, err)
+		}
 		return NudgeReport{State: baseline.State, Kind: baseline.Kind}, fmt.Errorf("nudge %s: %w: %w", name, errBeforeTyping, err)
 	}
 	if stop != nil {
