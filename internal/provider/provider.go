@@ -169,6 +169,12 @@ type Provider struct {
 	activity Store[SessionName, ActivityRecord]
 	meta     Store[metaKey, string]
 
+	// lockTracking counts the lock sections this provider holds, per kind, so
+	// lockSection can refuse an order lockNests does not allow. It is
+	// consulted only while lockOrderEnabled is set (a test); the built provider
+	// ignores it. See lock_order.go.
+	lockTracking lockTracking
+
 	// ns is the city namespace: the state dirs (the canonical one holds the
 	// cross-process lock; none means no locking) and the accepted Rex session
 	// labels (new sessions use the canonical one; lookups and binding
