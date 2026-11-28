@@ -32,17 +32,19 @@ The runtime pack lives at `pack/pack.toml`:
 
 ```toml
 [pack]
-name = "rex"
-version = "0.1.0"
+name = "rex-gascity-runtime"
+version = "2026.11.08"
 schema = 2
 description = "Gas City runtime pack for Rex: a native Rex session provider speaking RPP v0."
 
 [runtimes.rex]
-command = "gc-runtime-rex"
+command = "bin/gc-runtime-rex"
 protocol = 0
 ```
 
-`command = "gc-runtime-rex"` has no path separator, so `gc` resolves it via `PATH` at run time and the pack carries no platform-specific binary.
+`command = "bin/gc-runtime-rex"` contains a path separator, so `gc` resolves it
+against the pack directory, and the shipped shim installs the matching release
+into the version-keyed cache.
 
 ### Pool-claim nudge and live claims (GCREX-67 residual risk)
 
@@ -178,7 +180,7 @@ compares that `version` against the `[pack] version` in
 
 - **Match (exit 0)**: the reported version equals the declared version after a
   leading `v` and any `+build-metadata` suffix are stripped, so a tagged
-  `v0.1.0` and an `-ldflags`-stamped `0.1.0` both match `version = "0.1.0"`.
+  `v2026.11.08` and an `-ldflags`-stamped `2026.11.08` both match `version = "2026.11.08"`.
 - **Mismatch (exit 2)**: a determined version that differs, with a remediation
   naming the pack's version.
 - **Undeterminable (exit 1)**: the provider reports no version or has no

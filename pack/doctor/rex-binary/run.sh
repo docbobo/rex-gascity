@@ -1,7 +1,7 @@
 #!/bin/sh
 # gc doctor check: the pack's runtime provider binary and the rex CLI are
 # installed, and the provider matches the version the pack declares. The pack
-# declares [runtimes.rex] command = "gc-runtime-rex" and [pack] version; gc
+# declares [runtimes.rex] command = "bin/gc-runtime-rex" and [pack] version; gc
 # resolves a bare name through PATH and a path with a separator relative to
 # the pack directory. A missing provider surfaces only as opaque agent state,
 # so this check reports it with a remediation.
