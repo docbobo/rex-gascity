@@ -188,7 +188,12 @@ func (f *Fake) CreateSession(_ context.Context, label string) (rex.SessionID, er
 	defer f.mu.Unlock()
 	f.CreatedSessions = append(f.CreatedSessions, label)
 	id := rex.SessionID("session:" + label)
-	f.Sessions = append(f.Sessions, rex.Session{ID: id, Label: label})
+	st := fakestate.NewState()
+	for _, s := range f.Sessions {
+		st.AddSession(&fakestate.Session{ID: string(s.ID), Label: s.Label})
+	}
+	st.AddSession(&fakestate.Session{ID: string(id), Label: label})
+	f.projectSessionsLocked(st)
 	return id, nil
 }
 
@@ -305,19 +310,26 @@ func (f *Fake) DestroySession(_ context.Context, sid rex.SessionID) error {
 	if f.DestroySessionErr != nil {
 		return f.DestroySessionErr
 	}
-	kept := f.Sessions[:0]
+	// A session exists only once session.create recorded it; a facet View
+	// seeded without a session record is not a session to destroy.
 	found := false
 	for _, s := range f.Sessions {
 		if s.ID == sid {
 			found = true
-			continue
+			break
 		}
-		kept = append(kept, s)
 	}
 	if !found {
 		return rex.ErrNotFound
 	}
-	f.Sessions = kept
+	st, err := f.hydrationLocked(sid)
+	if err != nil {
+		return err
+	}
+	if !st.RemoveSession(string(sid)) {
+		return rex.ErrNotFound
+	}
+	f.projectSessionsLocked(st)
 	delete(f.Views, sid)
 	f.DestroyedSessions = append(f.DestroyedSessions, sid)
 	return nil

@@ -115,6 +115,17 @@ func (f *Fake) projectLocked(st *fakestate.State, sid rex.SessionID) {
 	f.View = v
 }
 
+// projectSessionsLocked rewrites f.Sessions from st, the session records a
+// transition leaves behind. Sessions carry only an id and a label, so the
+// projection is total. f.mu must be held.
+func (f *Fake) projectSessionsLocked(st *fakestate.State) {
+	sessions := make([]rex.Session, 0, len(st.Sessions))
+	for _, s := range st.Sessions {
+		sessions = append(sessions, rex.Session{ID: rex.SessionID(s.ID), Label: s.Label})
+	}
+	f.Sessions = sessions
+}
+
 // anchorWindowLocked finds the window holding anchor in ses. One lookup path:
 // fakestate's transitions address windows by resolved value, so the adapter
 // resolves the anchor here instead of searching for it in each method.

@@ -356,7 +356,26 @@ func (s *State) Block(id string) (*Session, *Window, *Block, error) {
 	return nil, nil, nil, fmt.Errorf("%w: block %s", ErrNotFound, id)
 }
 
-// AddWindow appends a window and returns it.
+// AddSession appends sess to the state. An adapter that keeps state in memory
+// uses it for session.create; the binary fake builds its sessions from the
+// JSON file instead.
+func (s *State) AddSession(sess *Session) {
+	s.Sessions = append(s.Sessions, sess)
+}
+
+// RemoveSession drops session id and reports whether it was there, the
+// session-level twin of Remove.
+func (s *State) RemoveSession(id string) bool {
+	for i, sess := range s.Sessions {
+		if sess.ID == id {
+			s.Sessions = append(s.Sessions[:i], s.Sessions[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// AddWindow appends a window. The first window becomes the active one.
 func (s *Session) AddWindow(w *Window) {
 	s.Windows = append(s.Windows, w)
 	if s.ActiveWindow == "" {
