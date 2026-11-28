@@ -63,6 +63,12 @@ PY
 }
 
 case "$1 $2" in
+  "pr view")
+    n=$3
+    files=$state/pr-$n.files
+    [ -f "$files" ] || { echo "fake gh: cannot read PR #$n" >&2; exit 1; }
+    cat "$files"
+    ;;
   "release view")
     tag=$3
     if [ -f "$state/published" ]; then assets_json false
@@ -186,6 +192,8 @@ reset_state() {
   # A draft whose notes a human already wrote. A new release and a resumed
   # draft both start from this body unless a case overrides it.
   printf '%s\n' "Rex runtime pack v0.2.0. Import it by tag." "" "- #121 — a tested bullet." > "$state/body"
+  # The bullet's PR is user-facing unless a case says otherwise.
+  printf '%s\n' 'internal/provider/provider.go' > "$state/pr-121.files"
   sha=$(shasum -a 256 "$work/asset" 2>/dev/null | awk '{print $1}')
   [ -n "$sha" ] || sha=$(sha256sum "$work/asset" | awk '{print $1}')
   for name in gc-runtime-rex_linux_amd64 gc-runtime-rex_linux_arm64 \
@@ -352,6 +360,44 @@ grep -q 'release notes' "$work/out" ||
   fail "a placeholder body mutated the release"
 git -C "$repo" push -q origin :refs/tags/v0.2.0
 git -C "$repo" tag -d v0.2.0 >/dev/null
+
+# A per-PR bullet whose PR touches docs only is release-note noise. The
+# operator has rejected these twice, so the gate refuses rather than trusting
+# the writer. A mixed PR still passes; see the cases below.
+reset_state
+printf '%s\n' 'docs/rex-runtime-pack.md' > "$state/pr-121.files"
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "a docs-only bullet was published"
+fi
+grep -q 'body of v0.2.0 has a docs/ADR-only bullet: #121 (remove it)' "$work/out" ||
+  fail "the docs-only bullet failure does not name the bullet"
+[ ! -f "$state/published" ] || fail "a docs-only bullet published the release"
+[ -f "$state/draft" ] || fail "a docs-only bullet removed the draft"
+
+reset_state
+printf '%s\n' 'adr/0001-release-notes' > "$state/pr-121.files"
+if run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1; then
+  fail "an ADR-only bullet was published"
+fi
+grep -q 'body of v0.2.0 has a docs/ADR-only bullet: #121 (remove it)' "$work/out" ||
+  fail "the ADR-only bullet failure does not name the bullet"
+[ ! -f "$state/published" ] || fail "an ADR-only bullet published the release"
+
+reset_state
+printf '%s\n' 'docs/rex-runtime-pack.md' 'internal/provider/provider.go' > "$state/pr-121.files"
+run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1 ||
+  fail "a mixed docs and code bullet failed the gate: $(cat "$work/out")"
+[ -f "$state/published" ] || fail "a mixed docs and code bullet did not publish"
+
+# A network blip must not block a release: warn and keep the bullet. The fake
+# gh returns non-zero when the file list is absent.
+reset_state
+rm -f "$state/pr-121.files"
+run sh pack/release.sh v0.2.0 --yes > "$work/out" 2>&1 ||
+  fail "an unreadable PR failed the gate: $(cat "$work/out")"
+grep -q 'warning: cannot read the files of #121; skipping' "$work/out" ||
+  fail "an unreadable PR did not warn"
+[ -f "$state/published" ] || fail "an unreadable PR blocked the release"
 
 # git ls-remote reports an annotated tag object next to its peeled commit. Read
 # the peeled ref, or an annotated tag at another commit would pass the check.

@@ -80,6 +80,25 @@ bullets=$(printf '%s\n' "$body" | grep -cE '^- #[0-9]+ — ' || true)
   die "body of $tag has no per-PR bullet of the form \"- #N — \"; found 0"
 echo "release notes: $bullets per-PR bullet(s)"
 
+# Every per-PR bullet must be user-facing. A bullet for a PR that only touches
+# docs/ or adr/, or only Markdown files, is release-note noise: the operator
+# has rejected those. A mixed PR still passes; pack/commands/, ui/, cmd/ and
+# internal/ are user-facing. A PR whose file list cannot be read is skipped
+# with a warning, so a network blip does not fail the gate.
+for n in $(printf '%s\n' "$body" | sed -n 's/^- #\([0-9][0-9]*\) — .*/\1/p' | sort -u); do
+  if ! files=$("$GH" pr view "$n" --repo "$slug" --json files -q '.files[].path' 2>/dev/null); then
+    echo "check-release-notes: warning: cannot read the files of #$n; skipping" >&2
+    continue
+  fi
+  if [ -z "$files" ]; then
+    echo "check-release-notes: warning: #$n has no changed files; skipping" >&2
+    continue
+  fi
+  if ! printf '%s\n' "$files" | grep -Evq '^(docs|adr)/|\.md$'; then
+    die "body of $tag has a docs/ADR-only bullet: #$n (remove it)"
+  fi
+done
+
 # A published tag may be named (for example "the previous release was
 # v2026.11.05"). A draft tag is not published, so it may not.
 published=$(
