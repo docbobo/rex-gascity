@@ -1836,9 +1836,10 @@ end)
 --
 -- The fake gc prints the fixture for `config show --json`, or fails like a
 -- broken city.toml when FAKE_GC_FAIL is set. The fake rex succeeds only for
--- a read-only check (--autostart=false) of session s1. Its `whoami --json`
--- names /tmp/discovered.sock, which owns s1, so it stands in for the endpoint
--- that a server without REX_SERVER reports.
+-- a read-only check (--autostart=false) of session s1. Its `home --json`
+-- reports /tmp/home.sock on this machine by default; FAKE_REX_HOME switches
+-- it to a remote endpoint (remote), no endpoint (none), or a failure (fail).
+-- Its `whoami --json` names /tmp/discovered.sock, the legacy fallback.
 local function probe_tools()
 	local dir = text.trim(sh('mktemp -d "${TMPDIR:-/tmp}/gascity-status-test.XXXXXX"'))
 	write_file(dir .. "/gc", table.concat({
@@ -1850,7 +1851,16 @@ local function probe_tools()
 	}, "\n") .. "\n")
 	write_file(dir .. "/rex", table.concat({
 		"#!/bin/sh",
+		'printf "%s\\n" "$*" >> rex.args',
 		'case " $* " in *" --autostart=false "*) ;; *) exit 8 ;; esac',
+		'case " $* " in *" home --json "*)',
+		'\tcase "${FAKE_REX_HOME:-local}" in',
+		'\t\tlocal) printf \'{\\n  "home": {"endpoint": "/tmp/home.sock", "this_machine": true}\\n}\\n\'; exit 0 ;;',
+		'\t\tremote) printf \'{\\n  "home": {"endpoint": "/tmp/remote.sock", "this_machine": false}\\n}\\n\'; exit 0 ;;',
+		'\t\tnone) printf \'{\\n  "home": {}\\n}\\n\'; exit 0 ;;',
+		'\t\tfail) printf \'home unavailable\\n\' >&2; exit 4 ;;',
+		'\tesac ;;',
+		'esac',
 		'case " $* " in *" whoami --json "*) printf \'{\\n  "endpoint": "/tmp/discovered.sock",\\n  "pid": 1\\n}\\n\'; exit 0 ;; esac',
 		'case " $* " in *" session.list_blocks "*) ;; *) exit 3 ;; esac',
 		'case " $* " in *" -s s1 "*) exit 0 ;; esac',
@@ -1925,8 +1935,54 @@ test("status: the probe verifies the server without starting one", function()
 	contains(foreign, "@@server_error|", "a server that did not answer is a reason")
 	contains(foreign, "/tmp/other.sock", "the reason names the address")
 	contains(foreign, "exit 3", "and the CLI's exit status")
-	contains(unset, "@@server|/tmp/discovered.sock\n", "without REX_SERVER, rex's own endpoint owns s1")
+	contains(foreign, "rex home endpoint", "the home attempt is named")
+	contains(foreign, "whoami endpoint", "the whoami attempt is named")
+	contains(unset, "@@server|/tmp/home.sock\n", "without REX_SERVER, rex home reports the endpoint that owns s1")
 	falsy(unset:find("@@server_error|", 1, true), "and needs no reason")
+end)
+
+test("status: REX_SERVER is the first server candidate", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir, "REX_SERVER=/tmp/other.sock")
+	local calls = sh("cat " .. text.quote(dir .. "/rex.args"))
+	remove(dir)
+	contains(output, "@@server|/tmp/other.sock\n", "REX_SERVER owns the session")
+	falsy(output:find("@@server_error|", 1, true), "no reason")
+	falsy(calls:find("home --json", 1, true), "home is not asked when REX_SERVER answers")
+	falsy(calls:find("whoami --json", 1, true), "whoami is not asked either")
+end)
+
+test("status: without REX_SERVER, a home endpoint on this machine is used", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir, "FAKE_REX_HOME=local")
+	local calls = sh("cat " .. text.quote(dir .. "/rex.args"))
+	remove(dir)
+	contains(output, "@@server|/tmp/home.sock\n", "home.endpoint owns the session")
+	falsy(output:find("@@server_error|", 1, true), "no reason")
+	contains(calls, "home --json", "home was asked")
+	falsy(calls:find("whoami --json", 1, true), "whoami was not needed")
+end)
+
+test("status: a remote home endpoint falls back to whoami", function()
+	local dir = probe_tools()
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir, "FAKE_REX_HOME=remote")
+	local calls = sh("cat " .. text.quote(dir .. "/rex.args"))
+	remove(dir)
+	contains(output, "@@server|/tmp/discovered.sock\n", "whoami's endpoint owns the session")
+	falsy(output:find("@@server|/tmp/remote.sock", 1, true), "the remote home endpoint is not used")
+	falsy(output:find("@@server_error|", 1, true), "no reason once whoami answers")
+	contains(calls, "home --json", "home was asked")
+	contains(calls, "whoami --json", "and whoami was the fallback")
+end)
+
+test("status: no rex at all is a reason that names the search", function()
+	local dir = probe_tools()
+	sh("rm " .. text.quote(dir .. "/rex"))
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir)
+	remove(dir)
+	contains(output, "@@server|\n", "no server")
+	contains(output, "@@server_error|no rex on PATH and none in REX_BIN_DIR", "the search is named")
+	contains(output, "END", "the script ran to its end")
 end)
 
 test("status: a discovered endpoint that does not own the session is a reason", function()
@@ -1935,7 +1991,7 @@ test("status: a discovered endpoint that does not own the session is a reason", 
 	remove(dir)
 	contains(output, "@@server|\n", "no server")
 	contains(output, "@@server_error|", "the reason row")
-	contains(output, "/tmp/discovered.sock", "the discovered address")
+	contains(output, "/tmp/home.sock", "the home endpoint")
 	contains(output, "exit 3", "and the CLI's exit status")
 	contains(output, "END", "the script ran to its end")
 end)
