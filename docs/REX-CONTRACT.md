@@ -807,7 +807,7 @@ and ADR-0014 (D3, D4).
   session is left in place (above); `Stop` never destroys.
 - **Delivery and handshake (resolved, GCREX-5).** `gc-runtime-rex`
   (`cmd/gc-runtime-rex`) is the out-of-tree RPP v0 dispatcher; `pack/pack.toml`
-  declares `[runtimes.rex]` with `command = "gc-runtime-rex"` and `protocol = 0`,
+  declares `[runtimes.rex]` with `command = "bin/gc-runtime-rex"` and `protocol = 0`,
   and both `gc runtime check rex` and `gc runtime conformance rex` pass against
   `testdata/city` on the pinned edge build (18/18 checks; conformance 27 of 67
   requirements pass with 39 optional skips and one live-environment failure,
