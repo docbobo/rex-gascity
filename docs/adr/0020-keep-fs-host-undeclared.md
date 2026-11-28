@@ -5,8 +5,12 @@
 
 ## Context
 
-Parity row 90 (`docs/provider-herdr-parity.md:90`, `:313`) reads: we declare
-`"locality":"local"` but not the `fs.host` capability token. The RPP doc says
+Parity row 90 (the parity document's lines `:90` and `:313`, retired by
+[ADR-0011](0011-verify-the-provider-against-gc-and-conformance-not-herdr-core-parity.md))
+read: we declare `"locality":"local"` but not the `fs.host` capability token.
+The live statement of the same fact is `docs/rex-provider.md:200-220` (the
+handshake, `locality`, and `fs.host` under "Capabilities not declared") and
+`docs/REX-CONTRACT.md:344-365` (the non-baseline-token rule). The RPP doc says
 what the token buys. A handshake declaring `fs.host` **with** `locality: local`
 promises that its boxes run on gc's host, as gc's user, with gc's filesystem
 view (`/Volumes/Sources/gascity/docs/reference/exec-session-provider.md:729-736`).
@@ -44,8 +48,11 @@ choose. The question here is only whether we take on the `fs.host` promise.
 
 Today the provider reads a start config that carries `overlay_dir`,
 `pre_start`, `session_setup` and `session_setup_script`, and runs them itself
-(`docs/provider-herdr-parity.md:94`, `:97`). That is the "older gc" path the doc
-describes. A script does exactly what its start config carries
+(the parity document is retired by ADR-0011; the live anchors are
+`docs/rex-provider.md:660-664` and `docs/REX-CONTRACT.md:874-876`, which record
+the provider staging `copy_files`/`overlay_dir`, running `pre_start`, and
+running `session_setup`/`session_setup_script` itself). That is the "older gc"
+path. A script does exactly what its start config carries
 (`exec-session-provider.md:778-783`).
 
 ## Decision
@@ -64,7 +71,9 @@ one also copies a promise we already own:
   restarts (`exec-session-provider.md:783-789`).
 - **Transcripts.** gc would read agent transcripts from paths on the host
   (`exec-session-provider.md:791`). The provider feeds idleness from the pane
-  stream instead (`docs/provider-herdr-parity.md`, `peek` and `idle` rows).
+  stream instead (`report-activity` plus the `idle-boundary`-gated `idle` op;
+  `docs/rex-provider.md:217-226`, `docs/REX-CONTRACT.md:344-365`). The retired
+  parity rows are not citable.
 - **Orphan reaping.** gc would scan its process table for processes that carry
   the session's `GC_SESSION_ID` and `GC_CITY_PATH`
   (`exec-session-provider.md:801-810`). Our reaper closes Rex panes
@@ -90,8 +99,9 @@ says "`fs.host` is not a declaration. Agents simply run on gc's host".
   If gc drops that list, this decision re-opens for the admission rows only.
 - gc's orphan reaper does not run for Rex sessions. `internal/provider/reap.go`
   stays the only reaper.
-- The parity rows stay. Row 90 and deviation 2 are `matches` on `locality`. The
-  capability set stays "7 tokens, 3 outside ours".
+- The retired parity rows 90 and deviation 2 recorded `matches` on `locality`
+  (retired by ADR-0011). The live capability set stays "7 tokens, 3 outside
+  ours" (`cmd/gc-runtime-rex/main.go:60`, `docs/rex-provider.md:200-220`).
 - Whoever declares `fs.host` later must delete the provider's staging and
   `session_setup`, and keep a path for an older gc. That is a restart-visible
   split, not a flag.
@@ -118,15 +128,26 @@ says "`fs.host` is not a declaration. Agents simply run on gc's host".
 
 ## Sources and status
 
-- gc edge `890a58a3e`, files: `internal/runtime/protocol.go:96-110`,
-  `:236-242`, `internal/runtime/exec/hoststage.go:47-70`,
-  `cmd/gc/runtime_registry.go:163-168`, `cmd/gc/skill_integration.go:64-68`,
-  `:89`, `:114`, `docs/reference/exec-session-provider.md:205-236`, `:729-810`.
-- `v1.5.1` pin: the parity doc records six parsed tokens and no consumer for
-  `fs.host` (`docs/provider-herdr-parity.md:312`). We did not read the `v1.5.1`
-  tree here. The edge consumer is `unverified` at the pin.
-- Repo claim: `TestProtocolHandshake`
-  (`cmd/gc-runtime-rex/dispatch_test.go:84`) pins the seven-token handshake and
-  the absent `fs.host` in `capabilities`. The earlier check read
-  `hs["fs.host"]`, a top-level key the token never is. It could not fail. This
-  is the ADR-0007 shape.
+Every gc-source claim below was re-checked for this run. Repo claims name the
+file read; a claim backed by a test names the test that proves it. No gc source
+tree is present in the run environment, so the gc readings stay `unverified`
+and name the missing source.
+
+| Claim | Source read | v1.5.1 vs edge | Status |
+| --- | --- | --- | --- |
+| Handshake declares seven tokens, `locality: local`, no `fs.host` | `cmd/gc-runtime-rex/main.go:60`; `cmd/gc-runtime-rex/dispatch_test.go:84-114` | provider repo | verified by `TestProtocolHandshake` |
+| `ProtocolInfo.SharesHostFS()` is `DeclaresLocal() && Has("fs.host")` | none — gc tree absent | both | unverified (missing gc checkout) |
+| Staging/`pre_start` consumers (`internal/runtime/exec/hoststage.go`, `cmd/gc/runtime_registry.go`) | none — gc tree absent | both | unverified (missing gc checkout) |
+| `v1.5.1` parses six tokens and has no `fs.host` consumer | none — pin tree absent | pin | unverified (missing `v1.5.1` tree) |
+| Skill/MCP admission runs off `SharesHostFilesystem`, and `legacyStage1RuntimeNames` names `herdr` | none — gc tree absent | both | unverified (missing gc checkout) |
+| Non-baseline tokens are declared only with the behaviour they gate; `fs.host` is not a declaration | `docs/REX-CONTRACT.md:344-365` | repo | verified (read in this repo) |
+| Provider feeds idleness from the pane stream | `docs/rex-provider.md:217-226` | repo | verified (read in this repo) |
+
+The earlier handshake check read `hs["fs.host"]`, a top-level key the token
+never is; it could not fail. `TestProtocolHandshake` now checks the
+`capabilities` array (the ADR-0007 shape).
+
+When CI or a reviewer has a gc checkout, re-read each `unverified` row at both
+`v1.5.1` and the edge build and replace the label. Until then this ADR does not
+claim those readings. The `/Volumes/Sources/gascity` path cited above is the
+authoring machine's checkout and is absent in the run environment.

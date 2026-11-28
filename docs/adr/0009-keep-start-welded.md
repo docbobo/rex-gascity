@@ -5,7 +5,11 @@
 
 ## Context
 
-Parity row 120 ([parity doc:120](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L120)) reads: `provision` is not
+Parity row 120 ([parity doc:120](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L120);
+the parity document is retired by
+[ADR-0011](0011-verify-the-provider-against-gc-and-conformance-not-herdr-core-parity.md),
+so the link is pinned to the pre-deletion commit `09f11b8` and is historical
+evidence only) reads: `provision` is not
 implemented. So is `exec`. gc's `provisionBox` runs the `provision` op only when
 the handshake declares both `proc.provision` and `proc.exec`
 (`/Volumes/Sources/gascity/internal/runtime/exec/exec.go:570-580`). Without
