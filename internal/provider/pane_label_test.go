@@ -1009,6 +1009,11 @@ func TestIdentityMatch(t *testing.T) {
 		{"tagged unmarked pool-looking suffix names nobody", "gc__implementation-worker-mc-wisp-kvqib", "[gc.implementation-worker] (mc-wisp-kvqib)", false},
 		{"named form", "core__control-dispatcher-mc-wisp-vmecx", "core.control-dispatcher (core__control-dispatcher-mc-wisp-vmecx)", true},
 		{"pool short form", "gc__implementation-worker-mc-wisp-kvqib", "gc.implementation-worker (#mc-wisp-kvqib)", true},
+		// A complete session name in the long form names only that session:
+		// "[worker] (seat)" is the named session seat, never the marked pool
+		// seat worker-seat (CodeRabbit, label.go).
+		{"named session is not the pool seat", "worker-seat", "[worker] (seat)", false},
+		{"named session is itself", "seat", "[worker] (seat)", true},
 		// A long form's suffix is the whole session name. A label whose suffix
 		// is only part of the name names nobody.
 		{"long-form label, suffix is not the whole name", "legacy-agent-a--b-1", "legacy-agent (a--b-1)", false},
