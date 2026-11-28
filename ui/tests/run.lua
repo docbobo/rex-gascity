@@ -526,6 +526,21 @@ test("codec: a malformed row is reported", function()
 	contains(reason, "bad escape", "the reason")
 end)
 
+-- The server's Lua VM panics when gmatch iterates a temporary string and the
+-- loop body allocates. Iterating a long answer while allocating must not
+-- crash, so codec.rows and codec.parts bind the string to a local first.
+test("codec: rows and parts survive allocation during iteration", function()
+	local lines = {}
+	for i = 1, 200 do
+		lines[#lines + 1] = "@@host|" .. codec.escape("value " .. i)
+	end
+	local rows = assert(codec.rows(table.concat(lines, "\n"), { "host" }))
+	equal(#rows, 200, "every row reads")
+	local parts = assert(codec.parts("a|b|c"))
+	equal(#parts, 3, "the parts split")
+	equal(parts[2], "b", "the middle part")
+end)
+
 test("codec: the shell esc function matches the Lua escape table", function()
 	local dir = scratch()
 	local value = "a|b@@c%d<e\tf\ng\rh"

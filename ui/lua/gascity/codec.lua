@@ -190,7 +190,10 @@ function M.rows(output, names, opts)
 		current = nil
 		return true
 	end
-	for line in ((output or ""):gsub("\r", "") .. "\n"):gmatch("([^\n]*)\n") do
+	-- Bind the string to a local first: the server's Lua VM panics when
+	-- gmatch iterates a temporary that the loop body allocates over.
+	local text = (output or ""):gsub("\r", "") .. "\n"
+	for line in text:gmatch("([^\n]*)\n") do
 		line = carry .. line
 		carry = ""
 		-- A wrap between the marker's two characters leaves a lone `@`.
@@ -227,7 +230,8 @@ end
 -- escaped, so the split is exact.
 function M.parts(value)
 	local parts = {}
-	for part in ((value or "") .. "|"):gmatch("(.-)|") do
+	local text = (value or "") .. "|"
+	for part in text:gmatch("(.-)|") do
 		local value, reason = M.unescape(part)
 		if reason ~= nil then
 			return nil, reason
