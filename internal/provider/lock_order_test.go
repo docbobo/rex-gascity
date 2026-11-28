@@ -116,17 +116,16 @@ func TestLockSecondStateFails(t *testing.T) {
 // naive rank order would get wrong: name -> state, which start and KillObject
 // take, while the reverse (state -> name) never occurs.
 func TestLockOrderAllowedNestingsPass(t *testing.T) {
-	ctx := withLockOperation(context.Background())
 	cases := []struct {
 		name string
-		run  func(*Provider) error
+		run  func(context.Context, *Provider) error
 	}{
-		{"name -> state", func(p *Provider) error {
+		{"name -> state", func(ctx context.Context, p *Provider) error {
 			return p.withNameLock(ctx, "worker", func() error {
 				return p.withStateLock(ctx, func() error { return nil })
 			})
 		}},
-		{"name -> launch", func(p *Provider) error {
+		{"name -> launch", func(ctx context.Context, p *Provider) error {
 			return p.withNameLock(ctx, "worker", func() error {
 				release, err := p.beginLaunch(ctx, "sid-a")
 				if err != nil {
@@ -136,7 +135,7 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 				return nil
 			})
 		}},
-		{"name -> launch -> tab", func(p *Provider) error {
+		{"name -> launch -> tab", func(ctx context.Context, p *Provider) error {
 			return p.withNameLock(ctx, "worker", func() error {
 				release, err := p.beginLaunch(ctx, "sid-a")
 				if err != nil {
@@ -146,7 +145,7 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 				return p.withTabLock(ctx, "rig-a", func() error { return nil })
 			})
 		}},
-		{"state -> launch", func(p *Provider) error {
+		{"state -> launch", func(ctx context.Context, p *Provider) error {
 			return p.withStateLock(ctx, func() error {
 				release, busy, err := p.tryLaunchLock(ctx, "sid-a")
 				if err != nil {
@@ -159,7 +158,7 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 				return nil
 			})
 		}},
-		{"launch -> tab", func(p *Provider) error {
+		{"launch -> tab", func(ctx context.Context, p *Provider) error {
 			release, err := p.beginLaunch(ctx, "sid-a")
 			if err != nil {
 				return err
@@ -167,7 +166,7 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 			defer release()
 			return p.withTabLock(ctx, "rig-a", func() error { return nil })
 		}},
-		{"name -> name", func(p *Provider) error {
+		{"name -> name", func(ctx context.Context, p *Provider) error {
 			return p.withNameLock(ctx, "a", func() error {
 				return p.withNameLock(ctx, "a1", func() error { return nil })
 			})
@@ -176,7 +175,10 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newLockOrderProvider(t)
-			if err := tc.run(p); err != nil {
+			// Build the operation context after the provider arms the guard;
+			// withLockOperation is a no-op while the guard is off.
+			ctx := withLockOperation(context.Background())
+			if err := tc.run(ctx, p); err != nil {
 				t.Fatalf("allowed nesting %s: %v", tc.name, err)
 			}
 		})
