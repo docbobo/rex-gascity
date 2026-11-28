@@ -26,27 +26,8 @@ M.SUBJECT = "Status update requested"
 -- word.
 
 -- The row encoding: % is %25, @ is %40, < is %3C, | is %7C, a tab %09, a
--- newline %0A, a carriage return %0D. The filter and the probe's shell share
--- this one function, so the two encoders cannot drift.
-local ENCODE = [[
-function enc(v,   r, i, n, ch) {
-	r = ""
-	n = length(v)
-	for (i = 1; i <= n; i++) {
-		ch = substr(v, i, 1)
-		if (ch == "%") r = r "%25"
-		else if (ch == "@") r = r "%40"
-		else if (ch == "<") r = r "%3C"
-		else if (ch == "|") r = r "%7C"
-		else if (ch == "\t") r = r "%09"
-		else if (ch == "\n") r = r "%0A"
-		else if (ch == "\r") r = r "%0D"
-		else r = r ch
-	}
-	return r
-}
-]]
-
+-- newline %0A, a carriage return %0D. `codec.AWK_ENCODE` is the filter
+-- encoder's only source, so the filter and the probe's shell cannot drift.
 M.FILTER = [==[
 function hex(s,   i, v, c) {
 	if (length(s) < 4) return -1
@@ -94,7 +75,7 @@ function dec(v,   r, i, n, c, e, u, l) {
 	}
 	return r
 }
-]==] .. ENCODE .. [==[
+]==] .. codec.AWK_ENCODE .. "\n" .. [==[
 {
 	n = length($0)
 	for (i = 1; i <= n; i++) {

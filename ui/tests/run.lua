@@ -2134,6 +2134,47 @@ test("status: a percent, a tab, a newline, and a carriage return survive", funct
 	equal(found.server, server, "the percent, newline, tab, and carriage return come back")
 end)
 
+test("status: the filter round-trips every escaped character", function()
+	local dir = probe_tools()
+	local city = "a%b@c<d|e\tf\ng\rh"
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"a%b@c\\u003cd|e\\tf\\ng\\rh","config":{"Imports":{"rex":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path)
+	)
+	remove(dir)
+	local body = (output:gsub("END\n$", ""))
+	local found = status.parse(body)
+	equal(found.city, city, "the city round-trips every escaped character")
+	local rows = assert(codec.rows(body, { "city" }, { marker_only = true }))
+	equal(codec.value(rows[1]), city, "the raw row decodes byte-for-byte")
+end)
+
+test("status: the filter's encoder matches codec's awk encoder", function()
+	local dir = probe_tools()
+	local city = "a/b%c@d<e|f\tg\nh\ri"
+	local path = probe_fixture(
+		dir,
+		'{"city_path":"a/b%c@d\\u003ce|f\\tg\\nh\\ri","config":{"Imports":{"rex":{"Source":"https://github.com/docbobo/rex-gascity//pack"}}}}'
+	)
+	local output = run_probe(
+		status.script(config.resolve(nil), "/cities/alpha", "s1"),
+		dir,
+		"FIXTURE=" .. text.quote(path)
+	)
+	remove(dir)
+	local actual = output:match("@@city|([^\n]*)")
+	falsy(actual == nil, "the filter printed a city row")
+	local expected_out = run_wrapped(codec.wrap(codec.emit("city", text.quote(city))))
+	local expected = expected_out:match("@@city|([^\n]*)")
+	falsy(expected == nil, "the shell encoder printed a city row")
+	equal(actual, expected, "the filter's bytes match codec.AWK_ENCODE's bytes")
+end)
+
 test("status: a filter that fails is a probe error, not an empty lookup", function()
 	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
 	local dir = probe_tools()
