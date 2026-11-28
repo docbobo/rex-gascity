@@ -242,6 +242,15 @@ func fitPoolPaneLabel(agent, pool, id string) (string, bool) {
 // "[agent] (name) #id", "[agent…] (name) #id", "[agent] (name)",
 // "[agent…] (name)": a name that can survive does survive.
 func fitLongPaneLabel(agent, name, id string) (string, bool) {
+	// A complete session name beginning with the pool mark would read back as
+	// the marked pool identity: "[worker] (#seat)" names worker-seat to
+	// namesSession, not the session literally called "#seat". The long form
+	// cannot carry such a name unambiguously, so it declines; the caller falls
+	// back to the bare clamped name, which discovery still matches as the
+	// expected pane label (name.PaneLabel()) rather than as a pool seat.
+	if strings.HasPrefix(name, paneLabelShortForm) {
+		return "", false
+	}
 	ids := []string{id}
 	if id != "" {
 		ids = append(ids, "")

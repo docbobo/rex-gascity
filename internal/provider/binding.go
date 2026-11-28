@@ -571,6 +571,13 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 		primary = tabLabel(name, nil, b.townTab)
 	}
 	lbl.tabs = appendLabel(nil, primary)
+	// A record's TabLabel is the tab its pane lives in, so it is the only
+	// candidate a scan may use: a pane with the same label in another tab is a
+	// different binding. The legacy rungs below exist only for a record with no
+	// stored tab (or no record at all), where the name has to stand in for it.
+	if !lbl.recordless {
+		return lbl
+	}
 	// A town window started before the bracketed tags still carries the bare
 	// pin (or "Gas City"); without this rung a recordless scan for a town
 	// session would stop finding it. Only a town-level name may claim that

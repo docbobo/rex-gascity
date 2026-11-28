@@ -294,9 +294,14 @@ label carries a bracketed kind tag; the name after it is the identity.
   session `seat` and the pool seat `worker-seat`. Shortening the agent keeps
   the identity — the parenthesis survives the cut — and the trailing `#` tail
   is display-only: it is never compared, so it alone never names a session.
+  A complete session name that itself starts with `#` cannot take the long
+  form: `[worker] (#seat)` would read as the pool seat `worker-seat`, not the
+  session `#seat`. Such a start keeps the bare clamped session name, which
+  discovery matches as the expected name-derived pane label, so `#seat` finds
+  its pane and `worker-seat` does not.
 - The launch label, the discovery hint and the recorded label all come from the same pool-routing-projected env (`launch.Project`), the one the pane itself runs with. Deriving the launch label from the pre-projection env would disagree with the hint whenever routing rewrites `BEADS_ACTOR`, and a restart with the sidecar record lost would launch a duplicate pane.
 - With no sidecar record and no start env (`is-running`, `stop`), the fallback scan accepts a pane label whose parenthesised suffix names the session — the long `(<GC_SESSION_NAME>)` form, or the verified pool short form `Sanitize(agent)+"-"+bead id == name` (written `#<bead id>`) — as well as the exact name-derived label, so a live pane is found without any start env. A shortened short form names nobody: such a pane is left alone rather than risking another session's stop.
-- A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
+- A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. A record that carries a stored tab label is scanned in that tab alone: the same pane label in another tab is a different binding, never an adoption. New tabs always use the labels above.
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
 - `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `[city] <city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 

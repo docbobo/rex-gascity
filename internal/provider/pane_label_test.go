@@ -597,6 +597,41 @@ func TestRecordlessRigPaneNotAttributedThroughTownTab(t *testing.T) {
 	})
 }
 
+// TestHashLeadingNameIsNotThePoolForm proves a complete session name beginning
+// with the pool mark never renders as the pool form, which discovery would read
+// as the different session Sanitize(agent)+"-"+tail (CodeRabbit). The "#seat"
+// pane must answer for "#seat" and must not answer for the pool seat
+// "worker-seat".
+func TestHashLeadingNameIsNotThePoolForm(t *testing.T) {
+	ctx := context.Background()
+	const name = SessionName("#seat")
+	env := map[string]string{"GC_ALIAS": "worker", "GC_SESSION_NAME": string(name)}
+
+	fake := faketest.New()
+	p := New("acme", fake)
+	if err := p.Start(ctx, string(name), Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.CreatedWindows) != 1 {
+		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	if label := fake.CreatedWindows[0].Spec.Label; label != string(name) {
+		t.Fatalf("pane label = %q, want the bare %q; the pool form would name worker-seat", label, name)
+	}
+
+	// Record lost: discovery must still find the pane for "#seat" and never
+	// for the pool seat the parenthesised form would have named.
+	rebuilt := faketest.New()
+	rebuilt.Sessions = fake.Sessions
+	rebuilt.View = fake.View
+	if running, err := New("acme", rebuilt).IsRunning(ctx, string(name)); err != nil || !running {
+		t.Fatalf("IsRunning(%q) = %v, %v; the pane must answer for its own name", name, running, err)
+	}
+	if running, err := New("acme", rebuilt).IsRunning(ctx, "worker-seat"); err != nil || running {
+		t.Fatalf("IsRunning(worker-seat) = %v, %v; the #seat pane must not answer for the pool seat", running, err)
+	}
+}
+
 // TestTownPaneLabelClamp pins the 128-rune limit on the town-level pane label:
 // an agent and session name that together overflow are shortened the same way
 // the rig branch shortens, and the parenthesised identity survives the cut.
