@@ -44,7 +44,7 @@ func TestObserveRecordlessPaneHasNoIdentity(t *testing.T) {
 	if ans.Identity == nil || len(ans.Identity) != 0 {
 		t.Errorf("identity = %v, want {}: a pane the provider did not start has no gc identity", ans.Identity)
 	}
-	if _, ok := p.Binding("Indigo--dog-1"); ok {
+	if _, ok := mustBinding(t)(p.Binding("Indigo--dog-1")); ok {
 		t.Error("Observe saved a binding; discovery must stay read-only")
 	}
 }
@@ -100,7 +100,7 @@ func TestObserveRecordlessDeadPaneHasNoIdentity(t *testing.T) {
 	if ans.Identity == nil || len(ans.Identity) != 0 {
 		t.Errorf("identity = %v, want an empty set", ans.Identity)
 	}
-	if _, ok := p.Binding("Indigo--dog-1"); ok {
+	if _, ok := mustBinding(t)(p.Binding("Indigo--dog-1")); ok {
 		t.Error("Observe saved a binding, but discovery must stay read-only")
 	}
 }
@@ -119,7 +119,7 @@ func TestInventoryAdoptedDiscoveryHasNoIdentity(t *testing.T) {
 	if err != nil || !running {
 		t.Fatalf("IsRunning = %v, %v; want the recordless pane alive", running, err)
 	}
-	bd, ok := p.Binding("Indigo--dog-1")
+	bd, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatal("IsRunning did not save the adopted binding")
 	}
@@ -190,7 +190,7 @@ func TestKillObjectKeepsAReplacementThatLandsBeforeTheClose(t *testing.T) {
 	// An app client makes the attachment check read the view, where the swap
 	// lands; the dead pane has no owner, so attachment stays false.
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "app"}}
-	bd, ok := p.Binding("Indigo--dog-1")
+	bd, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}
@@ -212,7 +212,7 @@ func TestKillObjectKeepsAReplacementThatLandsBeforeTheClose(t *testing.T) {
 	if len(fake.ClosedBlocks) != 0 {
 		t.Errorf("closed blocks = %v, want none", fake.ClosedBlocks)
 	}
-	got, ok := p.Binding("Indigo--dog-1")
+	got, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok || got.BlockID != "block:replacement" {
 		t.Errorf("binding = %+v, %v; want the replacement kept", got, ok)
 	}
@@ -224,7 +224,7 @@ func TestKillObjectKeepsAReplacementThatLandsBeforeTheClose(t *testing.T) {
 // recordSurvivor stores a survivor on the current binding.
 func recordSurvivor(t *testing.T, p *Provider, name SessionName, pid int, proc string) Binding {
 	t.Helper()
-	bd, ok := p.Binding(string(name))
+	bd, ok := mustBinding(t)(p.Binding(string(name)))
 	if !ok {
 		t.Fatalf("no binding for %s", name)
 	}
@@ -269,7 +269,7 @@ func TestKillObjectRetiresTheSurvivorsItRecorded(t *testing.T) {
 	if len(signalLog(host)) == 0 || (signalLog(host))[0] != "terminated:300" {
 		t.Errorf("signals = %v, want the recorded survivor TERMed", signalLog(host))
 	}
-	if _, ok := p.Binding(string(reapDog)); ok {
+	if _, ok := mustBinding(t)(p.Binding(string(reapDog))); ok {
 		t.Error("binding survived the successful survivor reap")
 	}
 }
@@ -290,7 +290,7 @@ func TestKillObjectFailsWhileRecordedSurvivorsSurvive(t *testing.T) {
 	if _, err := p.KillObject(ctx, string(reapDog), KillObjectRequest{Object: observeObjectFor(bd), Mode: "corpse"}); err == nil {
 		t.Fatal("KillObject = nil, want a survivor failure while pid 300 runs")
 	}
-	if _, ok := p.Binding(string(reapDog)); !ok {
+	if _, ok := mustBinding(t)(p.Binding(string(reapDog))); !ok {
 		t.Error("binding gone after a failed survivor reap, want it kept for the retry")
 	}
 }
@@ -436,7 +436,7 @@ func TestStartClearsTheRetiredAliasIdentity(t *testing.T) {
 	if err := p.Start(ctx, canonical, Config{Argv: []string{"pi"}, Env: env}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	bd, ok := p.Binding(canonical)
+	bd, ok := mustBinding(t)(p.Binding(canonical))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}

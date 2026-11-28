@@ -129,7 +129,7 @@ func sanitizeQualified(name string) string {
 // cache and the Rex session view as the source of truth.
 type Binder struct {
 	client rex.Client
-	store  Store[SessionName, Binding]
+	store  BindingTable
 	// sessionLabels are the accepted labels, canonical first. A new session
 	// and a fresh record use the first; a legacy record under another
 	// candidate label still revalidates.
@@ -142,13 +142,13 @@ type Binder struct {
 
 // NewBinder builds a Binder that looks for the Rex session labelled
 // sessionLabel and caches bindings in store.
-func NewBinder(client rex.Client, store Store[SessionName, Binding], sessionLabel, town string) *Binder {
+func NewBinder(client rex.Client, store BindingTable, sessionLabel, town string) *Binder {
 	return NewBinderWithLabels(client, store, []string{sessionLabel}, town)
 }
 
 // NewBinderWithLabels builds a Binder that accepts any of labels (canonical
 // first, duplicates and empty entries dropped) and caches bindings in store.
-func NewBinderWithLabels(client rex.Client, store Store[SessionName, Binding], labels []string, town string) *Binder {
+func NewBinderWithLabels(client rex.Client, store BindingTable, labels []string, town string) *Binder {
 	return &Binder{client: client, store: store, sessionLabels: normalizeSessionLabels(labels), townTab: town}
 }
 
@@ -200,30 +200,11 @@ func (b *Binder) FindSession(ctx context.Context) (rex.SessionID, bool, error) {
 	return "", false, nil
 }
 
-// lookup returns the stored bindings that answer to name: the primary binding
-// stored under name first, then any primary binding that lists name as an
-// alias. The result is empty when nothing is known. It does not contact Rex.
-func (b *Binder) lookup(name SessionName) []Binding {
-	var out []Binding
-	seen := map[SessionName]bool{}
-	if bd, ok, _ := b.store.Read(name); ok {
-		out = append(out, bd)
-		seen[bd.Name] = true
-	}
-	lister, ok := b.store.(Lister[Binding])
-	if !ok {
-		return out
-	}
-	for _, bd := range lister.List() {
-		if seen[bd.Name] {
-			continue
-		}
-		if slices.Contains(bd.Aliases, name) {
-			out = append(out, bd)
-			seen[bd.Name] = true
-		}
-	}
-	return out
+// lookup returns the stored bindings that answer to name, primary first and
+// aliases second, through the one BindingTable. A read or list failure is an
+// error, never an empty result: an unreadable store must not read as absence.
+func (b *Binder) lookup(name SessionName) ([]Binding, error) {
+	return b.store.Lookup(name)
 }
 
 // ResolveMode selects how much a resolution does.
@@ -264,7 +245,10 @@ func (b *Binder) Resolve(ctx context.Context, req ResolveRequest) (Binding, bool
 	case ResolveFresh:
 		return b.resolveFresh(ctx, req.Name, req.StartEnv)
 	default:
-		cands := b.lookup(req.Name)
+		cands, err := b.lookup(req.Name)
+		if err != nil {
+			return Binding{}, false, err
+		}
 		if len(cands) == 0 {
 			return Binding{}, false, nil
 		}
@@ -277,7 +261,10 @@ func (b *Binder) Resolve(ctx context.Context, req ResolveRequest) (Binding, bool
 // address is re-scanned under the labels the record had (or the requested name
 // when nothing is cached), and a record whose pane cannot be found is deleted.
 func (b *Binder) resolveLive(ctx context.Context, name SessionName) (Binding, bool, error) {
-	cands := b.lookup(name)
+	cands, err := b.lookup(name)
+	if err != nil {
+		return Binding{}, false, err
+	}
 	if len(cands) == 0 {
 		// Nothing cached: fall back to the label scan a fresh resolve performs.
 		bd, ok, err := b.resolveFresh(ctx, name, nil)
@@ -363,7 +350,11 @@ func (b *Binder) revalidate(ctx context.Context, bd Binding) (Binding, bool, err
 func (b *Binder) resolveFresh(ctx context.Context, name SessionName, startEnv map[string]string) (Binding, bool, error) {
 	var stale []Binding
 	var hint Binding
-	for _, bd := range b.lookup(name) {
+	cands, err := b.lookup(name)
+	if err != nil {
+		return Binding{}, false, err
+	}
+	for _, bd := range cands {
 		if !matchesName(bd, name) {
 			// The record stored under this key answers to a different name:
 			// drop the key, never the record's own name.
@@ -414,6 +405,8 @@ func (b *Binder) ResolveRead(ctx context.Context, name SessionName, record Bindi
 // the record bd read and it names no survivor. A stop may have recorded a
 // survivor, or a start replaced the record, while the resolve ran: that record
 // is the only name for a pid whose pane is gone, and it is not ours to drop.
+// A record that cannot be read is left alone: this is a best-effort cleanup,
+// so the read error is intentionally discarded.
 func (b *Binder) dropStaleIfUnchanged(bd Binding) {
 	cur, ok, err := b.store.Read(bd.Name)
 	if err != nil || !ok || len(cur.Survivors) > 0 || !bd.sameIncarnation(cur) {
@@ -425,22 +418,15 @@ func (b *Binder) dropStaleIfUnchanged(bd Binding) {
 // saveKeepingSurvivors writes bd but keeps any survivor another writer
 // recorded under the same name, or any survivor the record already held. A
 // stop can record a survivor while a scan runs: the scan's pre-stop snapshot
-// is not a reason to forget a pid whose pane is gone. The store applies the
-// merge under its lock, so the read-modify-write cannot interleave.
+// is not a reason to forget a pid whose pane is gone. BindingTable requires
+// Mutate, and the table forwards it to the backing records, so the store
+// applies the merge under its lock and the read-modify-write cannot
+// interleave. There is no unlocked fallback: a table that cannot mutate does
+// not compile.
 func (b *Binder) saveKeepingSurvivors(bd Binding) error {
-	if ms, ok := b.store.(interface {
-		Mutate(SessionName, func(Binding) Binding) error
-	}); ok {
-		return ms.Mutate(bd.Name, func(cur Binding) Binding {
-			return keepOtherLaunch(cur, bd)
-		})
-	}
-	cur, _, err := b.store.Read(bd.Name)
-	if err != nil {
-		return err
-	}
-	bd = keepOtherLaunch(cur, bd)
-	return b.store.Write(bd.Name, bd)
+	return b.store.Mutate(bd.Name, func(cur Binding) Binding {
+		return keepOtherLaunch(cur, bd)
+	})
 }
 
 // keepOtherLaunch refuses to replace a provisional record written by another
@@ -815,13 +801,21 @@ func (b *Binder) ForgetIfCurrent(binding Binding) (bool, error) {
 
 // Forget drops the stored binding that answers to name, clearing the whole
 // primary record including its aliases. An alias drops the primary it names.
-func (b *Binder) Forget(name SessionName) {
-	if bd, ok, _ := b.store.Read(name); ok {
+// A read failure is returned: it is not evidence that no record exists.
+func (b *Binder) Forget(name SessionName) error {
+	if bd, ok, err := b.store.Read(name); err != nil {
+		return err
+	} else if ok {
 		_ = b.store.Drop(bd.Name)
 		_ = b.store.Drop(name)
-		return
+		return nil
 	}
-	if cands := b.lookup(name); len(cands) > 0 {
+	cands, err := b.lookup(name)
+	if err != nil {
+		return err
+	}
+	if len(cands) > 0 {
 		_ = b.store.Drop(cands[0].Name)
 	}
+	return nil
 }

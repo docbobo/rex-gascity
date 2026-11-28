@@ -27,7 +27,7 @@ func retireStarted(t *testing.T, name string) (*faketest.Fake, *provider.Provide
 	if err := p.Start(context.Background(), name, cfg); err != nil {
 		t.Fatalf("Start %s: %v", name, err)
 	}
-	b, ok := p.Binding(name)
+	b, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatalf("no binding recorded for %s", name)
 	}
@@ -156,7 +156,7 @@ func TestProcessAliveLegacyBindingFallsBackToEnv(t *testing.T) {
 	if err := p.Start(context.Background(), name, provider.Config{Argv: []string{"/bin/gc"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	b, ok := p.Binding(name)
+	b, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatal("no binding recorded")
 	}

@@ -158,7 +158,7 @@ func TestPaneLifeAcrossOps(t *testing.T) {
 		if ans.Identity == nil || len(ans.Identity) != 0 {
 			t.Errorf("identity = %v, want an empty set", ans.Identity)
 		}
-		if _, ok := p.Binding(name); ok {
+		if _, ok := mustBinding(t)(p.Binding(name)); ok {
 			t.Error("Observe saved a binding, but discovery must stay read-only")
 		}
 	})

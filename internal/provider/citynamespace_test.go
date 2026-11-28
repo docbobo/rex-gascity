@@ -474,11 +474,11 @@ func TestUnpinnedLookupKeepsDistinctCitiesApart(t *testing.T) {
 			t.Errorf("IsRunning(%s) = %v, %v; want true, nil", name, running, err)
 		}
 	}
-	bdA, ok := p.Binding(nameA)
+	bdA, ok := mustBinding(t)(p.Binding(nameA))
 	if !ok || bdA.SessionID != "session:gc:alpha" {
 		t.Errorf("Binding(%s) = %+v, %v; want alpha's session", nameA, bdA, ok)
 	}
-	bdB, ok := p.Binding(nameB)
+	bdB, ok := mustBinding(t)(p.Binding(nameB))
 	if !ok || bdB.SessionID != "session:gc:beta" {
 		t.Errorf("Binding(%s) = %+v, %v; want beta's session", nameB, bdB, ok)
 	}
@@ -523,7 +523,7 @@ func TestUnpinnedLookupDuplicateNamePrecedence(t *testing.T) {
 	cities = append(cities, provider.SiblingCityNamespaces(cities)...)
 	p := provider.New(provider.CityFromEnv(), fake, namespacesOption(t, cities))
 
-	bd, ok := p.Binding(name)
+	bd, ok := mustBinding(t)(p.Binding(name))
 	if !ok || bd.SessionID != "session:gc:alpha" {
 		t.Errorf("duplicate name resolved %+v, %v; want the first sibling (alpha)", bd, ok)
 	}
@@ -603,7 +603,7 @@ func TestStopAliasLocksTheRecordItRetires(t *testing.T) {
 			t.Fatalf("Start(%s): %v", name, err)
 		}
 	}
-	stale, ok := p.Binding("Indigo--dog-1")
+	stale, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatal("no binding for Indigo--dog-1")
 	}

@@ -23,7 +23,7 @@ func newTestBinder(t *testing.T, windows ...rex.Window) (*Binder, *MemoryStore, 
 	fake.Sessions = []rex.Session{{ID: "session:acme", Label: testLabel}}
 	fake.View = rex.SessionView{Label: testLabel, Windows: windows}
 	store := NewMemoryStore()
-	return NewBinder(fake, store, testLabel, testTown), store, fake
+	return NewBinder(fake, newBindingTable(store, NewMemoryMetaStore()), testLabel, testTown), store, fake
 }
 
 func indigoWindow() rex.Window {
@@ -352,7 +352,9 @@ func TestForgetAliasClearsPrimary(t *testing.T) {
 	primary.Aliases = []SessionName{"Rig--dog-1"}
 	store.Save(primary)
 
-	b.Forget("Rig--dog-1")
+	if err := b.Forget("Rig--dog-1"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
 	if _, ok := store.Load("Indigo--dog-1"); ok {
 		t.Error("Forget(alias) left the primary record")
 	}
@@ -614,7 +616,7 @@ func TestScanFindsPaneInLegacySession(t *testing.T) {
 		"session:acme":   {Label: testLabel},
 		"session:legacy": {Label: "gc:legacy", Windows: []rex.Window{indigoWindow()}},
 	}
-	b := NewBinderWithLabels(fake, NewMemoryStore(), []string{testLabel, "gc:legacy"}, testTown)
+	b := NewBinderWithLabels(fake, newBindingTable(NewMemoryStore(), NewMemoryMetaStore()), []string{testLabel, "gc:legacy"}, testTown)
 	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
 	if err != nil || !ok {
 		t.Fatalf("Resolve = %+v, %v, %v; want the legacy session's pane", got, ok, err)

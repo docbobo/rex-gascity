@@ -72,7 +72,7 @@ func TestStartDerivesTabFromGCRig(t *testing.T) {
 		t.Errorf("pane label = %q, want %q (from the start name)", w.Spec.Label, wispStart)
 	}
 
-	b, ok := p.Binding(wispStart)
+	b, ok := mustBinding(t)(p.Binding(wispStart))
 	if !ok {
 		t.Fatal("Binding(start name) = false")
 	}
@@ -159,7 +159,7 @@ func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
 			if got := fake.CreatedWindows[0].Spec.Label; got != tt.want {
 				t.Fatalf("pane label = %q, want %q", got, tt.want)
 			}
-			b, ok := p.Binding(tt.start)
+			b, ok := mustBinding(t)(p.Binding(tt.start))
 			if !ok {
 				t.Fatal("Binding(start) = false after Start")
 			}
@@ -196,7 +196,7 @@ func TestStartDerivesTabFromNameWithoutRig(t *testing.T) {
 	if got := fake.CreatedWindows[0].Label; got != "[rig] Indigo" {
 		t.Errorf("tab label = %q, want %q", got, "[rig] Indigo")
 	}
-	b, _ := p.Binding("Indigo--dog-1")
+	b, _ := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if len(b.Aliases) != 0 {
 		t.Errorf("aliases = %v, want none without env", b.Aliases)
 	}
@@ -319,7 +319,7 @@ func TestStartRigQualifiedNameKeepsTab(t *testing.T) {
 	if got := fake.CreatedWindows[0].Label; got != rigTab {
 		t.Errorf("tab label = %q, want %q", got, rigTab)
 	}
-	b, _ := p.Binding("my-project--dog-1")
+	b, _ := mustBinding(t)(p.Binding("my-project--dog-1"))
 	if len(b.Aliases) != 0 {
 		t.Errorf("aliases = %v, want none for a rig-qualified name", b.Aliases)
 	}
@@ -344,7 +344,7 @@ func TestStopAndPeekThroughAlias(t *testing.T) {
 	if !slices.Contains(fake.ClosedBlocks, cdPaneBlock) {
 		t.Errorf("closed = %v, want %s", fake.ClosedBlocks, cdPaneBlock)
 	}
-	if _, ok := p.Binding(cdCanonical); ok {
+	if _, ok := mustBinding(t)(p.Binding(cdCanonical)); ok {
 		t.Error("Binding still present after Stop(alias)")
 	}
 }
@@ -433,7 +433,7 @@ func TestAliasResolutionThroughFileStore(t *testing.T) {
 	// A second provider reads the aliases only from disk.
 	reader := provider.New("acme", rebuiltWispFake(), provider.WithBindingStore(provider.NewFileStore(dir)))
 
-	b, ok := reader.Binding(wispInstance)
+	b, ok := mustBinding(t)(reader.Binding(wispInstance))
 	if !ok {
 		t.Fatal("Binding(instance alias) = false after reload")
 	}

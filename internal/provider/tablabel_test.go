@@ -33,7 +33,7 @@ func TestStartTownPaneUsesCityPinLabel(t *testing.T) {
 	if got := fake.CreatedWindows[0].Label; got != "[city] my-city" {
 		t.Errorf("town tab label = %q, want %q", got, "[city] my-city")
 	}
-	b, ok := p.Binding("mayor")
+	b, ok := mustBinding(t)(p.Binding("mayor"))
 	if !ok {
 		t.Fatal("Binding(mayor) = false")
 	}

@@ -179,7 +179,7 @@ func TestBindingWorkDirRoundTripsThroughFileStore(t *testing.T) {
 	state := t.TempDir()
 	drainStarted(t, repo, state)
 	reader := provider.New("acme", faketest.New(), provider.WithNamespace(provider.NewNamespaceForDirs(state)))
-	b, ok := reader.Binding("Indigo--dog-1")
+	b, ok := mustBinding(t)(reader.Binding("Indigo--dog-1"))
 	if !ok || b.WorkDir != repo {
 		t.Errorf("reloaded WorkDir = %q (ok=%v), want %q", b.WorkDir, ok, repo)
 	}
@@ -241,7 +241,7 @@ func TestStopWritesDiagnosticWhenPaneIsAlreadyGone(t *testing.T) {
 	if len(fake.ClosedBlocks) != 0 {
 		t.Errorf("closed = %v, want none for a vanished pane", fake.ClosedBlocks)
 	}
-	if _, ok := p.Binding("Indigo--dog-1"); ok {
+	if _, ok := mustBinding(t)(p.Binding("Indigo--dog-1")); ok {
 		t.Error("binding still stored after Stop")
 	}
 }

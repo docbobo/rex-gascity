@@ -271,12 +271,12 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	}
 
 	// AC #1: a second provider over the same state dir sees the same identity.
-	b1, ok := p.Binding(name)
+	b1, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatal("Binding after Start: not found")
 	}
 	p2 := provider.New(city, client, provider.WithNamespace(provider.NewNamespaceForDirs(stateDir)))
-	b2, ok := p2.Binding(name)
+	b2, ok := mustBinding(t)(p2.Binding(name))
 	if !ok {
 		t.Fatal("second provider: Binding not found in shared state dir")
 	}
@@ -298,7 +298,7 @@ func TestE2EIdentityActivityAttachment(t *testing.T) {
 	if out == "" {
 		t.Fatal("Peek with stale binding never returned output; pane not re-resolved")
 	}
-	if fresh, ok := p2.Binding(name); !ok || fresh.BlockID == "block:bogus" {
+	if fresh, ok := mustBinding(t)(p2.Binding(name)); !ok || fresh.BlockID == "block:bogus" {
 		t.Errorf("stale binding not replaced: %+v (ok=%v)", fresh, ok)
 	}
 
@@ -500,7 +500,7 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	b, ok := p.Binding(name)
+	b, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatal("Binding after Start: not found")
 	}
@@ -607,7 +607,7 @@ func TestE2EParallelStarts(t *testing.T) {
 		t.FailNow()
 	}
 
-	first, ok := p.Binding(names[0])
+	first, ok := mustBinding(t)(p.Binding(names[0]))
 	if !ok {
 		t.Fatalf("Binding %s: not found", names[0])
 	}
@@ -626,7 +626,7 @@ func TestE2EParallelStarts(t *testing.T) {
 		t.Errorf("got %d distinct block ids, want %d", len(seen), agents)
 	}
 	for _, name := range names {
-		if _, ok := p.Binding(name); !ok {
+		if _, ok := mustBinding(t)(p.Binding(name)); !ok {
 			t.Errorf("Binding %s: not found", name)
 		}
 	}

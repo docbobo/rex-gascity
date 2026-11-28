@@ -65,7 +65,7 @@ func TestKillObjectGoneWhenTheCloseRacesAnotherClient(t *testing.T) {
 	if res != "gone" {
 		t.Errorf("result = %q, want gone for the vanished block", res)
 	}
-	if _, ok := p.Binding(name); ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); ok {
 		t.Error("binding survived a close another client won")
 	}
 }

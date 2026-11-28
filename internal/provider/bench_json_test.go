@@ -92,7 +92,7 @@ func BenchmarkFileStore(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if got := s.List(); len(got) != n {
+				if got, _ := s.List(); len(got) != n {
 					b.Fatalf("List = %d bindings, want %d", len(got), n)
 				}
 			}

@@ -46,7 +46,7 @@ func TestE2ERigSplitGrid(t *testing.T) {
 		}
 	}
 
-	first, ok := p.Binding(names[0])
+	first, ok := mustBinding(t)(p.Binding(names[0]))
 	if !ok {
 		t.Fatalf("Binding %s: not found", names[0])
 	}
@@ -79,7 +79,7 @@ func TestE2ERigSplitGrid(t *testing.T) {
 	}
 
 	for _, name := range names {
-		if _, ok := p.Binding(name); !ok {
+		if _, ok := mustBinding(t)(p.Binding(name)); !ok {
 			t.Errorf("Binding %s: not found", name)
 		}
 	}

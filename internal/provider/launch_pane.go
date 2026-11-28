@@ -93,11 +93,14 @@ func (p *Provider) launchPane(ctx context.Context, req launchRequest) (res start
 		// The pane itself was already retired by discardLaunchPolicy when
 		// its record failed; this undoes only start's own provisional state.
 		_ = p.clearStartIdentity(n)
-		if bd, ok := p.Binding(string(n)); ok && len(bd.Survivors) > 0 {
+		// This cleanup runs on an already-failing path, so the read and the
+		// forget are both best-effort here; the table still reports, and the
+		// caller's error is the one that reaches gc.
+		if bd, ok, readErr := p.Binding(string(n)); readErr == nil && ok && len(bd.Survivors) > 0 {
 			return
 		}
 		if !keepProvisional {
-			p.binder.Forget(n)
+			_ = p.binder.Forget(n)
 		}
 	}()
 

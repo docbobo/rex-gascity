@@ -112,7 +112,7 @@ func retireSetupIn(t *testing.T, host *prochost.Fake, workDir string, opts ...Op
 	if err := p.SetMeta(ctx, reapDog, "suspended", "yes"); err != nil {
 		t.Fatalf("SetMeta: %v", err)
 	}
-	bd, ok := p.Binding(reapDog)
+	bd, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}
@@ -159,8 +159,9 @@ func wantRexCalls(t *testing.T, c *retireClient, want ...string) {
 	}
 }
 
-func bindingKept(p *Provider) bool {
-	_, ok := p.Binding(reapDog)
+func bindingKept(t *testing.T, p *Provider) bool {
+	t.Helper()
+	_, ok := mustBinding(t)(p.Binding(reapDog))
 	return ok
 }
 
@@ -283,7 +284,7 @@ func TestRetireStopPolicyRunsTheFixedOrder(t *testing.T) {
 	if len(diagAtSnapshot) != 1 {
 		t.Errorf("diagnostics at the first snapshot = %v, want one: the diagnostic must run before the snapshot", diagAtSnapshot)
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("binding kept after a clean retire")
 	}
 	if metaKept(t, p) {
@@ -303,7 +304,7 @@ func TestRetireReportsAlreadyClosedWhenRexAnswersNotFound(t *testing.T) {
 	if !res.alreadyClosed {
 		t.Error("alreadyClosed = false, want true for a block Rex no longer knows")
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("binding kept although the retirement finished")
 	}
 }
@@ -318,7 +319,7 @@ func TestRetireSnapshotFailureLeavesThePaneOpen(t *testing.T) {
 		t.Fatalf("retire = %v, want the wrapped snapshot error", err)
 	}
 	wantRexCalls(t, c, "process")
-	if !bindingKept(p) || !metaKept(t, p) {
+	if !bindingKept(t, p) || !metaKept(t, p) {
 		t.Error("record or meta lost although the pane stayed open")
 	}
 }
@@ -333,7 +334,7 @@ func TestRetireCloseErrorStopsEverything(t *testing.T) {
 		t.Fatalf("retire = %v, want the close error", err)
 	}
 	wantRexCalls(t, c, "process", "close")
-	if !bindingKept(p) || !metaKept(t, p) {
+	if !bindingKept(t, p) || !metaKept(t, p) {
 		t.Error("record or meta lost after a failed close")
 	}
 }
@@ -378,7 +379,7 @@ func TestRetireIgnoresAFailedReRead(t *testing.T) {
 		t.Errorf("signals = %v, want the pre-close process signalled after a failed re-read", signalLog(host))
 	}
 	wantRexCalls(t, c, "process", "close", "process", "view", "destroy")
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("binding kept although the retirement finished")
 	}
 }
@@ -421,7 +422,7 @@ func TestRetireSurvivorKeepsTheRecord(t *testing.T) {
 		t.Fatalf("retire = %v, want a survivorError", err)
 	}
 	wantRexCalls(t, c, "process", "close", "process")
-	got, ok := p.Binding(reapDog)
+	got, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok || len(got.Survivors) != 2 {
 		t.Errorf("binding = %+v, %v; want it kept with both survivors", got, ok)
 	}
@@ -452,7 +453,7 @@ func TestRetireReapsRecordedSurvivors(t *testing.T) {
 		t.Errorf("signals = %v, want the recorded survivor signalled", signalLog(host))
 	}
 	wantRexCalls(t, c, "process", "close", "process")
-	got, ok := p.Binding(reapDog)
+	got, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok || len(got.Survivors) != 1 || got.Survivors[0].PID != 300 {
 		t.Errorf("binding = %+v, %v; want it kept with the recorded survivor", got, ok)
 	}
@@ -474,7 +475,7 @@ func TestRetireAlreadyClosedOnlyOnSuccess(t *testing.T) {
 	if res.alreadyClosed {
 		t.Error("alreadyClosed = true although the retirement failed after the close")
 	}
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Error("binding forgotten after a failed retirement")
 	}
 }
@@ -506,7 +507,7 @@ func TestRetireLeavesAReplacementRecordUntouched(t *testing.T) {
 	if !errors.As(err, &surv) {
 		t.Fatalf("retire = %v, want a survivorError", err)
 	}
-	got, ok := p.Binding(reapDog)
+	got, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok || got.BlockID != "block:replacement" || len(got.Survivors) != 0 {
 		t.Errorf("binding = %+v, %v; want the replacement unchanged", got, ok)
 	}
@@ -529,7 +530,7 @@ func TestRetireForgetKeepsAReplacementRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retire: %v", err)
 	}
-	got, ok := p.Binding(reapDog)
+	got, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok {
 		t.Fatal("the replacement binding was dropped by the retirement's Forget")
 	}
@@ -548,7 +549,7 @@ func TestRetireForgetsLastAfterAClearFailure(t *testing.T) {
 		t.Fatalf("retire = %v, want the clear error", err)
 	}
 	wantRexCalls(t, c, "process", "close", "process")
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Error("binding forgotten after a failed clear")
 	}
 }
@@ -563,7 +564,7 @@ func TestRetireForgetsLastAfterADestroyFailure(t *testing.T) {
 		t.Fatalf("retire = %v, want the destroy error", err)
 	}
 	wantRexCalls(t, c, "process", "close", "process", "view", "destroy")
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Error("binding forgotten after a failed destroy")
 	}
 }
@@ -596,7 +597,7 @@ func TestRetireDestroyBacksOffWhileALaunchHoldsTheSession(t *testing.T) {
 		t.Fatalf("retire: %v", err)
 	}
 	wantRexCalls(t, c, "process", "close", "process")
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("binding kept although the retirement finished")
 	}
 }
@@ -616,7 +617,7 @@ func TestRetireStopNoPaneKeepsAnExistingRecordWhenClearFails(t *testing.T) {
 		t.Fatalf("retire = %v, want the clear error", err)
 	}
 	wantRexCalls(t, c)
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Error("record lost after a failed clear")
 	}
 }
@@ -625,14 +626,16 @@ func TestRetireStopNoPaneKeepsAnExistingRecordWhenClearFails(t *testing.T) {
 // REQ-009.2: preserving a record is not restoring one.
 func TestRetireStopNoPaneDoesNotRestoreADroppedRecordWhenClearFails(t *testing.T) {
 	c, p, bd := retireSetup(t, nil)
-	p.binder.Forget(bd.Name) // ResolveFresh dropped the stale record
+	if err := p.binder.Forget(bd.Name); err != nil {
+		t.Fatalf("Forget: %v", err)
+	} // ResolveFresh dropped the stale record
 	p.activity = dropFailActivity{Store: p.activity, err: errRetireBoom}
 	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(true))
 	if !errors.Is(err, errRetireBoom) {
 		t.Fatalf("retire = %v, want the clear error", err)
 	}
 	wantRexCalls(t, c)
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("a clear failure restored a dropped record")
 	}
 }
@@ -652,14 +655,16 @@ func closeOnFake(t *testing.T, c *retireClient, bd Binding) {
 func TestRetireStopNoPaneReRecordsOnDestroyFailure(t *testing.T) {
 	c, p, bd := retireSetup(t, nil)
 	closeOnFake(t, c, bd)
-	p.binder.Forget(bd.Name)
+	if err := p.binder.Forget(bd.Name); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
 	c.DestroySessionErr = errRetireBoom
 	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(true))
 	if !errors.Is(err, errRetireBoom) {
 		t.Fatalf("retire = %v, want the destroy error", err)
 	}
 	wantRexCalls(t, c, "view", "destroy")
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Error("record not restored after a failed destroy")
 	}
 }
@@ -678,7 +683,7 @@ func TestRetireStopNoPaneReRecordsAKeptRecordOnDestroyFailure(t *testing.T) {
 	if !errors.Is(err, errRetireBoom) {
 		t.Fatalf("retire = %v, want the destroy error", err)
 	}
-	got, ok := p.Binding(reapDog)
+	got, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok || got.BlockID != bd.BlockID || len(got.Survivors) != 1 {
 		t.Errorf("binding = %+v, %v; want the stored record written again", got, ok)
 	}
@@ -689,13 +694,15 @@ func TestRetireStopNoPaneReRecordsAKeptRecordOnDestroyFailure(t *testing.T) {
 func TestRetireStopNoPaneWithoutAStoredBindingDoesNotReRecord(t *testing.T) {
 	c, p, bd := retireSetup(t, nil)
 	closeOnFake(t, c, bd)
-	p.binder.Forget(bd.Name)
+	if err := p.binder.Forget(bd.Name); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
 	c.DestroySessionErr = errRetireBoom
 	_, err := p.retire(context.Background(), SessionName(reapDog), bd, stopNoPanePolicy(false))
 	if !errors.Is(err, errRetireBoom) {
 		t.Fatalf("retire = %v, want the destroy error", err)
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("record written although no stored binding existed")
 	}
 }
@@ -708,7 +715,7 @@ func TestRetireStopNoPaneZeroBindingOnlyClearsAndForgets(t *testing.T) {
 		t.Fatalf("retire: %v", err)
 	}
 	wantRexCalls(t, c)
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Error("an unrelated name's retirement forgot reapDog")
 	}
 }
@@ -725,7 +732,7 @@ func TestRetireRetryAfterAPartialClear(t *testing.T) {
 	if !errors.Is(err, errRetireBoom) {
 		t.Fatalf("first retire = %v, want the clear error", err)
 	}
-	if !bindingKept(p) {
+	if !bindingKept(t, p) {
 		t.Fatal("binding forgotten after the partial clear")
 	}
 	if metaKept(t, p) {
@@ -737,7 +744,7 @@ func TestRetireRetryAfterAPartialClear(t *testing.T) {
 	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, stopPolicy()); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("binding kept after the retry finished")
 	}
 }
@@ -757,7 +764,7 @@ func TestRetireDestroyReturnWithoutDeletionIsStillASuccess(t *testing.T) {
 	if len(c.DestroyedSessions) != 0 {
 		t.Errorf("destroyed %v, want the non-empty session left alone", c.DestroyedSessions)
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("binding kept although the retirement finished")
 	}
 
@@ -780,7 +787,7 @@ func TestRetireStalePolicyMakesNoRexCallsAndForgets(t *testing.T) {
 		t.Fatalf("retire: %v", err)
 	}
 	wantRexCalls(t, c)
-	if bindingKept(p) || metaKept(t, p) {
+	if bindingKept(t, p) || metaKept(t, p) {
 		t.Error("record or meta kept after a stale retirement")
 	}
 }
@@ -802,7 +809,7 @@ func TestRetireStalePolicyKeepsTheRecordWhileASurvivorLives(t *testing.T) {
 		t.Fatalf("retire = %v, want a survivorError", err)
 	}
 	wantRexCalls(t, c)
-	if !bindingKept(p) || !metaKept(t, p) {
+	if !bindingKept(t, p) || !metaKept(t, p) {
 		t.Error("record or meta lost while a survivor lives")
 	}
 }
@@ -833,7 +840,7 @@ func TestRetireDiscardLaunchPolicyOnlyClosesAndReaps(t *testing.T) {
 		t.Error("alreadyClosed = true after a clean close")
 	}
 	wantRexCalls(t, c, "process", "close", "process")
-	if !bindingKept(p) || !metaKept(t, p) {
+	if !bindingKept(t, p) || !metaKept(t, p) {
 		t.Error("discard cleared the record or meta it does not own")
 	}
 	if len(c.DestroyedSessions) != 0 {
@@ -856,13 +863,13 @@ func TestRetireDiscardLaunchPolicyReturnsTheCloseError(t *testing.T) {
 // lockProbeMeta runs probe before every meta Drop, the call clearStartIdentity
 // makes per identity key.
 type lockProbeMeta struct {
-	Store[metaKey, string]
+	MetaStore
 	probe func()
 }
 
 func (s lockProbeMeta) Drop(k metaKey) error {
 	s.probe()
-	return s.Store.Drop(k)
+	return s.MetaStore.Drop(k)
 }
 
 // TestRetireStartDeadPanePolicyClosesClearsIdentityAndForgets is the
@@ -884,7 +891,7 @@ func TestRetireStartDeadPanePolicyClosesClearsIdentityAndForgets(t *testing.T) {
 	if !metaKept(t, p) {
 		t.Error("identity clear removed non-identity meta")
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("record kept after the dead pane's retirement")
 	}
 }
@@ -919,7 +926,7 @@ func TestRetireStartDeadPanePolicyToleratesAClosedBlock(t *testing.T) {
 	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
 		t.Fatalf("retire: %v, want NotFound tolerated", err)
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("record kept after the dead pane's retirement")
 	}
 }
@@ -932,7 +939,7 @@ func TestRetireStartDeadPanePolicyHoldsTheStateLockOnlyAroundTheIdentityClear(t 
 	heldAtClose := false
 	c.onClose = func() { heldAtClose = stateLockHeld(t, p) }
 	var heldAtClear []bool
-	p.meta = lockProbeMeta{Store: p.meta, probe: func() { heldAtClear = append(heldAtClear, stateLockHeld(t, p)) }}
+	p.meta = lockProbeMeta{MetaStore: p.meta, probe: func() { heldAtClear = append(heldAtClear, stateLockHeld(t, p)) }}
 	if _, err := p.retire(context.Background(), SessionName(reapDog), bd, startDeadPanePolicy()); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
@@ -947,7 +954,7 @@ func TestRetireStartDeadPanePolicyHoldsTheStateLockOnlyAroundTheIdentityClear(t 
 			t.Errorf("identity Drop %d ran without the state lock", i+1)
 		}
 	}
-	if bindingKept(p) {
+	if bindingKept(t, p) {
 		t.Error("record kept after the dead pane's retirement")
 	}
 }

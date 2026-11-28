@@ -9,11 +9,23 @@ import (
 	"time"
 )
 
-// bindingAdapters returns a fresh Store (and its lister) per adapter.
-func bindingAdapters(t *testing.T) map[string]func() Store[SessionName, Binding] {
-	return map[string]func() Store[SessionName, Binding]{
-		"memory": func() Store[SessionName, Binding] { return NewMemoryStore() },
-		"file":   func() Store[SessionName, Binding] { return NewFileStore(t.TempDir()) },
+// tableAdapters returns a fresh BindingTable and the metadata store behind it
+// per adapter, so the one table contract runs against the memory, file and
+// composite shapes.
+func tableAdapters(t *testing.T) map[string]func() (BindingTable, MetaStore) {
+	return map[string]func() (BindingTable, MetaStore){
+		"memory": func() (BindingTable, MetaStore) {
+			meta := NewMemoryMetaStore()
+			return newBindingTable(NewMemoryStore(), meta), meta
+		},
+		"file": func() (BindingTable, MetaStore) {
+			meta := NewFileMetaStore(t.TempDir())
+			return newBindingTable(NewFileStore(t.TempDir()), meta), meta
+		},
+		"composite": func() (BindingTable, MetaStore) {
+			meta := newCompositeMetaStore(NewMemoryMetaStore(), NewFileMetaStore(t.TempDir()))
+			return newBindingTable(newCompositeBindingStore(NewMemoryStore(), NewFileStore(t.TempDir())), meta), meta
+		},
 	}
 }
 
@@ -26,19 +38,20 @@ func activityAdapters(t *testing.T) map[string]func() Store[SessionName, Activit
 	}
 }
 
-func metaAdapters(t *testing.T) map[string]func() Store[metaKey, string] {
-	return map[string]func() Store[metaKey, string]{
-		"memory": func() Store[metaKey, string] { return NewMemoryMetaStore() },
-		"file":   func() Store[metaKey, string] { return NewFileMetaStore(t.TempDir()) },
+func metaAdapters(t *testing.T) map[string]func() MetaStore {
+	return map[string]func() MetaStore{
+		"memory": func() MetaStore { return NewMemoryMetaStore() },
+		"file":   func() MetaStore { return NewFileMetaStore(t.TempDir()) },
 	}
 }
 
-// TestBindingStoreContract runs the Store and Lister contract against the
-// memory and file adapters.
-func TestBindingStoreContract(t *testing.T) {
-	for kind, mk := range bindingAdapters(t) {
+// TestBindingTableContract runs the one binding-table contract against the
+// memory, file and composite adapters: Read, Write, Drop, List, alias Lookup,
+// duplicate handling and the meta sweep.
+func TestBindingTableContract(t *testing.T) {
+	for kind, mk := range tableAdapters(t) {
 		t.Run(kind, func(t *testing.T) {
-			s := mk()
+			s, meta := mk()
 			if _, ok, _ := s.Read("a"); ok {
 				t.Fatal("Read before Write found a binding")
 			}
@@ -58,11 +71,10 @@ func TestBindingStoreContract(t *testing.T) {
 			if got, _, _ := s.Read("a"); got.BlockID != "block:replaced" {
 				t.Errorf("Write did not replace: %+v", got)
 			}
-			lister, ok := s.(Lister[Binding])
-			if !ok {
-				t.Fatal("store is not a Lister[Binding]")
+			list, err := s.List()
+			if err != nil {
+				t.Fatalf("List: %v", err)
 			}
-			list := lister.List()
 			if len(list) != 2 || list[0].Name != "a" || list[1].Name != "b" {
 				t.Errorf("List = %+v; want a, b sorted", list)
 			}
@@ -71,8 +83,78 @@ func TestBindingStoreContract(t *testing.T) {
 			if _, ok, _ := s.Read("a"); ok {
 				t.Error("Drop left the binding")
 			}
-			if got := lister.List(); len(got) != 1 || got[0].Name != "b" {
+			if got, _ := s.List(); len(got) != 1 || got[0].Name != "b" {
 				t.Errorf("List after Drop = %+v", got)
+			}
+
+			// A record answers to its alias through the table alone, and a
+			// duplicate write replaces instead of adding a second record.
+			aliased := fullBinding("c")
+			aliased.Aliases = []SessionName{"c-alias"}
+			if err := s.Write(aliased.Name, aliased); err != nil {
+				t.Fatalf("Write aliased: %v", err)
+			}
+			got, err := s.Lookup("c-alias")
+			if err != nil {
+				t.Fatalf("Lookup alias: %v", err)
+			}
+			if len(got) != 1 || got[0].Name != "c" {
+				t.Fatalf("Lookup(c-alias) = %+v; want the record named c", got)
+			}
+			if err := s.Write(aliased.Name, aliased); err != nil {
+				t.Fatalf("rewrite c: %v", err)
+			}
+			list, err = s.List()
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			seen := map[SessionName]int{}
+			for _, rec := range list {
+				seen[rec.Name]++
+			}
+			if seen["c"] != 1 {
+				t.Errorf("List holds %d records named c; want 1", seen["c"])
+			}
+
+			// Mutate merges under the records lock: a missing record is handed
+			// to fn as the zero value, an existing one as the stored record.
+			if err := s.Mutate("m", func(cur Binding) Binding {
+				if cur.Name != "" {
+					t.Errorf("Mutate of a missing record handed %+v; want the zero value", cur)
+				}
+				m := fullBinding("m")
+				m.BlockID = "block:mutated"
+				return m
+			}); err != nil {
+				t.Fatalf("Mutate: %v", err)
+			}
+			if got, ok, _ := s.Read("m"); !ok || got.BlockID != "block:mutated" {
+				t.Fatalf("Read after Mutate = %+v, %v; want the mutated record", got, ok)
+			}
+			if err := s.Mutate("m", func(cur Binding) Binding {
+				cur.BlockID = "block:mutated-again"
+				return cur
+			}); err != nil {
+				t.Fatalf("Mutate existing: %v", err)
+			}
+			if got, _, _ := s.Read("m"); got.BlockID != "block:mutated-again" {
+				t.Fatalf("Mutate did not see the stored record: %+v", got)
+			}
+
+			// The sweep removes every key of one name and no key of another.
+			for _, kv := range [][3]string{{"c", "k1", "v1"}, {"c", "k2", "v2"}, {"d", "k1", "d1"}} {
+				if err := meta.Write(metaKey{SessionName(kv[0]), kv[1]}, kv[2]); err != nil {
+					t.Fatalf("meta Write: %v", err)
+				}
+			}
+			if err := s.ClearMeta("c"); err != nil {
+				t.Fatalf("ClearMeta: %v", err)
+			}
+			if _, ok, _ := meta.Read(metaKey{"c", "k1"}); ok {
+				t.Error("ClearMeta left a key")
+			}
+			if v, ok, _ := meta.Read(metaKey{"d", "k1"}); !ok || v != "d1" {
+				t.Error("ClearMeta removed another name's key")
 			}
 		})
 	}
@@ -135,14 +217,10 @@ func TestMetaStoreContract(t *testing.T) {
 			if v, ok, _ := s.Read(metaKey{"a", "k2"}); !ok || v != "v2" {
 				t.Error("Drop removed another key")
 			}
-			clearer, ok := s.(clearer)
-			if !ok {
-				t.Fatal("metadata store does not implement clearer")
-			}
-			if err := clearer.Clear("a"); err != nil {
+			if err := s.Clear("a"); err != nil {
 				t.Fatalf("Clear: %v", err)
 			}
-			if err := clearer.Clear("a"); err != nil {
+			if err := s.Clear("a"); err != nil {
 				t.Errorf("Clear of an empty name: %v", err)
 			}
 			if _, ok, _ := s.Read(metaKey{"a", "k2"}); ok {
@@ -252,7 +330,10 @@ func TestCompositeBindingStoreContract(t *testing.T) {
 		t.Error("Write reached the legacy store")
 	}
 
-	list := c.List()
+	list, err := c.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
 	var names []SessionName
 	for _, b := range list {
 		names = append(names, b.Name)
@@ -276,20 +357,25 @@ func TestCompositeBindingStoreContract(t *testing.T) {
 		t.Error("empty composite found a binding")
 	}
 	_ = newCompositeBindingStore().Write("x", fullBinding("x")) // must not panic
-	if got := newCompositeBindingStore().List(); got == nil || len(got) != 0 {
-		t.Errorf("empty List = %#v; want empty non-nil", got)
+	if got, err := newCompositeBindingStore().List(); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("empty List = %#v, %v; want empty non-nil", got, err)
 	}
-	// A store that cannot list is skipped.
-	if got := newCompositeBindingStore(bindingOnly{}, canon).List(); len(got) != 1 {
-		t.Errorf("List with a non-lister = %d entries; want 1", len(got))
+	// A list failure in one store is reported, never hidden as an empty list.
+	failing := errors.New("list failed")
+	if _, err := newCompositeBindingStore(failingList{failing}, canon).List(); !errors.Is(err, failing) {
+		t.Errorf("List error = %v; want the store's error joined", err)
 	}
 }
 
-type bindingOnly struct{}
+type failingList struct{ err error }
 
-func (bindingOnly) Read(SessionName) (Binding, bool, error) { return Binding{}, false, nil }
-func (bindingOnly) Write(SessionName, Binding) error        { return nil }
-func (bindingOnly) Drop(SessionName) error                  { return nil }
+func (f failingList) Read(SessionName) (Binding, bool, error) { return Binding{}, false, nil }
+func (f failingList) Write(SessionName, Binding) error        { return nil }
+func (f failingList) Drop(SessionName) error                  { return nil }
+func (f failingList) List() ([]Binding, error)                { return nil, f.err }
+func (f failingList) Mutate(SessionName, func(Binding) Binding) error {
+	return nil
+}
 
 func TestCompositeActivityStoreContract(t *testing.T) {
 	canon, legacy := NewMemoryActivityStore(), NewMemoryActivityStore()
@@ -374,9 +460,9 @@ func TestCompositeMetaStoreContract(t *testing.T) {
 	}
 
 	e1, e2 := errors.New("e1"), errors.New("e2")
-	for op, fn := range map[string]func(Store[metaKey, string]) error{
-		"Drop":  func(s Store[metaKey, string]) error { return s.Drop(metaKey{"x", "k"}) },
-		"Clear": func(s Store[metaKey, string]) error { return s.(clearer).Clear("x") },
+	for op, fn := range map[string]func(MetaStore) error{
+		"Drop":  func(s MetaStore) error { return s.Drop(metaKey{"x", "k"}) },
+		"Clear": func(s MetaStore) error { return s.Clear("x") },
 	} {
 		err := fn(newCompositeMetaStore(failingMeta{e1}, canon, failingMeta{e2}))
 		if !errors.Is(err, e1) || !errors.Is(err, e2) {

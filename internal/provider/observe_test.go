@@ -80,7 +80,7 @@ func TestObserveVisiblePaneDuringStart(t *testing.T) {
 	if err := p.Start(ctx, name, cfg); err != nil {
 		t.Fatal(err)
 	}
-	final, ok := p.Binding(name)
+	final, ok := mustBinding(t)(p.Binding(name))
 	if !ok || final.BlockID == "" {
 		t.Fatal("missing final binding")
 	}
@@ -410,7 +410,7 @@ func TestObserveAbsentWhenPaneVanished(t *testing.T) {
 	if _, err := p.Observe(context.Background(), name, nil); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	bd, ok := p.Binding(name)
+	bd, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatalf("Binding(%s) missing before the vanish", name)
 	}
@@ -423,7 +423,7 @@ func TestObserveAbsentWhenPaneVanished(t *testing.T) {
 	if ans.State != provider.ObserveAbsent || ans.Object != nil {
 		t.Errorf("Observe = %+v, want absent with no object", ans)
 	}
-	if _, ok := p.Binding(name); !ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); !ok {
 		t.Error("Observe forgot the stale binding; Start and Stop own that cleanup")
 	}
 }
@@ -467,7 +467,7 @@ func TestObserveAnswersForPaneRestoredUnderName(t *testing.T) {
 	// Observe is a read: the restored pane answers, but the recorded binding is
 	// left for Start or Stop to replace, and the retired box's created and
 	// identity are not reported for a pane the provider did not start.
-	if bd, ok := p.Binding(name); !ok || bd.BlockID != recorded {
+	if bd, ok := mustBinding(t)(p.Binding(name)); !ok || bd.BlockID != recorded {
 		t.Errorf("binding after observe = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 	if ans.Object != nil && ans.Object.Created == first.Object.Created {
@@ -505,7 +505,7 @@ func TestInventoryRestoredPaneLeavesBindingAlone(t *testing.T) {
 	if len(inv.Sessions) != 1 || inv.Sessions[0].Object == nil || inv.Sessions[0].Object.ID != "block:dog-1-restored" {
 		t.Fatalf("sessions = %+v, want the restored pane running", inv.Sessions)
 	}
-	if bd, ok := p.Binding(name); !ok || bd.BlockID != recorded {
+	if bd, ok := mustBinding(t)(p.Binding(name)); !ok || bd.BlockID != recorded {
 		t.Errorf("binding after inventory = %+v, %v; want the recorded %s kept", bd, ok, first.Object.ID)
 	}
 	// Like observe, the restored pane's identity is an empty set, not null: gc
@@ -568,7 +568,7 @@ func TestObserveAbsentLeavesIncarnationStateAlone(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	bd, ok := p.Binding(name)
+	bd, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatalf("Binding(%s) missing before the vanish", name)
 	}
@@ -582,7 +582,7 @@ func TestObserveAbsentLeavesIncarnationStateAlone(t *testing.T) {
 	if got, err := p.GetMeta(context.Background(), name, "GC_SESSION_ID"); err != nil || got != "sid-1" {
 		t.Errorf("meta after absent observe = %q, %v; want the retired incarnation's sid-1", got, err)
 	}
-	if _, ok := p.Binding(name); !ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); !ok {
 		t.Error("Observe dropped the binding; Start and Stop own that cleanup")
 	}
 }
@@ -617,7 +617,7 @@ func TestKillObjectGoneWhenBlockVanished(t *testing.T) {
 // complete listing rather than listed dead.
 func TestInventorySkipsVanishedBinding(t *testing.T) {
 	fake, p := started(t)
-	bd, ok := p.Binding("Indigo--dog-1")
+	bd, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatalf("Binding missing before the vanish")
 	}
@@ -660,7 +660,7 @@ func TestInventoryIncompleteWhenLivenessUnavailable(t *testing.T) {
 // takes the binding instead.
 func blockOf(t *testing.T, p *provider.Provider, name string) rex.BlockID {
 	t.Helper()
-	bd, ok := p.Binding(name)
+	bd, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatalf("Binding(%s) missing", name)
 	}
@@ -943,7 +943,7 @@ func TestInventoryLastActivityFromStore(t *testing.T) {
 			t.Fatalf("Start %s: %v", n, err)
 		}
 	}
-	freshBinding, ok := p.Binding(fresh)
+	freshBinding, ok := mustBinding(t)(p.Binding(fresh))
 	if !ok {
 		t.Fatalf("no binding for %s", fresh)
 	}

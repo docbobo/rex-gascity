@@ -317,7 +317,9 @@ func (p *Provider) retire(ctx context.Context, caller SessionName, bd Binding, p
 			return res, err
 		}
 	case forgetCaller:
-		p.binder.Forget(caller)
+		if err := p.binder.Forget(caller); err != nil {
+			return res, err
+		}
 	}
 	res.alreadyClosed = closedNotFound
 	return res, nil

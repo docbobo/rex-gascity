@@ -20,8 +20,12 @@ import (
 // take them in opposite order.
 func (p *Provider) stopUnderPrimaryLock(ctx context.Context, name string) error {
 	n := SessionName(name)
+	cands, err := p.binder.lookup(n)
+	if err != nil {
+		return err
+	}
 	var primaries []SessionName
-	for _, bd := range p.binder.lookup(n) {
+	for _, bd := range cands {
 		if bd.Name != n && !slices.Contains(primaries, bd.Name) {
 			primaries = append(primaries, bd.Name)
 		}
@@ -44,7 +48,10 @@ func (p *Provider) stop(ctx context.Context, name string) error {
 	// Resolve answers to a primary record or an alias, so the retry's drain
 	// diagnostic and survivors must come from the same record: a plain read of
 	// an alias name has no entry and would lose them.
-	cands := p.binder.lookup(n) // before Resolve: Resolve may drop records
+	cands, err := p.binder.lookup(n) // before Resolve: Resolve may drop records
+	if err != nil {
+		return err
+	}
 	known := len(cands) > 0
 	var stored Binding
 	hadStored := known
@@ -100,7 +107,11 @@ func (p *Provider) recycleName(ctx context.Context, n SessionName, cfg Config) (
 // record, or the next Start forgets the pid while it still runs. A survivor
 // that will not die keeps the binding and fails the start for a retry.
 func (p *Provider) reapStartSurvivors(ctx context.Context, n SessionName) error {
-	for _, bd := range p.binder.lookup(n) {
+	cands, err := p.binder.lookup(n)
+	if err != nil {
+		return err
+	}
+	for _, bd := range cands {
 		if len(bd.Survivors) == 0 {
 			continue
 		}

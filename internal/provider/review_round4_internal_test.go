@@ -39,7 +39,7 @@ func TestStartFailsWhilePendingSurvivorsSurvive(t *testing.T) {
 	if !errors.Is(err, errStoreWrite) {
 		t.Fatalf("first Start = %v, want the record write error", err)
 	}
-	bd, ok := p.Binding(reapDog)
+	bd, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok {
 		t.Fatal("binding gone after the failed launch, want it kept for the survivor")
 	}
@@ -58,7 +58,7 @@ func TestStartFailsWhilePendingSurvivorsSurvive(t *testing.T) {
 			t.Errorf("second Start error %q does not name %q", err, want)
 		}
 	}
-	got, ok := p.Binding(reapDog)
+	got, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok {
 		t.Fatal("binding dropped although pid 300 survives")
 	}

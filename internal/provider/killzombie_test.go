@@ -279,7 +279,7 @@ func TestKillObjectZombieChangedForAdoptedPane(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	bd, ok := p.Binding(name)
+	bd, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatalf("binding for %s not recorded", name)
 	}

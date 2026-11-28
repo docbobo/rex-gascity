@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,21 +116,44 @@ func (t *fileTable[K, R]) removeAll(path string) error {
 	return os.RemoveAll(path)
 }
 
-// list returns every record directly under dir, in no particular order.
-// Missing and corrupt files are skipped.
-func (t *fileTable[K, R]) list() []R {
+// listWithErrors returns every decodable record directly under dir plus the
+// errors it could not read: a directory-read failure or a corrupt/unreadable
+// file. It still returns the healthy records, so a caller can log them, but a
+// non-nil error means the answer is incomplete and must not be read as absence.
+//
+// The directory is read with os.ReadDir rather than filepath.Glob: Glob ignores
+// filesystem errors and answers an unreadable directory with no matches and a
+// nil error, which would read as an empty store. Only a missing directory is an
+// empty store; any other read failure names the directory.
+func (t *fileTable[K, R]) listWithErrors() ([]R, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	paths, _ := filepath.Glob(filepath.Join(t.dir, "*.json"))
+	entries, err := os.ReadDir(t.dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []R{}, nil
+		}
+		return nil, fmt.Errorf("read dir %s: %w", t.dir, err)
+	}
 	out := []R{}
-	for _, path := range paths {
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(t.dir, entry.Name())
 		var r R
-		if ok, err := readJSON(path, &r); err != nil || !ok {
+		ok, err := readJSON(path, &r)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read %s: %w", path, err))
+			continue
+		}
+		if !ok {
 			continue
 		}
 		out = append(out, r)
 	}
-	return out
+	return out, errors.Join(errs...)
 }
 
 // removeIfPresent removes path if present.
@@ -194,19 +219,25 @@ func (s *fileStore[K, V, R]) Mutate(k K, fn func(V) V) error {
 
 func (s *fileStore[K, V, R]) Drop(k K) error { return s.t.remove(k) }
 
-// List decodes every record directly under the store's dir. Missing and
-// corrupt files are skipped.
-func (s *fileStore[K, V, R]) List() []V {
-	records := s.t.list()
+// List decodes every record directly under the store's dir. A missing store is
+// empty; a corrupt or unreadable record is an error naming its path. The
+// healthy records are still returned alongside that error.
+func (s *fileStore[K, V, R]) List() ([]V, error) {
+	records, err := s.t.listWithErrors()
 	out := make([]V, 0, len(records))
+	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
 	for _, r := range records {
 		v, err := s.dec(r)
 		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		out = append(out, v)
 	}
-	return out
+	return out, errors.Join(errs...)
 }
 
 // bindingRecord is the on-disk shape of a Binding. It has the same fields in
@@ -265,24 +296,27 @@ func NewFileStore(dir string) *FileStore {
 	)}
 }
 
-// Load returns the binding for name, if any. A missing, unreadable or corrupt
-// file reads as not found.
+// Load returns the binding for name, if any. It is a test-only convenience: a
+// missing, unreadable or corrupt file reads as not found, and no production
+// code may use it.
 func (s *FileStore) Load(name SessionName) (Binding, bool) {
 	b, ok, _ := s.Read(name)
 	return b, ok
 }
 
-// List returns every binding, sorted by Name. Missing and corrupt files are
-// skipped.
-func (s *FileStore) List() []Binding {
-	out := s.fileStore.List()
+// List returns every binding, sorted by Name. A corrupt or unreadable record
+// is an error naming its path; the healthy records are still returned.
+func (s *FileStore) List() ([]Binding, error) {
+	out, err := s.fileStore.List()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, err
 }
 
-// Save stores b, replacing any binding with the same name. A failed write is
-// dropped; the next Resolve rebuilds the binding by scanning.
+// Save stores b, replacing any binding with the same name. It is a test-only
+// convenience: a failed write is dropped, and no production code may use it.
 func (s *FileStore) Save(b Binding) { _ = s.Write(b.Name, b) }
 
-// Delete removes the binding for name. A missing file is not an error.
+// Delete removes the binding for name. A missing file is not an error. It is a
+// test-only convenience: a failed delete is dropped, and no production code
+// may use it.
 func (s *FileStore) Delete(name SessionName) { _ = s.Drop(name) }
