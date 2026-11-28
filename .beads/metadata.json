@@ -1,7 +1,7 @@
 {
-  "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "proxied-server",
+  "database": "dolt",
   "dolt_database": "gcrex",
-  "project_id": "3e7c5be4-ef21-4ec9-8ff1-f7c93c89baa0"
+  "dolt_mode": "server",
+  "project_id": "bc684f2a-bfea-4975-b139-f1b99662b64b"
 }
