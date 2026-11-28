@@ -95,11 +95,13 @@ func TestCityLabelIsNeverPathShaped(t *testing.T) {
 		t.Setenv("GC_EXEC_CITY_PATH", tc.exec)
 		t.Setenv("GC_REX_CITY", "")
 		labels := provider.SessionLabels(provider.CityCandidates())
-		if len(labels) != 1 {
-			t.Fatalf("name=%q exec=%q: labels = %v, want exactly one", tc.name, tc.exec, labels)
+		if len(labels) != 2 {
+			t.Fatalf("name=%q exec=%q: labels = %v, want the canonical and the legacy label", tc.name, tc.exec, labels)
 		}
-		if strings.Contains(labels[0], "/") {
-			t.Errorf("name=%q exec=%q: label %q carries a path", tc.name, tc.exec, labels[0])
+		for _, label := range labels {
+			if strings.Contains(label, "/") {
+				t.Errorf("name=%q exec=%q: label %q carries a path", tc.name, tc.exec, label)
+			}
 		}
 	}
 }

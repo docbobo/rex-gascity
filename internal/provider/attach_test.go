@@ -60,15 +60,15 @@ func attachWant(t *testing.T, p *provider.Provider, want bool) {
 }
 
 func TestIsAttachedNoClients(t *testing.T) {
-	attachWant(t, attachStarted(t, "window:Rig: Indigo", "block:dog-1"), false)
+	attachWant(t, attachStarted(t, "window:[rig] Indigo", "block:dog-1"), false)
 }
 
 func TestIsAttachedCLIOnly(t *testing.T) {
-	attachWant(t, attachStarted(t, "window:Rig: Indigo", "block:dog-1", attachCLI), false)
+	attachWant(t, attachStarted(t, "window:[rig] Indigo", "block:dog-1", attachCLI), false)
 }
 
 func TestIsAttachedOwnedByAppInActiveTab(t *testing.T) {
-	_, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp, attachCLI)
+	_, p := attachOwned(t, attachApp.ID, "window:[rig] Indigo", "", attachApp, attachCLI)
 	attachWant(t, p, true)
 }
 
@@ -83,7 +83,7 @@ func TestIsAttachedOwnedByAppOtherRigActive(t *testing.T) {
 }
 
 func TestIsAttachedOwnedBlockGoneFromActiveTab(t *testing.T) {
-	fake, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp)
+	fake, p := attachOwned(t, attachApp.ID, "window:[rig] Indigo", "", attachApp)
 	fake.View.Windows[0].Blocks = nil
 	attachWant(t, p, false)
 }
@@ -93,18 +93,18 @@ func TestIsAttachedOwnedBlockGoneFromActiveTab(t *testing.T) {
 // watching it. The old provider treated the session-level app client as
 // attachment.
 func TestIsAttachedAppAttachedButBlockUnowned(t *testing.T) {
-	_, p := attachOwned(t, "", "window:Rig: Indigo", "", attachApp, attachCLI)
+	_, p := attachOwned(t, "", "window:[rig] Indigo", "", attachApp, attachCLI)
 	attachWant(t, p, false)
 }
 
 func TestIsAttachedOwnedByCLI(t *testing.T) {
-	_, p := attachOwned(t, attachCLI.ID, "window:Rig: Indigo", "", attachApp, attachCLI)
+	_, p := attachOwned(t, attachCLI.ID, "window:[rig] Indigo", "", attachApp, attachCLI)
 	attachWant(t, p, false)
 }
 
 func TestIsAttachedOwnedByPeer(t *testing.T) {
 	peer := rex.ClientInfo{ID: "p1", Kind: "peer", Name: "peer"}
-	_, p := attachOwned(t, peer.ID, "window:Rig: Indigo", "", attachApp, peer)
+	_, p := attachOwned(t, peer.ID, "window:[rig] Indigo", "", attachApp, peer)
 	attachWant(t, p, false)
 }
 
@@ -112,13 +112,13 @@ func TestIsAttachedOwnedByPeer(t *testing.T) {
 // heartbeat, so an owner no longer in the client list errs toward true rather
 // than closing a pane someone may still be watching.
 func TestIsAttachedStaleOwner(t *testing.T) {
-	_, p := attachOwned(t, "c9", "window:Rig: Indigo", "", attachApp)
+	_, p := attachOwned(t, "c9", "window:[rig] Indigo", "", attachApp)
 	attachWant(t, p, true)
 }
 
 func TestIsAttachedUnknownOwnerKind(t *testing.T) {
 	for _, kind := range []string{"", "mystery"} {
-		_, p := attachOwned(t, "x", "window:Rig: Indigo", "block:dog-1", attachApp, rex.ClientInfo{ID: "x", Kind: kind})
+		_, p := attachOwned(t, "x", "window:[rig] Indigo", "block:dog-1", attachApp, rex.ClientInfo{ID: "x", Kind: kind})
 		got, err := p.IsAttached(context.Background(), attachName)
 		if err != nil {
 			t.Errorf("kind %q: IsAttached error = %v, want nil", kind, err)
@@ -130,7 +130,7 @@ func TestIsAttachedUnknownOwnerKind(t *testing.T) {
 }
 
 func TestIsAttachedListClientsError(t *testing.T) {
-	fake, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp)
+	fake, p := attachOwned(t, attachApp.ID, "window:[rig] Indigo", "", attachApp)
 	boom := errors.New("rex down")
 	fake.ListClientsErr = boom
 	got, err := p.IsAttached(context.Background(), attachName)
@@ -140,7 +140,7 @@ func TestIsAttachedListClientsError(t *testing.T) {
 }
 
 func TestIsAttachedSessionViewError(t *testing.T) {
-	fake, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp)
+	fake, p := attachOwned(t, attachApp.ID, "window:[rig] Indigo", "", attachApp)
 	boom := errors.New("rex down")
 	fake.SessionViewErr = boom
 	got, err := p.IsAttached(context.Background(), attachName)
@@ -153,7 +153,7 @@ func TestIsAttachedSessionViewError(t *testing.T) {
 // session.view, so the probe must not spend a second Rex round-trip on the
 // terminal size method.
 func TestIsAttachedReadsOwnerFromView(t *testing.T) {
-	fake, p := attachOwned(t, attachApp.ID, "window:Rig: Indigo", "", attachApp)
+	fake, p := attachOwned(t, attachApp.ID, "window:[rig] Indigo", "", attachApp)
 	attachWant(t, p, true)
 	for _, c := range fake.BlockCalls {
 		if c.Op == "size" {

@@ -38,7 +38,7 @@ func TestStopRemovesEmptyCitySession(t *testing.T) {
 			if err := p.Stop(context.Background(), teardownDog); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
-			if !slices.Equal(fake.DestroyedSessions, []rex.SessionID{"session:gc:acme"}) {
+			if !slices.Equal(fake.DestroyedSessions, []rex.SessionID{"session:[city] acme"}) {
 				t.Errorf("destroyed = %v, want the empty city session", fake.DestroyedSessions)
 			}
 			if len(fake.Sessions) != 0 {
@@ -60,7 +60,7 @@ func TestStopReportsDestroyFailure(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); !errors.Is(err, boom) {
 		t.Fatalf("Stop = %v, want the destroy error", err)
 	}
-	if len(fake.Sessions) != 1 || fake.Sessions[0].ID != "session:gc:acme" {
+	if len(fake.Sessions) != 1 || fake.Sessions[0].ID != "session:[city] acme" {
 		t.Errorf("sessions = %v, want the city session kept", fake.Sessions)
 	}
 }

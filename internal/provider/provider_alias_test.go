@@ -13,7 +13,7 @@ import (
 const (
 	aliasRig      = "my-project"
 	aliasTown     = aliasRig
-	rigTab        = "Rig: " + aliasRig
+	rigTab        = "[rig] " + aliasRig
 	wispStart     = "pi-mc-wisp-ybq1"
 	wispInstance  = "my-project--pi-mc-wisp-ybq1"
 	wispTemplate  = "my-project--pi"
@@ -113,13 +113,13 @@ func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
 			name:  "verified pool seat short form",
 			start: wispStart,
 			env:   withSessionName(wispEnv(), wispStart),
-			want:  "pi (#mc-wisp-ybq1)",
+			want:  "[pi] (mc-wisp-ybq1)",
 		},
 		{
 			name:  "aliased named session keeps the whole name",
 			start: cdStart,
 			env:   withSessionName(cdEnv(), cdStart),
-			want:  "core.control-dispatcher (" + cdStart + ")",
+			want:  "[core.control-dispatcher] (" + cdStart + ")",
 		},
 		{
 			// Pool routing rewrites BEADS_ACTOR to GC_TEMPLATE before the
@@ -135,7 +135,7 @@ func TestStartDerivesPaneLabelFromEnv(t *testing.T) {
 				"BEADS_ACTOR":     "legacy",
 				"GC_SESSION_NAME": projName,
 			},
-			want: "worker (" + projName + ")",
+			want: "[worker] (" + projName + ") #mc-wisp-projected",
 		},
 		{
 			name:  "no agent identity keeps the name-derived label",
@@ -193,8 +193,8 @@ func TestStartDerivesTabFromNameWithoutRig(t *testing.T) {
 	if err := p.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := fake.CreatedWindows[0].Label; got != "Rig: Indigo" {
-		t.Errorf("tab label = %q, want %q", got, "Rig: Indigo")
+	if got := fake.CreatedWindows[0].Label; got != "[rig] Indigo" {
+		t.Errorf("tab label = %q, want %q", got, "[rig] Indigo")
 	}
 	b, _ := p.Binding("Indigo--dog-1")
 	if len(b.Aliases) != 0 {
@@ -411,7 +411,7 @@ func TestIsRunningRecoversFromStaleBinding(t *testing.T) {
 // recorded by a first provider, as a restarted process would find it.
 func rebuiltWispFake() *faketest.Fake {
 	fake := faketest.New()
-	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.Sessions = []rex.Session{{ID: "session:[city] acme", Label: "[city] acme"}}
 	fake.View = rex.SessionView{Windows: []rex.Window{{
 		ID:     wispWindowID,
 		Label:  rigTab,

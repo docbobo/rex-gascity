@@ -51,3 +51,4 @@ live in the `AGENTS.md` files.
 | [0019](0019-the-ui-ships-from-this-repo-through-one-installer-that-edits-only-init-lua.md) | The UI ships from this repo through one installer that edits only `init.lua` | Accepted |
 | [0020](0020-keep-fs-host-undeclared.md) | `fs.host` stays undeclared, `locality` stays `local` | Accepted |
 | [0021](0021-recover-a-dialog-withheld-seed-inside-start.md) | Recover a dialog-withheld seed inside `start` | Accepted |
+| [0022](0022-bracketed-kind-tags-on-rex-labels.md) | Bracketed kind tags on Rex labels | Accepted |

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
 	"github.com/docbobo/rex-gascity/internal/rex/faketest"
@@ -21,6 +22,10 @@ func clearCityPin(t *testing.T) {
 		t.Setenv(k, "")
 	}
 }
+
+// townWinLabel is the window label the town tab carries under the bracketed
+// tags: the city tag and the pin name (townTabFallback with no pin).
+func townWinLabel() string { return clampRexLabel(taggedLabel(labelCity, townTabFallback)) }
 
 // townStartCfg is a town-level start: no GC_RIG.
 func townStartCfg() Config { return Config{Argv: []string{"pi"}} }
@@ -57,11 +62,11 @@ func mustStart(t *testing.T, p *Provider, name string, cfg Config) {
 func TestStartPlacesNewTownTabFirst(t *testing.T) {
 	clearCityPin(t)
 	fake := faketest.New()
-	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
-	fake.View.Label = "gc:acme"
+	fake.Sessions = []rex.Session{{ID: "session:[city] acme", Label: "[city] acme"}}
+	fake.View.Label = "[city] acme"
 	fake.View.Windows = []rex.Window{{
-		ID:     "window:Rig: rig-a",
-		Label:  "Rig: rig-a",
+		ID:     "window:[rig] rig-a",
+		Label:  "[rig] rig-a",
 		Blocks: []rex.Block{{ID: "block:polecat", Label: "polecat"}},
 	}}
 	p := New("acme", fake)
@@ -71,13 +76,13 @@ func TestStartPlacesNewTownTabFirst(t *testing.T) {
 	if len(fake.CreatedSessions) != 0 {
 		t.Fatalf("created sessions = %v, want the seeded canonical session reused", fake.CreatedSessions)
 	}
-	if got, want := tabOrder(fake), []string{townTabFallback, "Rig: rig-a"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{townWinLabel(), "[rig] rig-a"}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 	want := []faketest.MoveWindowCall{{
-		SessionID: "session:gc:acme",
-		WindowID:  rex.WindowID("window:" + townTabFallback),
-		Before:    "window:Rig: rig-a",
+		SessionID: "session:[city] acme",
+		WindowID:  rex.WindowID("window:" + townWinLabel()),
+		Before:    "window:[rig] rig-a",
 	}}
 	if !slices.Equal(fake.MoveWindowCalls, want) {
 		t.Errorf("MoveWindowCalls = %+v, want %+v", fake.MoveWindowCalls, want)
@@ -94,7 +99,7 @@ func TestStartTownSplitKeepsOperatorOrder(t *testing.T) {
 	p := New("acme", fake)
 	mustStart(t, p, "rig-a--polecat", rigStartCfg("rig-a"))
 	mustStart(t, p, "mayor", townStartCfg())
-	if got, want := tabOrder(fake), []string{townTabFallback, "Rig: rig-a"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{townWinLabel(), "[rig] rig-a"}; !slices.Equal(got, want) {
 		t.Fatalf("setup: tab order after mayor = %q, want %q", got, want)
 	}
 	// The operator drags the town tab back behind the rig tab.
@@ -109,7 +114,7 @@ func TestStartTownSplitKeepsOperatorOrder(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none for a split", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{"Rig: rig-a", townTabFallback}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{"[rig] rig-a", townWinLabel()}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want the operator's %q", got, want)
 	}
 }
@@ -127,7 +132,7 @@ func TestStartTownTabAlreadyFirstMakesNoMoveCall(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{townTabFallback}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{townWinLabel()}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
@@ -141,21 +146,20 @@ func TestStartLongPinTownTabMovesFirst(t *testing.T) {
 	t.Setenv("GC_REX_CITY", strings.Repeat("T", 200))
 	fake := faketest.New()
 	p := New("acme", fake)
-	if p.binder.canonicalLabel() != "gc:acme" {
-		t.Fatalf("canonical label = %q, want gc:acme", p.binder.canonicalLabel())
+	if p.binder.canonicalLabel() != "[city] acme" {
+		t.Fatalf("canonical label = %q, want [city] acme", p.binder.canonicalLabel())
 	}
 	mustStart(t, p, "rig-a--polecat", rigStartCfg("rig-a"))
 
 	mustStart(t, p, "mayor", townStartCfg())
 
-	clamped := clampRexLabel(strings.Repeat("T", 200))
-	if clamped == p.townTab {
-		t.Fatal("test setup: the town label is not clamped")
+	if utf8.RuneCountInString(taggedLabel(labelCity, strings.Repeat("T", 200))) <= maxRexLabel {
+		t.Fatal("test setup: the tagged town label is not over the limit")
 	}
 	if len(fake.MoveWindowCalls) != 1 {
 		t.Errorf("MoveWindowCalls = %+v, want exactly one", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{clamped, "Rig: rig-a"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{townTabLabel(p.townTab), "[rig] rig-a"}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
@@ -173,7 +177,7 @@ func TestStartRigTabAfterTownMakesNoMoveCall(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{townTabFallback, "Rig: rig-a"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{townWinLabel(), "[rig] rig-a"}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
@@ -192,22 +196,22 @@ func TestStartTownStyleNameWithRigIsNotMoved(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{"Rig: rig-a", "Rig: rig-b"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{"[rig] rig-a", "[rig] rig-b"}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
 
 // TestStartRigLabelEqualToTownPinIsNotMoved is #47 AC-4, the regression for
-// a label-equality gate: with the pin "Rig: blue", a rig start with
-// GC_RIG=blue creates a window whose label equals the town label. It is a rig
-// tab and is not moved.
+// a label-equality gate: a rig window's "[rig] blue" must not be mistaken for
+// the town window's "[city] blue" even when the pin equals the rig name. It is
+// a rig tab and is not moved.
 func TestStartRigLabelEqualToTownPinIsNotMoved(t *testing.T) {
 	clearCityPin(t)
-	t.Setenv("GC_REX_CITY", "Rig: blue")
+	t.Setenv("GC_REX_CITY", "blue")
 	fake := faketest.New()
 	p := New("acme", fake)
-	if p.townTab != "Rig: blue" {
-		t.Fatalf("townTab = %q, want the pin", p.townTab)
+	if got := townTabLabel(p.townTab); got != "[city] blue" {
+		t.Fatalf("town tab label = %q, want the tagged pin", got)
 	}
 	mustStart(t, p, "rig-a--polecat", rigStartCfg("rig-a"))
 
@@ -216,7 +220,7 @@ func TestStartRigLabelEqualToTownPinIsNotMoved(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{"Rig: rig-a", "Rig: blue"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{"[rig] rig-a", "[rig] blue"}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
@@ -244,7 +248,7 @@ func TestStartRelaunchRecreatingTownTabMovesItFirst(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 1 {
 		t.Errorf("MoveWindowCalls = %+v, want exactly one", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{townTabFallback, "Rig: rig-a"}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{townWinLabel(), "[rig] rig-a"}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
@@ -267,7 +271,7 @@ func TestStartTownTabMoveFailureOnlyWarns(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 1 {
 		t.Errorf("MoveWindowCalls = %+v, want the one failed call", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{"Rig: rig-a", townTabFallback}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{"[rig] rig-a", townWinLabel()}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q (the failed move changes nothing)", got, want)
 	}
 	if _, ok := p.Binding("mayor"); !ok {
@@ -327,7 +331,7 @@ func TestStartTownTabViewFailureOnlyWarns(t *testing.T) {
 	if len(c.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none after a failed view read", c.MoveWindowCalls)
 	}
-	if got, want := tabOrder(c.Fake), []string{"Rig: rig-a", townTabFallback}; !slices.Equal(got, want) {
+	if got, want := tabOrder(c.Fake), []string{"[rig] rig-a", townWinLabel()}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }
@@ -340,8 +344,8 @@ func TestStartTownTabInLegacySessionIsNotMoved(t *testing.T) {
 	fake := faketest.New()
 	fake.Sessions = []rex.Session{{ID: "session:gc:old", Label: "gc:old"}}
 	fake.View.Windows = []rex.Window{{
-		ID:     "window:Rig: rig-a",
-		Label:  "Rig: rig-a",
+		ID:     "window:[rig] rig-a",
+		Label:  "[rig] rig-a",
 		Blocks: []rex.Block{{ID: "block:polecat", Label: "polecat"}},
 	}}
 	p := New("acme", fake, WithNamespace(Namespace{labels: []string{"gc:acme", "gc:old"}}))
@@ -357,7 +361,7 @@ func TestStartTownTabInLegacySessionIsNotMoved(t *testing.T) {
 	if len(fake.MoveWindowCalls) != 0 {
 		t.Errorf("MoveWindowCalls = %+v, want none in a legacy session", fake.MoveWindowCalls)
 	}
-	if got, want := tabOrder(fake), []string{"Rig: rig-a", townTabFallback}; !slices.Equal(got, want) {
+	if got, want := tabOrder(fake), []string{"[rig] rig-a", townWinLabel()}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q", got, want)
 	}
 }

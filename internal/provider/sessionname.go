@@ -2,7 +2,6 @@ package provider
 
 import (
 	"strings"
-	"unicode/utf8"
 )
 
 // nameSep separates the rig from the agent in a gc session name.
@@ -43,17 +42,56 @@ func (n SessionName) IsTown() bool {
 	return !strings.Contains(string(n), nameSep)
 }
 
-// rexSessionLabel is the Rex session label for city (one session per city).
-func rexSessionLabel(city string) string { return "gc:" + city }
+// rexSessionLabel is the canonical Rex session label for city (one session
+// per city): "[city] <city>". The tag names the kind; the name is the city
+// identity unchanged.
+func rexSessionLabel(city string) string { return clampRexLabel(taggedLabel(labelCity, city)) }
 
-// townTabLabel returns the town-level tab label: the pin itself, or
-// townTabFallback when there is no pin. The label is the pin, never "default"
-// merely because CityFromEnv fell back to it: town-ness is the pin being empty.
-func townTabLabel(pin string) string {
+// legacySessionLabel is the session label providers before the bracketed-tag
+// grammar wrote: "gc:<city>". It stays an accepted label forever, so a session
+// created by an older provider is still found without recreation.
+func legacySessionLabel(city string) string { return "gc:" + city }
+
+// sameCityLabel reports whether two Rex session labels name the same city: the
+// canonical "[city] <city>" and the legacy "gc:<city>" are one city's session,
+// so a record written under one still settles a view that carries the other.
+func sameCityLabel(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ca, oka := cityOfSessionLabel(a)
+	cb, okb := cityOfSessionLabel(b)
+	return oka && okb && ca == cb
+}
+
+// cityOfSessionLabel returns the city a session label names under either
+// grammar.
+func cityOfSessionLabel(label string) (string, bool) {
+	if rest, ok := strings.CutPrefix(label, labelTagOpen+labelCity+labelTagClose); ok {
+		return rest, true
+	}
+	if rest, ok := strings.CutPrefix(label, "gc:"); ok {
+		return rest, true
+	}
+	return "", false
+}
+
+// townTabName is the town tab's name: the pin itself, or townTabFallback when
+// there is no pin. The label is the pin, never "default" merely because
+// CityFromEnv fell back to it: town-ness is the pin being empty. The bare name
+// is also the pre-change town tab label, so resolution keeps it as a legacy
+// rung.
+func townTabName(pin string) string {
 	if pin == "" {
 		return townTabFallback
 	}
 	return pin
+}
+
+// townTabLabel is the canonical town tab label: "[city] <pin>", or
+// "[city] Gas City" when there is no pin. No tab is untagged.
+func townTabLabel(pin string) string {
+	return clampRexLabel(taggedLabel(labelCity, townTabName(pin)))
 }
 
 // clampRexLabel truncates s to maxRexLabel runes, replacing the tail with "…"
@@ -107,54 +145,20 @@ const paneLabelShortened = "…"
 // can equal a bead id, so without the mark a short-form label would name it.
 const paneLabelShortForm = "#"
 
-// fitPaneLabel renders "<agent> (<suffix>)" at or under Rex's limit. Only the
-// agent is shortened: the parenthesised suffix is the discovery identity
-// (Binder.findLive), so cutting it would make two sessions differing at the tail
-// share a label. A short-form suffix carries paneLabelShortForm, so the mark
-// costs one rune of the agent budget. A shortened agent is marked (paneLabelShortened) and names no
-// session; ok is false when not even the marked agent and the suffix fit — no
-// label within the limit can then name the session.
-func fitPaneLabel(agent, suffix string) (string, bool) {
-	tail := " (" + suffix + ")"
-	budget := maxPaneLabelRunes - utf8.RuneCountInString(tail)
-	if budget < 1 {
-		return "", false
-	}
-	r := []rune(agent)
-	if len(r) <= budget {
-		return string(r) + tail, true
-	}
-	if budget < 2 {
-		return "", false
-	}
-	return string(r[:budget-1]) + paneLabelShortened + tail, true
-}
+// fitPaneLabel is gone: the pool and long pane forms shorten differently, so
+// fitPoolPaneLabel and fitLongPaneLabel each state their own ladder.
 
-// identityMatch reports whether label names session n. A short form is
-// "<agent> (#<bead id>)": its suffix carries paneLabelShortForm, so n is
-// exactly Sanitize(agent)+"-"+bead id. A long form is "<agent> (<suffix>)":
-// its suffix is n. Nothing else counts. A short form that fitPaneLabel had to
-// shorten keeps the bead id but loses the agent's tail, so a prefix plus the
-// suffix names no session: two names can share both while differing in
-// between, and a label that fits two sessions is not evidence for either. A
-// clamped label is a bare session name and names no session here.
+// identityMatch reports whether label names session n. The pane grammar has
+// one parser (splitPaneLabel) and one identity rule (paneParts.namesSession):
+// the suffix is the identity and the "#<id>" tail is display-only. Every pane
+// shape the provider ever wrote is accepted, and a label that does not parse
+// names nobody.
 func identityMatch(name SessionName, label string) bool {
-	i := strings.LastIndex(label, " (")
-	if i < 0 || !strings.HasSuffix(label, ")") {
+	parts, ok := splitPaneLabel(label)
+	if !ok {
 		return false
 	}
-	agent, suffix := label[:i], label[i+2:len(label)-1]
-	if agent == "" || suffix == "" {
-		return false
-	}
-	if strings.HasPrefix(suffix, paneLabelShortForm) {
-		bead := suffix[len(paneLabelShortForm):]
-		if bead == "" || strings.HasSuffix(agent, paneLabelShortened) {
-			return false
-		}
-		return sanitizeQualified(agent)+"-"+bead == string(name)
-	}
-	return suffix == string(name)
+	return parts.namesSession(name)
 }
 
 // String returns the original gc session name.

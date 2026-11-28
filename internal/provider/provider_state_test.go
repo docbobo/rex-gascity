@@ -31,7 +31,7 @@ func TestBindingSurvivesNewProvider(t *testing.T) {
 		t.Fatal("second provider lost the binding")
 	}
 	if got.SessionID != want.SessionID || got.WindowID != want.WindowID ||
-		got.BlockID != want.BlockID || got.SessionLabel != "gc:acme" {
+		got.BlockID != want.BlockID || got.SessionLabel != "[city] acme" {
 		t.Errorf("second Binding = %+v, want %+v", got, want)
 	}
 	if fake2.ListSessionsCalls != 0 || fake2.SessionViewCalls != 0 {

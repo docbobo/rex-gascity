@@ -30,15 +30,15 @@ func TestStartTownPaneUsesCityPinLabel(t *testing.T) {
 	if len(fake.CreatedWindows) != 1 {
 		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
 	}
-	if got := fake.CreatedWindows[0].Label; got != "my-city" {
-		t.Errorf("town tab label = %q, want %q", got, "my-city")
+	if got := fake.CreatedWindows[0].Label; got != "[city] my-city" {
+		t.Errorf("town tab label = %q, want %q", got, "[city] my-city")
 	}
 	b, ok := p.Binding("mayor")
 	if !ok {
 		t.Fatal("Binding(mayor) = false")
 	}
-	if b.TabLabel != "my-city" {
-		t.Errorf("binding tab label = %q, want %q", b.TabLabel, "my-city")
+	if b.TabLabel != "[city] my-city" {
+		t.Errorf("binding tab label = %q, want %q", b.TabLabel, "[city] my-city")
 	}
 }
 
@@ -52,8 +52,8 @@ func TestStartRigPaneUsesRigPrefix(t *testing.T) {
 	if err := p.Start(context.Background(), "Indigo--dog-1", Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := fake.CreatedWindows[0].Label; got != "Rig: Indigo" {
-		t.Errorf("rig tab label = %q, want %q", got, "Rig: Indigo")
+	if got := fake.CreatedWindows[0].Label; got != "[rig] Indigo" {
+		t.Errorf("rig tab label = %q, want %q", got, "[rig] Indigo")
 	}
 }
 
@@ -78,8 +78,8 @@ func TestResolveFreshRediscoversPaneUnderPinLabel(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ResolveFresh = %v, %v; want found", ok, err)
 	}
-	if got.TabLabel != "my-city" || got.BlockID != "block:mayor" {
-		t.Errorf("rediscovered binding = %+v, want tab my-city and block:mayor", got)
+	if got.TabLabel != "[city] my-city" || got.BlockID != "block:mayor" {
+		t.Errorf("rediscovered binding = %+v, want tab \"[city] my-city\" and block:mayor", got)
 	}
 }
 
@@ -103,8 +103,8 @@ func TestResolveFreshRediscoversPaneUnderRigLabel(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ResolveFresh = %v, %v; want found", ok, err)
 	}
-	if got.TabLabel != "Rig: Indigo" || got.BlockID != "block:dog-1" {
-		t.Errorf("rediscovered binding = %+v, want tab \"Rig: Indigo\" and block:dog-1", got)
+	if got.TabLabel != "[rig] Indigo" || got.BlockID != "block:dog-1" {
+		t.Errorf("rediscovered binding = %+v, want tab \"[rig] Indigo\" and block:dog-1", got)
 	}
 }
 

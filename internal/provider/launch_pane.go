@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
@@ -48,7 +49,11 @@ type launchRequest struct {
 	attempt string        // the one token per start call; the retry reuses it
 	session rex.SessionID // from start's first find-or-create
 	tab     string        // the rig tab label (start's hint.TabLabel)
-	spec    rex.LaunchSpec
+	// tabLegacy lists the pre-bracketed-tags labels a window started by an
+	// older build still carries. A start joins one of them rather than
+	// creating a second tab for the same rig.
+	tabLegacy []string
+	spec      rex.LaunchSpec
 	// relaunch is true when a binding already answered to the name (a dead
 	// pane is relaunched); such a start must not steal focus.
 	relaunch bool
@@ -169,7 +174,7 @@ func (p *Provider) launchOnce(ctx context.Context, req launchRequest, sid rex.Se
 			return err
 		}
 		for _, w := range view.Windows {
-			if w.Label != req.tab {
+			if w.Label != req.tab && !slices.Contains(req.tabLegacy, w.Label) {
 				continue
 			}
 			anchor, direction, ok := nextSplit(w)
@@ -181,7 +186,11 @@ func (p *Provider) launchOnce(ctx context.Context, req launchRequest, sid rex.Se
 				return err
 			}
 			if block != "" {
-				if err := p.recordOrDiscard(ctx, req.name, p.newBinding(req.name, sid, w.ID, block, "split", req.attempt, req.cfg)); err != nil {
+				bd := p.newBinding(req.name, sid, w.ID, block, "split", req.attempt, req.cfg)
+				// The window may answer to a legacy label: record the label it
+				// actually carries, not the one this build would have written.
+				bd.TabLabel = w.Label
+				if err := p.recordOrDiscard(ctx, req.name, bd); err != nil {
 					return err
 				}
 			}

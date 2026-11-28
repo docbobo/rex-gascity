@@ -55,7 +55,7 @@ func TestE2ETownTabFirst(t *testing.T) {
 	for _, w := range view.Windows {
 		labels = append(labels, w.Label)
 	}
-	if want := []string{"Gas City", "Rig: Indigo"}; !slices.Equal(labels, want) {
+	if want := []string{"[city] Gas City", "[rig] Indigo"}; !slices.Equal(labels, want) {
 		t.Errorf("window order = %q, want %q", labels, want)
 	}
 }

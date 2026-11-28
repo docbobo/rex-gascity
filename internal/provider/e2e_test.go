@@ -529,8 +529,8 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 
 	// Self-exit with no Stop leaves the empty session shell: no pane-exit
 	// watcher destroys it (GCREX-65 Decision 4).
-	if !e2eHasSession(ctx, t, client, "gc:"+city) {
-		t.Errorf("session gc:%s gone after the agent exited without Stop; it must survive", city)
+	if !e2eHasSession(ctx, t, client, provider.SessionLabels([]string{city})[0]) {
+		t.Errorf("session %s gone after the agent exited without Stop; it must survive", provider.SessionLabels([]string{city})[0])
 	}
 
 	// Closing the last pane removes the rig tab. Allow a moment for the
@@ -540,7 +540,7 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 		var left []rex.Window
 		deadline = time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
-			if left = e2eWindowsLabelled(ctx, t, client, b.SessionID, "Rig: Indigo"); len(left) == 0 {
+			if left = e2eWindowsLabelled(ctx, t, client, b.SessionID, "[rig] Indigo"); len(left) == 0 {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
@@ -608,7 +608,7 @@ func TestE2EParallelStarts(t *testing.T) {
 	if !ok {
 		t.Fatalf("Binding %s: not found", names[0])
 	}
-	windows := e2eWindowsLabelled(ctx, t, client, first.SessionID, "Rig: Indigo")
+	windows := e2eWindowsLabelled(ctx, t, client, first.SessionID, "[rig] Indigo")
 	if len(windows) != 1 {
 		t.Fatalf("got %d windows labelled Indigo, want exactly 1: %+v", len(windows), windows)
 	}

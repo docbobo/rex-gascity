@@ -275,18 +275,18 @@ func StateDirs(cities []string) ([]string, error) {
 	return dirs, nil
 }
 
-// SessionLabels returns the Rex session labels for cities, in order and
-// deduplicated. The first is the canonical label used for a new session.
+// SessionLabels returns the accepted Rex session labels for cities: every
+// canonical "[city] <city>" label first, then every legacy "gc:<city>" label,
+// deduplicated in order. The first label is canonical for a new session; the
+// legacy labels keep a session written by an older provider reachable, so an
+// upgrade never needs a city restart.
 func SessionLabels(cities []string) []string {
-	out := make([]string, 0, len(cities))
-	seen := map[string]bool{}
+	labels := make([]string, 0, 2*len(cities))
 	for _, city := range cities {
-		label := rexSessionLabel(city)
-		if seen[label] {
-			continue
-		}
-		seen[label] = true
-		out = append(out, label)
+		labels = append(labels, rexSessionLabel(city))
 	}
-	return out
+	for _, city := range cities {
+		labels = append(labels, legacySessionLabel(city))
+	}
+	return normalizeSessionLabels(labels)
 }

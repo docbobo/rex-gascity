@@ -260,10 +260,10 @@ func TestStartupNudgeDeliveredAfterLaunch(t *testing.T) {
 	hasWrite := false
 	hasSubmit := false
 	for _, c := range fake.BlockCalls {
-		if c.Op == "write" && c.BlockID == "block:dog-1" && c.SessionID == "session:gc:acme" {
+		if c.Op == "write" && c.BlockID == "block:dog-1" && c.SessionID == "session:[city] acme" {
 			hasWrite = true
 		}
-		if c.Op == "send-key" && c.BlockID == "block:dog-1" && c.SessionID == "session:gc:acme" {
+		if c.Op == "send-key" && c.BlockID == "block:dog-1" && c.SessionID == "session:[city] acme" {
 			hasSubmit = true
 		}
 	}

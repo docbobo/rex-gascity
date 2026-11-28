@@ -64,8 +64,8 @@ func TestNudgeWritesTextThenSubmits(t *testing.T) {
 		t.Fatalf("send-keys calls = %d, want 1", len(fake.SentKeys))
 	}
 	sent := fake.SentKeys[0]
-	if sent.SessionID != "session:gc:acme" || sent.BlockID != "block:dog-1" {
-		t.Errorf("send-keys scope = %s/%s, want session:gc:acme/block:dog-1", sent.SessionID, sent.BlockID)
+	if sent.SessionID != "session:[city] acme" || sent.BlockID != "block:dog-1" {
+		t.Errorf("send-keys scope = %s/%s, want session:[city] acme/block:dog-1", sent.SessionID, sent.BlockID)
 	}
 	if len(sent.Keys) != 1 || sent.Keys[0] != "enter" {
 		t.Errorf("submit keys = %v, want [enter]", sent.Keys)
@@ -364,8 +364,8 @@ func TestInterruptSendsCtrlC(t *testing.T) {
 		t.Fatalf("send-keys calls = %d, want 1", len(fake.SentKeys))
 	}
 	sent := fake.SentKeys[0]
-	if sent.SessionID != "session:gc:acme" || sent.BlockID != "block:dog-1" {
-		t.Errorf("interrupt scope = %s/%s, want session:gc:acme/block:dog-1", sent.SessionID, sent.BlockID)
+	if sent.SessionID != "session:[city] acme" || sent.BlockID != "block:dog-1" {
+		t.Errorf("interrupt scope = %s/%s, want session:[city] acme/block:dog-1", sent.SessionID, sent.BlockID)
 	}
 	if len(sent.Keys) != 1 || sent.Keys[0] != "ctrl+c" {
 		t.Errorf("interrupt keys = %v, want [ctrl+c]", sent.Keys)
