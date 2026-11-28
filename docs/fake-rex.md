@@ -56,6 +56,26 @@ REX_E2E=1 go test ./cmd/gc-runtime-rex -run TestE2E -v
 - Exit codes 2 (usage or validation), 3 (missing target), 4 (no server), and
   1 (server-side failure), per `docs/REX-CONTRACT.md` section 8.
 
+## One model of session state
+
+`internal/rex/fakerex/fakestate` owns every session, window, and block
+transition: focus advancing to the window's first surviving block on close,
+an emptied tab going away, the active-window id clearing with it, and
+`session.move_window`'s order. The binary fake and `internal/rex/faketest`
+both call those transitions, so the in-process fake cannot drift from the
+binary on them.
+
+`faketest` keeps its exported fields (`Sessions`, `View`, `Views`) as the
+source of truth: each call hydrates a `fakestate.Session` from them, runs one
+transition, and projects the result back. There is no cached state, so a
+test's direct field write is authoritative for the next call. Geometry
+(`Block.Rect`) stays outside `fakestate` and is carried over by block id.
+
+`internal/rex/conformance` holds the acceptance suite both doubles run: the
+in-process `faketest.Fake` and the real `cli.Client` against the fake binary.
+A behavior belongs there once both must agree on it; a fake-specific quirk
+stays in that fake's own tests.
+
 ## What the fake does not emulate
 
 - **A PTY.** Panes use pipes, not terminal devices. A program sees no tty, so
