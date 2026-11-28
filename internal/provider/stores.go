@@ -43,15 +43,20 @@ type Store[K comparable, V any] interface {
 }
 
 // bindingRecords is everything a binding backing store must offer: the store
-// seam plus enumeration. Enumeration is a required capability, not an optional
-// one: a type without List cannot be installed as a binding store, so the
-// compiler rejects it instead of an op discovering it at run time. A read or
-// list failure is returned, never read as absence.
+// seam plus enumeration and an atomic read-modify-write. Enumeration and Mutate
+// are required capabilities, not optional ones: a type without List or Mutate
+// cannot be installed as a binding store, so the compiler rejects it instead of
+// an op discovering it at run time. A read or list failure is returned, never
+// read as absence.
 type bindingRecords interface {
 	Store[SessionName, Binding]
 	// List returns every record the store holds. A missing store is empty; a
 	// corrupt or unreadable record is an error.
 	List() ([]Binding, error)
+	// Mutate applies fn to the stored record for name under the store's lock
+	// and writes the result. A missing record is passed as the zero Binding.
+	// A read or write failure is returned.
+	Mutate(name SessionName, fn func(Binding) Binding) error
 }
 
 // MetaStore is the metadata seam plus the per-session sweep. A meta store
@@ -70,6 +75,9 @@ type BindingTable interface {
 	Store[SessionName, Binding]
 	// List returns every binding record. A corrupt record is an error.
 	List() ([]Binding, error)
+	// Mutate applies fn to the stored record for name under the records lock
+	// and writes the result, so a read-modify-write cannot interleave.
+	Mutate(name SessionName, fn func(Binding) Binding) error
 	// Lookup returns the records that answer to name: the primary record
 	// stored under name first, then every primary record that lists name as
 	// an alias. It never contacts Rex.
@@ -106,6 +114,10 @@ func (t *bindingTable) Drop(name SessionName) error {
 
 func (t *bindingTable) List() ([]Binding, error) {
 	return t.records.List()
+}
+
+func (t *bindingTable) Mutate(name SessionName, fn func(Binding) Binding) error {
+	return t.records.Mutate(name, fn)
 }
 
 func (t *bindingTable) ClearMeta(name SessionName) error {

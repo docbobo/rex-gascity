@@ -116,6 +116,31 @@ func TestBindingTableContract(t *testing.T) {
 				t.Errorf("List holds %d records named c; want 1", seen["c"])
 			}
 
+			// Mutate merges under the records lock: a missing record is handed
+			// to fn as the zero value, an existing one as the stored record.
+			if err := s.Mutate("m", func(cur Binding) Binding {
+				if cur.Name != "" {
+					t.Errorf("Mutate of a missing record handed %+v; want the zero value", cur)
+				}
+				m := fullBinding("m")
+				m.BlockID = "block:mutated"
+				return m
+			}); err != nil {
+				t.Fatalf("Mutate: %v", err)
+			}
+			if got, ok, _ := s.Read("m"); !ok || got.BlockID != "block:mutated" {
+				t.Fatalf("Read after Mutate = %+v, %v; want the mutated record", got, ok)
+			}
+			if err := s.Mutate("m", func(cur Binding) Binding {
+				cur.BlockID = "block:mutated-again"
+				return cur
+			}); err != nil {
+				t.Fatalf("Mutate existing: %v", err)
+			}
+			if got, _, _ := s.Read("m"); got.BlockID != "block:mutated-again" {
+				t.Fatalf("Mutate did not see the stored record: %+v", got)
+			}
+
 			// The sweep removes every key of one name and no key of another.
 			for _, kv := range [][3]string{{"c", "k1", "v1"}, {"c", "k2", "v2"}, {"d", "k1", "d1"}} {
 				if err := meta.Write(metaKey{SessionName(kv[0]), kv[1]}, kv[2]); err != nil {
@@ -348,6 +373,9 @@ func (f failingList) Read(SessionName) (Binding, bool, error) { return Binding{}
 func (f failingList) Write(SessionName, Binding) error        { return nil }
 func (f failingList) Drop(SessionName) error                  { return nil }
 func (f failingList) List() ([]Binding, error)                { return nil, f.err }
+func (f failingList) Mutate(SessionName, func(Binding) Binding) error {
+	return nil
+}
 
 func TestCompositeActivityStoreContract(t *testing.T) {
 	canon, legacy := NewMemoryActivityStore(), NewMemoryActivityStore()

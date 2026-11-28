@@ -41,6 +41,8 @@ func (c *compositeStore[K, V]) Write(k K, v V) error {
 }
 
 // Mutate applies fn to the canonical store. With no stores it is a no-op.
+// Every production adapter offers Mutate; the read-then-write fallback is only
+// for a caller that hands a plain Store.
 func (c *compositeStore[K, V]) Mutate(k K, fn func(V) V) error {
 	if len(c.stores) == 0 {
 		return nil
@@ -84,6 +86,12 @@ func newCompositeBindingStore(records ...bindingRecords) *compositeBindingStore 
 		compositeStore: newCompositeStore(stores...),
 		records:        records,
 	}
+}
+
+// Mutate applies fn to the canonical namespace's records under its lock. The
+// canonical store is first, so the merge lands where Write lands.
+func (c *compositeBindingStore) Mutate(name SessionName, fn func(Binding) Binding) error {
+	return c.compositeStore.Mutate(name, fn)
 }
 
 // List returns the union of every namespace, canonical first and name-sorted.

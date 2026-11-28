@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,19 +117,31 @@ func (t *fileTable[K, R]) removeAll(path string) error {
 }
 
 // listWithErrors returns every decodable record directly under dir plus the
-// errors it could not read: a glob failure or a corrupt/unreadable file. It
-// still returns the healthy records, so a caller can log them, but a non-nil
-// error means the answer is incomplete and must not be read as absence.
+// errors it could not read: a directory-read failure or a corrupt/unreadable
+// file. It still returns the healthy records, so a caller can log them, but a
+// non-nil error means the answer is incomplete and must not be read as absence.
+//
+// The directory is read with os.ReadDir rather than filepath.Glob: Glob ignores
+// filesystem errors and answers an unreadable directory with no matches and a
+// nil error, which would read as an empty store. Only a missing directory is an
+// empty store; any other read failure names the directory.
 func (t *fileTable[K, R]) listWithErrors() ([]R, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	paths, err := filepath.Glob(filepath.Join(t.dir, "*.json"))
+	entries, err := os.ReadDir(t.dir)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, fs.ErrNotExist) {
+			return []R{}, nil
+		}
+		return nil, fmt.Errorf("read dir %s: %w", t.dir, err)
 	}
 	out := []R{}
 	var errs []error
-	for _, path := range paths {
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(t.dir, entry.Name())
 		var r R
 		ok, err := readJSON(path, &r)
 		if err != nil {

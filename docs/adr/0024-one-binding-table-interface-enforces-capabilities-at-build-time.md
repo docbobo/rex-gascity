@@ -43,6 +43,7 @@ one value of it in both the `Provider` and the `Binder`:
 type bindingRecords interface {
 	Store[SessionName, Binding]
 	List() ([]Binding, error)
+	Mutate(name SessionName, fn func(Binding) Binding) error
 }
 
 type MetaStore interface {
@@ -53,6 +54,7 @@ type MetaStore interface {
 type BindingTable interface {
 	Store[SessionName, Binding]
 	List() ([]Binding, error)
+	Mutate(name SessionName, fn func(Binding) Binding) error
 	Lookup(name SessionName) ([]Binding, error)
 	ClearMeta(name SessionName) error
 }
@@ -63,7 +65,12 @@ store, so `Provider.metaClear` and the `Binder` alias scan both run inside it.
 `New` builds the table after the options run and hands the same value to
 `NewBinderWithLabels`. `Lister` and `clearer` are deleted: enumeration and the
 meta sweep are required capabilities, and a type without them does not compile
-as a store.
+as a store. `Mutate` is required for the same reason plus one of its own: the
+Binder holds the table, not the backing records, so `saveKeepingSurvivors`
+reaches the store-locked survivor merge only if the table offers and forwards
+`Mutate`. Leaving it an optional assertion on the Binder's store meant every
+production table silently took the unlocked read-then-write fallback and could
+lose a survivor a stop recorded in between.
 
 Every read returns an error: `Binder.lookup`, `Provider.Binding` and
 `metaName` propagate it; `Forget` returns it; `fresh_only` returns it before
@@ -104,6 +111,12 @@ considering a collision. `Store`'s comment states the rule: absence is
   alias scan in the `Binder`. Rejected: the meta sweep and the binding records
   then have two owners, a meta store can diverge from the binding store it is
   paired with, and every alias-lookup caller re-implements the ordering.
+- **Keep `Mutate` an optional run-time assertion on the `Binder`'s store**
+  (the shape the plan first proposed). Rejected: once the Binder holds the
+table, the assertion misses for every production adapter, so the survivor
+merge always takes the unlocked read-then-write fallback. A stop that records a
+survivor between the scan's read and its write is then lost. Requiring
+`Mutate` on `bindingRecords` and `BindingTable` makes that a compile error.
 - **Keep `List` returning no error and skip corrupt files.** Rejected: a
   corrupt record is then indistinguishable from an absent one, so `Inventory`
   and `ListRunning` report the session as gone and a `fresh_only` start can

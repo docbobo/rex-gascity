@@ -418,27 +418,15 @@ func (b *Binder) dropStaleIfUnchanged(bd Binding) {
 // saveKeepingSurvivors writes bd but keeps any survivor another writer
 // recorded under the same name, or any survivor the record already held. A
 // stop can record a survivor while a scan runs: the scan's pre-stop snapshot
-// is not a reason to forget a pid whose pane is gone. The store applies the
-// merge under its lock, so the read-modify-write cannot interleave.
-//
-// The Mutate assertion is deliberately optional and is not a fail-open
-// capability: the fallback below performs the same merge, just without the
-// store's lock, so a store that does not offer Mutate still gets the correct
-// answer.
+// is not a reason to forget a pid whose pane is gone. BindingTable requires
+// Mutate, and the table forwards it to the backing records, so the store
+// applies the merge under its lock and the read-modify-write cannot
+// interleave. There is no unlocked fallback: a table that cannot mutate does
+// not compile.
 func (b *Binder) saveKeepingSurvivors(bd Binding) error {
-	if ms, ok := b.store.(interface {
-		Mutate(SessionName, func(Binding) Binding) error
-	}); ok {
-		return ms.Mutate(bd.Name, func(cur Binding) Binding {
-			return keepOtherLaunch(cur, bd)
-		})
-	}
-	cur, _, err := b.store.Read(bd.Name)
-	if err != nil {
-		return err
-	}
-	bd = keepOtherLaunch(cur, bd)
-	return b.store.Write(bd.Name, bd)
+	return b.store.Mutate(bd.Name, func(cur Binding) Binding {
+		return keepOtherLaunch(cur, bd)
+	})
 }
 
 // keepOtherLaunch refuses to replace a provisional record written by another

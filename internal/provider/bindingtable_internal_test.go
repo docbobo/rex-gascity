@@ -27,6 +27,9 @@ func (failingRead) Read(SessionName) (Binding, bool, error) { return Binding{}, 
 func (failingRead) Write(SessionName, Binding) error        { return nil }
 func (failingRead) Drop(SessionName) error                  { return nil }
 func (failingRead) List() ([]Binding, error)                { return nil, nil }
+func (failingRead) Mutate(SessionName, func(Binding) Binding) error {
+	return errRead
+}
 
 // TestStartFreshOnlyReportsBindingReadError pins REQ-005/REQ-009: a store
 // whose Read fails must surface that error from a fresh_only start, not be read
@@ -107,6 +110,71 @@ func TestFileStoreListReportsCorruptFile(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("List of a missing directory = %+v; want empty", got)
+	}
+}
+
+// TestFileStoreListReportsUnreadableDir pins the List error shape for a
+// directory that exists but cannot be read: the failure names the directory
+// instead of reading as an empty store. filepath.Glob answered this with no
+// matches and a nil error, so the store reported no bindings.
+func TestFileStoreListReportsUnreadableDir(t *testing.T) {
+	dir := t.TempDir()
+	// A regular file where the store expects its directory: opening it as a
+	// directory fails with ENOTDIR, which is not fs.ErrNotExist.
+	notADir := filepath.Join(dir, "bindings")
+	if err := os.WriteFile(notADir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := NewFileStore(notADir).List()
+	if err == nil || !strings.Contains(err.Error(), notADir) {
+		t.Fatalf("List over an unreadable directory = %+v, %v; want an error naming %s", list, err, notADir)
+	}
+}
+
+// TestFileStoreListKeepsHealthyRecordsBesideCorruptOnes pins the mixed case:
+// a corrupt record is reported while every healthy record is still returned.
+func TestFileStoreListKeepsHealthyRecordsBesideCorruptOnes(t *testing.T) {
+	dir := t.TempDir()
+	good := fullBinding("good")
+	if err := NewFileStore(dir).Write(good.Name, good); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := NewFileStore(dir).List()
+	if err == nil || !strings.Contains(err.Error(), "bad.json") {
+		t.Fatalf("List = %+v, %v; want an error naming bad.json", list, err)
+	}
+	if len(list) != 1 || list[0].Name != good.Name {
+		t.Fatalf("List = %+v; want the healthy record beside the error", list)
+	}
+}
+
+// lockedStore counts the Mutate calls that reach the backing store, so a test
+// can prove the table forwarded the merge instead of read-then-writing it.
+type lockedStore struct {
+	*MemoryStore
+	mutates int
+}
+
+func (s *lockedStore) Mutate(name SessionName, fn func(Binding) Binding) error {
+	s.mutates++
+	return s.MemoryStore.Mutate(name, fn)
+}
+
+// TestSaveKeepingSurvivorsUsesTheStoreLock pins the survivor merge to the
+// store lock. The table is the only path from the Binder to the records, so a
+// table that did not forward Mutate would silently fall back to an unlocked
+// read-then-write and lose a survivor a stop recorded in between.
+func TestSaveKeepingSurvivorsUsesTheStoreLock(t *testing.T) {
+	records := &lockedStore{MemoryStore: NewMemoryStore()}
+	binder := NewBinder(faketest.New(), newBindingTable(records, NewMemoryMetaStore()), testLabel, testTown)
+	if err := binder.saveKeepingSurvivors(fullBinding("a")); err != nil {
+		t.Fatalf("saveKeepingSurvivors: %v", err)
+	}
+	if records.mutates != 1 {
+		t.Fatalf("backing store Mutate calls = %d; want 1 (the merge must run under the store lock)", records.mutates)
 	}
 }
 
