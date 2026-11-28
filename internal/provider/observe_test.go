@@ -1055,12 +1055,13 @@ func processReads(fake *faketest.Fake) int {
 	return n
 }
 
-// TestObserveAgentRootFromFreshRead guards RPP-OBSERVE-006's read order: the
-// agent root comes from a fresh foreground read after boxState, and the one
-// host snapshot is walked from that root. The first read names root 100
-// (sleep); every later read names root 200, the agent. Taking the root from
-// boxState's reading would make one read and answer dead.
-func TestObserveAgentRootFromFreshRead(t *testing.T) {
+// TestObserveUsesOneProcessRead pins REQ-001's one-reading contract: a bound
+// running box costs exactly one Rex `process` read per Observe, and the box
+// state and the agent root come from that same reading. The first read names
+// root 100 (sleep); every later read names root 200, a name gc did not ask
+// for. A second read would therefore change the answer as well as the count,
+// so the answer and the count together pin that one reading supplies both.
+func TestObserveUsesOneProcessRead(t *testing.T) {
 	ctx := context.Background()
 	fake := faketest.New()
 	host := &prochost.Fake{}
@@ -1083,15 +1084,26 @@ func TestObserveAgentRootFromFreshRead(t *testing.T) {
 	)
 
 	before := processReads(fake)
-	ans, err := p.Observe(ctx, name, []string{"gc-rpp-no-such-process"})
+	ans, err := p.Observe(ctx, name, []string{"sleep"})
 	if err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	if ans.Agent != "alive" || ans.AgentPID != "200" {
-		t.Errorf("agent = %q pid = %q, want alive and 200 from the fresh read", ans.Agent, ans.AgentPID)
+	reads := processReads(fake) - before
+	// Only two readings exist: the first names root 100, the second root 200.
+	// Which root the answer used is therefore implied by the read count, and
+	// reporting both makes a failure say what the tree actually did.
+	rootUsed := 100
+	if reads > 1 {
+		rootUsed = 200
 	}
-	if got := processReads(fake) - before; got != 2 {
-		t.Errorf("Observe made %d process reads, want 2 (boxState, then the fresh foreground read)", got)
+	if ans.State != provider.ObserveRunning {
+		t.Errorf("state = %q; Observe made %d process reads and used root %d, want %q", ans.State, reads, rootUsed, provider.ObserveRunning)
+	}
+	if ans.Agent != "alive" || ans.AgentPID != "100" {
+		t.Errorf("agent = %q pid = %q; Observe made %d process reads and used root %d, want alive and 100 from the one reading that answered the state", ans.Agent, ans.AgentPID, reads, rootUsed)
+	}
+	if reads != 1 {
+		t.Errorf("Observe made %d process reads (used root %d), want exactly 1", reads, rootUsed)
 	}
 	if snapshots != 1 {
 		t.Errorf("Observe took %d host snapshots, want 1", snapshots)

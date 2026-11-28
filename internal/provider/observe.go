@@ -151,8 +151,10 @@ func (p *Provider) observeIdentity(n SessionName) map[string]string {
 // Observe answers `observe <name>`: absent when nothing holds the name,
 // running or dead for the box that holds it, unknown when Rex cannot be
 // reached. names are gc's process-name hints from stdin, with which a running
-// box reports its agent. It is a read and never mutates the session; a vanished
-// record is left for the next Start or Stop to replace.
+// box reports its agent. One pane reading supplies both the box state and the
+// running agent root, so the two cannot disagree. It is a read and never
+// mutates the session; a vanished record is left for the next Start or Stop to
+// replace.
 func (p *Provider) Observe(ctx context.Context, name string, names []string) (ObserveAnswer, error) {
 	ctx, cancel := observeBudget(ctx)
 	defer cancel()
@@ -173,13 +175,14 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 			return ObserveAnswer{State: ObserveAbsent}, nil
 		}
 	}
-	state, holder, err := p.boxState(ctx, bd)
+	read, err := p.boxState(ctx, bd)
 	if err != nil {
 		if observeUnreadable(err) {
 			return ObserveAnswer{State: ObserveUnknown}, nil
 		}
 		return ObserveAnswer{}, err
 	}
+	state, holder := read.state, read.holder
 	if state == ObserveAbsent {
 		return ObserveAnswer{State: ObserveAbsent}, nil
 	}
@@ -211,7 +214,7 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	// readable and hold one of the names.
 	sameProbedBlock := holder.SessionID == bd.SessionID && holder.BlockID == bd.BlockID
 	if state == ObserveRunning && len(names) > 0 && (sameBlock || sameProbedBlock) {
-		if root := p.foregroundPID(ctx, holder); root > 0 {
+		if root := read.life.foregroundPID(); root > 0 {
 			if agent, pid := p.agentState(ctx, root, expandProcessNames(names, bindingGCBin(holder))); agent != agentUnknown {
 				ans.Agent = agent
 				if pid > 0 {
@@ -225,7 +228,11 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 
 // foregroundPID is the pid of the box's foreground process, the root of the
 // agent subtree. It answers 0 when Rex cannot name it, which makes the agent
-// unknown rather than dead.
+// unknown rather than dead. Observe no longer calls it: Observe takes the root
+// from the reading boxState already made. Its remaining caller is deadAgent,
+// where the fresh read is intentional: kill-object re-checks the live root
+// after a stop, so it must read the pane again rather than trust an older
+// reading.
 func (p *Provider) foregroundPID(ctx context.Context, bd Binding) int {
 	return readPaneLife(ctx, p.client, bd.SessionID, bd.BlockID).foregroundPID()
 }
@@ -237,13 +244,26 @@ func observeUnreadable(err error) bool {
 	return errors.Is(err, rex.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// boxState reports what holds the name a binding records. Rex proving the
-// recorded block gone does not prove the name is free (observe.v1 rule 7): a
-// restore or an operator can put another pane under the same labels, so the
-// live scan decides. It claims no state of its own; unknown is the caller's
+// boxRead is what one boxState call proved: the state, the binding the
+// answer is attributed to, and the paneLife reading that decided the state.
+// State and reading travel together so a caller cannot re-read the pane for
+// a fact the first read already holds.
+type boxRead struct {
+	state  string
+	holder Binding
+	life   paneLife
+}
+
+// boxState reports what holds the name a binding records, together with the
+// paneLife reading it classified. Rex proving the recorded block gone does not
+// prove the name is free (observe.v1 rule 7): a restore or an operator can put
+// another pane under the same labels, so the live scan decides. On that
+// gone-resolve path the record's block is probed and the replacement pane is
+// read, and the reading returned is the replacement pane's: the one that
+// answered the state. It claims no state of its own; unknown is the caller's
 // answer for an unreadable backend. It is a read: a vanished record is left for
 // the next Start or Stop to replace.
-func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, error) {
+func (p *Provider) boxState(ctx context.Context, bd Binding) (boxRead, error) {
 	l := readPaneLife(ctx, p.client, bd.SessionID, bd.BlockID)
 	if l.state == paneGone {
 		// Find a live pane under the record's labels, without ResolveLive's
@@ -251,22 +271,22 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (string, Binding, e
 		// Stop replaces the record.
 		live, ok, err := p.binder.ResolveRead(ctx, bd.Name, bd)
 		if err != nil {
-			return "", Binding{}, err
+			return boxRead{}, err
 		}
 		if !ok {
-			return ObserveAbsent, Binding{}, nil
+			return boxRead{state: ObserveAbsent}, nil
 		}
 		bd, l = live, readPaneLife(ctx, p.client, live.SessionID, live.BlockID)
 	}
 	switch l.state {
 	case paneGone:
-		return ObserveAbsent, Binding{}, nil
+		return boxRead{state: ObserveAbsent}, nil
 	case paneUnknown:
-		return "", Binding{}, l.err
+		return boxRead{}, l.err
 	case paneExited:
-		return ObserveDead, bd, nil
+		return boxRead{state: ObserveDead, holder: bd, life: l}, nil
 	default:
-		return ObserveRunning, bd, nil
+		return boxRead{state: ObserveRunning, holder: bd, life: l}, nil
 	}
 }
 
@@ -307,7 +327,8 @@ func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
 			// block id.
 			continue
 		}
-		state, holder, err := p.boxState(ctx, bd)
+		read, err := p.boxState(ctx, bd)
+		state, holder := read.state, read.holder
 		switch {
 		case errors.Is(err, rex.ErrUnavailable):
 			complete = false
@@ -414,10 +435,11 @@ func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillOb
 	if req.Object.ID != obj.ID || req.Object.Created != obj.Created {
 		return "gone", nil
 	}
-	state, holder, err := p.boxState(ctx, bd)
+	read, err := p.boxState(ctx, bd)
 	if err != nil {
 		return "", err
 	}
+	state, holder := read.state, read.holder
 	exact := holder.BlockID == bd.BlockID && holder.WindowID == bd.WindowID
 	if !exact {
 		// The recorded block is gone or a new box holds the name: the object
