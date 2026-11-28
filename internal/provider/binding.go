@@ -88,7 +88,9 @@ func (b Binding) tabLabel(town string) string {
 // or derived label, the pre-change town tab label (the bare pin or "Gas
 // City") for a record that has no stored label, or — for a record that has no
 // stored label — the label gc wrote before GCREX-72, which a window started by
-// an older build still has.
+// an older build still has. That includes both the bare pre-GCREX-72 tab and
+// the "Rig: <rig>" label builds between GCREX-72 and the bracketed tags
+// wrote; without it a legacy binding cannot be confirmed against its own tab.
 func (b Binding) acceptsTabLabel(label, town string) bool {
 	if label == b.tabLabel(town) {
 		return true
@@ -97,6 +99,9 @@ func (b Binding) acceptsTabLabel(label, town string) bool {
 		return false
 	}
 	if town != "" && label == town {
+		return true
+	}
+	if tab := legacyRigTabFor(b.Name, nil); tab != "" && label == tab {
 		return true
 	}
 	return label == legacyTabLabel(b.Name)
@@ -568,8 +573,11 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 	lbl.tabs = appendLabel(nil, primary)
 	// A town window started before the bracketed tags still carries the bare
 	// pin (or "Gas City"); without this rung a recordless scan for a town
-	// session would stop finding it.
-	if b.townTab != "" {
+	// session would stop finding it. Only a town-level name may claim that
+	// tab: for a rig name such as "Indigo--mayor" the bare pane label "mayor"
+	// would otherwise be attributed through the unrelated town pane of the
+	// town's own mayor.
+	if b.townTab != "" && name.IsTown() {
 		lbl.tabs = appendLabel(lbl.tabs, b.townTab)
 	}
 	// A window started by a build before GCREX-72 still carries the old

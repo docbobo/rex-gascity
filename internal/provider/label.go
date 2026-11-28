@@ -134,29 +134,24 @@ func splitPaneLabel(label string) (paneParts, bool) {
 }
 
 // namesSession reports whether the label names session name. The suffix is the
-// identity, never the "#<id>" tail: a marked (legacy pool) suffix means name is
-// Sanitize(agent)+"-"+id; an unmarked suffix equal to name is the long form;
-// otherwise the tagged unmarked suffix is the new pool identity. A shortened
-// agent keeps the identity, because the parenthesis survives the cut; the
-// legacy short form stays display-only and names nobody.
+// identity, never the "#<id>" tail: a marked suffix (the short pool form) means
+// name is Sanitize(agent)+"-"+marker-tail; an unmarked suffix is a complete
+// session name (the long and town forms). A shortened agent keeps the identity,
+// because the parenthesis survives the cut.
+//
+// Only the marked form is read as a pool identity. Reading an unmarked tagged
+// suffix as Sanitize(agent)+"-"+suffix would let one label name two sessions:
+// the pool seat and a session literally named the suffix (the town form
+// "[worker] (seat)" for session "seat" is byte-for-byte the unmarked pool form
+// for "worker-seat"). The marker is what keeps each label to one session.
 func (p paneParts) namesSession(name SessionName) bool {
 	if strings.HasPrefix(p.suffix, paneLabelShortForm) {
-		// Legacy short form: the parentheses hold the bead id.
+		// Short pool form: the parentheses hold the marked bead id.
 		suffix := p.suffix[len(paneLabelShortForm):]
 		if suffix == "" || p.agent == "" || strings.HasSuffix(p.agent, paneLabelShortened) {
 			return false
 		}
 		return sanitizeQualified(p.agent)+"-"+suffix == string(name)
 	}
-	if p.suffix == string(name) {
-		return true
-	}
-	if !p.tagged || p.agent == "" || strings.HasSuffix(p.agent, paneLabelShortened) {
-		// The unmarked pool suffix is a new-grammar shape only. A legacy
-		// label's suffix is either the whole name (above) or a marked bead
-		// id; reading anything else as a pool identity would widen the
-		// legacy labels beyond what older providers wrote.
-		return false
-	}
-	return sanitizeQualified(p.agent)+"-"+p.suffix == string(name)
+	return p.suffix == string(name)
 }

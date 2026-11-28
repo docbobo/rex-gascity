@@ -28,27 +28,35 @@ We write a bracketed kind tag on every generated label:
 
 - session `[city] <city>`, tab `[rig] <rig>` / `[city] <pin>`,
   pane `[<agent>] (<identity>)`, with the pool form
-  `[<agent>] (<agent>-<bead id>) #<bead id>`.
+  `[<agent>] (#<bead id>) #<session id>`.
 
-The tag names the kind; the identity after it is compared, never re-derived.
-One parenthesis rule serves all three levels: the contents of `(...)` are the
-identity. The `#` tail is display-only and is dropped first when a label must be
-clamped. A pane with no agent identity keeps today's bare label (`mayor`).
+The tag names the kind. An unmarked parenthesis is the complete session name
+and is compared by equality. A parenthesis starting with `#` is the pool
+identity: it is verified as `Sanitize(agent)+"-"+bead id`, the one name-shape
+check the pane keeps. The marker is required: without it `[worker] (seat)` is
+byte-for-byte both the town form for session `seat` and the pool form for
+`worker-seat`, so one label would name two sessions. The trailing `#` tail is
+display-only and is dropped first when a label must be clamped. A pane with no
+agent identity keeps today's bare label (`mayor`).
 The pre-tag labels (`gc:<city>`, `Rig: <rig>`, the bare pin, the untagged pane
 form) stay accepted on read, so a session or window created by an older build
 is found rather than duplicated.
 
 ## Consequences
 
-- Discovery becomes one rule per level with no name-shape reconstruction for
-  the pool form: a tagged parenthesis names the session directly, and an
-  untagged suffix names nobody.
+- Discovery has one rule per level: an unmarked parenthesis names the session
+  whose complete name it equals, and a marked parenthesis names the pool seat
+  its identity verifies. An unmarked suffix is never re-derived as a pool
+  name, so one label cannot name two sessions.
 - An upgrade joins the existing tab (`Rig: <rig>`, bare pin) and the existing
   session label instead of creating a second one; a split into a legacy tab
   records the legacy label it actually carries.
-- Clamping is deterministic: the display-only tail goes first, then the agent
-  (marked `…`), and only then the whole suffix. A clamped label still names its
-  session because the parenthesis is never cut.
+- Clamping is deterministic per form. The pool form drops the display-only
+  tail and never cuts the agent; if the marked identity cannot fit, the long
+  form takes over. The long and town forms keep the identity and cut the agent
+  first with the tail and then without it (marked `…`), and only then fall back
+  to the bare session name. A clamped label still names its session because the
+  parenthesis is never cut.
 - Every label is longer by the tag (`[rig] `, `[agent] `), which costs about
   8 runes of the 128-rune budget; the `#` tail keeps labels distinct only up to
   the limit.
@@ -58,6 +66,10 @@ is found rather than duplicated.
 
 - Keep the shapes and add a per-level prefix on read only: a reader still
   cannot tell a pinned city tab from a rig tab, and the `#` verification stays.
+- Keep the unmarked pool identity `[<agent>] (<agent>-<bead id>)`: it is
+  byte-identical to the town form `[<agent>] (<name>)` for a session literally
+  named the bead id, so one label names both that session and the pool seat.
+  Marking the pool identity is what keeps one label to one session.
 - Put the tag after the identity (`<city> [city]`): the name is what an
   operator scans, and Rex sorts and truncates from the left.
 - Keep `#<bead id>` load-bearing as the pool identity: it is display-only data

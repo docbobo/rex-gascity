@@ -102,6 +102,25 @@ func TestRexSessionLabel(t *testing.T) {
 	}
 }
 
+// TestRexSessionLabelLongCitiesStayDistinct pins the identity guarantee for the
+// canonical session label: the city part is never truncated. Two city names
+// longer than the old clamp budget that share a prefix must not fold into one
+// Rex session, which SessionLabels would do if their labels were equal.
+func TestRexSessionLabelLongCitiesStayDistinct(t *testing.T) {
+	prefix := strings.Repeat("c", 120)
+	a, b := rexSessionLabel(prefix+"-a"), rexSessionLabel(prefix+"-b")
+	if a == b {
+		t.Fatalf("distinct cities share label %q", a)
+	}
+	if !strings.HasSuffix(a, "-a") || !strings.HasSuffix(b, "-b") {
+		t.Fatalf("labels lost the city tail: %q, %q", a, b)
+	}
+	labels := SessionLabels([]string{prefix + "-a", prefix + "-b"})
+	if len(labels) != 4 {
+		t.Fatalf("SessionLabels dropped a city: %v", labels)
+	}
+}
+
 // TestSessionLabelsKeepsLegacyNamespace pins the accepted set and its order:
 // the canonical "[city] X" label comes first so a new session is created under
 // it, and "gc:X" stays accepted so a session an older provider wrote is still

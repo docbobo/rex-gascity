@@ -79,12 +79,15 @@ func tabLabel(name SessionName, env map[string]string, town string) string {
 // legacyRigTabFor is the tab label the provider derived before the bracketed
 // tags: "Rig: <rig>". A window started by an older build still carries it, so
 // resolution looks for it as well. Empty for a town-level name with no GC_RIG.
+// The old tab label was clamped to maxRexLabel, so the candidate is clamped
+// too: for a rig of 124 or more runes the stored tab ends in "…" and an
+// unclamped candidate would never match it.
 func legacyRigTabFor(n SessionName, env map[string]string) string {
 	if rig := env["GC_RIG"]; rig != "" {
-		return legacyRigTabPrefix + rig
+		return clampRexLabel(legacyRigTabPrefix + rig)
 	}
 	if rig := n.Rig(); rig != "" {
-		return legacyRigTabPrefix + rig
+		return clampRexLabel(legacyRigTabPrefix + rig)
 	}
 	return ""
 }
@@ -148,10 +151,10 @@ func legacyPaneLabelFor(n SessionName, env map[string]string) string {
 // paneLabelForAgent is the one pane-label writer. A town-level start renders
 // "[agent] (<name>)" with no tail. An unaliased pool seat whose name the env
 // proves (Sanitize(agent)+"-"+pool identity equals GC_SESSION_NAME, gc's
-// PoolSessionName shape) gets the bracketed tag, the pool identity in
-// parentheses and the display-only "#<session id>" tail. Every other
-// rig-scoped session keeps "[agent] (<GC_SESSION_NAME>) #<id>". The two forms
-// shorten differently, so each states its own ladder below.
+// PoolSessionName shape) gets the bracketed tag, the marked pool identity
+// "(#<bead id>)" in parentheses and the display-only "#<session id>" tail.
+// Every other rig-scoped session keeps "[agent] (<GC_SESSION_NAME>) #<id>".
+// The two forms shorten differently, so each states its own ladder below.
 func paneLabelForAgent(n SessionName, env map[string]string, agent string) string {
 	if isTownStart(n, env) {
 		return townPaneLabel(agent, n)
@@ -185,12 +188,17 @@ func paneSessionID(env map[string]string) string { return strings.TrimSpace(env[
 
 // townPaneLabel is a town-level pane label: "[agent] (<name>)". The session
 // name is the agent, so there is no separate identity for the parentheses and
-// no display id to append.
+// no display id to append. It obeys the same 128-rune limit as the rig branch:
+// the long form when it fits, otherwise the agent is shortened, and a label
+// that still cannot fit falls back to the clamped bare name.
 func townPaneLabel(agent string, n SessionName) string {
 	if agent == "" {
 		return n.PaneLabel()
 	}
-	return newPaneParts(agent, n.String(), "").String()
+	if label, ok := fitLongPaneLabel(agent, n.String(), ""); ok {
+		return label
+	}
+	return clampRexLabel(n.String())
 }
 
 // fitAgent fits agent into budget runes, marking a cut with paneLabelShortened
@@ -210,16 +218,19 @@ func fitAgent(agent string, budget int) (string, bool) {
 // fitPoolPaneLabel renders the pool form at or under Rex's limit. The agent
 // and the parenthesised pool identity both name the session, so neither is cut
 // here; the "#<id>" tail is display-only, so it is the one part that may be
-// dropped. The ladder is therefore "[agent] (pool) #id", then
-// "[agent] (pool)". A pool identity that does not fit returns ok=false and the
-// caller falls back to the long form, whose identity is the whole name.
+// dropped. The identity is marked with paneLabelShortForm, which is what keeps
+// the pool form from colliding with a session literally named the pool id. The
+// ladder is therefore "[agent] (#pool) #id", then "[agent] (#pool)". A pool
+// identity that does not fit returns ok=false and the caller falls back to the
+// long form, whose identity is the whole name.
 func fitPoolPaneLabel(agent, pool, id string) (string, bool) {
+	suffix := paneLabelShortForm + pool
 	if id != "" {
-		if label := newPaneParts(agent, pool, id).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+		if label := newPaneParts(agent, suffix, id).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 			return label, true
 		}
 	}
-	if label := newPaneParts(agent, pool, "").String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+	if label := newPaneParts(agent, suffix, "").String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 		return label, true
 	}
 	return "", false

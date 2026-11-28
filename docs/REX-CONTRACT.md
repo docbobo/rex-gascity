@@ -957,23 +957,30 @@ Pane labels are display-only and outside the durable contract (GCREX-5qel):
 from `GC_TEMPLATE` (agent part) → `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR`
 segment after the first `/`; the tag ends at the first `"] "` and a name that
 cannot carry a tag keeps the untagged legacy shape. The parenthesis carries the
-identity: the whole `GC_SESSION_NAME` for a named/aliased session, or the pool
-identity `<agent>-<bead id>` for an unaliased pool seat whose name verifies as
-`Sanitize(agent)+"-"+bead id`. The pool form adds `#<GC_SESSION_ID>`
-(`[gc.implementation-worker] (gc__implementation-worker-mc-wisp-kvqib)
-#mc-wisp-kvqib`); the tail is display-only and never an identity.
+identity: the whole `GC_SESSION_NAME` for a named/aliased session, or the
+marked pool identity `#<bead id>` for an unaliased pool seat whose name
+verifies as `Sanitize(agent)+"-"+bead id`. The pool form adds the display-only
+`#<GC_SESSION_ID>` tail
+(`[gc.implementation-worker] (#mc-wisp-kvqib) #mc-wisp-kvqib`); the tail is
+never an identity. The marker inside the parentheses is load-bearing: it is
+what keeps `[worker] (seat)` (the town session `seat`) from also naming the
+pool seat `worker-seat`.
 A blank session name or agent keeps the name-derived label, and town-level
 panes keep `[<agent>] (<name>)`. An over-long label is clamped to 128 runes by
-dropping the display-only `#` tail first, then cutting the agent with `…`; only
-a suffix that cannot fit falls back to the bare session name. The parenthesis
-survives the cut, so a clamped label still names its session; the untagged
-pre-tag short form stays display-only and names nobody. The launch label, the
-discovery hint and the recorded label all derive from the
+two different ladders. The pool form drops its display-only `#` tail first and
+never cuts the agent; if the marked identity does not fit, the long form takes
+over. The long and town forms keep the identity and cut the agent with `…`,
+first with the tail and then without it; only a suffix that cannot fit falls
+back to the bare session name. The parenthesis survives the cut, so a clamped
+label still names its session; an unmarked untagged short form names nobody.
+The launch label, the discovery hint and the recorded label all derive from the
 pool-routing-projected env (`launch.Project`), so routing a rewrite of
-`BEADS_ACTOR` cannot make them disagree. Discovery compares the parenthesis and
-never re-derives the pool name, and a record-less scan with no start env
-matches the parenthesised session name on its own, so resolution never depends
-on the human-readable prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
+`BEADS_ACTOR` cannot make them disagree. Discovery reads the marked
+parenthesised pool identity or the unmarked full session name and never
+re-derives an unmarked suffix as a pool name, so one label cannot name two
+sessions. A record-less scan with no start env matches the parenthesised
+session name on its own, so resolution never depends on the human-readable
+prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
 stay incidental: they only feed this display string.
 
 | Variable | Meaning | When set | Role |

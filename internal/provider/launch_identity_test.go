@@ -57,7 +57,7 @@ func TestLaunchIdentity(t *testing.T) {
 			sess:      "gc__short-mc-wisp-cccc",
 			env:       map[string]string{"GC_RIG": "rex-gascity", "GC_TEMPLATE": "rex-gascity/gc.short", "GC_AGENT": "mc-wisp-cccc", "GC_SESSION_NAME": "gc__short-mc-wisp-cccc", "GC_SESSION_ID": "mc-ccc"},
 			wantTab:   "[rig] rex-gascity",
-			wantPane:  "[gc.short] (mc-wisp-cccc) #mc-ccc",
+			wantPane:  "[gc.short] (#mc-wisp-cccc) #mc-ccc",
 			wantAlias: []SessionName{"rex-gascity--gc__short", "rex-gascity--gc__short-mc-wisp-cccc"},
 			wantTabs:  []string{"__town", "rex-gascity"},
 			wantLPane: "mc-wisp-cccc (gc__short-mc-wisp-cccc)",

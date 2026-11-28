@@ -248,6 +248,7 @@ func TestResolveLegacyWindowLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name, windowLabel, blockLabel, paneLabel string
 	}{
+		{"Indigo--dog-1", "Rig: Indigo", "dog-1", "dog-1"},
 		{"Indigo--dog-1", "Indigo", "dog-1", "dog-1"},
 		{"mayor", legacyTownTab, "mayor", "mayor"},
 	} {

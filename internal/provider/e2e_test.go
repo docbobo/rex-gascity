@@ -420,17 +420,20 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 }
 
 // e2eExpectSessionGoneAfterStop checks the GCREX-31 teardown rule after the
-// last pane of a city is stopped: the provider removes the canonical gc:<city>
-// session behind its fail-closed empty check.
+// last pane of a city is stopped: the provider removes the city session behind
+// its fail-closed empty check. Both the canonical "[city] <city>" label and
+// the legacy "gc:<city>" label name that one session, so either one still
+// listed means the session was not removed.
 func e2eExpectSessionGoneAfterStop(ctx context.Context, t *testing.T, client *cli.Client, city string) {
 	t.Helper()
 	sessions, err := client.ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
+	canonical := provider.SessionLabels([]string{city})[0]
 	for _, s := range sessions {
-		if s.Label == "gc:"+city {
-			t.Errorf("session gc:%s (%s) still listed after Stop; Stop must remove it once empty", city, s.ID)
+		if s.Label == canonical || s.Label == "gc:"+city {
+			t.Errorf("session %s (%s) still listed after Stop; Stop must remove it once empty", s.Label, s.ID)
 			return
 		}
 	}

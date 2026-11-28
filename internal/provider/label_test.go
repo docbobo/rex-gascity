@@ -177,15 +177,35 @@ func TestPanePartsNamesSession(t *testing.T) {
 	}{
 		{
 			name:  "new pool form names the pooled session",
-			parts: paneParts{agent: "gc.implementation-worker", suffix: "mc-wisp-fvwrce", id: "gcg-session-1", tagged: true},
+			parts: paneParts{agent: "gc.implementation-worker", suffix: "#mc-wisp-fvwrce", id: "gcg-session-1", tagged: true},
 			sess:  "gc__implementation-worker-mc-wisp-fvwrce",
 			want:  true,
 		},
 		{
 			name:  "new pool form without tail still names it",
-			parts: paneParts{agent: "gc.implementation-worker", suffix: "mc-wisp-fvwrce", tagged: true},
+			parts: paneParts{agent: "gc.implementation-worker", suffix: "#mc-wisp-fvwrce", tagged: true},
 			sess:  "gc__implementation-worker-mc-wisp-fvwrce",
 			want:  true,
+		},
+		{
+			// An unmarked suffix is a complete session name only. Reading it as
+			// a pool identity would let one label name two sessions.
+			name:  "tagged unmarked pool-looking suffix names nobody",
+			parts: paneParts{agent: "gc.implementation-worker", suffix: "mc-wisp-fvwrce", tagged: true},
+			sess:  "gc__implementation-worker-mc-wisp-fvwrce",
+			want:  false,
+		},
+		{
+			name:  "an unmarked suffix names the session literally named the suffix",
+			parts: paneParts{agent: "worker", suffix: "seat", tagged: true},
+			sess:  "seat",
+			want:  true,
+		},
+		{
+			name:  "an unmarked suffix never names the pool seat it could spell",
+			parts: paneParts{agent: "worker", suffix: "seat", tagged: true},
+			sess:  "worker-seat",
+			want:  false,
 		},
 		{
 			name:  "new long form names the session by its suffix",
@@ -219,7 +239,7 @@ func TestPanePartsNamesSession(t *testing.T) {
 		},
 		{
 			name:  "a shortened tag names nobody",
-			parts: paneParts{agent: "gc.implem…", suffix: "mc-wisp-fvwrce", tagged: true},
+			parts: paneParts{agent: "gc.implem…", suffix: "#mc-wisp-fvwrce", tagged: true},
 			sess:  "gc__implementation-worker-mc-wisp-fvwrce",
 			want:  false,
 		},

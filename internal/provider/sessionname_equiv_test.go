@@ -72,13 +72,14 @@ func refCutAgent(agent string, budget int) (string, bool) {
 }
 
 func refFitPool(agent, pool, id string) (string, bool) {
+	suffix := paneLabelShortForm + pool
 	for _, tail := range []string{id, ""} {
 		if tail != "" || id == "" {
-			if label := refPane(agent, pool, tail); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+			if label := refPane(agent, suffix, tail); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 				return label, true
 			}
 		}
-		if label := refPane(agent, pool, ""); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+		if label := refPane(agent, suffix, ""); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 			return label, true
 		}
 	}

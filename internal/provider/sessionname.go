@@ -44,8 +44,12 @@ func (n SessionName) IsTown() bool {
 
 // rexSessionLabel is the canonical Rex session label for city (one session
 // per city): "[city] <city>". The tag names the kind; the name is the city
-// identity unchanged.
-func rexSessionLabel(city string) string { return clampRexLabel(taggedLabel(labelCity, city)) }
+// identity unchanged. The city part is never truncated: clamping "[city] "
+// would make two different long city names share one canonical label, and
+// SessionLabels would then fold them into one Rex session. A city too long for
+// Rex's label limit fails loudly at session creation instead of silently
+// reusing another city's session.
+func rexSessionLabel(city string) string { return taggedLabel(labelCity, city) }
 
 // legacySessionLabel is the session label providers before the bracketed-tag
 // grammar wrote: "gc:<city>". It stays an accepted label forever, so a session
