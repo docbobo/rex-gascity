@@ -552,6 +552,8 @@ func TestRecordlessCrossTabDiscovery(t *testing.T) {
 // actual town session still resolves.
 func TestRecordlessRigPaneNotAttributedThroughTownTab(t *testing.T) {
 	ctx := context.Background()
+	clearCityPin(t)
+	t.Setenv("GC_REX_CITY", "my-city")
 	const (
 		townName = "mayor"
 		ownBlock = rex.BlockID("block:mayor")
@@ -569,12 +571,7 @@ func TestRecordlessRigPaneNotAttributedThroughTownTab(t *testing.T) {
 		}
 		return f
 	}
-	newProvider := func() *Provider {
-		p := New("acme", newFake())
-		p.townTab = "my-city"
-		p.binder.townTab = "my-city"
-		return p
-	}
+	newProvider := func() *Provider { return New("acme", newFake()) }
 
 	t.Run("rig name does not claim the town pane", func(t *testing.T) {
 		running, err := newProvider().IsRunning(ctx, "Indigo--mayor")
@@ -593,6 +590,77 @@ func TestRecordlessRigPaneNotAttributedThroughTownTab(t *testing.T) {
 		}
 		if !running {
 			t.Fatalf("IsRunning(%s) = false; the town rung must keep finding the town pane", townName)
+		}
+	})
+}
+
+// TestRecordlessTownRigNameCollision guards the CodeRabbit finding on
+// binding.go:574. When the city pin equals the rig name, the pre-GCREX-72 tab
+// label for the rig (its bare rig name) is the same string as the town tab's
+// bare name. A bare pane label in that tab cannot say which session owns the
+// pane: the town pane labelled "mayor" sits in "Indigo" exactly where a legacy
+// rig pane for "Indigo--mayor" would. The rig name must not adopt the town
+// pane, while the town name still resolves it.
+func TestRecordlessTownRigNameCollision(t *testing.T) {
+	ctx := context.Background()
+	clearCityPin(t)
+	t.Setenv("GC_REX_CITY", "Indigo")
+	const (
+		pin       = "Indigo"
+		rigName   = pin + "--mayor"
+		townName  = "mayor"
+		townBlock = rex.BlockID("block:mayor")
+	)
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		// The bare pin tab is the pre-GCREX-72 town tab; its pane carries the
+		// bare agent label.
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:town",
+			Label:  pin,
+			Blocks: []rex.Block{{ID: townBlock, Label: townName}},
+		}}}
+		f.Processes = map[rex.BlockID]rex.ProcessInfo{
+			townBlock: {Foreground: &rex.Process{PID: fakePID, Name: "pi"}},
+		}
+		return f
+	}
+	newProvider := func() *Provider { return New("acme", newFake()) }
+
+	t.Run("rig name does not claim the town pane", func(t *testing.T) {
+		running, err := newProvider().IsRunning(ctx, rigName)
+		if err != nil {
+			t.Fatalf("IsRunning(%s): %v", rigName, err)
+		}
+		if running {
+			t.Fatalf("IsRunning(%s) = true; the town pane of mayor must not answer for it", rigName)
+		}
+		fake := newFake()
+		p := New("acme", fake)
+		if err := p.Stop(ctx, rigName); err != nil {
+			t.Fatalf("Stop(%s): %v", rigName, err)
+		}
+		if slices.Contains(fake.ClosedBlocks, townBlock) {
+			t.Fatalf("Stop(%s) closed the town pane %s", rigName, townBlock)
+		}
+	})
+
+	t.Run("town name still resolves its pane", func(t *testing.T) {
+		running, err := newProvider().IsRunning(ctx, townName)
+		if err != nil {
+			t.Fatalf("IsRunning(%s): %v", townName, err)
+		}
+		if !running {
+			t.Fatalf("IsRunning(%s) = false; the town rung must keep finding the town pane", townName)
+		}
+		fake := newFake()
+		p := New("acme", fake)
+		if err := p.Stop(ctx, townName); err != nil {
+			t.Fatalf("Stop(%s): %v", townName, err)
+		}
+		if !slices.Contains(fake.ClosedBlocks, townBlock) {
+			t.Fatalf("Stop(%s) did not close the town pane %s; closed %v", townName, townBlock, fake.ClosedBlocks)
 		}
 	})
 }
@@ -630,6 +698,69 @@ func TestHashLeadingNameIsNotThePoolForm(t *testing.T) {
 	if running, err := New("acme", rebuilt).IsRunning(ctx, "worker-seat"); err != nil || running {
 		t.Fatalf("IsRunning(worker-seat) = %v, %v; the #seat pane must not answer for the pool seat", running, err)
 	}
+}
+
+// TestRecordlessPoolAndNamedSiblingResolveTheirOwnPane is the recordless
+// discovery proof CodeRabbit asked for on label.go: the marked pool label
+// "[worker] (#seat)" and the unmarked named label "[worker] (seat)" are
+// different sessions. With no record and no start env, each session must
+// resolve only its own pane, so Stop acts on the right one.
+func TestRecordlessPoolAndNamedSiblingResolveTheirOwnPane(t *testing.T) {
+	ctx := context.Background()
+	clearCityPin(t)
+	const (
+		poolName   = "worker-seat"
+		namedName  = "seat"
+		poolLabel  = "[worker] (#seat)"
+		namedLabel = "[worker] (seat)"
+		poolBlock  = rex.BlockID("block:pool")
+		namedBlock = rex.BlockID("block:named")
+	)
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:    "window:rig",
+			Label: "Rig: rex-gascity",
+			Blocks: []rex.Block{
+				{ID: poolBlock, Label: poolLabel},
+				{ID: namedBlock, Label: namedLabel},
+			},
+		}}}
+		return f
+	}
+
+	t.Run("pool seat resolves only the marked pane", func(t *testing.T) {
+		if running, err := New("acme", newFake()).IsRunning(ctx, poolName); err != nil || !running {
+			t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", poolName, running, err)
+		}
+		fake := newFake()
+		if err := New("acme", fake).Stop(ctx, poolName); err != nil {
+			t.Fatalf("Stop(%s): %v", poolName, err)
+		}
+		if !slices.Contains(fake.ClosedBlocks, poolBlock) {
+			t.Fatalf("Stop(%s) did not close %s; closed %v", poolName, poolBlock, fake.ClosedBlocks)
+		}
+		if slices.Contains(fake.ClosedBlocks, namedBlock) {
+			t.Fatalf("Stop(%s) closed the named sibling %s", poolName, namedBlock)
+		}
+	})
+
+	t.Run("named seat resolves only the unmarked pane", func(t *testing.T) {
+		if running, err := New("acme", newFake()).IsRunning(ctx, namedName); err != nil || !running {
+			t.Fatalf("IsRunning(%s) = %v, %v; want true, nil", namedName, running, err)
+		}
+		fake := newFake()
+		if err := New("acme", fake).Stop(ctx, namedName); err != nil {
+			t.Fatalf("Stop(%s): %v", namedName, err)
+		}
+		if !slices.Contains(fake.ClosedBlocks, namedBlock) {
+			t.Fatalf("Stop(%s) did not close %s; closed %v", namedName, namedBlock, fake.ClosedBlocks)
+		}
+		if slices.Contains(fake.ClosedBlocks, poolBlock) {
+			t.Fatalf("Stop(%s) closed the pool sibling %s", namedName, poolBlock)
+		}
+	})
 }
 
 // TestTownPaneLabelClamp pins the 128-rune limit on the town-level pane label:
@@ -1110,6 +1241,28 @@ func TestRecordlessDiscoveryByPoolIdentity(t *testing.T) {
 	}
 	if running {
 		t.Fatalf("IsRunning(%s) = true; adopted the sibling seat's pane", sibling)
+	}
+}
+
+// TestPoolSeatAndNamedSessionRenderDistinctLabels ties the labels the writer
+// emits to the collision CodeRabbit flagged (label.go): a pool seat renders
+// "[worker] (#seat)" while a session literally named "seat" renders
+// "[worker] (seat)", so the two must never be the same string. The recordless
+// discovery tests above hardcode these labels; this pins that the writer
+// produces them from the env each shape carries.
+func TestPoolSeatAndNamedSessionRenderDistinctLabels(t *testing.T) {
+	poolLabel := paneLabelForAgent("worker-seat",
+		map[string]string{"GC_RIG": "rex-gascity", "GC_AGENT": "seat", "GC_SESSION_NAME": "worker-seat"}, "worker")
+	if want := "[worker] (#seat)"; poolLabel != want {
+		t.Fatalf("pool pane label = %q, want %q", poolLabel, want)
+	}
+	namedLabel := paneLabelForAgent("seat",
+		map[string]string{"GC_RIG": "rex-gascity", "GC_ALIAS": "worker", "GC_SESSION_NAME": "seat"}, "worker")
+	if want := "[worker] (seat)"; namedLabel != want {
+		t.Fatalf("named pane label = %q, want %q", namedLabel, want)
+	}
+	if poolLabel == namedLabel {
+		t.Fatalf("pool seat and named session render the same label %q", poolLabel)
 	}
 }
 
