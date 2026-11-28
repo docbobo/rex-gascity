@@ -3,8 +3,10 @@
 `internal/rex/` is the client for the `rex` CLI: argv construction, the wire
 protocol, paging, and fault handling. `internal/rex/fakerex/` is the fake the
 provider e2e suites drive; `internal/rex/faketest/` is the shared test harness.
-The repo-wide rules in the root `AGENTS.md` apply here; this file adds only
-local invariants.
+`internal/rex/fakerex/fakestate/` owns every session, window, and block
+transition; both fakes adapt it rather than re-implementing one (see
+`docs/fake-rex.md`, "One model of session state"). The repo-wide rules in the
+root `AGENTS.md` apply here; this file adds only local invariants.
 
 ## The pinned surface
 
