@@ -240,26 +240,20 @@ func fitPoolPaneLabel(agent, pool, id string) (string, bool) {
 // suffix is the whole session name, so shortening the agent keeps the
 // identity and is preferable to dropping the display id. The fixed ladder is
 // "[agent] (name) #id", "[agent…] (name) #id", "[agent] (name)",
-// "[agent…] (name)": a name that can survive does survive.
+// "[agent…] (name)": a name that can survive does survive. A name that starts
+// with the pool marker is escaped in the suffix (paneSuffix), so it stays a
+// complete name instead of reading as the marked pool identity.
 func fitLongPaneLabel(agent, name, id string) (string, bool) {
-	// A complete session name beginning with the pool mark would read back as
-	// the marked pool identity: "[worker] (#seat)" names worker-seat to
-	// namesSession, not the session literally called "#seat". The long form
-	// cannot carry such a name unambiguously, so it declines; the caller falls
-	// back to the bare clamped name, which discovery still matches as the
-	// expected pane label (name.PaneLabel()) rather than as a pool seat.
-	if strings.HasPrefix(name, paneLabelShortForm) {
-		return "", false
-	}
+	suffix := paneSuffix(name)
 	ids := []string{id}
 	if id != "" {
 		ids = append(ids, "")
 	}
 	for _, tailID := range ids {
-		if label := newPaneParts(agent, name, tailID).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+		if label := newPaneParts(agent, suffix, tailID).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 			return label, true
 		}
-		overhead := 2 + 3 + utf8.RuneCountInString(name)
+		overhead := 2 + 3 + utf8.RuneCountInString(suffix)
 		if tailID != "" {
 			overhead += 2 + utf8.RuneCountInString(tailID)
 		}
@@ -267,7 +261,7 @@ func fitLongPaneLabel(agent, name, id string) (string, bool) {
 		if !ok {
 			continue
 		}
-		if label := newPaneParts(cut, name, tailID).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+		if label := newPaneParts(cut, suffix, tailID).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
 			return label, true
 		}
 	}

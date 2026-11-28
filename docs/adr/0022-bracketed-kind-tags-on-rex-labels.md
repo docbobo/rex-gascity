@@ -47,7 +47,9 @@ is found rather than duplicated.
 - Discovery has one rule per level: an unmarked parenthesis names the session
   whose complete name it equals, and a marked parenthesis names the pool seat
   its identity verifies. An unmarked suffix is never re-derived as a pool
-  name, so one label cannot name two sessions.
+  name, so one label cannot name two sessions. A complete name that itself
+  starts with `#` is written with one escape, `(\#seat)`, and read back by
+  stripping one; an escaped suffix is never a pool identity.
 - An upgrade joins the existing tab (`Rig: <rig>`, bare pin) and the existing
   session label instead of creating a second one; a split into a legacy tab
   records the legacy label it actually carries.
