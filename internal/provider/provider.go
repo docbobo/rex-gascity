@@ -361,6 +361,7 @@ func (p *Provider) Binding(name string) (Binding, bool) {
 // after the locks are released, so its bounded readiness wait cannot stall
 // other starts or stops.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
+	ctx = withLockOperation(ctx)
 	var launch startResult
 	err := p.withNameLock(ctx, SessionName(name), func() error {
 		var startErr error
@@ -383,6 +384,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 // state dir, exactly one launches and the other sees ErrAlreadyRunning. The
 // startup nudge is delivered after the lock is released, like Start.
 func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error {
+	ctx = withLockOperation(ctx)
 	var launch startResult
 	err := p.withNameLock(ctx, SessionName(name), func() error {
 		if cfg.FreshOnly {
@@ -569,6 +571,7 @@ func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID
 // lock is needed: the close, the reap and the re-read run while stops and starts
 // of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
+	ctx = withLockOperation(ctx)
 	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
 }
 
