@@ -343,7 +343,7 @@ func (p *Provider) destroyEmptyCitySession(ctx context.Context, sid rex.SessionI
 	// stale under us. Rex removes a tab with its last block
 	// (docs/REX-CONTRACT.md:803, live-verified), so zero windows
 	// is a true empty session.
-	release, busy, lockErr := p.tryLaunchLock(sid)
+	release, busy, lockErr := p.tryLaunchLock(ctx, sid)
 	if lockErr != nil {
 		return fmt.Errorf("check whether %s is empty: %w", sid, lockErr)
 	}

@@ -169,12 +169,6 @@ type Provider struct {
 	activity Store[SessionName, ActivityRecord]
 	meta     Store[metaKey, string]
 
-	// lockTracking counts the lock sections this provider holds, per kind, so
-	// lockSection can refuse an order lockNests does not allow. It is
-	// consulted only while lockOrderEnabled is set (a test); the built provider
-	// ignores it. See lock_order.go.
-	lockTracking lockTracking
-
 	// ns is the city namespace: the state dirs (the canonical one holds the
 	// cross-process lock; none means no locking) and the accepted Rex session
 	// labels (new sessions use the canonical one; lookups and binding
@@ -367,6 +361,7 @@ func (p *Provider) Binding(name string) (Binding, bool) {
 // after the locks are released, so its bounded readiness wait cannot stall
 // other starts or stops.
 func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
+	ctx = withLockOperation(ctx)
 	var launch startResult
 	err := p.withNameLock(ctx, SessionName(name), func() error {
 		var startErr error
@@ -389,6 +384,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg Config) error {
 // state dir, exactly one launches and the other sees ErrAlreadyRunning. The
 // startup nudge is delivered after the lock is released, like Start.
 func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error {
+	ctx = withLockOperation(ctx)
 	var launch startResult
 	err := p.withNameLock(ctx, SessionName(name), func() error {
 		if cfg.FreshOnly {
@@ -575,6 +571,7 @@ func (p *Provider) newBinding(n SessionName, sid rex.SessionID, wid rex.WindowID
 // lock is needed: the close, the reap and the re-read run while stops and starts
 // of other names proceed (observe.v1 rule 9).
 func (p *Provider) Stop(ctx context.Context, name string) error {
+	ctx = withLockOperation(ctx)
 	return p.withNameLock(ctx, SessionName(name), func() error { return p.stopUnderPrimaryLock(ctx, name) })
 }
 

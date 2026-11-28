@@ -29,7 +29,7 @@ func armLockOrder(t *testing.T) {
 // innermost section, name is an outer one, so the pair is not allowed.
 func TestLockOutOfOrderFails(t *testing.T) {
 	p := newLockOrderProvider(t)
-	ctx := context.Background()
+	ctx := withLockOperation(context.Background())
 
 	err := p.withTabLock(ctx, "rig-a", func() error {
 		inner := p.withNameLock(ctx, SessionName("worker"), func() error { return nil })
@@ -54,7 +54,7 @@ func TestLockOutOfOrderFails(t *testing.T) {
 // would hold the city-wide lock across a blocking launch.
 func TestLockStateInsideLaunchFails(t *testing.T) {
 	p := newLockOrderProvider(t)
-	ctx := context.Background()
+	ctx := withLockOperation(context.Background())
 
 	release, err := p.beginLaunch(ctx, "sid-a")
 	if err != nil {
@@ -74,7 +74,7 @@ func TestLockStateInsideLaunchFails(t *testing.T) {
 // innermost section, so the launch lock must not be taken under it.
 func TestLockLaunchInsideTabFails(t *testing.T) {
 	p := newLockOrderProvider(t)
-	ctx := context.Background()
+	ctx := withLockOperation(context.Background())
 
 	err := p.withTabLock(ctx, "rig-a", func() error {
 		release, err := p.beginLaunch(ctx, "sid-a")
@@ -97,7 +97,7 @@ func TestLockLaunchInsideTabFails(t *testing.T) {
 // launch section, not another state section, so nothing needs it.
 func TestLockSecondStateFails(t *testing.T) {
 	p := newLockOrderProvider(t)
-	ctx := context.Background()
+	ctx := withLockOperation(context.Background())
 
 	err := p.withStateLock(ctx, func() error {
 		inner := p.withStateLock(ctx, func() error { return nil })
@@ -116,7 +116,7 @@ func TestLockSecondStateFails(t *testing.T) {
 // naive rank order would get wrong: name -> state, which start and KillObject
 // take, while the reverse (state -> name) never occurs.
 func TestLockOrderAllowedNestingsPass(t *testing.T) {
-	ctx := context.Background()
+	ctx := withLockOperation(context.Background())
 	cases := []struct {
 		name string
 		run  func(*Provider) error
@@ -148,7 +148,7 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 		}},
 		{"state -> launch", func(p *Provider) error {
 			return p.withStateLock(ctx, func() error {
-				release, busy, err := p.tryLaunchLock("sid-a")
+				release, busy, err := p.tryLaunchLock(ctx, "sid-a")
 				if err != nil {
 					return err
 				}
@@ -188,7 +188,7 @@ func TestLockOrderAllowedNestingsPass(t *testing.T) {
 func TestLockOrderOffInBuiltProvider(t *testing.T) {
 	lockOrderEnabled = false
 	p := New("test", nil, WithNamespace(NewNamespaceForDirs(t.TempDir())))
-	ctx := context.Background()
+	ctx := withLockOperation(context.Background())
 	err := p.withTabLock(ctx, "rig-a", func() error {
 		return p.withNameLock(ctx, "worker", func() error { return nil })
 	})
@@ -203,8 +203,9 @@ func TestLockOrderOffInBuiltProvider(t *testing.T) {
 // release.
 func TestTryLaunchLockReportsHeldAfterRelease(t *testing.T) {
 	p := New("test", nil, WithNamespace(NewNamespaceForDirs(t.TempDir())))
+	ctx := withLockOperation(context.Background())
 
-	release, held, err := p.tryLaunchLock("sid-a")
+	release, held, err := p.tryLaunchLock(ctx, "sid-a")
 	if err != nil {
 		t.Fatalf("tryLaunchLock: %v", err)
 	}
@@ -215,13 +216,13 @@ func TestTryLaunchLockReportsHeldAfterRelease(t *testing.T) {
 		t.Fatal("first tryLaunchLock: release=nil, want a release")
 	}
 
-	if _, held2, err := p.tryLaunchLock("sid-a"); err != nil || !held2 {
+	if _, held2, err := p.tryLaunchLock(ctx, "sid-a"); err != nil || !held2 {
 		t.Fatalf("second tryLaunchLock while held: held=%v err=%v, want true, nil", held2, err)
 	}
 
 	release()
 
-	release3, held3, err := p.tryLaunchLock("sid-a")
+	release3, held3, err := p.tryLaunchLock(ctx, "sid-a")
 	if err != nil {
 		t.Fatalf("third tryLaunchLock: %v", err)
 	}
@@ -229,4 +230,75 @@ func TestTryLaunchLockReportsHeldAfterRelease(t *testing.T) {
 		t.Fatal("third tryLaunchLock after release: held=true, want false")
 	}
 	release3()
+}
+
+// TestLockOrderIndependentOperationsDoNotInterfere is the concurrency bug the
+// per-provider counter had: one goroutine holding a tab section made an
+// unrelated goroutine's name section fail with ErrLockOrder, as if the name
+// lock were taken under the tab lock. Each operation carries its own nesting
+// tracker, so the two must not see each other's sections.
+func TestLockOrderIndependentOperationsDoNotInterfere(t *testing.T) {
+	p := newLockOrderProvider(t)
+	ctxTab := withLockOperation(context.Background())
+	ctxName := withLockOperation(context.Background())
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- p.withTabLock(ctxTab, "rig-a", func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	// While the tab section is held by the other goroutine, this operation
+	// takes a name section. They are independent, so the table must not apply.
+	err := p.withNameLock(ctxName, "worker", func() error { return nil })
+	close(release)
+	if tabErr := <-done; tabErr != nil {
+		t.Fatalf("tab section: %v", tabErr)
+	}
+	if err != nil {
+		t.Fatalf("independent name section: %v", err)
+	}
+}
+
+// TestLockCanceledSectionDoesNotLeakTracking guards the second review finding:
+// a canceled wrapper incremented the tracker, then withFlock returned before
+// its end ran. A retry in the same operation then failed with ErrLockOrder even
+// though no flock was held. Each wrapper now defers its end immediately after a
+// successful lockSection, so a canceled acquire unwinds the count.
+func TestLockCanceledSectionDoesNotLeakTracking(t *testing.T) {
+	cases := []struct {
+		name string
+		lock func(*Provider, context.Context) error
+	}{
+		{"state", func(p *Provider, ctx context.Context) error {
+			return p.withStateLock(ctx, func() error { return nil })
+		}},
+		{"name", func(p *Provider, ctx context.Context) error {
+			return p.withNameLock(ctx, "worker", func() error { return nil })
+		}},
+		{"tab", func(p *Provider, ctx context.Context) error {
+			return p.withTabLock(ctx, "rig-a", func() error { return nil })
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newLockOrderProvider(t)
+			ctx := withLockOperation(context.Background())
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+
+			if err := tc.lock(p, canceled); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled acquire: want context.Canceled, got %v", err)
+			}
+			if err := tc.lock(p, ctx); err != nil {
+				t.Fatalf("retry after canceled acquire: %v", err)
+			}
+		})
+	}
 }

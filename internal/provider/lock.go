@@ -26,15 +26,15 @@ const (
 // Rex launch. Those run under withNameLock/withTabLock instead, so a slow hook
 // or launch for one session cannot stall every other start and stop.
 func (p *Provider) withStateLock(ctx context.Context, fn func() error) error {
-	end, err := p.lockSection(lockState)
+	end, err := p.lockSection(ctx, lockState)
 	if err != nil {
 		return err
 	}
+	defer end()
 	if p.ns.CanonicalDir() == "" {
-		defer end()
 		return fn()
 	}
-	return withFlock(ctx, filepath.Join(p.ns.CanonicalDir(), "lock"), p.endOnReturn(end, fn))
+	return withFlock(ctx, filepath.Join(p.ns.CanonicalDir(), "lock"), fn)
 }
 
 // withNameLock runs fn while holding an exclusive flock for one session name at
@@ -43,15 +43,15 @@ func (p *Provider) withStateLock(ctx context.Context, fn func() error) error {
 // launch for one session does not delay the rest of the city. Without a state
 // dir it just runs fn.
 func (p *Provider) withNameLock(ctx context.Context, n SessionName, fn func() error) error {
-	end, err := p.lockSection(lockName)
+	end, err := p.lockSection(ctx, lockName)
 	if err != nil {
 		return err
 	}
+	defer end()
 	if p.ns.CanonicalDir() == "" {
-		defer end()
 		return fn()
 	}
-	return withFlock(ctx, p.nameLockPath(n), p.endOnReturn(end, fn))
+	return withFlock(ctx, p.nameLockPath(n), fn)
 }
 
 // withTabLock runs fn while holding an exclusive flock for one Rex tab (rig) at
@@ -62,15 +62,15 @@ func (p *Provider) withNameLock(ctx context.Context, n SessionName, fn func() er
 // both create the tab, while starts in other rigs still proceed. Without a
 // state dir it just runs fn.
 func (p *Provider) withTabLock(ctx context.Context, tab string, fn func() error) error {
-	end, err := p.lockSection(lockTab)
+	end, err := p.lockSection(ctx, lockTab)
 	if err != nil {
 		return err
 	}
+	defer end()
 	if p.ns.CanonicalDir() == "" {
-		defer end()
 		return fn()
 	}
-	return withFlock(ctx, filepath.Join(p.ns.CanonicalDir(), "locks", "tab-"+nameKey(SessionName(tab))+".lock"), p.endOnReturn(end, fn))
+	return withFlock(ctx, filepath.Join(p.ns.CanonicalDir(), "locks", "tab-"+nameKey(SessionName(tab))+".lock"), fn)
 }
 
 // nameLockPath is the per-name lock file under the canonical state dir.
@@ -90,7 +90,7 @@ func (p *Provider) launchLockPath(sid rex.SessionID) string {
 // pane still to come. Without a state dir there is nothing to coordinate, so
 // it returns a no-op release. A canceled ctx returns ctx.Err().
 func (p *Provider) beginLaunch(ctx context.Context, sid rex.SessionID) (func(), error) {
-	end, err := p.lockSection(lockLaunch)
+	end, err := p.lockSection(ctx, lockLaunch)
 	if err != nil {
 		return func() {}, err
 	}
@@ -109,8 +109,8 @@ func (p *Provider) beginLaunch(ctx context.Context, sid rex.SessionID) (func(), 
 // true when a launch already holds it shared, which means the session is not
 // empty even when its view shows no window yet. Without a state dir it reports
 // held=false and a no-op release.
-func (p *Provider) tryLaunchLock(sid rex.SessionID) (release func(), held bool, err error) {
-	end, err := p.lockSection(lockLaunch)
+func (p *Provider) tryLaunchLock(ctx context.Context, sid rex.SessionID) (release func(), held bool, err error) {
+	end, err := p.lockSection(ctx, lockLaunch)
 	if err != nil {
 		return func() {}, false, err
 	}

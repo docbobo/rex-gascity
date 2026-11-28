@@ -48,8 +48,9 @@ func TestLockOrderHoldsAcrossStartAndStartNew(t *testing.T) {
 // held) must refuse the next tab section with ErrLockOrder.
 func TestLockOrderGuardFailureSurfaces(t *testing.T) {
 	p := newLockOrderProvider(t)
-	p.lockTracking.held[lockTab] = 1 // a leaked tab section
-	err := p.withTabLock(context.Background(), "rig-a", func() error { return nil })
+	ctx := withLockOperation(context.Background())
+	lockTrackingFrom(ctx).held[lockTab] = 1 // a leaked tab section
+	err := p.withTabLock(ctx, "rig-a", func() error { return nil })
 	if !errors.Is(err, ErrLockOrder) {
 		t.Fatalf("second tab section with a leaked hold: want ErrLockOrder, got %v", err)
 	}

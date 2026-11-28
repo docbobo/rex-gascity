@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -101,11 +102,43 @@ var lockReentrant = map[lockKind]bool{
 	lockName: true,
 }
 
-// lockTracking records, per kind, how many sections this provider holds. It
+// lockTracking records, per kind, how many sections one operation holds. It
 // exists so lockSection can refuse a pair lockNests does not allow. It is a
 // count, not a bool, so a reentrant kind unwinds exactly.
+//
+// A tracker belongs to one operation, not to the Provider. Two goroutines that
+// start and stop different sessions share a Provider; if they shared a
+// tracker, one goroutine's tab section would look like an outer section to the
+// other's name section and fail with a false ErrLockOrder. The tracker travels
+// in the operation's context instead, so nested calls see it and unrelated
+// operations do not.
 type lockTracking struct {
 	held [lockKindCount]int
+}
+
+// lockTrackingKey is the context key for one operation's tracker.
+type lockTrackingKey struct{}
+
+// withLockOperation starts a new lock operation. Every public entry point that
+// takes a provider lock calls it once, before its first lockSection, so the
+// nested sections of that operation share a tracker. The guard is test-only, so
+// the built provider does not pay for the context value.
+func withLockOperation(ctx context.Context) context.Context {
+	if !lockOrderEnabled {
+		return ctx
+	}
+	return context.WithValue(ctx, lockTrackingKey{}, &lockTracking{})
+}
+
+// lockTrackingFrom returns the operation's tracker, or a throwaway one when the
+// caller did not open an operation. The guard only runs in tests, and every
+// entry point opens an operation, so the fallback is a safety net rather than
+// a normal path.
+func lockTrackingFrom(ctx context.Context) *lockTracking {
+	if t, ok := ctx.Value(lockTrackingKey{}).(*lockTracking); ok {
+		return t
+	}
+	return &lockTracking{}
 }
 
 // lockOrderEnabled turns the check on. It is false in the built provider: a
@@ -114,16 +147,17 @@ type lockTracking struct {
 // set it through armLockOrder.
 var lockOrderEnabled bool
 
-// lockSection opens a section of the given kind and returns a function that
-// ends it, or an ErrLockOrder naming both kinds when the section may not be
-// held under what this provider already holds. Every lock in lock.go opens
-// through it, before it takes its flock, so the guard runs whether or not the
-// flock is taken (a provider with no state dir still nests sections).
-func (p *Provider) lockSection(taking lockKind) (end func(), err error) {
+// lockSection opens a section of the given kind in ctx's operation and returns
+// a function that ends it, or an ErrLockOrder naming both kinds when the
+// section may not be held under what that operation already holds. Every lock
+// in lock.go opens through it, before it takes its flock, so the guard runs
+// whether or not the flock is taken (a provider with no state dir still nests
+// sections).
+func (p *Provider) lockSection(ctx context.Context, taking lockKind) (end func(), err error) {
 	if !lockOrderEnabled {
 		return func() {}, nil
 	}
-	t := &p.lockTracking
+	t := lockTrackingFrom(ctx)
 	if t.held[taking] > 0 && !lockReentrant[taking] {
 		return nil, fmt.Errorf("%w: %s lock already held", ErrLockOrder, taking)
 	}
@@ -137,15 +171,6 @@ func (p *Provider) lockSection(taking lockKind) (end func(), err error) {
 	}
 	t.held[taking]++
 	return func() { t.held[taking]-- }, nil
-}
-
-// endOnReturn wraps fn so the section end runs when fn returns, after withFlock
-// has released the flock on its own defer.
-func (p *Provider) endOnReturn(end func(), fn func() error) func() error {
-	return func() error {
-		defer end()
-		return fn()
-	}
 }
 
 // releaseBoth returns one release that drops the flock and then ends the

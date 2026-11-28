@@ -385,6 +385,7 @@ func (p *Provider) inventoryActivity(ctx context.Context, b Binding) string {
 // provably dead by the RPP-OBSERVE-006 snapshot; anything less answers
 // `changed`.
 func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRequest) (string, error) {
+	ctx = withLockOperation(ctx)
 	if strings.TrimSpace(req.Object.ID) == "" || strings.TrimSpace(req.Object.Created) == "" {
 		return "", errors.New("kill-object: object id and created are required")
 	}
