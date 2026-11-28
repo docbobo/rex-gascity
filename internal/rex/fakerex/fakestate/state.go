@@ -153,6 +153,13 @@ type Record struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
+// NewState returns an empty in-memory state. The adapters that hold state in
+// memory (faketest, and any test driving the transitions directly) use it
+// instead of Load, which reads a state dir.
+func NewState() *State {
+	return &State{Next: 1, Results: map[string]int64{}}
+}
+
 // Load reads the state in dir. A missing file is an empty state; a missing dir
 // means no fake server is running.
 func Load(dir string) (*State, error) {
@@ -357,8 +364,9 @@ func (s *Session) AddWindow(w *Window) {
 	}
 }
 
-// Remove drops a block. A window with no blocks is removed, as Rex does.
-func (s *Session) Remove(id string) {
+// Remove drops a block and reports whether it was there. A window with no
+// blocks is removed, as Rex does.
+func (s *Session) Remove(id string) bool {
 	for wi, w := range s.Windows {
 		for bi, b := range w.Blocks {
 			if b.ID == id {
@@ -372,10 +380,11 @@ func (s *Session) Remove(id string) {
 				} else if w.FocusedBlock == id {
 					w.FocusedBlock = w.Blocks[0].ID
 				}
-				return
+				return true
 			}
 		}
 	}
+	return false
 }
 
 // MoveWindow moves window id to just before window before, or to the end of

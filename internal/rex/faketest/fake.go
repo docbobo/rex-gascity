@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/docbobo/rex-gascity/internal/rex"
+	"github.com/docbobo/rex-gascity/internal/rex/fakerex/fakestate"
 )
 
 // CreatedWindow records a NewWindow call.
@@ -195,12 +196,24 @@ func (f *Fake) NewWindow(_ context.Context, sid rex.SessionID, label string, spe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.CreatedWindows = append(f.CreatedWindows, CreatedWindow{SessionID: sid, Label: label, Spec: spec})
+	st, err := f.hydrationLocked(sid)
+	if err != nil {
+		return "", "", err
+	}
+	ses, err := st.Session(string(sid))
+	if err != nil {
+		return "", "", rex.ErrNotFound
+	}
 	wid, block := rex.WindowID("window:"+label), rex.BlockID("block:"+spec.Label)
-	f.View.Windows = append(f.View.Windows, rex.Window{
-		ID:     wid,
-		Label:  label,
-		Blocks: []rex.Block{{ID: block, Label: spec.Label}},
+	// The new window's only block is focused, as the binary fake's newWindow
+	// sets it; AddWindow makes the window active when the session has none.
+	ses.AddWindow(&fakestate.Window{
+		ID:           string(wid),
+		Label:        label,
+		FocusedBlock: string(block),
+		Blocks:       []*fakestate.Block{{ID: string(block), Label: spec.Label}},
 	})
+	f.projectLocked(st, sid)
 	return wid, block, nil
 }
 
@@ -208,51 +221,54 @@ func (f *Fake) NewSplit(_ context.Context, sid rex.SessionID, anchor rex.BlockID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.CreatedSplits = append(f.CreatedSplits, CreatedSplit{SessionID: sid, Anchor: anchor, Direction: direction, Side: side, Spec: spec})
-	block := rex.BlockID("block:" + spec.Label)
-	for i, w := range f.View.Windows {
-		for _, b := range w.Blocks {
-			if b.ID == anchor {
-				f.View.Windows[i].Blocks = append(w.Blocks, rex.Block{ID: block, Label: spec.Label})
-				return block, nil
-			}
-		}
+	st, err := f.hydrationLocked(sid)
+	if err != nil {
+		return "", err
 	}
+	ses, err := st.Session(string(sid))
+	if err != nil {
+		return "", rex.ErrNotFound
+	}
+	w, err := anchorWindowLocked(ses, anchor)
+	if err != nil {
+		return "", err
+	}
+	block := rex.BlockID("block:" + spec.Label)
+	// The binary fake's newSplit keeps the window's focus where it is.
+	w.Blocks = append(w.Blocks, &fakestate.Block{ID: string(block), Label: spec.Label})
+	f.projectLocked(st, sid)
 	return block, nil
 }
 
-func (f *Fake) CloseBlock(_ context.Context, _ rex.SessionID, block rex.BlockID) error {
+func (f *Fake) CloseBlock(_ context.Context, sid rex.SessionID, block rex.BlockID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ClosedBlocks = append(f.ClosedBlocks, block)
 	if f.CloseBlockErr != nil {
 		return f.CloseBlockErr
 	}
-	f.ClosedBlocks = append(f.ClosedBlocks, block)
+	st, err := f.hydrationLocked(sid)
+	if err != nil {
+		return err
+	}
+	ses, err := st.Session(string(sid))
+	if err != nil {
+		return rex.ErrNotFound
+	}
+	if !ses.Remove(string(block)) {
+		return fmt.Errorf("block %s: %w", block, rex.ErrNotFound)
+	}
 	// A closed pane has no process: drop any recorded liveness so a block ID
 	// reused by a relaunched pane starts live, as a fresh Rex block does.
 	delete(f.Processes, block)
-	var windows []rex.Window
-	for _, w := range f.View.Windows {
-		var kept []rex.Block
-		for _, b := range w.Blocks {
-			if b.ID != block {
-				kept = append(kept, b)
-			}
-		}
-		// Rex removes a tab when its last block closes.
-		if len(kept) == 0 {
-			continue
-		}
-		w.Blocks = kept
-		windows = append(windows, w)
-	}
-	f.View.Windows = windows
+	f.projectLocked(st, sid)
 	return nil
 }
 
-// MoveWindow reorders View.Windows as Rex's session.move_window does: wid
-// moves just before before, or to the end when before is "". It acts on View,
-// as NewWindow does. The call is recorded first; then MoveWindowErr, before ==
-// wid, or an unknown id fail it without changing the order.
+// MoveWindow reorders the acting session's windows as Rex's session.move_window
+// does: wid moves just before before, or to the end when before is "". The call
+// is recorded first; then MoveWindowErr, before == wid, or an unknown id fail
+// it without changing the order.
 func (f *Fake) MoveWindow(_ context.Context, sid rex.SessionID, wid, before rex.WindowID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -260,22 +276,24 @@ func (f *Fake) MoveWindow(_ context.Context, sid rex.SessionID, wid, before rex.
 	if f.MoveWindowErr != nil {
 		return f.MoveWindowErr
 	}
-	if before == wid {
-		return fmt.Errorf("move window %s before itself: bad_request", wid)
+	st, err := f.hydrationLocked(sid)
+	if err != nil {
+		return err
 	}
-	from := slices.IndexFunc(f.View.Windows, func(w rex.Window) bool { return w.ID == wid })
-	if from < 0 {
-		return fmt.Errorf("window %s: %w", wid, rex.ErrNotFound)
+	ses, err := st.Session(string(sid))
+	if err != nil {
+		return rex.ErrNotFound
 	}
-	moved := f.View.Windows[from]
-	rest := slices.Delete(slices.Clone(f.View.Windows), from, from+1)
-	to := len(rest)
-	if before != "" {
-		if to = slices.IndexFunc(rest, func(w rex.Window) bool { return w.ID == before }); to < 0 {
-			return fmt.Errorf("window %s: %w", before, rex.ErrNotFound)
+	changed, err := ses.MoveWindow(string(wid), string(before))
+	if err != nil {
+		if errors.Is(err, fakestate.ErrFail) {
+			return fmt.Errorf("move window %s before itself: bad_request", wid)
 		}
+		return fmt.Errorf("move window %s before %s: %w", wid, before, rex.ErrNotFound)
 	}
-	f.View.Windows = slices.Insert(rest, to, moved)
+	if changed {
+		f.projectLocked(st, sid)
+	}
 	return nil
 }
 
