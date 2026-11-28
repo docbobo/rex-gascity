@@ -143,6 +143,26 @@ func TestResolveStaleBindingGone(t *testing.T) {
 	}
 }
 
+// TestResolveStoredTabIsExclusive proves a record that carries a TabLabel is
+// resolved in that one tab. The same pane label in a legacy tab is a different
+// binding, so the record's label must not be widened by the recordless legacy
+// rungs (CodeRabbit).
+func TestResolveStoredTabIsExclusive(t *testing.T) {
+	b, store, _ := newTestBinder(t, rex.Window{ID: "window:legacy", Label: "Indigo",
+		Blocks: []rex.Block{{ID: "block:dog-1", Label: "dog-1"}}})
+	rec := indigoBinding()
+	rec.WindowID, rec.BlockID = "window:gone", "block:gone"
+	store.Save(rec)
+
+	got, ok, err := b.Resolve(context.Background(), ResolveRequest{Name: "Indigo--dog-1", Mode: ResolveFresh})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if ok {
+		t.Fatalf("Resolve = %+v; a stored TabLabel %q must not adopt the pane in tab %q", got, rec.TabLabel, "Indigo")
+	}
+}
+
 func TestResolveKeepsStaleBindingWithPendingSurvivors(t *testing.T) {
 	b, store, _ := newTestBinder(t)
 	stale := indigoBinding()
@@ -248,6 +268,7 @@ func TestResolveLegacyWindowLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name, windowLabel, blockLabel, paneLabel string
 	}{
+		{"Indigo--dog-1", "Rig: Indigo", "dog-1", "dog-1"},
 		{"Indigo--dog-1", "Indigo", "dog-1", "dog-1"},
 		{"mayor", legacyTownTab, "mayor", "mayor"},
 	} {

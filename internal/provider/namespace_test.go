@@ -30,7 +30,10 @@ func TestNewNamespaceCanonicalFirst(t *testing.T) {
 	if got := ns.CanonicalDir(); got != wantDirs[0] {
 		t.Errorf("CanonicalDir = %q, want %q", got, wantDirs[0])
 	}
-	wantLabels := []string{rexSessionLabel("default"), rexSessionLabel("mycity"), rexSessionLabel("c")}
+	wantLabels := []string{
+		rexSessionLabel("default"), rexSessionLabel("mycity"), rexSessionLabel("c"),
+		legacySessionLabel("default"), legacySessionLabel("mycity"), legacySessionLabel("c"),
+	}
 	if !slices.Equal(ns.Labels(), wantLabels) {
 		t.Errorf("Labels = %v, want %v", ns.Labels(), wantLabels)
 	}
@@ -111,7 +114,7 @@ func TestNamespaceForCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 	rDir, _ := StateDir("r")
-	if city != "r" || !slices.Equal(ns.Dirs(), []string{rDir}) || !slices.Equal(ns.Labels(), []string{rexSessionLabel("r")}) {
+	if city != "r" || !slices.Equal(ns.Dirs(), []string{rDir}) || !slices.Equal(ns.Labels(), SessionLabels([]string{"r"})) {
 		t.Errorf("pinned: city=%q ns=%+v", city, ns)
 	}
 }
@@ -140,7 +143,7 @@ func TestNamespaceForCallerExecCityPathIsPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantDir, _ := StateDir("mycity")
-	if city != "mycity" || !slices.Equal(ns.Dirs(), []string{wantDir}) || !slices.Equal(ns.Labels(), []string{rexSessionLabel("mycity")}) {
+	if city != "mycity" || !slices.Equal(ns.Dirs(), []string{wantDir}) || !slices.Equal(ns.Labels(), SessionLabels([]string{"mycity"})) {
 		t.Errorf("exec-pinned: city=%q ns=%+v", city, ns)
 	}
 }

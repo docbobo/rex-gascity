@@ -85,13 +85,26 @@ func (b Binding) tabLabel(town string) string {
 }
 
 // acceptsTabLabel reports whether label is the binding's tab label: its stored
-// or derived label, or — for a record that has no stored label — the label gc
-// wrote before GCREX-72, which a window started by an older build still has.
+// or derived label, the pre-change town tab label (the bare pin or "Gas
+// City") for a record that has no stored label, or — for a record that has no
+// stored label — the label gc wrote before GCREX-72, which a window started by
+// an older build still has. That includes both the bare pre-GCREX-72 tab and
+// the "Rig: <rig>" label builds between GCREX-72 and the bracketed tags
+// wrote; without it a legacy binding cannot be confirmed against its own tab.
 func (b Binding) acceptsTabLabel(label, town string) bool {
 	if label == b.tabLabel(town) {
 		return true
 	}
-	return b.TabLabel == "" && label == legacyTabLabel(b.Name)
+	if b.TabLabel != "" {
+		return false
+	}
+	if town != "" && label == town {
+		return true
+	}
+	if tab := legacyRigTabFor(b.Name, nil); tab != "" && label == tab {
+		return true
+	}
+	return label == legacyTabLabel(b.Name)
 }
 
 // paneLabel returns the Rex pane label for the pane: the stored env-derived
@@ -121,8 +134,9 @@ type Binder struct {
 	// and a fresh record use the first; a legacy record under another
 	// candidate label still revalidates.
 	sessionLabels []string
-	// townTab is the town-level tab label, used to derive the tab label for
-	// a legacy record or a discovery scan that has no stored start env.
+	// townTab is the town tab's bare name (the pin, or the fallback). It
+	// derives the tagged town label, and it is the pre-change town tab label
+	// a window started by an older build still carries.
 	townTab string
 }
 
@@ -463,7 +477,11 @@ func mergeSurvivors(own, other []Survivor) []Survivor {
 // stored tab and pane labels (falling back to the name-derived labels for
 // legacy records).
 func stillBound(view rex.SessionView, bd Binding, town string) bool {
-	if view.Label != bd.SessionLabel {
+	// A record written before the bracketed tags names the session "gc:X"
+	// while the canonical session is now "[city] X" (and the converse for a
+	// record written by a newer provider into a session an older one made).
+	// Both labels name the one city, so either settles the session.
+	if view.Label != bd.SessionLabel && !sameCityLabel(view.Label, bd.SessionLabel) {
 		return false
 	}
 	for _, w := range view.Windows {
@@ -500,6 +518,19 @@ type resolvedLabels struct {
 	// recordless is true when no tab attributes the scan, so a suffix label
 	// in any tab may still name the session.
 	recordless bool
+	// session is the identity the panes are matched against: GC_SESSION_NAME
+	// when a start env supplies one, else the name. A start name can differ
+	// from the session name (GCREX-...), so every label rung verifies against
+	// the session's identity, not the start's.
+	session SessionName
+}
+
+// identity is the session name a label must verify against.
+func (l resolvedLabels) identity(name SessionName) SessionName {
+	if l.session != "" {
+		return l.session
+	}
+	return name
 }
 
 // resolveLabels returns the label candidates one traversal tries for name. A
@@ -509,6 +540,7 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 	var lbl resolvedLabels
 	if pol.startEnv != nil {
 		id := newLaunchIdentity(name, pol.startEnv, b.townTab)
+		lbl.session = SessionName(strings.TrimSpace(pol.startEnv["GC_SESSION_NAME"]))
 		lbl.pane = id.PaneLabel()
 		lbl.aliases = id.Aliases()
 		lbl.tabs = appendLabel(nil, id.TabLabel())
@@ -516,6 +548,11 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 		// which the pre-GC_RIG start env did not record. Keep that candidate
 		// before the env-derived legacy tab.
 		for _, tab := range id.LegacyTabLabels() {
+			lbl.tabs = appendLabel(lbl.tabs, tab)
+		}
+		// A window started by an older build carries "Rig: <rig>", which no
+		// start env recorded.
+		if tab := legacyRigTabFor(name, pol.startEnv); tab != "" {
 			lbl.tabs = appendLabel(lbl.tabs, tab)
 		}
 		if legacy := id.LegacyPaneLabel(); legacy != lbl.pane {
@@ -534,9 +571,30 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 		primary = tabLabel(name, nil, b.townTab)
 	}
 	lbl.tabs = appendLabel(nil, primary)
+	// A record's TabLabel is the tab its pane lives in, so it is the only
+	// candidate a scan may use: a pane with the same label in another tab is a
+	// different binding. The legacy rungs below exist only for a record with no
+	// stored tab (or no record at all), where the name has to stand in for it.
+	if !lbl.recordless {
+		return lbl
+	}
+	// A town window started before the bracketed tags still carries the bare
+	// pin (or "Gas City"); without this rung a recordless scan for a town
+	// session would stop finding it. Only a town-level name may claim that
+	// tab: for a rig name such as "Indigo--mayor" the bare pane label "mayor"
+	// would otherwise be attributed through the unrelated town pane of the
+	// town's own mayor.
+	if b.townTab != "" && name.IsTown() {
+		lbl.tabs = appendLabel(lbl.tabs, b.townTab)
+	}
 	// A window started by a build before GCREX-72 still carries the old
 	// label; find it rather than start a second tab.
 	lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, nil))
+	// The bracketed tags are newer still: a window from before them carries
+	// "Rig: <rig>".
+	if tab := legacyRigTabFor(name, nil); tab != "" {
+		lbl.tabs = appendLabel(lbl.tabs, tab)
+	}
 	return lbl
 }
 
@@ -605,8 +663,9 @@ func (b *Binder) findInView(name SessionName, lbl resolvedLabels, pol scanPolicy
 	// that label ("rig--rig--worker" is labelled "rig--worker" and sits in
 	// "Rig: rig"), so a bare label is only accepted as the expected pane label
 	// from the hint or record above.
+	identity := lbl.identity(name)
 	paneMatches := func(label string) bool {
-		if label == pane || identityMatch(name, label) {
+		if label == pane || identityMatch(identity, label) {
 			return true
 		}
 		for _, legacyPane := range lbl.legacyPanes {
@@ -661,7 +720,7 @@ func (b *Binder) findInView(name SessionName, lbl resolvedLabels, pol scanPolicy
 				continue
 			}
 			for _, blk := range w.Blocks {
-				if identityMatch(name, blk.Label) {
+				if identityMatch(identity, blk.Label) {
 					return accept(tab, w, blk)
 				}
 			}
@@ -683,7 +742,7 @@ func (b *Binder) findInView(name SessionName, lbl resolvedLabels, pol scanPolicy
 	if lbl.recordless {
 		for _, w := range view.Windows {
 			for _, blk := range w.Blocks {
-				if identityMatch(name, blk.Label) {
+				if identityMatch(identity, blk.Label) {
 					return accept(w.Label, w, blk)
 				}
 			}

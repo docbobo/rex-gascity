@@ -61,19 +61,35 @@ func isTownStart(name SessionName, env map[string]string) bool {
 	return env["GC_RIG"] == "" && name.IsTown()
 }
 
-// tabLabel derives the Rex tab label for a started session: "Rig: <GC_RIG>"
+// tabLabel derives the Rex tab label for a started session: "[rig] <GC_RIG>"
 // whenever GC_RIG is non-empty, even for a town-style name with no "--" (a wisp
-// instance name). Only with no GC_RIG does the name shape decide: the town label
-// for a town-level name, otherwise "Rig: " plus the name split. Every result is
-// clamped to maxRexLabel.
+// instance name). Only with no GC_RIG does the name shape decide: the tagged
+// town label for a town-level name, otherwise "[rig] " plus the name split.
+// Every result is clamped to maxRexLabel.
 func tabLabel(name SessionName, env map[string]string, town string) string {
 	if isTownStart(name, env) {
-		return clampRexLabel(town)
+		return townTabLabel(town)
 	}
 	if rig := env["GC_RIG"]; rig != "" {
-		return clampRexLabel("Rig: " + rig)
+		return clampRexLabel(taggedLabel(labelRig, rig))
 	}
-	return clampRexLabel("Rig: " + name.Rig())
+	return clampRexLabel(taggedLabel(labelRig, name.Rig()))
+}
+
+// legacyRigTabFor is the tab label the provider derived before the bracketed
+// tags: "Rig: <rig>". A window started by an older build still carries it, so
+// resolution looks for it as well. Empty for a town-level name with no GC_RIG.
+// The old tab label was clamped to maxRexLabel, so the candidate is clamped
+// too: for a rig of 124 or more runes the stored tab ends in "…" and an
+// unclamped candidate would never match it.
+func legacyRigTabFor(n SessionName, env map[string]string) string {
+	if rig := env["GC_RIG"]; rig != "" {
+		return clampRexLabel(legacyRigTabPrefix + rig)
+	}
+	if rig := n.Rig(); rig != "" {
+		return clampRexLabel(legacyRigTabPrefix + rig)
+	}
+	return ""
 }
 
 // legacyTabLabel is the tab label gc wrote before GCREX-72: "__town" for a
@@ -97,16 +113,8 @@ func legacyTabLabelFor(n SessionName, env map[string]string) string {
 	return n.Rig()
 }
 
-// paneLabelFor returns the Rex pane label for a started session. An unaliased
-// pool seat whose name the env proves (Sanitize(agent)+"-"+bead id equals
-// GC_SESSION_NAME, gc's PoolSessionName shape) gets the short
-// "<agent> (#<bead id>)" form; every other rig-scoped session keeps
-// "<agent> (<GC_SESSION_NAME>)", and a town-level session keeps the
-// name-derived label. Both forms shorten only the agent. A verified short form
-// is the identity even when it is over the limit, so it is clamped keeping the
-// bead id rather than falling through to the always-longer long form. The "#"
-// marks the short form so identityMatch never reads its bead id as a session
-// name.
+// paneLabelFor returns the Rex pane label for a started session. See
+// paneLabelForAgent: it is the one writer of the pane grammar.
 func paneLabelFor(n SessionName, env map[string]string) string {
 	return paneLabelForAgent(n, env, paneLabelAgent(env))
 }
@@ -140,29 +148,130 @@ func legacyPaneLabelFor(n SessionName, env map[string]string) string {
 	return agent + tail
 }
 
+// paneLabelForAgent is the one pane-label writer. A town-level start renders
+// "[agent] (<name>)" with no tail. An unaliased pool seat whose name the env
+// proves (Sanitize(agent)+"-"+pool identity equals GC_SESSION_NAME, gc's
+// PoolSessionName shape) gets the bracketed tag, the marked pool identity
+// "(#<bead id>)" in parentheses and the display-only "#<session id>" tail.
+// Every other rig-scoped session keeps "[agent] (<GC_SESSION_NAME>) #<id>".
+// The two forms shorten differently, so each states its own ladder below.
 func paneLabelForAgent(n SessionName, env map[string]string, agent string) string {
-	if env["GC_RIG"] == "" && n.IsTown() {
-		return n.PaneLabel()
+	if isTownStart(n, env) {
+		return townPaneLabel(agent, n)
 	}
 	session := strings.TrimSpace(env["GC_SESSION_NAME"])
 	if session == "" || agent == "" {
 		return n.PaneLabel()
 	}
-	// The safety guard: only claim the short form when the name verifies it.
+	id := paneSessionID(env)
+	// The safety guard: only claim the pool form when the name verifies it.
 	// gc has changed the name shape before, so a failed check degrades to the
 	// long form rather than to a guess.
 	if env["GC_ALIAS"] == "" {
-		if suffix := panePoolSuffix(env); suffix != "" && sanitizeQualified(agent)+"-"+suffix == session {
-			if label, ok := fitPaneLabel(agent, paneLabelShortForm+suffix); ok {
+		if pool := panePoolSuffix(env); pool != "" && sanitizeQualified(agent)+"-"+pool == session {
+			if label, ok := fitPoolPaneLabel(agent, pool, id); ok {
 				return label
 			}
-			return clampRexLabel(session)
+			// The pool form cannot fit: the long form names the session by
+			// its suffix, so it is the one that survives a shortened agent.
 		}
 	}
-	if label, ok := fitPaneLabel(agent, session); ok {
+	if label, ok := fitLongPaneLabel(agent, session, id); ok {
 		return label
 	}
 	return clampRexLabel(session)
+}
+
+// paneSessionID is the display id a pane label carries after "#": the claim's
+// GC_SESSION_ID, never an identity.
+func paneSessionID(env map[string]string) string { return strings.TrimSpace(env["GC_SESSION_ID"]) }
+
+// townPaneLabel is a town-level pane label: "[agent] (<name>)". The session
+// name is the agent, so there is no separate identity for the parentheses and
+// no display id to append. It obeys the same 128-rune limit as the rig branch:
+// the long form when it fits, otherwise the agent is shortened, and a label
+// that still cannot fit falls back to the clamped bare name.
+func townPaneLabel(agent string, n SessionName) string {
+	if agent == "" {
+		return n.PaneLabel()
+	}
+	if label, ok := fitLongPaneLabel(agent, n.String(), ""); ok {
+		return label
+	}
+	return clampRexLabel(n.String())
+}
+
+// fitAgent fits agent into budget runes, marking a cut with paneLabelShortened
+// so the label never reads like a whole agent. ok is false when not even the
+// marker fits.
+func fitAgent(agent string, budget int) (string, bool) {
+	r := []rune(agent)
+	if len(r) <= budget {
+		return agent, true
+	}
+	if budget < 2 {
+		return "", false
+	}
+	return string(r[:budget-1]) + paneLabelShortened, true
+}
+
+// fitPoolPaneLabel renders the pool form at or under Rex's limit. The agent
+// and the parenthesised pool identity both name the session, so neither is cut
+// here; the "#<id>" tail is display-only, so it is the one part that may be
+// dropped. The identity is marked with paneLabelShortForm, which is what keeps
+// the pool form from colliding with a session literally named the pool id. The
+// ladder is therefore "[agent] (#pool) #id", then "[agent] (#pool)". A pool
+// identity that does not fit returns ok=false and the caller falls back to the
+// long form, whose identity is the whole name.
+func fitPoolPaneLabel(agent, pool, id string) (string, bool) {
+	suffix := paneLabelShortForm + pool
+	if id != "" {
+		if label := newPaneParts(agent, suffix, id).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+			return label, true
+		}
+	}
+	if label := newPaneParts(agent, suffix, "").String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+		return label, true
+	}
+	return "", false
+}
+
+// fitLongPaneLabel renders the long form at or under Rex's limit. Here the
+// suffix is the whole session name, so shortening the agent keeps the
+// identity and is preferable to dropping the display id. The fixed ladder is
+// "[agent] (name) #id", "[agent…] (name) #id", "[agent] (name)",
+// "[agent…] (name)": a name that can survive does survive.
+func fitLongPaneLabel(agent, name, id string) (string, bool) {
+	// A complete session name beginning with the pool mark would read back as
+	// the marked pool identity: "[worker] (#seat)" names worker-seat to
+	// namesSession, not the session literally called "#seat". The long form
+	// cannot carry such a name unambiguously, so it declines; the caller falls
+	// back to the bare clamped name, which discovery still matches as the
+	// expected pane label (name.PaneLabel()) rather than as a pool seat.
+	if strings.HasPrefix(name, paneLabelShortForm) {
+		return "", false
+	}
+	ids := []string{id}
+	if id != "" {
+		ids = append(ids, "")
+	}
+	for _, tailID := range ids {
+		if label := newPaneParts(agent, name, tailID).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+			return label, true
+		}
+		overhead := 2 + 3 + utf8.RuneCountInString(name)
+		if tailID != "" {
+			overhead += 2 + utf8.RuneCountInString(tailID)
+		}
+		cut, ok := fitAgent(agent, maxPaneLabelRunes-overhead)
+		if !ok {
+			continue
+		}
+		if label := newPaneParts(cut, name, tailID).String(); utf8.RuneCountInString(label) <= maxPaneLabelRunes {
+			return label, true
+		}
+	}
+	return "", false
 }
 
 // paneLabelAgent is the display agent: the agent part of GC_TEMPLATE (the

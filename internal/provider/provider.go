@@ -160,9 +160,11 @@ type Provider struct {
 	client rex.Client
 	binder *Binder
 
-	// townTab is the town-level tab label, resolved once from the process
-	// city pin at construction so every start and record agrees even when the
-	// caller passes a different city.
+	// townTab is the town tab's bare name (the city pin, or the fallback),
+	// resolved once from the process city pin at construction so every start
+	// and record agrees even when the caller passes a different city. It stays
+	// bare: it is both the canonical label's name and the pre-change town tab
+	// label the resolution rungs still accept.
 	townTab string
 
 	bindings Store[SessionName, Binding]
@@ -328,7 +330,7 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 		warn:                os.Stderr,
 	}
 	p.nudge.claimProbe = p.probeLiveClaim
-	p.townTab = townTabLabel(cityPin())
+	p.townTab = townTabName(cityPin())
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -337,7 +339,10 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	}
 	labels := p.ns.labels
 	if len(labels) == 0 {
-		labels = []string{rexSessionLabel(city)}
+		// No namespace (the dirs-only constructor): accept the canonical and
+		// the legacy city label, so a session an older provider wrote is still
+		// found.
+		labels = SessionLabels([]string{city})
 	}
 	p.binder = NewBinderWithLabels(client, p.bindings, labels, p.townTab)
 	return p
@@ -488,14 +493,23 @@ func (p *Provider) start(ctx context.Context, name string, cfg Config) (startRes
 	// Seed identity, launch the pane, and record it or roll back. launchPane
 	// owns that step, its lock order, the vanished-session retry and the
 	// rollback of everything this start seeded.
+	id := newLaunchIdentity(n, cfg.Env, p.townTab)
+	// A tab started by an older build carries its pre-bracketed-tags label
+	// ("Rig: <rig>", or the bare pin). Joining it instead of creating a
+	// second tab keeps an upgrade from splitting the rig across two tabs.
+	legacyTabs := id.LegacyTabLabels()
+	if tab := legacyRigTabFor(n, cfg.Env); tab != "" {
+		legacyTabs = append(legacyTabs, tab)
+	}
 	return p.launchPane(ctx, launchRequest{
-		name:     n,
-		attempt:  attempt,
-		session:  sid,
-		tab:      newLaunchIdentity(n, cfg.Env, p.townTab).TabLabel(),
-		spec:     plan.Spec,
-		relaunch: relaunch,
-		cfg:      cfg,
+		name:      n,
+		attempt:   attempt,
+		session:   sid,
+		tab:       id.TabLabel(),
+		tabLegacy: legacyTabs,
+		spec:      plan.Spec,
+		relaunch:  relaunch,
+		cfg:       cfg,
 	})
 }
 

@@ -58,8 +58,8 @@ func TestE2ERigSplitGrid(t *testing.T) {
 		t.Fatalf("windows = %d, want 1", len(view.Windows))
 	}
 	win := view.Windows[0]
-	if win.Label != "Rig: Indigo" {
-		t.Errorf("window label = %q, want \"Rig: Indigo\"", win.Label)
+	if win.Label != "[rig] Indigo" {
+		t.Errorf("window label = %q, want \"[rig] Indigo\"", win.Label)
 	}
 	if len(win.Blocks) != agents {
 		t.Fatalf("blocks = %d, want %d", len(win.Blocks), agents)

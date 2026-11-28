@@ -230,61 +230,82 @@ Two of these are Rex-only, and `docs/REX-CONTRACT.md` §9 has their contract:
 
 ## Identity Mapping
 
-Gas City sessions map onto the three-level Rex hierarchy:
+Gas City sessions map onto the three-level Rex hierarchy. Every generated
+label carries a bracketed kind tag; the name after it is the identity.
 
 | Gas City | Rex | Label / Rule |
 |---|---|---|
-| City | Session | `gc:<city>` (one Rex session per city namespace) |
-| Rig | Tab (window) | `Rig: <GC_RIG>` whenever `GC_RIG` is non-empty; otherwise `Rig: <rig>` for `<rig>--<agent>`, or the city pin for town-level names with no `--` (`Gas City` when no pin is set). The pane label never decides the tab |
-| Agent | Pane (block) | `<agent> (<suffix>)`; the agent is the agent part of `GC_TEMPLATE` (else `GC_ALIAS`, then `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`). An unaliased pool seat gets the short `(<session bead id>)` suffix; named/aliased sessions and names the env cannot verify keep `(<GC_SESSION_NAME>)`. Town-level agents and sessions with no agent identity keep `<agent>` |
+| City | Session | `[city] <city>` (one Rex session per city namespace); the pre-tag `gc:<city>` is still accepted |
+| Rig | Tab (window) | `[rig] <GC_RIG>` whenever `GC_RIG` is non-empty; otherwise `[rig] <rig>` for `<rig>--<agent>`, or `[city] <pin>` for town-level names with no `--` (`[city] Gas City` when no pin is set). The pane label never decides the tab |
+| Agent | Pane (block) | `[<agent>] (<session>)`; the agent is the agent part of `GC_TEMPLATE` (else `GC_ALIAS`, then `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`). An unaliased pool seat whose session name verifies as `<agent>-<bead id>` gets `[<agent>] (#<bead id>) #<session id>`; every other session keeps the long `(<GC_SESSION_NAME>)` form, and a town-level start keeps `[<agent>] (<name>)`. A start with no resolvable agent keeps the bare session name |
 
-- Starting the first agent in a rig creates a new Rex tab labeled `Rig: <rig>`; a start whose env carries `GC_RIG` joins `Rig: <GC_RIG>` even when its runtime name has no `--` (a wisp instance such as `gc__implementation-worker-mc-wisp-s5gax5`). A start with no `GC_RIG` and a town-level name opens a tab labeled with the city pin (`my-city`), or `Gas City` when the process has no pin.
-- Session names and the `gc:<city>` session label are unchanged. A pane label is display-only (see below).
-- The pane label is `"<agent> (<suffix>)"` (GCREX-5qel, gcrex-7n06r):
-  - R1 town-level start (no `GC_RIG`) keeps the bare agent (`mayor`);
+- The bracketed text names the kind of identity that follows; only a pane with
+  no agent identity stays bare (`mayor`, `shell`). One parenthesis rule serves
+  all three levels: the contents of `(...)` are the identity.
+- Starting the first agent in a rig creates a new Rex tab labeled
+  `[rig] <rig>`; a start whose env carries `GC_RIG` joins `[rig] <GC_RIG>` even
+  when its runtime name has no `--` (a wisp instance such as
+  `gc__implementation-worker-mc-wisp-s5gax5`). A start with no `GC_RIG` and a
+  town-level name opens a tab labeled with the city pin (`[city] my-city`), or
+  `[city] Gas City` when the process has no pin.
+- Session names are unchanged; the session *label* gains the tag. A pane label
+  is display-only (see below).
+- The pane label is `"[<agent>] (<suffix>)"` (GCREX-5qel, gcrex-7n06r):
+  - R1 town-level start (no `GC_RIG`) is `[<agent>] (<name>)`, with the
+    session name in the parentheses and no display tail;
   - R2 rig-scoped agent prefix is the agent part of `GC_TEMPLATE`
     (`path.Base`): `gc.implementation-worker`, `core.control-dispatcher`.
     When `GC_TEMPLATE` is absent it falls back to `GC_ALIAS`, then
     `GC_AGENT`, then the `BEADS_ACTOR` segment after the first `/`;
-  - R3 suffix: a named/aliased session (`GC_ALIAS` non-empty) uses the whole
-    `GC_SESSION_NAME`; an unaliased pool/ephemeral seat uses its session bead
-    id — `GC_AGENT` (a value containing `/` or `.` is a qualified agent, never
-    a bead id), else `GC_SESSION_ID` — so a pool seat reads
-    `gc.implementation-worker (#mc-wisp-kvqib)`. The `#` marks the suffix as a
-    bead id, not a session name. The bead id is *tried* against
-    the name, never assumed: a seat with neither `GC_AGENT` nor
-    `GC_SESSION_ID` falls back to the template's agent part as the candidate
-    suffix, the verification below fails, and the long form is emitted;
+  - R3 suffix: an unaliased pool/ephemeral seat whose session name verifies as
+    `Sanitize(agent)+"-"+bead id` reads
+    `[<agent>] (#<bead id>) #<session id>` — the `#` inside the parentheses
+    marks the pool identity, and the trailing `#<session id>` is display-only;
+    a named/aliased session, or any name the env cannot verify, uses the whole
+    `GC_SESSION_NAME` in the parentheses. The suffix candidate is the bead id
+    from `GC_AGENT` (a value containing `/` or `.` is a qualified agent, never
+    a bead id), else `GC_SESSION_ID`; a seat with neither falls back to the
+    template's agent part and the verification fails, so it gets the long form;
   - R4 a pane with no gc env (started by hand, `shell`) is never relabelled.
 
   A blank session name or agent keeps the name-derived label, and an
-  over-long label is clamped to 128 runes without truncating the suffix.
-  A shortened agent ends in `…` (`paneLabelShortened`), so the cut is visible
-  in the label and discovery can tell it from a whole short agent. Shortening
-  the agent costs the short form its identity: a visible agent prefix plus the
-  bead id fits more than one name, so discovery refuses that label instead of
-  guessing which pane it means. The long form is unaffected —
-  its suffix is the whole session name. Only a suffix that cannot fit at all
-  falls back to the bare session name.
+  over-long label is clamped to 128 runes. The two forms shorten differently.
+  The pool form drops its display-only `#<session id>` tail first, keeping
+  `[<agent>] (#<bead id>)`, and never cuts the agent: if the marked identity
+  does not fit, the long form takes over. The long and town forms keep the
+  identity and cut the agent with `…` to fit, first with the display tail and
+  then without it; only a suffix that cannot fit at all falls back to the bare
+  session name. A cut agent ends in `…` (`paneLabelShortened`), so the cut
+  stays visible.
 - How a short label is verified: gc's pool runtime name is
   `Sanitize(path.Base(GC_TEMPLATE)) + "-" + beadID` (`PoolSessionName`,
   `cmd/gc/pool_session_name.go` at v1.5.1), with `Sanitize` mapping `/` to
   `--` and `.` to `__` (`internal/agent/session_name.go`). Before emitting the
-  short form the provider asserts `Sanitize(agent)+"-"+suffix ==
+  pool form the provider asserts `Sanitize(agent)+"-"+suffix ==
   GC_SESSION_NAME`; when that fails (gc has changed its name shape before) it
-  emits the long `"<agent> (<GC_SESSION_NAME>)"` form rather than a guess. The
-  candidate suffix is only tried: without `GC_AGENT` and `GC_SESSION_ID` the
-  fallback candidate is the template's agent part, so the check fails and the
-  long form is emitted.
-  Discovery applies the same rule (`identityMatch`): a label names session `n`
-  when its parenthesised suffix is `n`, or its suffix is `#<bead id>` and
-  `n` is exactly `Sanitize(agent)+"-"+bead id` with no shortening; a bare
-  label, a prefix-only match or an agent ending in `…` never counts.
+  emits the long `"[<agent>] (<GC_SESSION_NAME>)"` form rather than a guess.
+  The candidate suffix is only tried: without `GC_AGENT` and `GC_SESSION_ID`
+  the fallback candidate is the template's agent part, so the check fails and
+  the long form is emitted.
+  Discovery applies the same rule (`identityMatch`): the marked short form
+  (tagged `[agent] (#<bead id>)` or the legacy untagged `agent (#<bead id>)`)
+  names session `n` when its identity is exactly
+  `Sanitize(agent)+"-"+bead id`; an unmarked suffix names only the session
+  whose complete name equals the parentheses. The marker is what keeps a
+  label to one session: without it `[worker] (seat)` would name both the town
+  session `seat` and the pool seat `worker-seat`. Shortening the agent keeps
+  the identity — the parenthesis survives the cut — and the trailing `#` tail
+  is display-only: it is never compared, so it alone never names a session.
+  A complete session name that itself starts with `#` cannot take the long
+  form: `[worker] (#seat)` would read as the pool seat `worker-seat`, not the
+  session `#seat`. Such a start keeps the bare clamped session name, which
+  discovery matches as the expected name-derived pane label, so `#seat` finds
+  its pane and `worker-seat` does not.
 - The launch label, the discovery hint and the recorded label all come from the same pool-routing-projected env (`launch.Project`), the one the pane itself runs with. Deriving the launch label from the pre-projection env would disagree with the hint whenever routing rewrites `BEADS_ACTOR`, and a restart with the sidecar record lost would launch a duplicate pane.
 - With no sidecar record and no start env (`is-running`, `stop`), the fallback scan accepts a pane label whose parenthesised suffix names the session — the long `(<GC_SESSION_NAME>)` form, or the verified pool short form `Sanitize(agent)+"-"+bead id == name` (written `#<bead id>`) — as well as the exact name-derived label, so a live pane is found without any start env. A shortened short form names nobody: such a pane is left alone rather than risking another session's stop.
-- A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. New tabs always use the labels above.
+- A pane started by a build before GCREX-72 still sits in a tab labelled `__town` or the bare rig name (`Indigo`). Resolution, discovery and `start` accept that label for a record with no stored tab label or a scan that finds no derived one, so an upgrade reuses the live pane instead of opening a second tab. A record that carries a stored tab label is scanned in that tab alone: the same pane label in another tab is a different binding, never an adoption. New tabs always use the labels above.
 - Starting more agents in the same rig splits panes into that rig's existing tab. Each new pane splits the largest-area pane along its longer axis (horizontal when width >= height, else vertical) at 50%, so panes stay balanced. If the layout has no usable geometry, it falls back to splitting the first block horizontally.
-- `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `gc:<city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
+- `stop` closes only the city-owned agent block (`rex block close`). Closing the last pane in a tab removes that tab automatically in Rex. Teardown never stops the shared Rex server and never destroys a session: the live probe hit the plan's approved skip branch because the Rex app is listed on every session of the shared server, so the empty canonical `[city] <city>` shell stays listed and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 
 ### Rig from the start config
 
@@ -293,24 +314,27 @@ gc 1.5.1 starts pool and wisp instances under a runtime name that carries no
 arrives out of band in the start config `env` as `GC_RIG`. The provider
 therefore derives the Rex tab label as:
 
-- a non-empty `GC_RIG` wins regardless of the name shape: `Rig: <GC_RIG>`,
+- a non-empty `GC_RIG` wins regardless of the name shape: `[rig] <GC_RIG>`,
   including a town-level name with no `--`;
-- with no `GC_RIG`, a town-level name uses the town label: the city pin, or
-  `Gas City` when no pin is set;
-- with no `GC_RIG`, a rig name (`<rig>--<agent>`) uses `Rig: ` plus
+- with no `GC_RIG`, a town-level name uses the town label: `[city] <pin>`, or
+  `[city] Gas City` when no pin is set;
+- with no `GC_RIG`, a rig name (`<rig>--<agent>`) uses `[rig] ` plus
   `SessionName(name).Rig()`.
 
-Every generated label is clamped to Rex's 128-character limit.
+Every generated label is clamped to Rex's 128-character limit, except the
+canonical session label: `[city] <city>` keeps the city identity whole, because
+two long city names that shared a truncated label would fold into one Rex
+session.
 
-The pane label is `<agent> (<suffix>)` for a rig-scoped session, with the agent
-resolved from `GC_TEMPLATE` (agent part) → `GC_ALIAS` → `GC_AGENT` → the
+The pane label is `[<agent>] (<suffix>)` for a rig-scoped session, with the
+agent resolved from `GC_TEMPLATE` (agent part) → `GC_ALIAS` → `GC_AGENT` → the
 `BEADS_ACTOR` segment after the first `/`. An unaliased pool seat whose name
-verifies as `Sanitize(agent)+"-"+bead id` gets the short `<agent> (<bead id>)`
-suffix; every other session keeps `(<GC_SESSION_NAME>)`. A blank session name
-or agent keeps the name-derived label, and an over-long label is clamped to 128
-runes without truncating the suffix. A shortened agent ends in `…`, and that
-marked label names no session. `GC_SESSION_NAME` is load-bearing for the long
-label.
+verifies as `Sanitize(agent)+"-"+bead id` gets the marked short
+`[<agent>] (#<bead id>)` suffix; every other session keeps
+`[<agent>] (<GC_SESSION_NAME>)`. A blank session name or agent keeps the
+name-derived label, and an over-long label is clamped as described above. A
+shortened agent ends in `…`, and that marked label names no session.
+`GC_SESSION_NAME` is load-bearing for the long label.
 
 At `start` the provider records the pane's binding under the runtime name it
 was started with, plus rig-qualified aliases derived from the start config
@@ -341,8 +365,8 @@ phantom orphan session bead.
 
 Bindings written before this change (or without a start-config env) carry no
 stored aliases and keep resolving by the derived tab label (the town label for
-town-level names, `Rig: <rig>` from the name split otherwise) and the pane
-label.
+town-level names, `[rig] <rig>` or the legacy `Rig: <rig>` from the name split
+otherwise) and the pane label.
 
 ## Sidecar State and Environment Variables
 
@@ -383,7 +407,7 @@ ordered set of legacy namespaces:
   of `GC_EXEC_CITY_NAME`, `GC_EXEC_CITY_PATH`, `GC_REX_CITY`, `GC_CITY_PATH` or
   `GC_CITY` at all — resolve a binding the pinned controller wrote. Discovery
   only widens reads: a live pane still has to revalidate against its
-  `gc:<city>` Rex session, so a dead city's record is never reported as
+  `[city] <city>` Rex session, so a dead city's record is never reported as
   running. The relaxation is that an unpinned caller cannot
   name a city, so if two live cities hold the same session name, the name
   resolves in read-set order (canonical `default`, then env fallbacks, then
@@ -409,8 +433,8 @@ the canonical namespace is caller-independent:
 
 The pin is a city **name**, never a path: gc's absolute
 `GC_EXEC_CITY_PATH` names the city by its last path component, so the Rex
-session label stays `gc:my-city` and a city's sidecar state stays in one
-namespace. Using the raw path as the pin made the label `gc:/Users/…/my-city`
+session label stays `[city] my-city` and a city's sidecar state stays in one
+namespace. Using the raw path as the pin made the label `[city] /Users/…/my-city`
 and split the state the moment gc started setting the variable (GCREX-71).
 
 `basename($GC_CITY_PATH)` and `$GC_CITY` do **not** select the canonical store;
@@ -433,7 +457,7 @@ the widened read honest.
 | `GC_REX_BIN` | `rex` (resolved via `PATH`) | Path or name of the `rex` CLI binary used by the provider |
 | `GC_EXEC_CITY_NAME` | unset | gc's per-op city name; pins the canonical city namespace (highest precedence) |
 | `GC_EXEC_CITY_PATH` | unset | gc's per-op city path; names the city by its last path component when `GC_EXEC_CITY_NAME` is unset |
-| `GC_REX_CITY` | `"default"` | Pins the canonical city namespace for the `gc:<city>` Rex session label and sidecar state subdirectory; also removes all fallback read namespaces |
+| `GC_REX_CITY` | `"default"` | Pins the canonical city namespace for the `[city] <city>` Rex session label and sidecar state subdirectory; also removes all fallback read namespaces |
 | `GC_REX_STATE_DIR` | `$XDG_STATE_HOME/rex-gascity` or `~/.local/state/rex-gascity` | Overrides the base directory for per-city sidecar state |
 
 ### Start-config `GC_*` environment
@@ -668,7 +692,7 @@ live pane as a dead/zombie seat and closes the session bead without issuing
 - **Unimplemented operations exit 2**: `exec`, `provision`, and `watch-startup` are not implemented and exit with code `2` per RPP v0. `server-stop` and `copy-to` are not registered, so they also exit 2. At `v1.5.1`, gc's exec `CopyTo` runs `copy-to` best-effort (`internal/runtime/exec/exec.go:793-797`). The retired parity doc said gc never sends it. Whether a 1.5.1 city reaches that call for an exec provider is `unverified`. When `watch-startup` is unsupported, gc falls back to `runtime.AcceptStartupDialogs` over `peek` and `send-keys` (`internal/runtime/exec/exec.go:376-380` at `v1.5.1`). ADR-0009 records why `start` stays welded.
 - **`attach` is a hint, not a pty passthrough (GCREX-20)**: gc 1.5.1 calls `attach` from `gc session attach` and `gc session new` through `runWithTTY`, which does not apply the exit-2-is-success rule, so a Rex-backed session cannot answer exit 2 without failing the command. The provider registers `attach` and always exits 0, printing a one-line hint to open the Rex app and select the session. It reads no Rex state, so an unknown session and an unreachable server succeed too. No `tty.attach` capability is declared: this is a hint path, not an interactive connection.
 - **`nudge` is busy-gated on the agent's OSC 7501 status (GCREX-16, GCREX-21)**: the pane program emits OSC 7501 status frames (Pi does; gc-managed Pi panes report `idle`/`working`/…), and Rex stores them as `program_status`. `nudge` reads the newest record before it types. A `working` pane answers the `busy` input outcome. A `blocked` pane answers `pending_interaction` and names the blocked kind. Both exit 80 and type nothing (`internal/provider/pane_delivery.go`, `input.go`; `TestNudgeBusyIsBusyOutcome`, `TestNudgeBlockedIsPendingInteraction`). A program that reports no status is not gated.
-- **Teardown leaves the server and the session intact**: Stopping agents closes only city-owned blocks (`rex block close`) and never stops the shared Rex server. After the last pane closes, the empty canonical `gc:<city>` session is left in place — the live probe lists the server-wide Rex app client on every session, which is the approved skip branch — and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
+- **Teardown leaves the server and the session intact**: Stopping agents closes only city-owned blocks (`rex block close`) and never stops the shared Rex server. After the last pane closes, the empty canonical `[city] <city>` session is left in place — the live probe lists the server-wide Rex app client on every session, which is the approved skip branch — and the next `Start` reuses it (`docs/REX-CONTRACT.md` §12).
 
 ## Operational risks
 

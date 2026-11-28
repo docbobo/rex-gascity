@@ -420,17 +420,20 @@ func e2eP3WriteStale(t *testing.T, stateDir, name string, real provider.Binding,
 }
 
 // e2eExpectSessionGoneAfterStop checks the GCREX-31 teardown rule after the
-// last pane of a city is stopped: the provider removes the canonical gc:<city>
-// session behind its fail-closed empty check.
+// last pane of a city is stopped: the provider removes the city session behind
+// its fail-closed empty check. Both the canonical "[city] <city>" label and
+// the legacy "gc:<city>" label name that one session, so either one still
+// listed means the session was not removed.
 func e2eExpectSessionGoneAfterStop(ctx context.Context, t *testing.T, client *cli.Client, city string) {
 	t.Helper()
 	sessions, err := client.ListSessions(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
+	canonical := provider.SessionLabels([]string{city})[0]
 	for _, s := range sessions {
-		if s.Label == "gc:"+city {
-			t.Errorf("session gc:%s (%s) still listed after Stop; Stop must remove it once empty", city, s.ID)
+		if s.Label == canonical || s.Label == "gc:"+city {
+			t.Errorf("session %s (%s) still listed after Stop; Stop must remove it once empty", s.Label, s.ID)
 			return
 		}
 	}
@@ -529,8 +532,8 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 
 	// Self-exit with no Stop leaves the empty session shell: no pane-exit
 	// watcher destroys it (GCREX-65 Decision 4).
-	if !e2eHasSession(ctx, t, client, "gc:"+city) {
-		t.Errorf("session gc:%s gone after the agent exited without Stop; it must survive", city)
+	if !e2eHasSession(ctx, t, client, provider.SessionLabels([]string{city})[0]) {
+		t.Errorf("session %s gone after the agent exited without Stop; it must survive", provider.SessionLabels([]string{city})[0])
 	}
 
 	// Closing the last pane removes the rig tab. Allow a moment for the
@@ -540,7 +543,7 @@ func TestE2EAgentExitLiveness(t *testing.T) {
 		var left []rex.Window
 		deadline = time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
-			if left = e2eWindowsLabelled(ctx, t, client, b.SessionID, "Rig: Indigo"); len(left) == 0 {
+			if left = e2eWindowsLabelled(ctx, t, client, b.SessionID, "[rig] Indigo"); len(left) == 0 {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
@@ -608,7 +611,7 @@ func TestE2EParallelStarts(t *testing.T) {
 	if !ok {
 		t.Fatalf("Binding %s: not found", names[0])
 	}
-	windows := e2eWindowsLabelled(ctx, t, client, first.SessionID, "Rig: Indigo")
+	windows := e2eWindowsLabelled(ctx, t, client, first.SessionID, "[rig] Indigo")
 	if len(windows) != 1 {
 		t.Fatalf("got %d windows labelled Indigo, want exactly 1: %+v", len(windows), windows)
 	}

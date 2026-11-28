@@ -65,7 +65,7 @@ gc city → Rex session, gc rig → Rex tab, gc agent → Rex pane (Option B).
 | `session.view` | `session_id` | `session_id`, `active_window_id`, `label`, `revision` (increments per change, jumps on restore), `windows[].{window_id, label, focused_block_id, layers[]}`; each `layers[].blocks[]` entry is `{block_id, flavor, label, owner, creator_name, host_id}`. **The view has no `clients` field** |
 | `session.list` | — | `sessions[] {session_id, label}` in creation order |
 | `session.list_clients` | `session_id` | `clients[] {client_id, principal, info, connected_at, connection_state}` — the attached-client source (§12), not `session.view` |
-| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe.** The provider calls it in one place: `stop` removes this city's own canonical `gc:<city>` session once its last pane is gone, behind the fail-closed empty check in §12 (GCREX-31) |
+| `session.destroy` | `session_id` (required) | closes every window and block in the session, hanging up the programs in them. Schema requires an **attached** connection (`session.attach` / `session.bootstrap` / `session.attach_all`) or the call fails `conflict`; an unknown id fails `session_not_found`. **Destructive — never use it in a probe.** The provider calls it in one place: `stop` removes this city's own canonical `[city] <city>` session (the legacy `gc:<city>` label is accepted on read) once its last pane is gone, behind the fail-closed empty check in §12 (GCREX-31) |
 | `session.focus_block` / `session.focus_window` | ids | focus a pane / tab |
 | `session.move_window` | `session_id`, `window_id`, optional `before_window_id` (omitted: move the window to the end) | `revision`, unchanged when the window is already in place (the call is then a no-op). The window order is `session.view` `windows[]` and the Rex.app tab order; the active window, focus and blocks do not change. Faults: unknown session `session_not_found`; a window not in the session `not_found`; `before_window_id == window_id` `bad_request` (server-side, CLI exit 1, as §8). `rex window move --index 1` equals `before_window_id=<current first window>` only when the window is not already first, because the API rejects `before_window_id == window_id`. The provider calls it once, when it creates the town tab (#47). Source: installed `rex` `0.1.0-preview.21` `api describe session.move_window` |
 | `session.set_block_label` / `session.set_window_label` / `session.set_label` | ids, label | ≤128 chars |
@@ -606,7 +606,7 @@ and ADR-0014 (D3, D4).
 | D0 delivery form | Out-of-tree RPP v0 executable via pack `[runtimes.rex]`. §9 records the op set and handshake; `gc runtime check` is the verifier. |
 | D1 mapping | session = city, tab = rig, pane = agent. §1; supported by `session.create` + `session.new_window` + `session.new_split`. |
 | D2 transport | Shell out to the CLI behind `rex.Client`; the socket protocol is undocumented and revision-numbered (§7). |
-| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes. The canonical `gc:<city>` session (created in the `FindSession`-miss branch of `internal/provider/provider.go`) is ours and **is** destroyed once its last pane is gone, behind the fail-closed empty check (§12, GCREX-31). A server-wide Rex app client is listed on every session, so the client list cannot gate that removal. Never touch the server itself. The version skew in §0 is another reason: it only moves on restart. An opt-in city-owned server is addressable with `GC_REX_SERVER` (`-S`, `gcrex-d3m0i`). The default stays the shared server. Stage 3 (`server-stop` behind an ownership record) is #197. |
+| D3 server ownership | Never destroy what we did not create: the shared server (`server.stop` exists and must not be called), other sessions, legacy-labelled sessions, human panes. Do destroy what we did: our panes. The canonical `[city] <city>` session (created in the `FindSession`-miss branch of `internal/provider/provider.go`; the legacy `gc:<city>` label is accepted on read) is ours and **is** destroyed once its last pane is gone, behind the fail-closed empty check (§12, GCREX-31). A server-wide Rex app client is listed on every session, so the client list cannot gate that removal. Never touch the server itself. The version skew in §0 is another reason: it only moves on restart. An opt-in city-owned server is addressable with `GC_REX_SERVER` (`-S`, `gcrex-d3m0i`). The default stays the shared server. Stage 3 (`server-stop` behind an ownership record) is #197. |
 | D4 scope | Local server via the default socket or `-S <host>`; agents run on gc's host. RPP has no declaration for this. |
 | D5 sleep tier | Aim for `full` via `report-activity` plus `program_status` (OSC 7501 — emitted by the pane program; Pi does, and gc-managed Pi panes report under Rex). Fall back to `timed_only` if classification proves unreliable. |
 | D6 v1 breadth | Core `Provider` + idle/wait + relaunch + metadata sidecar + activity + attachment; skip `ExecProvider` and `DialogProvider`. |
@@ -642,7 +642,8 @@ and ADR-0014 (D3, D4).
      again (test `TestStartRecreatesSessionDestroyedBeforeLaunch`).
 
   <!-- /coderabbit-ai-generated:v1 -->
-  2. `session.view` must name this city's canonical label (`gc:<city>`) and
+  2. `session.view` must name this city's canonical label (`[city] <city>`, or the
+     legacy `gc:<city>`) and
      carry no windows. A legacy-labelled, foreign or other-city session stays
      (D3), and a session with any pane or block stays.
   3. A view or destroy error keeps the session and returns the error; `Stop`
@@ -837,7 +838,7 @@ and ADR-0014 (D3, D4).
   trusted only when they re-encode to the same directory), because gc's CLI
   fallback provider is invoked with no `GC_REX_CITY`/`GC_CITY_PATH`/`GC_CITY`
   at all. Reads widen, writes and the lock stay canonical, and revalidation
-  against the live `gc:<city>` session keeps a dead city's record from
+  against the live `[city] <city>` session keeps a dead city's record from
   answering as running. With no pin an identical name in two live cities
   resolves in read-set order; a pinned caller never reads siblings.
 - **Remaining start-config hooks (resolved for the hook/staging fields, GCREX-5/GCREX-56).** The
@@ -952,26 +953,39 @@ incidental to the provider: present in the start config, but not part of the
 provider contract.
 
 Pane labels are display-only and outside the durable contract (GCREX-5qel):
-`start` labels a rig-scoped pane `<agent> (<GC_SESSION_NAME>)`, resolving the
-agent `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR` segment after the first `/`.
-A blank session name or agent keeps the name-derived label, town-level panes
-keep theirs, and an over-long label is clamped to 128 runes without cutting the
-parenthesised session name. An unaliased pool seat's suffix is its bead id,
-written `#<bead id>` (`gc.implementation-worker (#mc-wisp-kvqib)`), so it never
-reads as a session name: a short-form label matches only when
-`Sanitize(agent)+"-"+bead id` is the whole session name, never by a bare suffix.
-A shortened agent ends in `…`, so a clamped label names no session and
-discovery never matches it. The launch label, the discovery hint and the
-recorded label all derive from the pool-routing-projected env (`launch.Project`),
-so routing a rewrite of `BEADS_ACTOR` cannot make them disagree. Discovery
-re-derives the same label, and a record-less scan with no start env matches the
-parenthesised session name on its own, so resolution never depends on the
-human-readable prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
+`start` labels a rig-scoped pane `[<agent>] (<identity>)`, resolving the agent
+from `GC_TEMPLATE` (agent part) → `GC_ALIAS` → `GC_AGENT` → the `BEADS_ACTOR`
+segment after the first `/`; the tag ends at the first `"] "` and a name that
+cannot carry a tag keeps the untagged legacy shape. The parenthesis carries the
+identity: the whole `GC_SESSION_NAME` for a named/aliased session, or the
+marked pool identity `#<bead id>` for an unaliased pool seat whose name
+verifies as `Sanitize(agent)+"-"+bead id`. The pool form adds the display-only
+`#<GC_SESSION_ID>` tail
+(`[gc.implementation-worker] (#mc-wisp-kvqib) #mc-wisp-kvqib`); the tail is
+never an identity. The marker inside the parentheses is load-bearing: it is
+what keeps `[worker] (seat)` (the town session `seat`) from also naming the
+pool seat `worker-seat`.
+A blank session name or agent keeps the name-derived label, and town-level
+panes keep `[<agent>] (<name>)`. An over-long label is clamped to 128 runes by
+two different ladders. The pool form drops its display-only `#` tail first and
+never cuts the agent; if the marked identity does not fit, the long form takes
+over. The long and town forms keep the identity and cut the agent with `…`,
+first with the tail and then without it; only a suffix that cannot fit falls
+back to the bare session name. The parenthesis survives the cut, so a clamped
+label still names its session; an unmarked untagged short form names nobody.
+The launch label, the discovery hint and the recorded label all derive from the
+pool-routing-projected env (`launch.Project`), so routing a rewrite of
+`BEADS_ACTOR` cannot make them disagree. Discovery reads the marked
+parenthesised pool identity or the unmarked full session name and never
+re-derives an unmarked suffix as a pool name, so one label cannot name two
+sessions. A record-less scan with no start env matches the parenthesised
+session name on its own, so resolution never depends on the human-readable
+prefix. `GC_SESSION_NAME` and `BEADS_ACTOR`
 stay incidental: they only feed this display string.
 
 | Variable | Meaning | When set | Role |
 |---|---|---|---|
-| `GC_RIG` | rig name (`my-project`); empty for town-level sessions | rig-scoped sessions (empty otherwise) | **Durable**: tab label (`Rig: <rig>`), alias |
+| `GC_RIG` | rig name (`my-project`); empty for town-level sessions | rig-scoped sessions (empty otherwise) | **Durable**: tab label (`[rig] <rig>`; legacy `Rig: <rig>` accepted on read), alias |
 | `GC_TEMPLATE` | qualified template (`my-project/pi`, `my-project/core.control-dispatcher`, `mayor`) | when `Info.Template` is non-empty | **Durable**: alias `Sanitize(GC_TEMPLATE)` |
 | `GC_ALIAS` | public routing/display alias (`mayor`, `my-project/core.control-dispatcher`; empty for an unaliased pool instance) | always (explicit empty clears a stale default) | **Durable**: alias `Sanitize(GC_ALIAS)`; first choice for the pane label |
 | `GC_AGENT` | durable ownership identity (`mayor`, `mc-wisp-ybq1`, `my-project/core.control-dispatcher`) | when the assignee identity is non-empty | **Durable**: alias `Sanitize(GC_AGENT)` when qualified; pane-label fallback |

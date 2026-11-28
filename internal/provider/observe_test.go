@@ -356,7 +356,7 @@ func TestKillObjectCorpseLiveWhenAttached(t *testing.T) {
 	}
 	fake.Clients = []rex.ClientInfo{{ID: "c1", Kind: "app", Name: "Rex"}}
 	fake.View.Windows[0].Blocks[0].Owner = "c1"
-	fake.View.ActiveWindowID = "window:Rig: Indigo"
+	fake.View.ActiveWindowID = "window:[rig] Indigo"
 
 	res, err := p.KillObject(context.Background(), name, provider.KillObjectRequest{Object: *ans.Object, Mode: "corpse"})
 	if err != nil {

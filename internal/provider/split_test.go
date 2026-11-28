@@ -90,11 +90,11 @@ func TestNextSplit(t *testing.T) {
 
 func TestStartSplitsTheLargestPaneAlongItsLongerAxis(t *testing.T) {
 	fake := faketest.New()
-	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+	fake.Sessions = []rex.Session{{ID: "session:[city] acme", Label: "[city] acme"}}
 	fake.View = rex.SessionView{
 		Windows: []rex.Window{{
 			ID:    "window:Indigo",
-			Label: "Rig: Indigo",
+			Label: "[rig] Indigo",
 			Blocks: []rex.Block{
 				{ID: "block:dog-1", Label: "dog-1", Rect: [4]float64{0, 0, 0.25, 1}},
 				{ID: "block:dog-2", Label: "dog-2", Rect: [4]float64{0.25, 0, 0.75, 0.25}},

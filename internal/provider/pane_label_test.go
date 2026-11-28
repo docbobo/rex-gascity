@@ -33,7 +33,7 @@ func TestPaneLabelFor(t *testing.T) {
 				"BEADS_ACTOR":     "rex-gascity/gc.implementation-worker",
 				"GC_SESSION_NAME": "gc__implementation-worker-mc-wisp-fvwrce",
 			},
-			want: "gc.implementation-worker (gc__implementation-worker-mc-wisp-fvwrce)",
+			want: "[gc.implementation-worker] (gc__implementation-worker-mc-wisp-fvwrce)",
 		},
 		{
 			name: "empty alias falls to agent",
@@ -45,7 +45,7 @@ func TestPaneLabelFor(t *testing.T) {
 				"BEADS_ACTOR":     "rex-gascity/gc.requirements-planner",
 				"GC_SESSION_NAME": "gc__requirements-planner-mc-wisp-mf93ir",
 			},
-			want: "mc-wisp-mf93ir (gc__requirements-planner-mc-wisp-mf93ir)",
+			want: "[mc-wisp-mf93ir] (gc__requirements-planner-mc-wisp-mf93ir)",
 		},
 		{
 			name: "beads actor suffix fallback",
@@ -55,7 +55,7 @@ func TestPaneLabelFor(t *testing.T) {
 				"BEADS_ACTOR":     "rex-gascity/gc.task-decomposer",
 				"GC_SESSION_NAME": "gc__task-decomposer-mc-wisp-aaaa",
 			},
-			want: "gc.task-decomposer (gc__task-decomposer-mc-wisp-aaaa)",
+			want: "[gc.task-decomposer] (gc__task-decomposer-mc-wisp-aaaa)",
 		},
 		{
 			name: "beads actor without slash used whole",
@@ -65,9 +65,11 @@ func TestPaneLabelFor(t *testing.T) {
 				"BEADS_ACTOR":     "mayor",
 				"GC_SESSION_NAME": "gc__mayor-mc-wisp-bbbb",
 			},
-			want: "mayor (gc__mayor-mc-wisp-bbbb)",
+			want: "[mayor] (gc__mayor-mc-wisp-bbbb)",
 		},
 		{
+			// No identity in the env: nothing is guessed, the label falls back
+			// to the name-derived pane label.
 			name: "no agent identity keeps name-derived label",
 			sess: "gc__implementation-worker-mc-wisp-fvwrce",
 			env: map[string]string{
@@ -104,7 +106,7 @@ func TestPaneLabelFor(t *testing.T) {
 				"GC_AGENT":        "mayor",
 				"GC_SESSION_NAME": "mayor",
 			},
-			want: "mayor",
+			want: "[mayor] (mayor)",
 		},
 		{
 			name: "rigless pool name with rig set gets new label",
@@ -114,7 +116,7 @@ func TestPaneLabelFor(t *testing.T) {
 				"GC_AGENT":        "mc-wisp-fvwrce",
 				"GC_SESSION_NAME": "gc__implementation-worker-mc-wisp-fvwrce",
 			},
-			want: "mc-wisp-fvwrce (gc__implementation-worker-mc-wisp-fvwrce)",
+			want: "[mc-wisp-fvwrce] (gc__implementation-worker-mc-wisp-fvwrce)",
 		},
 	}
 	for _, tt := range tests {
@@ -190,40 +192,40 @@ func TestPaneLabelForClamp(t *testing.T) {
 		}
 	})
 
-	// An over-long short form keeps its parenthesised bead id for display
-	// instead of falling through to the long form (which cannot fit either).
-	// Cutting the agent's tail costs the label its identity: the bead id alone
-	// fits two names, so identityMatch must refuse it rather than guess.
-	t.Run("verified short form over the limit keeps the bead id but names nobody", func(t *testing.T) {
-		agent := strings.Repeat("a", 60)
-		bead := strings.Repeat("9", 78)
+	// The pool form's "#<id>" tail is display-only. An over-long pool form
+	// drops that tail before it touches the agent, so the label still names
+	// the session through the bracketed pool identity.
+	t.Run("verified short form over the limit drops the display id", func(t *testing.T) {
+		agent := strings.Repeat("a", 30)
+		bead := strings.Repeat("9", 70)
 		session := agent + "-" + bead
+		id := "gcg-session-" + strings.Repeat("7", 30)
 		env := map[string]string{
 			"GC_RIG":          "rex-gascity",
 			"GC_TEMPLATE":     "rex-gascity/" + agent,
 			"GC_AGENT":        bead,
+			"GC_SESSION_ID":   id,
 			"GC_SESSION_NAME": session,
 		}
-		if short := agent + " (#" + bead + ")"; utf8.RuneCountInString(short) <= maxPaneLabelRunes {
-			t.Fatalf("fixture short form is %d runes, want over %d", utf8.RuneCountInString(short), maxPaneLabelRunes)
+		if full := "[" + agent + "] (#" + bead + ") #" + id; utf8.RuneCountInString(full) <= maxPaneLabelRunes {
+			t.Fatalf("fixture pool form is %d runes, want over %d", utf8.RuneCountInString(full), maxPaneLabelRunes)
 		}
 		got := paneLabelFor(SessionName(session), env)
+		want := "[" + agent + "] (#" + bead + ")"
+		if got != want {
+			t.Fatalf("paneLabelFor = %q, want %q", got, want)
+		}
 		if n := utf8.RuneCountInString(got); n > maxPaneLabelRunes {
 			t.Fatalf("label has %d runes, want <= %d: %q", n, maxPaneLabelRunes, got)
-		}
-		if !strings.HasSuffix(got, " (#"+bead+")") {
-			t.Fatalf("label %q lost the parenthesised bead id %q", got, bead)
 		}
 		if again := paneLabelFor(SessionName(session), env); again != got {
 			t.Fatalf("label is not deterministic: %q != %q", got, again)
 		}
-		if identityMatch(SessionName(session), got) {
-			t.Fatalf("identityMatch(%q, %q) = true; a shortened agent names nobody", session, got)
+		if !identityMatch(SessionName(session), got) {
+			t.Fatalf("identityMatch(%q, %q) = false; dropping the display id must not cost the identity", session, got)
 		}
-		// The name that shares the visible prefix and the bead id differs only
-		// where the cut happened, so the label cannot tell the two apart.
-		if sibling := SessionName(agent + "-extra-" + bead); identityMatch(sibling, got) {
-			t.Fatalf("label %q was adopted by %q", got, sibling)
+		if sibling := SessionName(agent + "-" + strings.Repeat("8", len(bead))); identityMatch(sibling, got) {
+			t.Fatalf("label %q was adopted by a sibling seat %q", got, sibling)
 		}
 	})
 
@@ -249,97 +251,97 @@ func TestPaneLabelForClamp(t *testing.T) {
 			"GC_AGENT":        "agent",
 			"GC_SESSION_NAME": shortSession,
 		}
-		want := "agent (" + shortSession + ")"
+		want := "[agent] (" + shortSession + ")"
 		if got := paneLabelFor("gc__short", env); got != want {
 			t.Fatalf("paneLabelFor = %q, want %q", got, want)
 		}
 	})
 }
 
-// TestPaneLabelOverflowIdentity is the boundary proof for R2-F1: a verified
-// short form at exactly the 128-rune limit is not shortened and still names
-// the session through identityMatch, while one rune over it must shorten the
-// agent and then names nobody. A shortened label fits a whole family of names,
-// so accepting it would let a recordless IsRunning/Stop pick the wrong pane.
+// TestPaneLabelOverflowIdentity is the boundary proof for the pool form: at
+// exactly the 128-rune limit the display-only "#<id>" tail is kept, one rune
+// over it is dropped, and neither shortening costs the label its identity. A
+// shortened label fits a whole family of names, so accepting one would let a
+// recordless IsRunning/Stop pick the wrong pane.
 func TestPaneLabelOverflowIdentity(t *testing.T) {
+	const agent = "worker"
+	id := "gcg-session-" + strings.Repeat("7", 20)
+	base := len("[worker] (#)")
+	atLimit := maxPaneLabelRunes - base - len(" #"+id)
 	tests := []struct {
-		name     string
-		agent    int
-		bead     int
-		wantRune int
-		names    bool
+		name  string
+		pool  int
+		tail  bool
+		names bool
 	}{
-		{"exact limit", 60, 64, 128, true},
-		{"one over the limit", 60, 65, 129, false},
-		{"far over the limit", 100, 39, 143, false},
+		{"exact limit", atLimit, true, true},
+		{"one over the limit", atLimit + 1, false, true},
+		// A pool identity that cannot fit even without the tail falls back to
+		// the clamped session name and names nobody.
+		{"far over the limit", atLimit + 100, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			agent := strings.Repeat("a", tt.agent)
-			bead := strings.Repeat("9", tt.bead)
-			session := agent + "-" + bead
-			if n := utf8.RuneCountInString(agent + " (#" + bead + ")"); n != tt.wantRune {
-				t.Fatalf("fixture short form is %d runes, want %d", n, tt.wantRune)
-			}
+			pool := strings.Repeat("9", tt.pool)
+			session := agent + "-" + pool
 			env := map[string]string{
 				"GC_RIG":          "rex-gascity",
 				"GC_TEMPLATE":     "rex-gascity/" + agent,
-				"GC_AGENT":        bead,
+				"GC_AGENT":        pool,
+				"GC_SESSION_ID":   id,
 				"GC_SESSION_NAME": session,
 			}
 			got := paneLabelFor(SessionName(session), env)
 			if n := utf8.RuneCountInString(got); n > maxPaneLabelRunes {
 				t.Fatalf("label has %d runes, want <= %d: %q", n, maxPaneLabelRunes, got)
 			}
-			if !strings.HasSuffix(got, " (#"+bead+")") {
-				t.Fatalf("label %q lost the parenthesised bead id %q", got, bead)
+			if hasTail := strings.Contains(got, " #"); hasTail != tt.tail {
+				t.Fatalf("label %q tail = %v, want %v", got, hasTail, tt.tail)
 			}
 			if names := identityMatch(SessionName(session), got); names != tt.names {
-				t.Fatalf("identityMatch row %q = %v, want %v", tt.name, names, tt.names)
+				t.Fatalf("identityMatch(%q, %q) = %v, want %v", session, got, names, tt.names)
 			}
-			if sibling := SessionName(agent + "-" + strings.Repeat("8", tt.bead)); identityMatch(sibling, got) {
+			if sibling := SessionName(agent + "-" + strings.Repeat("8", tt.pool)); identityMatch(sibling, got) {
 				t.Fatalf("label %q was adopted by a sibling seat %q", got, sibling)
 			}
 		})
 	}
 }
 
-// TestRecordlessClampedShortFormIsNotAnIdentity starts an overflowing pool
-// seat and drops the sidecar record, so only the shortened label is left. The
-// scan must not adopt it: this session's own pane, and a sibling whose name
-// shares the visible prefix and the bead id, are both refused, because a label
-// that fits two sessions is no evidence for either. Leaving the pane behind
-// beats stopping the wrong one.
-func TestRecordlessClampedShortFormIsNotAnIdentity(t *testing.T) {
+// TestLegacyShortenedShortFormIsNotAnIdentity covers a pane written before
+// the bracketed tags with an agent too long for the label: the agent was cut
+// (and marked) but the parenthesised bead id stayed, so the label fits two
+// names. The scan must not adopt it: this session's own pane, and a sibling
+// whose name shares the visible prefix and the bead id, are both refused,
+// because a label that fits two sessions is no evidence for either. Leaving
+// the pane behind beats stopping the wrong one.
+func TestLegacyShortenedShortFormIsNotAnIdentity(t *testing.T) {
 	ctx := context.Background()
 	agent := strings.Repeat("a", 100)
 	bead := strings.Repeat("9", 40)
 	session := agent + "-" + bead
-	env := map[string]string{
-		"GC_RIG":          "rex-gascity",
-		"GC_TEMPLATE":     "rex-gascity/" + agent,
-		"GC_AGENT":        bead,
-		"GC_SESSION_NAME": session,
-	}
+	short := agent[:60] + paneLabelShortened
+	label := short + " (#" + bead + ")"
 	fake := faketest.New()
-	if err := New("acme", fake).Start(ctx, session, Config{Argv: []string{"pi"}, Env: env}); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	label := paneLabelFor(SessionName(session), env)
+	fake.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
 	block := rex.BlockID("block:" + label)
-	// The shortened agent is marked, so the label itself shows that it lost
-	// the tail instead of reading like a short agent.
+	fake.View = rex.SessionView{Windows: []rex.Window{{
+		ID:     "window:rig",
+		Label:  "Rig: rex-gascity",
+		Blocks: []rex.Block{{ID: block, Label: label}},
+	}}}
+	fake.Processes = map[rex.BlockID]rex.ProcessInfo{
+		block: {Foreground: &rex.Process{PID: fakePID, Name: "pi"}},
+	}
 	if !strings.HasSuffix(label, " (#"+bead+")") || !strings.Contains(label, paneLabelShortened) {
 		t.Fatalf("label %q does not mark its shortened agent", label)
 	}
 	// Names built from the visible agent text are exactly what must not match.
-	short := label[:strings.LastIndex(label, " (")]
-	short = strings.TrimSuffix(short, paneLabelShortened)
 	names := []string{
 		session,
 		agent + "-extra-" + bead,
+		short[:len(short)-len(paneLabelShortened)] + "-" + bead,
 		short + "-" + bead,
-		short + paneLabelShortened + "-" + bead,
 	}
 	for _, name := range names {
 		running, err := New("acme", fake).IsRunning(ctx, name)
@@ -365,7 +367,7 @@ func TestPaneLabelRediscovery(t *testing.T) {
 	const (
 		start   = "pi-mc-wisp-fvwrce"
 		session = "gc__implementation-worker-mc-wisp-fvwrce"
-		want    = "mc-wisp-fvwrce (" + session + ")"
+		want    = "[mc-wisp-fvwrce] (" + session + ")"
 	)
 	env := map[string]string{
 		"GC_RIG":          "rex-gascity",
@@ -413,8 +415,8 @@ func TestPaneLabelRediscovery(t *testing.T) {
 }
 
 // TestPaneLabelRediscoveryAfterTemplateChange covers the upgrade path: a pane
-// launched before GC_TEMPLATE drove the agent prefix carries
-// "<GC_AGENT> (<GC_SESSION_NAME>)". With GC_TEMPLATE set, the new hint differs
+// launched before GC_TEMPLATE drove the agent prefix carries the tagged long
+// form with "<GC_AGENT>" as the agent. With GC_TEMPLATE set, the new hint differs
 // by the agent (and the start name differs from GC_SESSION_NAME), so a
 // recordless start must still find the old pane by its session suffix instead
 // of launching a duplicate.
@@ -423,7 +425,7 @@ func TestPaneLabelRediscoveryAfterTemplateChange(t *testing.T) {
 	const (
 		start    = "pi-mc-wisp-fvwrce"
 		session  = "gc__implementation-worker-mc-wisp-fvwrce"
-		oldLabel = "mc-wisp-fvwrce (" + session + ")"
+		oldLabel = "[mc-wisp-fvwrce] (" + session + ")"
 	)
 	oldEnv := map[string]string{
 		"GC_RIG":          "rex-gascity",
@@ -538,6 +540,124 @@ func TestRecordlessCrossTabDiscovery(t *testing.T) {
 		}
 		if !slices.Contains(fake.ClosedBlocks, block) {
 			t.Fatalf("Stop did not close %s; closed %v", block, fake.ClosedBlocks)
+		}
+	})
+}
+
+// TestRecordlessRigPaneNotAttributedThroughTownTab guards the CodeRabbit
+// finding on the recordless fallback: a legacy town tab holds the town pane
+// labelled "mayor", so a recordless resolve for the rig session
+// "Indigo--mayor" must not accept that bare label just because its agent part
+// is "mayor". The town tab is a candidate only for a town-level name, so the
+// actual town session still resolves.
+func TestRecordlessRigPaneNotAttributedThroughTownTab(t *testing.T) {
+	ctx := context.Background()
+	const (
+		townName = "mayor"
+		ownBlock = rex.BlockID("block:mayor")
+	)
+	newFake := func() *faketest.Fake {
+		f := faketest.New()
+		f.Sessions = []rex.Session{{ID: "session:gc:acme", Label: "gc:acme"}}
+		f.View = rex.SessionView{Windows: []rex.Window{{
+			ID:     "window:town",
+			Label:  "my-city",
+			Blocks: []rex.Block{{ID: ownBlock, Label: townName}},
+		}}}
+		f.Processes = map[rex.BlockID]rex.ProcessInfo{
+			ownBlock: {Foreground: &rex.Process{PID: fakePID, Name: "pi"}},
+		}
+		return f
+	}
+	newProvider := func() *Provider {
+		p := New("acme", newFake())
+		p.townTab = "my-city"
+		p.binder.townTab = "my-city"
+		return p
+	}
+
+	t.Run("rig name does not claim the town pane", func(t *testing.T) {
+		running, err := newProvider().IsRunning(ctx, "Indigo--mayor")
+		if err != nil {
+			t.Fatalf("IsRunning: %v", err)
+		}
+		if running {
+			t.Fatalf("IsRunning(Indigo--mayor) = true; the town pane of mayor must not answer for it")
+		}
+	})
+
+	t.Run("town name still resolves", func(t *testing.T) {
+		running, err := newProvider().IsRunning(ctx, townName)
+		if err != nil {
+			t.Fatalf("IsRunning: %v", err)
+		}
+		if !running {
+			t.Fatalf("IsRunning(%s) = false; the town rung must keep finding the town pane", townName)
+		}
+	})
+}
+
+// TestHashLeadingNameIsNotThePoolForm proves a complete session name beginning
+// with the pool mark never renders as the pool form, which discovery would read
+// as the different session Sanitize(agent)+"-"+tail (CodeRabbit). The "#seat"
+// pane must answer for "#seat" and must not answer for the pool seat
+// "worker-seat".
+func TestHashLeadingNameIsNotThePoolForm(t *testing.T) {
+	ctx := context.Background()
+	const name = SessionName("#seat")
+	env := map[string]string{"GC_ALIAS": "worker", "GC_SESSION_NAME": string(name)}
+
+	fake := faketest.New()
+	p := New("acme", fake)
+	if err := p.Start(ctx, string(name), Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.CreatedWindows) != 1 {
+		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	if label := fake.CreatedWindows[0].Spec.Label; label != string(name) {
+		t.Fatalf("pane label = %q, want the bare %q; the pool form would name worker-seat", label, name)
+	}
+
+	// Record lost: discovery must still find the pane for "#seat" and never
+	// for the pool seat the parenthesised form would have named.
+	rebuilt := faketest.New()
+	rebuilt.Sessions = fake.Sessions
+	rebuilt.View = fake.View
+	if running, err := New("acme", rebuilt).IsRunning(ctx, string(name)); err != nil || !running {
+		t.Fatalf("IsRunning(%q) = %v, %v; the pane must answer for its own name", name, running, err)
+	}
+	if running, err := New("acme", rebuilt).IsRunning(ctx, "worker-seat"); err != nil || running {
+		t.Fatalf("IsRunning(worker-seat) = %v, %v; the #seat pane must not answer for the pool seat", running, err)
+	}
+}
+
+// TestTownPaneLabelClamp pins the 128-rune limit on the town-level pane label:
+// an agent and session name that together overflow are shortened the same way
+// the rig branch shortens, and the parenthesised identity survives the cut.
+func TestTownPaneLabelClamp(t *testing.T) {
+	t.Run("label over the limit shortens the agent", func(t *testing.T) {
+		agent := strings.Repeat("a", 62)
+		name := SessionName(strings.Repeat("b", 62))
+		got := townPaneLabel(agent, name)
+		if n := utf8.RuneCountInString(got); n > maxPaneLabelRunes {
+			t.Fatalf("label has %d runes, want <= %d: %q", n, maxPaneLabelRunes, got)
+		}
+		if !strings.HasSuffix(got, "("+string(name)+")") {
+			t.Fatalf("label %q lost the parenthesised identity", got)
+		}
+		if !strings.Contains(got, paneLabelShortened) {
+			t.Fatalf("label %q does not mark the shortened agent", got)
+		}
+		if !identityMatch(name, got) {
+			t.Fatalf("identityMatch(%q, %q) = false; the cut must keep the identity", name, got)
+		}
+	})
+
+	t.Run("name that cannot fit falls back to the bare clamped name", func(t *testing.T) {
+		name := SessionName(strings.Repeat("c", 200))
+		if got, want := townPaneLabel("agent", name), clampRexLabel(string(name)); got != want {
+			t.Fatalf("townPaneLabel = %q, want %q", got, want)
 		}
 	})
 }
@@ -760,7 +880,7 @@ func TestPaneLabelForPoolShortForm(t *testing.T) {
 				"GC_SESSION_ID":   "mc-wisp-kvqib",
 				"GC_SESSION_NAME": "gc__implementation-worker-mc-wisp-kvqib",
 			},
-			want: "gc.implementation-worker (#mc-wisp-kvqib)",
+			want: "[gc.implementation-worker] (#mc-wisp-kvqib) #mc-wisp-kvqib",
 		},
 		{
 			name: "second seat from the same template",
@@ -774,7 +894,7 @@ func TestPaneLabelForPoolShortForm(t *testing.T) {
 				"GC_SESSION_ID":   "mc-wisp-1e4r8",
 				"GC_SESSION_NAME": "gc__implementation-worker-mc-wisp-1e4r8",
 			},
-			want: "gc.implementation-worker (#mc-wisp-1e4r8)",
+			want: "[gc.implementation-worker] (#mc-wisp-1e4r8) #mc-wisp-1e4r8",
 		},
 		{
 			name: "run operator seat",
@@ -788,7 +908,7 @@ func TestPaneLabelForPoolShortForm(t *testing.T) {
 				"GC_SESSION_ID":   "mc-wisp-jwlvf",
 				"GC_SESSION_NAME": "gc__run-operator-mc-wisp-jwlvf",
 			},
-			want: "gc.run-operator (#mc-wisp-jwlvf)",
+			want: "[gc.run-operator] (#mc-wisp-jwlvf) #mc-wisp-jwlvf",
 		},
 		{
 			name: "aliased control dispatcher keeps the whole session name",
@@ -801,7 +921,7 @@ func TestPaneLabelForPoolShortForm(t *testing.T) {
 				"BEADS_ACTOR":     "rex-gascity/core.control-dispatcher",
 				"GC_SESSION_NAME": "core__control-dispatcher-mc-wisp-vmecx",
 			},
-			want: "core.control-dispatcher (core__control-dispatcher-mc-wisp-vmecx)",
+			want: "[core.control-dispatcher] (core__control-dispatcher-mc-wisp-vmecx)",
 		},
 		{
 			name: "town-level unchanged",
@@ -810,7 +930,7 @@ func TestPaneLabelForPoolShortForm(t *testing.T) {
 				"GC_TEMPLATE":     "mayor",
 				"GC_SESSION_NAME": "mayor",
 			},
-			want: "mayor",
+			want: "[mayor] (mayor)",
 		},
 		{
 			name: "no gc env leaves the name-derived label",
@@ -839,7 +959,7 @@ func TestPaneLabelForInvariantFallback(t *testing.T) {
 		"BEADS_ACTOR":     "rex-gascity/worker",
 		"GC_SESSION_NAME": "gc__other-mc-wisp-aaa",
 	}
-	const want = "worker (gc__other-mc-wisp-aaa)"
+	const want = "[worker] (gc__other-mc-wisp-aaa)"
 	if got := paneLabelFor("gc__other-mc-wisp-aaa", env); got != want {
 		t.Fatalf("paneLabelFor = %q, want the long fallback %q", got, want)
 	}
@@ -883,8 +1003,17 @@ func TestIdentityMatch(t *testing.T) {
 		want  bool
 	}{
 		{"legacy long form", "rex-gascity--worker", "worker (rex-gascity--worker)", true},
+		{"tagged long form", "rex-gascity--worker", "[worker] (rex-gascity--worker)", true},
+		{"tagged pool form", "gc__implementation-worker-mc-wisp-kvqib", "[gc.implementation-worker] (#mc-wisp-kvqib) #mc-wisp-kvqib", true},
+		{"tagged pool form without the id", "gc__implementation-worker-mc-wisp-kvqib", "[gc.implementation-worker] (#mc-wisp-kvqib)", true},
+		{"tagged unmarked pool-looking suffix names nobody", "gc__implementation-worker-mc-wisp-kvqib", "[gc.implementation-worker] (mc-wisp-kvqib)", false},
 		{"named form", "core__control-dispatcher-mc-wisp-vmecx", "core.control-dispatcher (core__control-dispatcher-mc-wisp-vmecx)", true},
 		{"pool short form", "gc__implementation-worker-mc-wisp-kvqib", "gc.implementation-worker (#mc-wisp-kvqib)", true},
+		// A complete session name in the long form names only that session:
+		// "[worker] (seat)" is the named session seat, never the marked pool
+		// seat worker-seat (CodeRabbit, label.go).
+		{"named session is not the pool seat", "worker-seat", "[worker] (seat)", false},
+		{"named session is itself", "seat", "[worker] (seat)", true},
 		// A long form's suffix is the whole session name. A label whose suffix
 		// is only part of the name names nobody.
 		{"long-form label, suffix is not the whole name", "legacy-agent-a--b-1", "legacy-agent (a--b-1)", false},

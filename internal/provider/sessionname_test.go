@@ -47,14 +47,14 @@ func TestTabLabel(t *testing.T) {
 		town string
 		want string
 	}{
-		{"pin names the town tab", town, nil, townTabLabel("my-city"), "my-city"},
-		{"no pin falls back", town, nil, townTabLabel(""), "Gas City"},
-		{"pin default is not special", town, nil, townTabLabel("default"), "default"},
-		{"rig from GC_RIG", rig, map[string]string{"GC_RIG": "Other"}, townTabLabel("my-city"), "Rig: Other"},
-		{"rig from name split", rig, nil, townTabLabel("my-city"), "Rig: Indigo"},
-		{"GC_RIG on a town name groups by rig", town, map[string]string{"GC_RIG": "Other"}, townTabLabel("my-city"), "Rig: Other"},
-		{"over-long pin clamps", town, nil, townTabLabel(long), string([]rune(long)[:maxRexLabel-1]) + "…"},
-		{"over-long rig keeps prefix", rig, map[string]string{"GC_RIG": longRig}, "", "Rig: " + string([]rune(longRig)[:maxRexLabel-6]) + "…"},
+		{"pin names the town tab", town, nil, townTabName("my-city"), "[city] my-city"},
+		{"no pin falls back", town, nil, townTabName(""), "[city] Gas City"},
+		{"pin default is not special", town, nil, townTabName("default"), "[city] default"},
+		{"rig from GC_RIG", rig, map[string]string{"GC_RIG": "Other"}, townTabName("my-city"), "[rig] Other"},
+		{"rig from name split", rig, nil, townTabName("my-city"), "[rig] Indigo"},
+		{"GC_RIG on a town name groups by rig", town, map[string]string{"GC_RIG": "Other"}, townTabName("my-city"), "[rig] Other"},
+		{"over-long pin clamps", town, nil, townTabName(long), string([]rune("[city] " + long)[:maxRexLabel-1]) + "…"},
+		{"over-long rig keeps prefix", rig, map[string]string{"GC_RIG": longRig}, "", "[rig] " + string([]rune(longRig)[:maxRexLabel-7]) + "…"},
 	}
 	for _, tt := range tests {
 		got := tabLabel(tt.name, tt.env, tt.town)
@@ -94,7 +94,49 @@ func TestClampRexLabel(t *testing.T) {
 }
 
 func TestRexSessionLabel(t *testing.T) {
-	if got := rexSessionLabel("paris"); got != "gc:paris" {
-		t.Errorf("rexSessionLabel = %q", got)
+	if got := rexSessionLabel("paris"); got != "[city] paris" {
+		t.Errorf("rexSessionLabel = %q, want %q", got, "[city] paris")
+	}
+	if got := legacySessionLabel("paris"); got != "gc:paris" {
+		t.Errorf("legacySessionLabel = %q, want %q", got, "gc:paris")
+	}
+}
+
+// TestRexSessionLabelLongCitiesStayDistinct pins the identity guarantee for the
+// canonical session label: the city part is never truncated. Two city names
+// longer than the old clamp budget that share a prefix must not fold into one
+// Rex session, which SessionLabels would do if their labels were equal.
+func TestRexSessionLabelLongCitiesStayDistinct(t *testing.T) {
+	prefix := strings.Repeat("c", 120)
+	a, b := rexSessionLabel(prefix+"-a"), rexSessionLabel(prefix+"-b")
+	if a == b {
+		t.Fatalf("distinct cities share label %q", a)
+	}
+	if !strings.HasSuffix(a, "-a") || !strings.HasSuffix(b, "-b") {
+		t.Fatalf("labels lost the city tail: %q, %q", a, b)
+	}
+	labels := SessionLabels([]string{prefix + "-a", prefix + "-b"})
+	if len(labels) != 4 {
+		t.Fatalf("SessionLabels dropped a city: %v", labels)
+	}
+}
+
+// TestSessionLabelsKeepsLegacyNamespace pins the accepted set and its order:
+// the canonical "[city] X" label comes first so a new session is created under
+// it, and "gc:X" stays accepted so a session an older provider wrote is still
+// found. The set is deduplicated in order.
+func TestSessionLabelsKeepsLegacyNamespace(t *testing.T) {
+	labels := SessionLabels([]string{"Shady_Sands", "Shady_Sands", "other"})
+	want := []string{"[city] Shady_Sands", "[city] other", "gc:Shady_Sands", "gc:other"}
+	if len(labels) != len(want) {
+		t.Fatalf("SessionLabels = %v, want %v", labels, want)
+	}
+	for i := range want {
+		if labels[i] != want[i] {
+			t.Fatalf("SessionLabels = %v, want %v", labels, want)
+		}
+	}
+	if got := SessionLabels([]string{"a"})[0]; got != "[city] a" {
+		t.Errorf("canonical label = %q, want %q", got, "[city] a")
 	}
 }
