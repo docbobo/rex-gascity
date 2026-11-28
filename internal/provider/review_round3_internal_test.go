@@ -45,7 +45,7 @@ func TestStopReapsRecordedSurvivorsThroughAReplacementScan(t *testing.T) {
 	if !slices.Contains(signalLog(host), "terminated:300") {
 		t.Errorf("signals = %v, want a TERM for the recorded survivor 300", signalLog(host))
 	}
-	bd, ok := p.Binding(reapDog)
+	bd, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok {
 		t.Fatal("binding gone although pid 300 survives, want it kept for the retry")
 	}
@@ -72,7 +72,7 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 	if err := p.Start(ctx, "Indigo--dog-1", Config{Argv: []string{"sleep", "300"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	bd, ok := p.Binding("Indigo--dog-1")
+	bd, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}
@@ -86,7 +86,7 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 	fake.Processes = nil
 	fake.VanishedBlocks = map[rex.BlockID]bool{bd.BlockID: true}
 	client.swap = func() {
-		got, ok := p.Binding("Indigo--dog-1")
+		got, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 		if !ok {
 			t.Error("binding vanished in the swap")
 			return
@@ -103,7 +103,7 @@ func TestKillObjectUsesTheBindingReadUnderTheLock(t *testing.T) {
 	if !strings.Contains(err.Error(), "300 (bun)") {
 		t.Errorf("KillObject error %q does not name the surviving 300 (bun)", err)
 	}
-	got, ok := p.Binding("Indigo--dog-1")
+	got, ok := mustBinding(t)(p.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatal("binding gone although pid 300 survives")
 	}
@@ -185,7 +185,7 @@ func TestStartRetiresThePaneWhoseRecordFailed(t *testing.T) {
 					}
 				}
 			}
-			if _, ok := p.Binding(reapDog); ok {
+			if _, ok := mustBinding(t)(p.Binding(reapDog)); ok {
 				t.Error("binding kept although its pane was never recorded")
 			}
 		})

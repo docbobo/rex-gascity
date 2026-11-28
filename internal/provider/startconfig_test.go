@@ -463,7 +463,7 @@ func TestStartNewFreshOnlyLeavesTheHeldBoxUntouched(t *testing.T) {
 	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: identityEnv()}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	before, ok := p.Binding(name)
+	before, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatal("start recorded no binding")
 	}
@@ -481,7 +481,7 @@ func TestStartNewFreshOnlyLeavesTheHeldBoxUntouched(t *testing.T) {
 	if !errors.Is(err, provider.ErrFreshCollision) {
 		t.Fatalf("StartNew fresh_only = %v, want ErrFreshCollision", err)
 	}
-	after, ok := p.Binding(name)
+	after, ok := mustBinding(t)(p.Binding(name))
 	if !ok || !reflect.DeepEqual(before, after) {
 		t.Errorf("binding changed: before %+v, after %+v (ok=%v)", before, after, ok)
 	}

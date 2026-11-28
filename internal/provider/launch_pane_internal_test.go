@@ -50,7 +50,7 @@ func TestRecordOrDiscardRetiresPaneWhenRecordFails(t *testing.T) {
 	if !slices.Contains(c.got(), "process") {
 		t.Errorf("calls = %v, want a process snapshot", c.got())
 	}
-	if _, ok := p.Binding(reapDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(reapDog)); !ok {
 		t.Error("binding dropped; the discard policy leaves it for start's rollback")
 	}
 	got, ok, readErr := p.meta.Read(key)
@@ -128,7 +128,7 @@ func TestLaunchPaneRollsBackIdentityAndBindingOnFailure(t *testing.T) {
 		t.Errorf("destroyed = %v, want the empty city session removed", fake.DestroyedSessions)
 	}
 	wantIdentityCleared(t, p, reapDog)
-	if bd, ok := p.bindingRead(SessionName(reapDog)); ok {
+	if bd, ok := mustBinding(t)(p.bindings.Read(SessionName(reapDog))); ok {
 		t.Errorf("binding = %+v, want the provisional record forgotten", bd)
 	}
 }
@@ -149,7 +149,7 @@ func TestLaunchPaneKeepsProvisionalWhenEmptySessionRemovalFails(t *testing.T) {
 		t.Fatalf("launch = %v, want %v", err, boom)
 	}
 	wantIdentityCleared(t, p, reapDog)
-	if bd, ok := p.bindingRead(SessionName(reapDog)); !ok || bd.SessionID == "" || bd.BlockID != "" {
+	if bd, ok := mustBinding(t)(p.bindings.Read(SessionName(reapDog))); !ok || bd.SessionID == "" || bd.BlockID != "" {
 		t.Errorf("binding = %+v, %v; want the provisional record kept with its session id", bd, ok)
 	}
 	if !strings.Contains(warnings.String(), "remove the empty city session") {
@@ -169,7 +169,7 @@ func TestLaunchPaneKeepsBindingWithSurvivors(t *testing.T) {
 	fake.before = func() {
 		// Stand in for a discard retire that could not reap a descendant: it
 		// records the survivor on the binding before the launch fails.
-		bd, ok := p.bindingRead(n)
+		bd, ok := mustBinding(t)(p.bindings.Read(n))
 		if !ok {
 			t.Error("no provisional binding during the launch")
 			return
@@ -184,7 +184,7 @@ func TestLaunchPaneKeepsBindingWithSurvivors(t *testing.T) {
 		t.Fatalf("launch = %v, want %v", err, boom)
 	}
 	wantIdentityCleared(t, p, reapDog)
-	if bd, ok := p.bindingRead(n); !ok || len(bd.Survivors) != 1 || bd.Survivors[0].PID != 4242 {
+	if bd, ok := mustBinding(t)(p.bindings.Read(n)); !ok || len(bd.Survivors) != 1 || bd.Survivors[0].PID != 4242 {
 		t.Errorf("binding = %+v, %v; want it kept with survivor 4242", bd, ok)
 	}
 }
@@ -320,7 +320,7 @@ func TestLaunchPaneReturnsFullResultAcrossRetry(t *testing.T) {
 		t.Errorf("result session %s, window session %s; want both the recreated %s",
 			res.sessionID, fake.CreatedWindows[0].SessionID, fake.recreated)
 	}
-	bd, ok := p.bindingRead(SessionName(reapDog))
+	bd, ok := mustBinding(t)(p.bindings.Read(SessionName(reapDog)))
 	if !ok || bd.SessionID != fake.recreated || bd.BlockID == "" || res.blockID != bd.BlockID {
 		t.Errorf("binding = %+v, %v; result block %s; want the recorded pane in the recreated session", bd, ok, res.blockID)
 	}

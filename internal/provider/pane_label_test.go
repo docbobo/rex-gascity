@@ -380,7 +380,7 @@ func TestPaneLabelRediscovery(t *testing.T) {
 	if err := p.Start(ctx, start, Config{Argv: []string{"pi"}, Env: env}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	stored, ok := p.Binding(start)
+	stored, ok := mustBinding(t)(p.Binding(start))
 	if !ok {
 		t.Fatal("Binding(start) = false after Start")
 	}
@@ -904,7 +904,7 @@ func TestBareLabelPaneFoundWithAttribution(t *testing.T) {
 		if got := fake.CreatedWindows[0].Spec.Label; got != session {
 			t.Fatalf("len=%d: launched pane label = %q, want the bare session label", n, got)
 		}
-		if _, ok := p.Binding(session); !ok {
+		if _, ok := mustBinding(t)(p.Binding(session)); !ok {
 			t.Fatalf("len=%d: Binding = false after Start", n)
 		}
 

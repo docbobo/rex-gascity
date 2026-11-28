@@ -148,7 +148,7 @@ func TestStopWithoutPaneClearsAllMetaAndActivity(t *testing.T) {
 	if _, ok := act.Load(provider.SessionName(name)); ok {
 		t.Error("activity record survived a no-pane Stop")
 	}
-	if _, ok := p.Binding(name); ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); ok {
 		t.Error("binding still stored after a no-pane Stop")
 	}
 }

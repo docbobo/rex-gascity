@@ -69,7 +69,9 @@ func TestSIGTERMCancelsStartAndRollsBack(t *testing.T) {
 
 	// The rollback ran: no binding and no seeded identity survives.
 	p := provider.New("sigcity", fake, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
-	if b, ok := p.Binding(dog); ok {
+	if b, ok, err := p.Binding(dog); err != nil {
+		t.Fatalf("Binding: %v", err)
+	} else if ok {
 		t.Errorf("binding %+v survived the cancelled start", b)
 	}
 	got, err := p.GetMeta(context.Background(), dog, "GC_SESSION_ID")

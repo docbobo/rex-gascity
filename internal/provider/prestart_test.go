@@ -65,7 +65,7 @@ func TestPreStartFailureWarnsAndContinues(t *testing.T) {
 	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
 		t.Error("no pane launched after a failing pre_start")
 	}
-	if _, ok := p.Binding("pi-mc-wisp-abc"); !ok {
+	if _, ok := mustBinding(t)(p.Binding("pi-mc-wisp-abc")); !ok {
 		t.Error("binding missing after a non-fatal pre_start failure")
 	}
 }
@@ -320,7 +320,7 @@ func TestPreStartFailureWithIdentityEnvStillStarts(t *testing.T) {
 	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
 		t.Error("no pane launched after a failing pre_start")
 	}
-	if _, ok := p.Binding("pi-mc-wisp-abc"); !ok {
+	if _, ok := mustBinding(t)(p.Binding("pi-mc-wisp-abc")); !ok {
 		t.Error("binding missing after a non-fatal pre_start failure")
 	}
 	if got, _ := p.GetMeta(context.Background(), "pi-mc-wisp-abc", "GC_SESSION_ID"); got == "" {
@@ -361,7 +361,7 @@ func TestPreStartSecondCommandWarnsAndLaterHooksRun(t *testing.T) {
 	if len(fake.CreatedWindows) == 0 && len(fake.CreatedSplits) == 0 {
 		t.Error("no pane launched after a failing pre_start")
 	}
-	if _, ok := p.Binding("pi-mc-wisp-abc"); !ok {
+	if _, ok := mustBinding(t)(p.Binding("pi-mc-wisp-abc")); !ok {
 		t.Error("binding missing after a non-fatal pre_start failure")
 	}
 }
@@ -415,7 +415,7 @@ func TestMissingWorkDirAfterPreStartFails(t *testing.T) {
 	if len(fake.CreatedWindows) > 0 || len(fake.CreatedSplits) > 0 {
 		t.Error("a pane was launched with a missing work_dir")
 	}
-	if _, ok := p.Binding("pi-mc-wisp-abc"); ok {
+	if _, ok := mustBinding(t)(p.Binding("pi-mc-wisp-abc")); ok {
 		t.Error("binding exists after a missing-work_dir failure")
 	}
 	if got, _ := p.GetMeta(context.Background(), "pi-mc-wisp-abc", "GC_SESSION_ID"); got != "" {

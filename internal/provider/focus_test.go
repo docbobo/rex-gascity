@@ -40,7 +40,7 @@ func TestStartFocusesOnlyOnCreate(t *testing.T) {
 
 	// The pane's program exits: the next start relaunches an existing session,
 	// which must not steal focus.
-	b, ok := p.Binding("agent-1")
+	b, ok := mustBinding(t)(p.Binding("agent-1"))
 	if !ok {
 		t.Fatal("Binding(agent-1) = false after Start")
 	}

@@ -159,7 +159,10 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	ctx, cancel := observeBudget(ctx)
 	defer cancel()
 	n := SessionName(name)
-	bd, ok := p.Binding(name)
+	bd, ok, err := p.Binding(name)
+	if err != nil {
+		return ObserveAnswer{}, err
+	}
 	// Scan without adopting when there is no recorded block yet. In
 	// particular, a provisional start has labels but no block ID to probe.
 	if !ok || bd.BlockID == "" {
@@ -188,7 +191,10 @@ func (p *Provider) Observe(ctx context.Context, name string, names []string) (Ob
 	}
 	// Start can make the pane visible while the backend read is in flight.
 	// Recheck the store before deciding a pane found by label is ownerless.
-	current, recorded := p.Binding(name)
+	current, recorded, err := p.Binding(name)
+	if err != nil {
+		return ObserveAnswer{}, err
+	}
 	sameSession := recorded && current.SessionID == holder.SessionID
 	sameBlock := sameSession && current.BlockID == holder.BlockID
 	if sameSession && current.BlockID == "" && current.Attempt != "" {
@@ -309,11 +315,12 @@ func (p *Provider) boxState(ctx context.Context, bd Binding) (boxRead, error) {
 // for a bulk query or a trusted last_exit cache if a city grows past the
 // inventory call's time budget.
 func (p *Provider) Inventory(ctx context.Context) (InventoryAnswer, error) {
-	lister, ok := p.bindings.(Lister[Binding])
-	if !ok {
+	bds, err := p.bindings.List()
+	if err != nil {
+		// A store that cannot be enumerated proves nothing absent: answer
+		// incomplete rather than claim the sessions do not exist.
 		return InventoryAnswer{Complete: false, Sessions: []InventoryEntry{}}, nil
 	}
-	bds := lister.List()
 	complete := true
 	listed := make(map[SessionName]bool, len(bds))
 	sessions := make([]InventoryEntry, 0, len(bds))
@@ -427,7 +434,10 @@ func (p *Provider) KillObject(ctx context.Context, name string, req KillObjectRe
 
 // killObjectLocked is KillObject's re-check and kill, run under the name lock.
 func (p *Provider) killObjectLocked(ctx context.Context, name string, req KillObjectRequest) (string, error) {
-	bd, ok := p.Binding(name)
+	bd, ok, err := p.Binding(name)
+	if err != nil {
+		return "", err
+	}
 	if !ok {
 		return "gone", nil
 	}
@@ -577,7 +587,10 @@ func (p *Provider) deadAgent(ctx context.Context, bd Binding, agentPID string) (
 func (p *Provider) withSameBinding(ctx context.Context, name string, bd Binding, fn func(Binding) error) (bool, error) {
 	same := false
 	err := p.withStateLock(ctx, func() error {
-		got, ok := p.Binding(name)
+		got, ok, err := p.Binding(name)
+		if err != nil {
+			return err
+		}
 		if !ok || !bd.sameIncarnation(got) {
 			return nil
 		}

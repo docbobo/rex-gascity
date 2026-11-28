@@ -135,7 +135,7 @@ func TestStopFailsWhileDescendantsSurvive(t *testing.T) {
 	if len(fake.ClosedBlocks) != 1 {
 		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
 	}
-	if _, ok := p.Binding(reapDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(reapDog)); !ok {
 		t.Error("binding forgotten although descendants may survive")
 	}
 	if got, _ := p.GetMeta(ctx, reapDog, "suspended"); got != "yes" {
@@ -181,7 +181,7 @@ func TestStopRetriesTheSurvivorsItRecorded(t *testing.T) {
 	if err := p.Stop(ctx, reapDog); err == nil {
 		t.Fatal("Stop = nil, want a survivor failure")
 	}
-	bd, ok := p.Binding(reapDog)
+	bd, ok := mustBinding(t)(p.Binding(reapDog))
 	if !ok {
 		t.Fatal("binding gone after a survivor failure, want it kept for the retry")
 	}
@@ -204,7 +204,7 @@ func TestStopRetriesTheSurvivorsItRecorded(t *testing.T) {
 	if len(signalLog(host)) != 6 {
 		t.Errorf("signals = %v, want the first round's 4 and the retry's TERM on both survivors", signalLog(host))
 	}
-	if _, ok := p.Binding(reapDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(reapDog)); ok {
 		t.Error("binding survived the successful retry")
 	}
 }
@@ -436,7 +436,7 @@ func TestStopTreatsASignalErrorWithNothingLeftAsSuccess(t *testing.T) {
 	if len(host.Signals) != 2 {
 		t.Errorf("signals = %v, want one TERM for each of the two captures", signalLog(host))
 	}
-	if _, ok := p.Binding(reapDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(reapDog)); ok {
 		t.Error("binding kept although the tree is gone")
 	}
 }
@@ -467,7 +467,7 @@ func TestStopTreatsAVanishedPaneAsAnEmptyTree(t *testing.T) {
 	if len(signalLog(host)) != 0 {
 		t.Errorf("signals = %v, want none", signalLog(host))
 	}
-	if _, ok := p.Binding(reapDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(reapDog)); ok {
 		t.Error("binding survived a vanished pane's stop")
 	}
 }

@@ -68,25 +68,38 @@ func (c *compositeStore[K, V]) Drop(k K) error {
 
 // compositeBindingStore is the composite binding store. Its List is the union
 // of every namespace, canonical first so a primary record stored in more than
-// one place keeps its canonical copy.
+// one place keeps its canonical copy. Every namespace must be able to list: a
+// store that cannot is not installable.
 type compositeBindingStore struct {
 	*compositeStore[SessionName, Binding]
+	records []bindingRecords
 }
 
-func newCompositeBindingStore(stores ...Store[SessionName, Binding]) *compositeBindingStore {
-	return &compositeBindingStore{newCompositeStore(stores...)}
+func newCompositeBindingStore(records ...bindingRecords) *compositeBindingStore {
+	stores := make([]Store[SessionName, Binding], 0, len(records))
+	for _, r := range records {
+		stores = append(stores, r)
+	}
+	return &compositeBindingStore{
+		compositeStore: newCompositeStore(stores...),
+		records:        records,
+	}
 }
 
-// List implements Lister: the union of every namespace, canonical first.
-func (c *compositeBindingStore) List() []Binding {
+// List returns the union of every namespace, canonical first and name-sorted.
+// It returns the healthy records it read plus an error joining every
+// namespace's list error, so a caller never mistakes a truncated union for the
+// whole set.
+func (c *compositeBindingStore) List() ([]Binding, error) {
 	out := []Binding{}
 	seen := map[SessionName]bool{}
-	for _, store := range c.stores {
-		lister, ok := store.(Lister[Binding])
-		if !ok {
-			continue
+	var errs []error
+	for _, records := range c.records {
+		list, err := records.List()
+		if err != nil {
+			errs = append(errs, err)
 		}
-		for _, b := range lister.List() {
+		for _, b := range list {
 			if seen[b.Name] {
 				continue
 			}
@@ -95,17 +108,25 @@ func (c *compositeBindingStore) List() []Binding {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, errors.Join(errs...)
 }
 
 // compositeMetaStore is the composite metadata store. Clear sweeps every
-// namespace that can clear.
+// namespace, joining their errors.
 type compositeMetaStore struct {
 	*compositeStore[metaKey, string]
+	metas []MetaStore
 }
 
-func newCompositeMetaStore(stores ...Store[metaKey, string]) *compositeMetaStore {
-	return &compositeMetaStore{newCompositeStore(stores...)}
+func newCompositeMetaStore(metas ...MetaStore) *compositeMetaStore {
+	stores := make([]Store[metaKey, string], 0, len(metas))
+	for _, m := range metas {
+		stores = append(stores, m)
+	}
+	return &compositeMetaStore{
+		compositeStore: newCompositeStore(stores...),
+		metas:          metas,
+	}
 }
 
 // newCompositeActivityStore is the composite activity store.
@@ -113,14 +134,12 @@ func newCompositeActivityStore(stores ...Store[SessionName, ActivityRecord]) *co
 	return newCompositeStore(stores...)
 }
 
-// Clear removes every key for name from every namespace.
+// Clear removes every key for name from every namespace, joining the errors.
 func (c *compositeMetaStore) Clear(name SessionName) error {
 	var errs []error
-	for _, s := range c.stores {
-		if cl, ok := s.(clearer); ok {
-			if err := cl.Clear(name); err != nil {
-				errs = append(errs, err)
-			}
+	for _, meta := range c.metas {
+		if err := meta.Clear(name); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)

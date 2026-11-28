@@ -55,7 +55,7 @@ func teardownShellOnly(fake *faketest.Fake, block rex.BlockID) {
 
 func TestStartTwiceCreatesNoDuplicatePane(t *testing.T) {
 	fake, p := teardownStarted(t, teardownDog)
-	first, _ := p.Binding(teardownDog)
+	first, _ := mustBinding(t)(p.Binding(teardownDog))
 
 	teardownStart(t, p, teardownDog)
 
@@ -65,7 +65,7 @@ func TestStartTwiceCreatesNoDuplicatePane(t *testing.T) {
 	if len(fake.ClosedBlocks) != 0 {
 		t.Errorf("closed = %v, want none", fake.ClosedBlocks)
 	}
-	got, ok := p.Binding(teardownDog)
+	got, ok := mustBinding(t)(p.Binding(teardownDog))
 	if !ok || got.BlockID != first.BlockID {
 		t.Errorf("binding = %+v, want unchanged %+v", got, first)
 	}
@@ -87,7 +87,7 @@ func TestStartAfterExitRelaunchesInNewTab(t *testing.T) {
 	if len(fake.View.Windows) != 1 {
 		t.Errorf("windows in view = %d, want 1", len(fake.View.Windows))
 	}
-	if b, ok := p.Binding(teardownDog); !ok || b.LaunchMode != "window" {
+	if b, ok := mustBinding(t)(p.Binding(teardownDog)); !ok || b.LaunchMode != "window" {
 		t.Errorf("binding = %+v, %v, want a window launch", b, ok)
 	}
 }
@@ -108,7 +108,7 @@ func TestStartAfterExitRelaunchesAsSplitWhenRigTabRemains(t *testing.T) {
 	if len(fake.CreatedWindows) != 1 || len(fake.CreatedSplits) != 2 {
 		t.Errorf("windows=%d splits=%d, want 1 and 2", len(fake.CreatedWindows), len(fake.CreatedSplits))
 	}
-	if b, ok := p.Binding(teardownDog); !ok || b.LaunchMode != "split" {
+	if b, ok := mustBinding(t)(p.Binding(teardownDog)); !ok || b.LaunchMode != "split" {
 		t.Errorf("binding = %+v, %v, want a split launch", b, ok)
 	}
 }
@@ -120,7 +120,7 @@ func TestStopToleratesVanishedPane(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop = %v, want nil for a vanished pane", err)
 	}
-	if _, ok := p.Binding(teardownDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); ok {
 		t.Error("binding still stored after Stop")
 	}
 }
@@ -133,7 +133,7 @@ func TestStopPropagatesOtherCloseErrors(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); !errors.Is(err, boom) {
 		t.Fatalf("Stop = %v, want %v", err, boom)
 	}
-	if _, ok := p.Binding(teardownDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); !ok {
 		t.Error("binding forgotten although the close failed")
 	}
 }
@@ -162,7 +162,7 @@ func TestIsRunningMissingPane(t *testing.T) {
 func TestStartRecordsLaunchModeAndCreatedAt(t *testing.T) {
 	_, p := teardownStarted(t, teardownDog)
 
-	b, ok := p.Binding(teardownDog)
+	b, ok := mustBinding(t)(p.Binding(teardownDog))
 	if !ok {
 		t.Fatal("no binding recorded")
 	}
@@ -441,7 +441,7 @@ func TestStartRetryKeepsSeededIdentity(t *testing.T) {
 			t.Errorf("%s after Start = %q, %v, want %q, nil", key, v, err, want)
 		}
 	}
-	if b, ok := p.Binding(teardownDog); !ok || b.SessionID != probe.recreated {
+	if b, ok := mustBinding(t)(p.Binding(teardownDog)); !ok || b.SessionID != probe.recreated {
 		t.Errorf("binding = %+v, %v, want it recorded against %s", b, ok, probe.recreated)
 	}
 }
@@ -453,7 +453,7 @@ func TestStopToleratesSessionGoneBeforeClose(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if _, ok := p.Binding(teardownDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); ok {
 		t.Error("binding still stored after Stop")
 	}
 }
@@ -471,7 +471,7 @@ func TestStopUnreachableWithoutBindingSucceeds(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop with Rex unreachable and no binding = %v, want nil", err)
 	}
-	if _, ok := p.Binding(teardownDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); ok {
 		t.Error("binding exists after Stop, want none")
 	}
 	if len(fake.ClosedBlocks) != 0 {
@@ -494,7 +494,7 @@ func TestStopUnreachableWithBindingKeepsError(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); !errors.Is(err, rex.ErrUnavailable) {
 		t.Fatalf("Stop = %v, want ErrUnavailable", err)
 	}
-	if _, ok := p.Binding(teardownDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); !ok {
 		t.Error("binding dropped although Stop failed")
 	}
 	if v, err := p.GetMeta(context.Background(), teardownDog, "GC_USER_KEY"); err != nil || v != "keep" {
@@ -574,7 +574,7 @@ func TestStopDoesNotDestroySessionDuringLaunch(t *testing.T) {
 	if len(fake.Sessions) != 1 {
 		t.Errorf("sessions = %v, want the city session kept", fake.Sessions)
 	}
-	if _, ok := starter.Binding(teardownCat); !ok {
+	if _, ok := mustBinding(t)(starter.Binding(teardownCat)); !ok {
 		t.Error("no binding for the launched pane")
 	}
 }
@@ -585,7 +585,7 @@ func TestStopDoesNotDestroySessionDuringLaunch(t *testing.T) {
 // id to remove.
 func TestStopNoPaneKeepsBindingWhenDestroyFails(t *testing.T) {
 	fake, p := teardownStarted(t, teardownDog)
-	bd, ok := p.Binding(teardownDog)
+	bd, ok := mustBinding(t)(p.Binding(teardownDog))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}
@@ -646,7 +646,7 @@ func TestStopKeepsBindingWhenEmptySessionCheckFails(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err == nil {
 		t.Fatal("Stop = nil, want the empty-session check error")
 	}
-	if _, ok := p.Binding(teardownDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); !ok {
 		t.Error("binding forgotten although the session was not removed")
 	}
 	if len(fake.DestroyedSessions) != 0 {
@@ -660,7 +660,7 @@ func TestStopKeepsBindingWhenEmptySessionCheckFails(t *testing.T) {
 	if len(fake.DestroyedSessions) != 1 {
 		t.Errorf("destroyed = %v, want the retry to remove the empty session", fake.DestroyedSessions)
 	}
-	if _, ok := p.Binding(teardownDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); ok {
 		t.Error("binding still stored after the retry")
 	}
 }
@@ -672,7 +672,7 @@ func TestStopToleratesSessionGoneAtDestroy(t *testing.T) {
 	if err := p.Stop(context.Background(), teardownDog); err != nil {
 		t.Fatalf("Stop = %v, want nil for a session another client removed", err)
 	}
-	if _, ok := p.Binding(teardownDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(teardownDog)); ok {
 		t.Error("binding still stored after Stop")
 	}
 }

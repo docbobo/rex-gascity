@@ -10,13 +10,18 @@ import (
 // alias: gc reads keys such as GC_SESSION_ID and suspended under the canonical
 // identity even for a pane started under the short pool name. ok reports
 // whether a session record answers to name; it is false when nothing is stored
-// under name and name is not a recorded alias. It never contacts Rex.
-func (p *Provider) metaName(name string) (SessionName, bool) {
+// under name and name is not a recorded alias. A binding read failure is
+// returned, never read as an absent record. It never contacts Rex.
+func (p *Provider) metaName(name string) (SessionName, bool, error) {
 	n := SessionName(name)
-	if bd, ok, _ := p.binder.Resolve(context.Background(), ResolveRequest{Name: n}); ok {
-		return bd.Name, true
+	bd, ok, err := p.binder.Resolve(context.Background(), ResolveRequest{Name: n})
+	if err != nil {
+		return n, false, err
 	}
-	return n, false
+	if ok {
+		return bd.Name, true, nil
+	}
+	return n, false, nil
 }
 
 // metaGet, metaSet, metaDelete and metaClear are the provider's one place to
@@ -33,18 +38,10 @@ func (p *Provider) metaDelete(name SessionName, key string) error {
 	return p.meta.Drop(metaKey{name, key})
 }
 
-// bindingRead is the provider's one place to read a stored binding without
-// listing or contacting Rex.
-func (p *Provider) bindingRead(name SessionName) (Binding, bool) {
-	b, ok, _ := p.bindings.Read(name)
-	return b, ok
-}
-
+// metaClear removes every key stored for name through the binding table, so
+// the sweep is never optional: a meta store without Clear cannot be installed.
 func (p *Provider) metaClear(name SessionName) error {
-	if c, ok := p.meta.(clearer); ok {
-		return c.Clear(name)
-	}
-	return nil
+	return p.bindings.ClearMeta(name)
 }
 
 // SetMeta stores value under key for the named session, byte for byte. It
@@ -54,7 +51,10 @@ func (p *Provider) metaClear(name SessionName) error {
 // and stores nothing. It never contacts Rex; ctx is unused and kept for the
 // dispatcher's call shape. A failed write is returned, not swallowed.
 func (p *Provider) SetMeta(_ context.Context, name, key, value string) error {
-	n, ok := p.metaName(name)
+	n, ok, err := p.metaName(name)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return fmt.Errorf("no session %q", name)
 	}
@@ -65,7 +65,10 @@ func (p *Provider) SetMeta(_ context.Context, name, key, value string) error {
 // set. A store that cannot be read is an error. It never contacts Rex; ctx is
 // unused.
 func (p *Provider) GetMeta(_ context.Context, name, key string) (string, error) {
-	n, _ := p.metaName(name)
+	n, _, err := p.metaName(name)
+	if err != nil {
+		return "", err
+	}
 	v, ok, err := p.metaGet(n, key)
 	if err != nil {
 		return "", err
@@ -79,6 +82,9 @@ func (p *Provider) GetMeta(_ context.Context, name, key string) (string, error) 
 // RemoveMeta deletes only key for the named session. It never contacts Rex;
 // ctx is unused.
 func (p *Provider) RemoveMeta(_ context.Context, name, key string) error {
-	n, _ := p.metaName(name)
+	n, _, err := p.metaName(name)
+	if err != nil {
+		return err
+	}
 	return p.metaDelete(n, key)
 }

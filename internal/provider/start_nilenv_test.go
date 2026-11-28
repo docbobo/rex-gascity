@@ -26,7 +26,7 @@ func TestStartWithoutEnvResolvesStaleRecordToLivePane(t *testing.T) {
 	if err := p.Start(ctx, name, Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
-	launched, ok := p.Binding(name)
+	launched, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatalf("Binding(%q) = false after start", name)
 	}
@@ -50,7 +50,7 @@ func TestStartWithoutEnvResolvesStaleRecordToLivePane(t *testing.T) {
 		t.Fatalf("launches after second start = %d windows, %d splits; want 1 and 0 (no duplicate)",
 			len(fake.CreatedWindows), len(fake.CreatedSplits))
 	}
-	got, ok := p.Binding(name)
+	got, ok := mustBinding(t)(p.Binding(name))
 	if !ok || got.BlockID != launched.BlockID || got.TabLabel != launched.TabLabel {
 		t.Fatalf("Binding after second start = %+v, %v; want the live pane %+v", got, ok, launched)
 	}

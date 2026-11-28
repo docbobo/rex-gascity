@@ -19,14 +19,14 @@ func TestBindingSurvivesNewProvider(t *testing.T) {
 	if err := first.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	want, ok := first.Binding("Indigo--dog-1")
+	want, ok := mustBinding(t)(first.Binding("Indigo--dog-1"))
 	if !ok || want.BlockID == "" || want.WindowID == "" || want.SessionID == "" {
 		t.Fatalf("first Binding = %+v, %v", want, ok)
 	}
 
 	fake2 := faketest.New() // knows no sessions or views
 	second := provider.New("acme", fake2, provider.WithNamespace(provider.NewNamespaceForDirs(dir)))
-	got, ok := second.Binding("Indigo--dog-1")
+	got, ok := mustBinding(t)(second.Binding("Indigo--dog-1"))
 	if !ok {
 		t.Fatal("second provider lost the binding")
 	}
@@ -45,10 +45,10 @@ func TestDefaultProviderKeepsStateInMemory(t *testing.T) {
 	if err := p.Start(ctx, "Indigo--dog-1", provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if _, ok := p.Binding("Indigo--dog-1"); !ok {
+	if _, ok := mustBinding(t)(p.Binding("Indigo--dog-1")); !ok {
 		t.Error("in-memory binding missing")
 	}
-	if _, ok := provider.New("acme", faketest.New()).Binding("Indigo--dog-1"); ok {
+	if _, ok := mustBinding(t)(provider.New("acme", faketest.New()).Binding("Indigo--dog-1")); ok {
 		t.Error("a default provider shared state with another")
 	}
 }

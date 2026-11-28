@@ -167,9 +167,13 @@ type Provider struct {
 	// label the resolution rungs still accept.
 	townTab string
 
-	bindings Store[SessionName, Binding]
-	activity Store[SessionName, ActivityRecord]
-	meta     Store[metaKey, string]
+	bindings BindingTable
+	// bindingRecords is only used while options run; New assembles the one
+	// BindingTable from it and the meta store, and nothing reads this field
+	// after construction.
+	bindingRecords bindingRecords
+	activity       Store[SessionName, ActivityRecord]
+	meta           MetaStore
 
 	// ns is the city namespace: the state dirs (the canonical one holds the
 	// cross-process lock; none means no locking) and the accepted Rex session
@@ -212,9 +216,11 @@ type Provider struct {
 // Option configures a Provider.
 type Option func(*Provider)
 
-// WithBindingStore sets the binding store.
-func WithBindingStore(s Store[SessionName, Binding]) Option {
-	return func(p *Provider) { p.bindings = s }
+// WithBindingStore sets the binding store. The store must be able to list:
+// enumeration is a required capability of the binding table, so a partial
+// store does not compile here.
+func WithBindingStore(s bindingRecords) Option {
+	return func(p *Provider) { p.bindingRecords = s }
 }
 
 // WithActivityStore sets the activity store.
@@ -222,8 +228,10 @@ func WithActivityStore(s Store[SessionName, ActivityRecord]) Option {
 	return func(p *Provider) { p.activity = s }
 }
 
-// WithMetaStore sets the metadata store.
-func WithMetaStore(s Store[metaKey, string]) Option { return func(p *Provider) { p.meta = s } }
+// WithMetaStore sets the metadata store. The store must be able to sweep a
+// session: Clear is a required capability, so a partial store does not compile
+// here.
+func WithMetaStore(s MetaStore) Option { return func(p *Provider) { p.meta = s } }
 
 // WithNamespace configures the provider for ns: its state dirs back the
 // sidecar stores and its labels are the accepted Rex session labels. It is the
@@ -242,16 +250,16 @@ func WithNamespace(ns Namespace) Option {
 func applyNamespace(ns Namespace) Option {
 	return func(p *Provider) {
 		if len(ns.dirs) > 0 {
-			bindings := make([]Store[SessionName, Binding], 0, len(ns.dirs))
+			bindings := make([]bindingRecords, 0, len(ns.dirs))
 			activities := make([]Store[SessionName, ActivityRecord], 0, len(ns.dirs))
-			metas := make([]Store[metaKey, string], 0, len(ns.dirs))
+			metas := make([]MetaStore, 0, len(ns.dirs))
 			for _, dir := range ns.dirs {
 				bindings = append(bindings, NewFileStore(filepath.Join(dir, "bindings")))
 				activities = append(activities, NewFileActivityStore(filepath.Join(dir, "activity")))
 				metas = append(metas, NewFileMetaStore(filepath.Join(dir, "meta")))
 			}
 			p.ns.dirs = slices.Clone(ns.dirs)
-			p.bindings = newCompositeBindingStore(bindings...)
+			p.bindingRecords = newCompositeBindingStore(bindings...)
 			p.activity = newCompositeActivityStore(activities...)
 			p.meta = newCompositeMetaStore(metas...)
 		}
@@ -317,13 +325,13 @@ func WithProcessHost(h prochost.Host) Option {
 // held in memory.
 func New(city string, client rex.Client, opts ...Option) *Provider {
 	p := &Provider{
-		city:     city,
-		client:   client,
-		bindings: NewMemoryStore(),
-		activity: NewMemoryActivityStore(),
-		meta:     NewMemoryMetaStore(),
-		runner:   ExecRunner{},
-		nudge:    defaultNudgeConfig(),
+		city:           city,
+		client:         client,
+		bindingRecords: NewMemoryStore(),
+		activity:       NewMemoryActivityStore(),
+		meta:           NewMemoryMetaStore(),
+		runner:         ExecRunner{},
+		nudge:          defaultNudgeConfig(),
 
 		startBudget:         defaultStartBudget,
 		preStartHookTimeout: defaultPreStartHookTimeout,
@@ -334,6 +342,10 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 	for _, opt := range opts {
 		opt(p)
 	}
+	// One table owns the binding records and the meta sweep; the Provider and
+	// the Binder share this value, so there is no second typed path to the
+	// records.
+	p.bindings = newBindingTable(p.bindingRecords, p.meta)
 	if p.processHost == nil {
 		p.processHost = prochost.NewPSHost(p.runner)
 	}
@@ -350,10 +362,14 @@ func New(city string, client rex.Client, opts ...Option) *Provider {
 
 // Binding returns the stored binding that answers to name (its primary name
 // or one of its aliases) without contacting Rex. It is the dispatcher-facing
-// lookup; Resolve-based ops re-validate it against Rex.
-func (p *Provider) Binding(name string) (Binding, bool) {
-	bd, ok, _ := p.binder.Resolve(context.Background(), ResolveRequest{Name: SessionName(name)})
-	return bd, ok
+// lookup; Resolve-based ops re-validate it against Rex. A store read failure
+// is returned rather than reported as an absent binding.
+func (p *Provider) Binding(name string) (Binding, bool, error) {
+	bd, ok, err := p.binder.Resolve(context.Background(), ResolveRequest{Name: SessionName(name)})
+	if err != nil {
+		return Binding{}, false, err
+	}
+	return bd, ok, nil
 }
 
 // Start creates the city session, the rig's tab, and the agent's pane, and
@@ -397,8 +413,12 @@ func (p *Provider) StartNew(ctx context.Context, name string, cfg Config) error 
 			// never recycles or reuses it (herdr-core _check_name,
 			// herdrcore/lifecycle.py:755-756). A stale binding is a record, and
 			// so is a binding that holds the name only as an alias, so the
-			// check goes through lookup, not the primary-key read alone.
-			if len(p.binder.lookup(SessionName(name))) > 0 {
+			// check goes through lookup, not the primary-key read alone. A
+			// lookup failure is returned before the collision is considered:
+			// an unreadable store is not evidence the name is free.
+			if cands, err := p.binder.lookup(SessionName(name)); err != nil {
+				return err
+			} else if len(cands) > 0 {
 				return fmt.Errorf("%w: %s", ErrFreshCollision, name)
 			}
 		}
@@ -681,12 +701,12 @@ func (p *Provider) ClearScrollback(ctx context.Context, name string) error {
 // ListRunning returns the sorted names of known sessions with the given
 // prefix (all when empty) whose pane is still alive.
 func (p *Provider) ListRunning(ctx context.Context, prefix string) ([]string, error) {
-	lister, ok := p.bindings.(Lister[Binding])
-	if !ok {
-		return nil, errors.New("provider: binding store cannot list")
+	bindings, err := p.bindings.List()
+	if err != nil {
+		return nil, fmt.Errorf("provider: list bindings: %w", err)
 	}
 	names := []string{}
-	for _, b := range lister.List() {
+	for _, b := range bindings {
 		// Skip a binding no name answers for before paying for a liveness probe:
 		// gc polls list-running with narrow prefixes constantly.
 		if !prefixMatches(b, prefix) {

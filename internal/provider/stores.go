@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -41,17 +42,103 @@ type Store[K comparable, V any] interface {
 	Drop(k K) error
 }
 
-// Lister is the optional enumeration capability of a store. Only the binding
-// store implements it.
-type Lister[V any] interface {
-	// List returns every value, sorted by the store's own key order.
-	List() []V
+// bindingRecords is everything a binding backing store must offer: the store
+// seam plus enumeration. Enumeration is a required capability, not an optional
+// one: a type without List cannot be installed as a binding store, so the
+// compiler rejects it instead of an op discovering it at run time. A read or
+// list failure is returned, never read as absence.
+type bindingRecords interface {
+	Store[SessionName, Binding]
+	// List returns every record the store holds. A missing store is empty; a
+	// corrupt or unreadable record is an error.
+	List() ([]Binding, error)
 }
 
-// clearer is the optional per-session sweep of the metadata store: it removes
-// every key of one session in one call.
-type clearer interface {
+// MetaStore is the metadata seam plus the per-session sweep. A meta store
+// without Clear cannot be installed, for the same reason.
+type MetaStore interface {
+	Store[metaKey, string]
+	// Clear removes every key stored for name.
 	Clear(name SessionName) error
+}
+
+// BindingTable is the one module the Provider and the Binder hold: the binding
+// record seam, enumeration, alias lookup and the per-session meta sweep. Both
+// views reach the same records through this one value, so there is no second
+// independently typed path to them.
+type BindingTable interface {
+	Store[SessionName, Binding]
+	// List returns every binding record. A corrupt record is an error.
+	List() ([]Binding, error)
+	// Lookup returns the records that answer to name: the primary record
+	// stored under name first, then every primary record that lists name as
+	// an alias. It never contacts Rex.
+	Lookup(name SessionName) ([]Binding, error)
+	// ClearMeta removes every metadata key stored for name.
+	ClearMeta(name SessionName) error
+}
+
+// bindingTable is the one BindingTable implementation. It owns the binding
+// records and the meta sweep, so both the ordinary meta surface and the sweep
+// run against the same stores.
+type bindingTable struct {
+	records bindingRecords
+	meta    MetaStore
+}
+
+var _ BindingTable = (*bindingTable)(nil)
+
+func newBindingTable(records bindingRecords, meta MetaStore) *bindingTable {
+	return &bindingTable{records: records, meta: meta}
+}
+
+func (t *bindingTable) Read(name SessionName) (Binding, bool, error) {
+	return t.records.Read(name)
+}
+
+func (t *bindingTable) Write(name SessionName, b Binding) error {
+	return t.records.Write(name, b)
+}
+
+func (t *bindingTable) Drop(name SessionName) error {
+	return t.records.Drop(name)
+}
+
+func (t *bindingTable) List() ([]Binding, error) {
+	return t.records.List()
+}
+
+func (t *bindingTable) ClearMeta(name SessionName) error {
+	return t.meta.Clear(name)
+}
+
+// Lookup returns the records that answer to name, primary first and aliases
+// second, de-duplicated by their primary name. It never contacts Rex.
+func (t *bindingTable) Lookup(name SessionName) ([]Binding, error) {
+	bd, ok, err := t.records.Read(name)
+	if err != nil {
+		return nil, err
+	}
+	var out []Binding
+	seen := map[SessionName]bool{}
+	if ok {
+		out = append(out, bd)
+		seen[bd.Name] = true
+	}
+	all, err := t.records.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, cand := range all {
+		if seen[cand.Name] {
+			continue
+		}
+		if slices.Contains(cand.Aliases, name) {
+			out = append(out, cand)
+			seen[cand.Name] = true
+		}
+	}
+	return out, nil
 }
 
 // memTable is the one in-memory table behind every memory store: a mutex
@@ -153,24 +240,26 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{newMemStore[SessionName, Binding]()}
 }
 
-// Load returns the binding for name, if any. It is the historical binding API
-// kept for callers that do not need the generic seam.
+// Load returns the binding for name, if any. It is a test-only convenience:
+// it swallows the read error, and no production code may use it.
 func (s *MemoryStore) Load(name SessionName) (Binding, bool) {
 	b, ok, _ := s.Read(name)
 	return b, ok
 }
 
-// Save stores b, replacing any binding with the same name.
+// Save stores b, replacing any binding with the same name. It is a test-only
+// convenience: it swallows the write error, and no production code may use it.
 func (s *MemoryStore) Save(b Binding) { _ = s.Write(b.Name, b) }
 
-// Delete removes the binding for name.
+// Delete removes the binding for name. It is a test-only convenience: it
+// swallows the error, and no production code may use it.
 func (s *MemoryStore) Delete(name SessionName) { _ = s.Drop(name) }
 
-// List returns every binding, sorted by Name.
-func (s *MemoryStore) List() []Binding {
+// List returns every binding, sorted by Name. The memory store never fails.
+func (s *MemoryStore) List() ([]Binding, error) {
 	out := s.t.values()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, nil
 }
 
 // activityRecord is the on-disk shape of an ActivityRecord. It has the same

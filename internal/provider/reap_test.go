@@ -40,7 +40,7 @@ func TestStopRefusesRecycledPID(t *testing.T) {
 	if err := p.Start(ctx, reapStopDog, provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	stored, ok := p.Binding(reapStopDog)
+	stored, ok := mustBinding(t)(p.Binding(reapStopDog))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}
@@ -55,7 +55,7 @@ func TestStopRefusesRecycledPID(t *testing.T) {
 	if len(host.Signals) != 0 {
 		t.Errorf("Stop sent %v, want no signal to a reused pid", host.Signals)
 	}
-	if kept, ok := p.Binding(reapStopDog); ok {
+	if kept, ok := mustBinding(t)(p.Binding(reapStopDog)); ok {
 		t.Errorf("binding kept (%+v), want it cleared with no survivor record", kept)
 	}
 }
@@ -130,7 +130,7 @@ func reapStartDog(t *testing.T, host *prochost.Fake, tree rex.ProcessInfo) (*fak
 	if err := p.Start(context.Background(), reapStopDog, provider.Config{Argv: []string{"claude"}}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	stored, ok := p.Binding(reapStopDog)
+	stored, ok := mustBinding(t)(p.Binding(reapStopDog))
 	if !ok {
 		t.Fatal("no binding after Start")
 	}
@@ -145,7 +145,7 @@ var errReapTable = errors.New("host table unavailable")
 // record exists (spec review finding 2).
 func wantSurvivors(t *testing.T, p *provider.Provider, want ...provider.Survivor) {
 	t.Helper()
-	kept, ok := p.Binding(reapStopDog)
+	kept, ok := mustBinding(t)(p.Binding(reapStopDog))
 	if !ok {
 		t.Fatal("binding gone, want the survivor record kept")
 	}
@@ -177,7 +177,7 @@ func TestStopReuseBeforeKill(t *testing.T) {
 	if len(host.Signals) != 1 || host.Signals[0].Sig != syscall.SIGTERM {
 		t.Errorf("signals = %v, want one TERM and no KILL", host.Signals)
 	}
-	if kept, ok := p.Binding(reapStopDog); ok {
+	if kept, ok := mustBinding(t)(p.Binding(reapStopDog)); ok {
 		t.Errorf("binding kept (%+v), want it cleared", kept)
 	}
 }
@@ -197,7 +197,7 @@ func TestStopPersistentZombie(t *testing.T) {
 	if len(host.Signals) != 0 {
 		t.Errorf("signals = %v, want none for a zombie", host.Signals)
 	}
-	if kept, ok := p.Binding(reapStopDog); ok {
+	if kept, ok := mustBinding(t)(p.Binding(reapStopDog)); ok {
 		t.Errorf("binding kept (%+v), want it cleared", kept)
 	}
 }
@@ -222,7 +222,7 @@ func TestStopReportsOpaqueSurvivor(t *testing.T) {
 	if len(host.Signals) != 0 {
 		t.Errorf("signals = %v, want none for an opaque identity", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(reapStopDog)); !ok {
 		t.Error("binding gone, want the survivor record kept")
 	}
 }
@@ -247,7 +247,7 @@ func TestStopShDoesNotMatchBash(t *testing.T) {
 	if len(host.Signals) != 0 {
 		t.Errorf("signals = %v, want none for sh versus bash", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(reapStopDog)); !ok {
 		t.Error("binding gone, want the survivor record kept")
 	}
 }
@@ -268,7 +268,7 @@ func TestStopGoneAfterTerm(t *testing.T) {
 	if len(host.Signals) != 1 || host.Signals[0].Sig != syscall.SIGTERM {
 		t.Errorf("signals = %v, want one TERM", host.Signals)
 	}
-	if kept, ok := p.Binding(reapStopDog); ok {
+	if kept, ok := mustBinding(t)(p.Binding(reapStopDog)); ok {
 		t.Errorf("binding kept (%+v), want it cleared", kept)
 	}
 }
@@ -521,7 +521,7 @@ func TestStopKillsObjectFromFakeHost(t *testing.T) {
 	if len(fake.ClosedBlocks) != 1 {
 		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
 	}
-	if _, ok := p.Binding(reapStopDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(reapStopDog)); ok {
 		t.Error("binding survived a fully reaped stop")
 	}
 }
@@ -568,7 +568,7 @@ func TestStopSucceedsWhenTheSubtreeDies(t *testing.T) {
 	if len(fake.ClosedBlocks) != 1 {
 		t.Errorf("closed = %v, want one close", fake.ClosedBlocks)
 	}
-	if _, ok := p.Binding(reapStopDog); ok {
+	if _, ok := mustBinding(t)(p.Binding(reapStopDog)); ok {
 		t.Error("binding survived a fully reaped stop")
 	}
 }
@@ -663,7 +663,7 @@ func TestStopLeavesThePaneOpenWhenTheTreeCannotBeRead(t *testing.T) {
 	if len(host.Signals) != 0 {
 		t.Errorf("signals = %v, want none without an observed tree", host.Signals)
 	}
-	if _, ok := p.Binding(reapStopDog); !ok {
+	if _, ok := mustBinding(t)(p.Binding(reapStopDog)); !ok {
 		t.Error("binding forgotten although the pane was never closed")
 	}
 	if got, _ := p.GetMeta(ctx, reapStopDog, "suspended"); got != "yes" {

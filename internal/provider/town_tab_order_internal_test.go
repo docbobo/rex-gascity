@@ -234,7 +234,7 @@ func TestStartRelaunchRecreatingTownTabMovesItFirst(t *testing.T) {
 	p := New("acme", fake)
 	mustStart(t, p, "mayor", townStartCfg())
 	mustStart(t, p, "rig-a--polecat", rigStartCfg("rig-a"))
-	old, ok := p.Binding("mayor")
+	old, ok := mustBinding(t)(p.Binding("mayor"))
 	if !ok {
 		t.Fatal("no mayor binding")
 	}
@@ -274,7 +274,7 @@ func TestStartTownTabMoveFailureOnlyWarns(t *testing.T) {
 	if got, want := tabOrder(fake), []string{"[rig] rig-a", townWinLabel()}; !slices.Equal(got, want) {
 		t.Errorf("tab order = %q, want %q (the failed move changes nothing)", got, want)
 	}
-	if _, ok := p.Binding("mayor"); !ok {
+	if _, ok := mustBinding(t)(p.Binding("mayor")); !ok {
 		t.Error("mayor has no binding; a failed move must not undo the start")
 	}
 }
@@ -352,7 +352,7 @@ func TestStartTownTabInLegacySessionIsNotMoved(t *testing.T) {
 
 	mustStart(t, p, "mayor", townStartCfg())
 
-	if bd, ok := p.Binding("mayor"); !ok || bd.SessionID != "session:gc:old" {
+	if bd, ok := mustBinding(t)(p.Binding("mayor")); !ok || bd.SessionID != "session:gc:old" {
 		t.Fatalf("mayor binding = %+v, %v; want it in the legacy session", bd, ok)
 	}
 	if len(fake.CreatedSessions) != 0 {

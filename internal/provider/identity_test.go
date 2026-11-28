@@ -99,7 +99,7 @@ func TestStartSeedsIdentityBeforeLaunch(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	b, ok := p.Binding(name)
+	b, ok := mustBinding(t)(p.Binding(name))
 	if !ok {
 		t.Fatal("no final binding after launch")
 	}
@@ -158,7 +158,7 @@ func TestStartDropsTheRetiredIdentityWhenTheRelaunchFails(t *testing.T) {
 	if err := p.Start(ctx, name, provider.Config{Argv: []string{"pi"}, Env: identityEnv()}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	bd, ok := p.Binding(name)
+	bd, ok := mustBinding(t)(p.Binding(name))
 	if !ok || bd.BlockID == "" {
 		t.Fatal("no binding after the first start")
 	}
@@ -201,7 +201,7 @@ func TestStopClearsSeededIdentity(t *testing.T) {
 			t.Errorf("%s = %q after Stop, want empty", key, got)
 		}
 	}
-	if _, ok := p.Binding(name); ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); ok {
 		t.Error("binding still present after Stop")
 	}
 }
@@ -220,7 +220,7 @@ func TestStartFailureClearsSeededIdentityAndProvisionalBinding(t *testing.T) {
 			t.Errorf("%s = %q after failed start, want empty", key, got)
 		}
 	}
-	if _, ok := p.Binding(name); ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); ok {
 		t.Error("provisional binding survived a failed start")
 	}
 }
@@ -585,7 +585,7 @@ func TestStartupNudgeDeliveryFailureKeepsPane(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Start = %v, want nil (startup nudge is best effort)", err)
 			}
-			if _, ok := p.Binding(name); !ok {
+			if _, ok := mustBinding(t)(p.Binding(name)); !ok {
 				t.Error("binding missing after best-effort nudge failure")
 			}
 			if len(fake.CreatedWindows) == 0 {
@@ -890,7 +890,7 @@ func TestStartupNudgeRejectsInvalidUTF8(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if _, ok := p.Binding(name); !ok {
+	if _, ok := mustBinding(t)(p.Binding(name)); !ok {
 		t.Error("binding dropped, want the started pane kept")
 	}
 	got, err := p.GetMeta(ctx, name, provider.StartupDeliveryUnconfirmedMetaKey)

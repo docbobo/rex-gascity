@@ -43,7 +43,7 @@ func TestE2ETownTabFirst(t *testing.T) {
 		t.Fatalf("Start %s: %v", town, err)
 	}
 
-	bd, ok := p.Binding(town)
+	bd, ok := mustBinding(t)(p.Binding(town))
 	if !ok {
 		t.Fatalf("Binding %s: not found", town)
 	}

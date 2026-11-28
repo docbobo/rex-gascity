@@ -215,7 +215,7 @@ func TestSlowStopDoesNotHoldStateLock(t *testing.T) {
 			t.Fatalf("Start %s: %v", name, err)
 		}
 	}
-	bd, ok := p.Binding("Indigo--a")
+	bd, ok := mustBinding(t)(p.Binding("Indigo--a"))
 	if !ok {
 		t.Fatal("no binding for Indigo--a")
 	}

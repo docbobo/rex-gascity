@@ -13,7 +13,7 @@ import (
 // failingKeyStore fails Read for one key only, so a test can hold one identity
 // key unreadable while the rest stay readable.
 type failingKeyStore struct {
-	Store[metaKey, string]
+	MetaStore
 	fail string
 }
 
@@ -21,7 +21,7 @@ func (s *failingKeyStore) Read(k metaKey) (string, bool, error) {
 	if k.key == s.fail {
 		return "", false, errors.New("corrupt entry")
 	}
-	return s.Store.Read(k)
+	return s.MetaStore.Read(k)
 }
 
 // TestObserveUnreadableIdentityIsNull proves review finding 2: one unreadable
@@ -31,7 +31,7 @@ func (s *failingKeyStore) Read(k metaKey) (string, bool, error) {
 func TestObserveUnreadableIdentityIsNull(t *testing.T) {
 	ctx := context.Background()
 	name := "pi-mc-wisp-abc"
-	store := &failingKeyStore{Store: NewMemoryMetaStore(), fail: "GC_INSTANCE_TOKEN"}
+	store := &failingKeyStore{MetaStore: NewMemoryMetaStore(), fail: "GC_INSTANCE_TOKEN"}
 	p := New("acme", faketest.New(), WithMetaStore(store))
 	cfg := Config{Argv: []string{"pi"}, Env: map[string]string{
 		"GC_SESSION_ID":     "mc-wisp-abc",

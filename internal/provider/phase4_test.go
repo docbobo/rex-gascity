@@ -239,7 +239,7 @@ func TestStartWithSharedStateDirLock(t *testing.T) {
 	}
 	wg.Wait()
 	for _, n := range []string{"Indigo--a", "Indigo--b"} {
-		if _, ok := p1.Binding(n); !ok {
+		if _, ok := mustBinding(t)(p1.Binding(n)); !ok {
 			t.Errorf("no binding for %s", n)
 		}
 	}
@@ -312,7 +312,7 @@ func TestStartNewConcurrentDistinctNamesBothStart(t *testing.T) {
 		}
 	}
 	for _, n := range []string{"Indigo--a", "Indigo--b"} {
-		if _, ok := p.Binding(n); !ok {
+		if _, ok := mustBinding(t)(p.Binding(n)); !ok {
 			t.Errorf("no binding for %s", n)
 		}
 	}
