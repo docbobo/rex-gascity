@@ -964,7 +964,10 @@ verifies as `Sanitize(agent)+"-"+bead id`. The pool form adds the display-only
 (`[gc.implementation-worker] (#mc-wisp-kvqib) #mc-wisp-kvqib`); the tail is
 never an identity. The marker inside the parentheses is load-bearing: it is
 what keeps `[worker] (seat)` (the town session `seat`) from also naming the
-pool seat `worker-seat`.
+pool seat `worker-seat`. A name that itself starts with the marker is escaped
+with one `\`: `[worker] (\#seat)` names the session `#seat`, and an escaped
+suffix is never read as a pool identity. The writer escapes a name that starts
+with `\` too, so the reader strips exactly one escape.
 A blank session name or agent keeps the name-derived label, and town-level
 panes keep `[<agent>] (<name>)`. An over-long label is clamped to 128 runes by
 two different ladders. The pool form drops its display-only `#` tail first and

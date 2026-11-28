@@ -22,6 +22,14 @@ const (
 	// tags wrote: "Rig: <rig>". Nothing new is written with it; it is the
 	// compatibility rung a window started by an older build still carries.
 	legacyRigTabPrefix = "Rig: "
+
+	// paneSuffixEscape marks a suffix that begins with the pool marker but is a
+	// complete session name, not a pool identity: "(\#seat)" names the session
+	// "#seat", while "(#seat)" names the pool seat Sanitize(agent)+"-seat".
+	// The writer puts one escape in front of a name that starts with the pool
+	// marker or with the escape itself, and the reader strips exactly one, so
+	// every suffix decodes to one session.
+	paneSuffixEscape = `\`
 )
 
 // taggedLabel renders a session or tab label: "[city] Shady_Sands".
@@ -133,25 +141,50 @@ func splitPaneLabel(label string) (paneParts, bool) {
 	return p, true
 }
 
+// paneSuffix returns name as a pane label suffix: the name verbatim, escaped
+// when it begins with the pool marker or with the escape so the reader cannot
+// mistake it for a pool identity.
+func paneSuffix(name string) string {
+	if name == "" {
+		return ""
+	}
+	if name[0] == paneLabelShortForm[0] || name[0] == paneSuffixEscape[0] {
+		return paneSuffixEscape + name
+	}
+	return name
+}
+
+// unescapePaneSuffix returns the session name a suffix holds and whether the
+// writer escaped it. An escaped suffix is always a complete name, never a pool
+// identity.
+func unescapePaneSuffix(suffix string) (string, bool) {
+	if rest, ok := strings.CutPrefix(suffix, paneSuffixEscape); ok {
+		return rest, true
+	}
+	return suffix, false
+}
+
 // namesSession reports whether the label names session name. The suffix is the
 // identity, never the "#<id>" tail: a marked suffix (the short pool form) means
 // name is Sanitize(agent)+"-"+marker-tail; an unmarked suffix is a complete
 // session name (the long and town forms). A shortened agent keeps the identity,
 // because the parenthesis survives the cut.
 //
-// Only the marked form is read as a pool identity. Reading an unmarked tagged
-// suffix as Sanitize(agent)+"-"+suffix would let one label name two sessions:
-// the pool seat and a session literally named the suffix (the town form
-// "[worker] (seat)" for session "seat" is byte-for-byte the unmarked pool form
-// for "worker-seat"). The marker is what keeps each label to one session.
+// Only the unescaped marked form is read as a pool identity. Reading an
+// unmarked tagged suffix as Sanitize(agent)+"-"+suffix would let one label name
+// two sessions: the pool seat and a session literally named the suffix (the
+// town form "[worker] (seat)" for session "seat" is byte-for-byte the unmarked
+// pool form for "worker-seat"). The marker, and the escape that takes a name
+// out from under it, is what keeps each label to one session.
 func (p paneParts) namesSession(name SessionName) bool {
-	if strings.HasPrefix(p.suffix, paneLabelShortForm) {
+	suffix, escaped := unescapePaneSuffix(p.suffix)
+	if !escaped && strings.HasPrefix(suffix, paneLabelShortForm) {
 		// Short pool form: the parentheses hold the marked bead id.
-		suffix := p.suffix[len(paneLabelShortForm):]
-		if suffix == "" || p.agent == "" || strings.HasSuffix(p.agent, paneLabelShortened) {
+		bead := suffix[len(paneLabelShortForm):]
+		if bead == "" || p.agent == "" || strings.HasSuffix(p.agent, paneLabelShortened) {
 			return false
 		}
-		return sanitizeQualified(p.agent)+"-"+suffix == string(name)
+		return sanitizeQualified(p.agent)+"-"+bead == string(name)
 	}
-	return p.suffix == string(name)
+	return suffix == string(name)
 }

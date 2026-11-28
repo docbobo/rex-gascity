@@ -683,8 +683,15 @@ func TestHashLeadingNameIsNotThePoolForm(t *testing.T) {
 	if len(fake.CreatedWindows) != 1 {
 		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
 	}
-	if label := fake.CreatedWindows[0].Spec.Label; label != string(name) {
-		t.Fatalf("pane label = %q, want the bare %q; the pool form would name worker-seat", label, name)
+	label := fake.CreatedWindows[0].Spec.Label
+	if !identityMatch(name, label) {
+		t.Fatalf("pane label = %q, want a label that names %q", label, name)
+	}
+	if identityMatch(SessionName("worker-seat"), label) {
+		t.Fatalf("pane label = %q names the pool seat worker-seat", label)
+	}
+	if want := `[worker] (\#seat)`; label != want {
+		t.Fatalf("pane label = %q, want %q; the escape keeps the identity out of the pool form", label, want)
 	}
 
 	// Record lost: discovery must still find the pane for "#seat" and never
@@ -694,6 +701,53 @@ func TestHashLeadingNameIsNotThePoolForm(t *testing.T) {
 	rebuilt.View = fake.View
 	if running, err := New("acme", rebuilt).IsRunning(ctx, string(name)); err != nil || !running {
 		t.Fatalf("IsRunning(%q) = %v, %v; the pane must answer for its own name", name, running, err)
+	}
+	if running, err := New("acme", rebuilt).IsRunning(ctx, "worker-seat"); err != nil || running {
+		t.Fatalf("IsRunning(worker-seat) = %v, %v; the #seat pane must not answer for the pool seat", running, err)
+	}
+}
+
+// TestRecordlessHashLeadingRigSessionFindsItsPane pins the CodeRabbit finding
+// on launch_identity.go: a hash-leading name started under GC_RIG lives in the
+// "[rig] Indigo" tab, which a recordless scan cannot derive from the name. Its
+// pane label therefore has to carry the identity itself, or IsRunning reports
+// the live pane as gone after the binding record is lost.
+func TestRecordlessHashLeadingRigSessionFindsItsPane(t *testing.T) {
+	ctx := context.Background()
+	clearCityPin(t)
+	const name = SessionName("#seat")
+	env := map[string]string{
+		"GC_RIG":          "Indigo",
+		"GC_ALIAS":        "worker",
+		"GC_SESSION_NAME": string(name),
+	}
+
+	fake := faketest.New()
+	p := New("acme", fake)
+	if err := p.Start(ctx, string(name), Config{Argv: []string{"pi"}, Env: env}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(fake.CreatedWindows) != 1 {
+		t.Fatalf("created windows = %d, want 1", len(fake.CreatedWindows))
+	}
+	if want := "[rig] Indigo"; fake.CreatedWindows[0].Label != want {
+		t.Fatalf("tab label = %q, want %q", fake.CreatedWindows[0].Label, want)
+	}
+	label := fake.CreatedWindows[0].Spec.Label
+	if !identityMatch(name, label) {
+		t.Fatalf("pane label = %q, want a label that names %q", label, name)
+	}
+	if identityMatch(SessionName("worker-seat"), label) {
+		t.Fatalf("pane label = %q names the pool seat worker-seat", label)
+	}
+
+	// Record lost and no start env survives: the cross-tab scan has only the
+	// name, and the "[rig] Indigo" tab is not a name-derived candidate.
+	rebuilt := faketest.New()
+	rebuilt.Sessions = fake.Sessions
+	rebuilt.View = fake.View
+	if running, err := New("acme", rebuilt).IsRunning(ctx, string(name)); err != nil || !running {
+		t.Fatalf("IsRunning(%q) = %v, %v; the pane must answer without its record", name, running, err)
 	}
 	if running, err := New("acme", rebuilt).IsRunning(ctx, "worker-seat"); err != nil || running {
 		t.Fatalf("IsRunning(worker-seat) = %v, %v; the #seat pane must not answer for the pool seat", running, err)
@@ -1145,6 +1199,16 @@ func TestIdentityMatch(t *testing.T) {
 		// seat worker-seat (CodeRabbit, label.go).
 		{"named session is not the pool seat", "worker-seat", "[worker] (seat)", false},
 		{"named session is itself", "seat", "[worker] (seat)", true},
+		// A complete name that starts with the pool mark is escaped in the
+		// suffix, so the label names that session and not the pool seat the
+		// unescaped form would name.
+		{"escaped hash-leading long form", "#seat", `[worker] (\#seat)`, true},
+		{"escaped hash-leading long form is not the pool seat", "worker-seat", `[worker] (\#seat)`, false},
+		{"hash-leading pool-looking suffix is the pool seat", "worker-seat", "[worker] (#seat)", true},
+		{"hash-leading pool-looking suffix is not the named session", "#seat", "[worker] (#seat)", false},
+		// The escape itself is escaped, so one suffix still decodes to one name.
+		{"escaped escape", `\#seat`, `[worker] (\\#seat)`, true},
+		{"escaped escape is not the unescaped name", "#seat", `[worker] (\\#seat)`, false},
 		// A long form's suffix is the whole session name. A label whose suffix
 		// is only part of the name names nobody.
 		{"long-form label, suffix is not the whole name", "legacy-agent-a--b-1", "legacy-agent (a--b-1)", false},
