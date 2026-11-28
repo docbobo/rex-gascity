@@ -442,7 +442,10 @@ contract is exactly four of them: `GC_RIG`, `GC_TEMPLATE`, `GC_ALIAS`, and
 `GC_AGENT` (used to derive the tab and the aliases above). The rest are
 incidental to the provider and are applied to the launched process unchanged
 (GCREX-10). Empty values in the start-config env are applied as unset
-(`env -u KEY`) at the launch boundary, matching RPP and gc's tmux adapter.
+(`env -u KEY`) at the launch boundary, matching RPP and gc's tmux adapter. An
+omitted `env` is the same as an empty one: the provider normalizes the projected
+env to an empty map, so a fresh start resolves against the labels the name
+implies instead of a stale record's labels and does not launch a duplicate.
 
 For an unaliased pool or demand seat the provider keeps `GC_ALIAS` empty and
 routes the seat's **work-query agent identity** back to `GC_TEMPLATE` by setting

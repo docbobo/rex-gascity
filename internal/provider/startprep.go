@@ -30,6 +30,16 @@ func (p *Provider) startPlan(name string, cfg *Config) (launch.Plan, string) {
 		Label:   newLaunchIdentity(n, env, "").PaneLabel(),
 	})
 	cfg.Env = plan.Env
+	// gc's exec-session-provider contract makes env optional and omitted when
+	// empty, so launch.Project can return nil and start must treat it as an
+	// empty env. A nil map is not equivalent downstream: ResolveFresh reads nil
+	// as "no start env" and rescans under a stale record's labels, missing a
+	// live pane whose env-derived labels differ and launching a duplicate. The
+	// launch spec is already built above, so an empty map here changes nothing
+	// on the wire (it stays an omitted env).
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
+	}
 	return plan, attempt
 }
 
