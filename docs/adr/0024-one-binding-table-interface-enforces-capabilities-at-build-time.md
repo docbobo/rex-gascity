@@ -84,8 +84,16 @@ considering a collision. `Store`'s comment states the rule: absence is
   alias `Lookup`, duplicates and `ClearMeta` over the memory, file and composite
   adapters.
 - A store read failure reaches the caller from `StartNew`, `Start`,
-  `Binding`, `Forget`, `ListRunning`, `Inventory` and the retirement sweep. The
-  binding is kept when the sweep fails, so a retry has a name to sweep.
+  `Binding`, `Forget`, `ListRunning` and the retirement sweep. The binding is
+  kept when the sweep fails, so a retry has a name to sweep.
+- `Inventory` does not return the enumeration error. When
+  `BindingTable.List` fails it answers
+  `InventoryAnswer{Complete: false, Sessions: []InventoryEntry{}}, nil`
+  (`internal/provider/observe.go:317-323`): an unreadable store proves no
+  session absent, so it reports an incomplete snapshot instead of an empty one.
+  A caller that needs to know the snapshot is whole must inspect `Complete`;
+  `false` there means the session list may be missing entries, not that none
+  exist.
 - `FileStore.List` now reports a corrupt record as an error naming its path while
   still returning the healthy records; `compositeBindingStore.List` joins every
   namespace's error.
