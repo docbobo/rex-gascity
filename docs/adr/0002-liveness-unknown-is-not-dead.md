@@ -53,6 +53,11 @@ sibling ops: a missing pane answers `false, nil` from `ErrNotFound` for
 client kind answers `true` for `is-attached` because "we cannot tell"
 ([parity doc:142](https://github.com/docbobo/rex-gascity/blob/09f11b8/docs/provider-herdr-parity.md#L142)).
 
+The parity document is retired by
+[ADR-0011](0011-verify-the-provider-against-gc-and-conformance-not-herdr-core-parity.md);
+the links above are pinned to the pre-deletion commit `09f11b8` and are
+historical evidence only.
+
 ## Alternatives rejected
 
 - **Fold `unknown` into not alive** — a two-valued `alive() (bool, error)` that
