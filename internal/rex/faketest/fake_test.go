@@ -309,3 +309,86 @@ func TestFakeMoveWindowActsOnSessionView(t *testing.T) {
 		t.Errorf("facet View order = %v, want it untouched %v", got, want)
 	}
 }
+
+// TestCreateSessionThenNewWindow pins the create → launch path: the session id
+// the fake returns is the one the next call acts on, and ListSessions and
+// SessionView report it.
+func TestCreateSessionThenNewWindow(t *testing.T) {
+	ctx := context.Background()
+	f := faketest.New()
+
+	sid, err := f.CreateSession(ctx, "s")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	wid, block, err := f.NewWindow(ctx, sid, "Rig: One", rex.LaunchSpec{Label: "one"})
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+	sessions, err := f.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != sid || sessions[0].Label != "s" {
+		t.Fatalf("sessions = %+v, want only %s with label s", sessions, sid)
+	}
+	view, err := f.SessionView(ctx, sid)
+	if err != nil {
+		t.Fatalf("SessionView: %v", err)
+	}
+	if view.SessionID != sid || view.Label != "s" {
+		t.Errorf("view identity = %q/%q, want %s/s", view.SessionID, view.Label, sid)
+	}
+	if len(view.Windows) != 1 || view.Windows[0].ID != wid {
+		t.Fatalf("windows = %+v, want the one launched %s", view.Windows, wid)
+	}
+	if view.Windows[0].FocusedBlockID != block {
+		t.Errorf("FocusedBlockID = %q, want the launched block %s", view.Windows[0].FocusedBlockID, block)
+	}
+}
+
+// TestDestroySessionUnknownNotFound pins the controller rule: destroying a
+// session the fake does not hold, or destroying it a second time, is
+// ErrNotFound, never a silent success.
+func TestDestroySessionUnknownNotFound(t *testing.T) {
+	ctx := context.Background()
+	f := faketest.New()
+
+	if err := f.DestroySession(ctx, "session:zz"); !errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("DestroySession unknown = %v, want rex.ErrNotFound", err)
+	}
+	sid, err := f.CreateSession(ctx, "s")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := f.DestroySession(ctx, sid); err != nil {
+		t.Fatalf("DestroySession: %v", err)
+	}
+	if err := f.DestroySession(ctx, sid); !errors.Is(err, rex.ErrNotFound) {
+		t.Errorf("second DestroySession = %v, want rex.ErrNotFound", err)
+	}
+}
+
+// TestListSessionsClones pins the list as a snapshot: mutating a returned
+// session must not write through to the fake's state.
+func TestListSessionsClones(t *testing.T) {
+	ctx := context.Background()
+	f := faketest.New()
+	if _, err := f.CreateSession(ctx, "a"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	first, err := f.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	first[0].Label = "mutated"
+
+	second, err := f.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(second) != 1 || second[0].Label != "a" {
+		t.Errorf("sessions after mutating a returned copy = %+v, want label a", second)
+	}
+}

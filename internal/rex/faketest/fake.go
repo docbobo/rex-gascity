@@ -310,21 +310,12 @@ func (f *Fake) DestroySession(_ context.Context, sid rex.SessionID) error {
 	if f.DestroySessionErr != nil {
 		return f.DestroySessionErr
 	}
-	// A session exists only once session.create recorded it; a facet View
-	// seeded without a session record is not a session to destroy.
-	found := false
+	// Session records are the whole list, not one facet view: the removal must
+	// leave a duplicate label's session alone, so build the state from every
+	// recorded session before taking the target out.
+	st := fakestate.NewState()
 	for _, s := range f.Sessions {
-		if s.ID == sid {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return rex.ErrNotFound
-	}
-	st, err := f.hydrationLocked(sid)
-	if err != nil {
-		return err
+		st.AddSession(&fakestate.Session{ID: string(s.ID), Label: s.Label})
 	}
 	if !st.RemoveSession(string(sid)) {
 		return rex.ErrNotFound
