@@ -1901,12 +1901,27 @@ local function fixture_path(name)
 	return path
 end
 
-local function run_probe(script, dir, env)
+-- A PATH with the utilities the probe runs and no rex, for the test that a
+-- missing rex is reported. The normal PATH includes /usr/bin:/bin, where a
+-- host rex would make a removed fixture look present.
+local function tools_only_path(dir)
+	local tools = dir .. "/tools"
+	sh("mkdir -p " .. text.quote(tools))
+	for _, name in ipairs({ "awk", "cat", "mktemp", "rm", "tr" }) do
+		local resolved = text.trim(sh("command -v " .. name .. " 2>/dev/null || true"))
+		if resolved ~= "" then
+			sh("ln -sf " .. text.quote(resolved) .. " " .. text.quote(tools .. "/" .. name))
+		end
+	end
+	return dir .. ":" .. tools
+end
+
+local function run_probe(script, dir, env, path)
 	-- codec.wrap puts the shell escape function before every probe. The hidden
 	-- block wraps too, so the direct run here does the same.
 	write_file(dir .. "/probe.sh", codec.SHELL_ESCAPE .. "\n" .. script .. "\nprintf 'END\\n'\n")
 	return sh(
-		"cd " .. text.quote(dir) .. " && env -i HOME=\"$HOME\" PATH=" .. text.quote(dir .. ":/usr/bin:/bin")
+		"cd " .. text.quote(dir) .. " && env -i HOME=\"$HOME\" PATH=" .. text.quote(path or (dir .. ":/usr/bin:/bin"))
 			.. " FIXTURE=" .. text.quote(fixture_path("config-show.json"))
 			.. " " .. (env or "")
 			.. " /bin/sh probe.sh 2>/dev/null"
@@ -1997,7 +2012,7 @@ end)
 test("status: no rex at all is a reason that names the search", function()
 	local dir = probe_tools()
 	sh("rm " .. text.quote(dir .. "/rex"))
-	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir)
+	local output = run_probe(status.script(config.resolve(nil), "/cities/alpha", "s1"), dir, nil, tools_only_path(dir))
 	remove(dir)
 	contains(output, "@@server|\n", "no server")
 	contains(output, "@@server_error|no rex on PATH and none in REX_BIN_DIR", "the search is named")
@@ -2152,7 +2167,7 @@ test("status: rex is found in REX_BIN_DIR when it is not on PATH", function()
 	sh("chmod +x " .. text.quote(bin .. "/rex"))
 	local script = status.script(config.resolve(nil), "/cities/alpha", "s1")
 	local found = run_probe(script, dir, "REX_SERVER=/tmp/other.sock REX_BIN_DIR=" .. text.quote(bin))
-	local absent = run_probe(script, dir, "REX_SERVER=/tmp/other.sock")
+	local absent = run_probe(script, dir, "REX_SERVER=/tmp/other.sock", tools_only_path(dir))
 	remove(dir)
 	contains(found, "@@server|/tmp/other.sock\n", "the fallback finds rex")
 	contains(absent, "@@server|\n", "no rex anywhere is no server")
