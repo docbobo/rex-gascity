@@ -588,8 +588,16 @@ func (b *Binder) resolveLabels(name SessionName, pol scanPolicy) resolvedLabels 
 		lbl.tabs = appendLabel(lbl.tabs, b.townTab)
 	}
 	// A window started by a build before GCREX-72 still carries the old
-	// label; find it rather than start a second tab.
-	lbl.tabs = appendLabel(lbl.tabs, legacyTabLabelFor(name, nil))
+	// label; find it rather than start a second tab. When the city pin equals
+	// the rig name, that label is also the town tab's bare name, so a bare
+	// pane label there cannot say which session owns the pane: the town pane
+	// "mayor" sits in "Indigo" exactly where a legacy rig pane for
+	// "Indigo--mayor" would. Only a town-level name may claim a bare label in
+	// that tab (above); a rig name still finds a suffix-labelled pane through
+	// the recordless identity scan even without this rung.
+	if legacy := legacyTabLabelFor(name, nil); b.townTab == "" || name.IsTown() || legacy != b.townTab {
+		lbl.tabs = appendLabel(lbl.tabs, legacy)
+	}
 	// The bracketed tags are newer still: a window from before them carries
 	// "Rig: <rig>".
 	if tab := legacyRigTabFor(name, nil); tab != "" {
