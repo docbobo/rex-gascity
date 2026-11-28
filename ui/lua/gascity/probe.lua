@@ -8,8 +8,8 @@
 -- again.
 --
 -- An action cannot wait: Rex has no sleep or wait for one. It can run a command
--- that waits, so each turn of the loop below runs /bin/sleep, then reads the
--- block.
+-- that waits, so each turn of the loop below runs sleep through /bin/sh, then
+-- reads the block.
 
 local M = {}
 
@@ -48,7 +48,13 @@ function M.run(ctx, script, opts)
 	end
 
 	for _ = 1, opts.patience and PATIENCE or TURNS do
-		rex.exec({ "/bin/sleep", NAP })
+		-- /bin/sleep is not on every Unix: NixOS has sleep on PATH only.
+		-- Run it through /bin/sh, which the probe already requires.
+		local waited, wait_err = rex.exec({ "/bin/sh", "-c", "sleep " .. NAP })
+		if waited == nil then
+			close()
+			return nil, "cannot wait between screen reads: " .. tostring(wait_err)
+		end
 		local screen = rex.block.call(TERMINAL, "format", { block_id = block_id, trim = true })
 		local content = screen and (screen.content or screen.text)
 		if content ~= nil then

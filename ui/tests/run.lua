@@ -1248,6 +1248,25 @@ test("probe: gives up and closes the block when nothing answers", function()
 	equal(stub.closed[1], "block:probe", "the block is closed again")
 end)
 
+test("probe: waits with a command every Unix has", function()
+	stub.format = probe_answer({ "x" })
+	probe.run({ session_id = "session:1" }, "echo hi")
+	local argv = stub.execs[1].argv
+	equal(argv[1], "/bin/sh", "a shell, not a hard-coded sleep path")
+	equal(argv[2], "-c", "run the command")
+	equal(argv[3], "sleep 0.05", "the nap")
+end)
+
+test("probe: a wait that cannot run is reported, not spun through", function()
+	stub.format = probe_answer({ "x" })
+	stub.exec_error = "/bin/sleep: not found"
+	local answer, err = probe.run({ session_id = "session:1" }, "echo hi")
+	equal(answer, nil, "no answer")
+	contains(err, "cannot wait between screen reads", "the reason")
+	contains(err, "/bin/sleep: not found", "the failure")
+	equal(stub.closed[1], "block:probe", "the block is closed again")
+end)
+
 test("probe: reports a block that could not be made", function()
 	stub.block_error = "session not found"
 	local answer, err = probe.run({ session_id = "session:1" }, "echo hi")
